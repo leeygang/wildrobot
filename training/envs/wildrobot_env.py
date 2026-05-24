@@ -4119,6 +4119,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/cmd_forward_velocity_track"] = reward_contrib[
             "cmd_forward_velocity_track"
         ]
+        # v0.21.0 P6.4 (H5) — yaw-rate tracking weighted contribution.
+        # Default w.cmd_yaw_rate_track = 0.0 so legacy YAMLs log a
+        # constant 0 here; v0.21 smokes (P8) opt in and the value
+        # becomes the actual weighted contribution.
+        terminal_metrics_dict["reward/cmd_yaw_rate_track"] = reward_contrib[
+            "cmd_yaw_rate_track"
+        ]
         terminal_metrics_dict["reward/action_rate"] = reward_contrib["action_rate"]
         terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]

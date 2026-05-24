@@ -321,10 +321,13 @@ ENV_METRICS_KEYS = {
     "tracking/max_torque": "Max normalized torque (0-1)",
     "tracking/cmd_vs_achieved_forward": "|cmd_forward - achieved_forward|",
     "tracking/cmd_velocity_xy_err": (
-        "sqrt((vx-cmd_vx)^2 + vy^2) in heading-local frame "
+        "sqrt((vx-cmd_vx)^2 + (vy-cmd_vy)^2) in heading-local frame "
         "(actual vs commanded).  Under cmd_velocity_track_dim==2 "
         "this is the velocity reward target error (TB parity); "
-        "under dim==1 it is the legacy diagnostic."
+        "under dim==1 it is the legacy diagnostic.  v0.21.0 P6: the "
+        "lateral term subtracts the commanded vy (was vy^2 "
+        "unconditionally before P6 -- legacy YAMLs sample cmd_vy=0 "
+        "so the formula is byte-equivalent there)."
     ),
     "tracking/lateral_velocity_abs": "Absolute heading-local lateral velocity |vy|",
     "tracking/ref_velocity_xy_err": (
@@ -543,6 +546,10 @@ def get_initial_env_metrics(
         "ref/ang_vel_xy_err_rad_s": 0.0,
         "reward/ref_contact_match": 0.0,
         "reward/cmd_forward_velocity_track": 0.0,
+        # v0.21.0 P6.4: yaw-rate tracking contribution (0.0 reset slot;
+        # populated each step by _aggregate_reward when the v0.21
+        # cmd_yaw_rate_track weight is non-zero).
+        "reward/cmd_yaw_rate_track": 0.0,
         "ref/q_track_err_rmse": 0.0,
         "ref/body_quat_err_deg": 0.0,
         "ref/feet_pos_err_l2": 0.0,
@@ -737,6 +744,10 @@ def get_initial_env_metrics_jax(
         "ref/ang_vel_xy_err_rad_s": jp.zeros(()),
         "reward/ref_contact_match": jp.zeros(()),
         "reward/cmd_forward_velocity_track": jp.zeros(()),
+        # v0.21.0 P6.4: yaw-rate tracking contribution (0.0 reset slot;
+        # populated each step by _aggregate_reward when the v0.21
+        # cmd_yaw_rate_track weight is non-zero).
+        "reward/cmd_yaw_rate_track": jp.zeros(()),
         "ref/q_track_err_rmse": jp.zeros(()),
         "ref/body_quat_err_deg": jp.zeros(()),
         "ref/feet_pos_err_l2": jp.zeros(()),

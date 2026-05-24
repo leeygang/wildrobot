@@ -1462,6 +1462,14 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Forward velocity command tracking",
     ),
+    # v0.21.0 P6.4 (H5): yaw-rate tracking weighted contribution.  TB
+    # walk.gin ang_vel_tracking_sigma=4.0 -> WR cmd_yaw_rate_alpha=0.25.
+    # Default weight cmd_yaw_rate_track=0.0 keeps legacy YAMLs at 0 here.
+    MetricSpec(
+        name="reward/cmd_yaw_rate_track",
+        reducer=Reducer.MEAN,
+        description="Yaw-rate command tracking (v0.21.0+, TB-aligned)",
+    ),
     # =========================================================================
     # v0.20.1 ToddlerBot-alignment shaping rewards
     # (walking_training.md Appendix A.3).
