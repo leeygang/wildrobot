@@ -472,6 +472,29 @@ Expected additions:
   - `ZMP` is the recommended first executable prior
   - `ALIP` is the intended upgrade path if `ZMP` proves too conservative
   - `Placo` is a prototyping aid, not the mainline prior source of truth
+- **`v0.21.0` in progress on branch `smoke14_lateral`** — lateral (vy) +
+  yaw (wz) prior support, mirroring ToddlerBot's unified ZMP design.
+  Canonical plan: `training/docs/v0210_lateral_yaw_prior_plan-final-r2.md`.
+  WR-scaled ranges: `vy ∈ ±0.13 m/s`, `wz ∈ ±0.25 rad/s`.
+  - **Landed (P1–P3 + P1.5 + review-fix)**: ZMP planner accepts
+    `(vx, vy, wz)` with 3-axis norm gate and TB-mirrored arc-rotation;
+    foot_rpy yaw + IK consumption; 3D `ReferenceLibrary` schema with
+    per-axis (unit-coherent) nearest-grid lookup; `WildRobotInfo.velocity_cmd`
+    migrated `() → (3,)`; H7 incremental `path_state` in `WildRobotInfo`;
+    H3 `_load_three_axis` config helper (scalar `eval_velocity_cmd`
+    broadcasts to `(vx, 0, 0)`).
+  - **Not yet landed (P4–P11)**: 3D branched command sampler, env-side
+    3D library wiring (`_init_offline_service`, `_lookup_offline_window`
+    consume `(vx, vy, wz)`), `wr_obs_v8_cmd3d` actor observation layout,
+    real `vy_cmd` / `yaw_rate_cmd` reward terms, eval/visualize/deploy
+    parity for the wider command, smoke YAML + G6/G7 gates, CHANGELOG
+    entry.
+  - **Implication for smoke training**: until P4–P11 land, the env still
+    samples scalar vx, the actor obs still exposes scalar vx, and the
+    `_lookup_offline_window` still selects the bin by `velocity_cmd[0]`
+    only — so a smoke run on `smoke14_lateral` is functionally equivalent
+    to v0.20.x. The 3-axis groundwork is in place to make P4–P11 small,
+    test-driven diffs.
 
 ### `v0.19.0` Platform Pivot
 
