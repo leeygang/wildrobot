@@ -1780,6 +1780,18 @@ METRIC_SPECS: List[MetricSpec] = [
         ),
     ),
     MetricSpec(
+        name="tracking/yaw_rate_err",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "v0.21.0 P6.4 (H5): |ang_vel_z - velocity_cmd[2]| in "
+            "rad/s.  Body-frame yaw-rate error against the 3-vec "
+            "command's wz axis.  IS the reward-target error of the "
+            "new ``cmd_yaw_rate_track`` term (TB-aligned "
+            "alpha=0.25); always logged regardless of weight."
+        ),
+    ),
+    MetricSpec(
         name="tracking/ref_selected_vx",
         reducer=Reducer.MEAN,
         log_prefix="tracking",

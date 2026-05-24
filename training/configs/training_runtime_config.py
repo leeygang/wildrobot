@@ -1046,6 +1046,27 @@ class RewardWeightsConfig(Freezable):
     #                 with vy_ref fixed to 0 in forward-only command smokes.
     cmd_velocity_track_dim: int = 1
 
+    # v0.21.0 P6.4 (H5) — yaw-rate tracking term.
+    #
+    # ``cmd_yaw_rate_track`` is the weight on the new
+    # ``_yaw_rate_track_reward`` (Gaussian on (ang_vel_z -
+    # velocity_cmd[2])^2).  Default 0.0 keeps every legacy YAML
+    # (smoke7, smoke12b, smoke13, smoke14) byte-for-byte identical —
+    # only future v0.21 smokes that opt in (yaw axis active in the
+    # 3D cmd sampler) set this > 0.
+    #
+    # ``cmd_yaw_rate_alpha`` is a SEPARATE numerator-α field, NOT a
+    # reuse of ``cmd_forward_velocity_alpha`` (H5 from the r2 plan
+    # review).  TB's walk.gin has two distinct tracking sigmas:
+    #   lin_vel_tracking_sigma = 1000.0  →  WR α = 1/1000 = 0.001
+    #   ang_vel_tracking_sigma = 4.0     →  WR α = 1/4.0  = 0.25
+    # WR keeps its historically tighter lin-vel α (4.0) for
+    # cmd_forward_velocity, but adopts TB's broader yaw-rate width
+    # (α = 0.25) directly so the policy isn't punished out of the
+    # gate for the noisy first-step yaw rate.
+    cmd_yaw_rate_track: float = 0.0
+    cmd_yaw_rate_alpha: float = 0.25
+
     # NOTE: ``slip`` and ``pitch_rate`` already exist above (legacy v0.19.5x
     # fields).  The v0.20.1 v3 env reuses those slots — see the M1 fail-
     # mode decision tree (walking_training.md v0.20.1 §).  The smoke YAML

@@ -1340,6 +1340,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ref_lateral_velocity: jax.Array,
         alpha: jax.Array,
         track_dim: int,
+        vy_cmd: jax.Array = jp.float32(0.0),
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Compute cmd_forward_velocity_track and its 2D diagnostics.
 
@@ -1362,13 +1363,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
             exp(-alpha * ((vx_actual - velocity_cmd)^2
                         + (vy_actual - vy_cmd)^2))
 
-        WR currently has no lateral command, so ``vy_cmd == 0`` and the
-        lateral axis penalizes lateral drift.
+        ``vy_cmd`` defaults to 0.0 for backward compatibility (C16 /
+        NEW-1 mitigation): legacy callers that omit ``vy_cmd``
+        recover the pre-v0.21.0 ``vy_err_cmd = lateral_velocity``
+        form byte-for-byte (since ``lateral_velocity - 0.0 ==
+        lateral_velocity``).  v0.21.0 callers pass the sampled
+        ``vy_cmd`` from ``velocity_cmd[1]`` so the lateral axis
+        actually tracks the commanded lateral velocity instead of
+        unconditionally penalizing |vy|.
 
         Frame note: ``forward_velocity`` and ``lateral_velocity`` are
         in the actor's heading-local frame
         (CoordinateFrame.HEADING_LOCAL in ``_compute_reward_terms``);
-        the command is forward-only in that frame.
+        ``velocity_cmd`` / ``vy_cmd`` are likewise the heading-local
+        components of the 3-vec command (vx, vy, wz).
 
         ``ref_forward_velocity`` / ``ref_lateral_velocity`` are kept
         as inputs for the ``ref_velocity_xy_err`` diagnostic only
@@ -1384,8 +1392,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         reference diagnostic; non-zero under both dims when an
         external reference is supplied."""
         vx_err_cmd = forward_velocity - velocity_cmd
-        # WR has no lateral command; vy_cmd = 0.
-        vy_err_cmd = lateral_velocity
+        # v0.21.0 P6.2: subtract the commanded vy.  Pre-P6.2 this was
+        # ``vy_err_cmd = lateral_velocity`` (i.e. vy_cmd implicitly 0);
+        # the new kwarg defaults to 0.0 so legacy callers are byte-for-
+        # byte identical (NEW-1 / C16 mitigation).
+        vy_err_cmd = lateral_velocity - vy_cmd
         vx_err_ref = forward_velocity - ref_forward_velocity
         vy_err_ref = lateral_velocity - ref_lateral_velocity
         if track_dim == 1:
@@ -1395,13 +1406,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             raise ValueError(f"track_dim must be 1 or 2; got {track_dim!r}")
         reward = jp.exp(-alpha * err_sq).astype(jp.float32)
-        # ``cmd_velocity_xy_err`` — actual (vx, vy) vs (velocity_cmd, 0).
-        # Under ``track_dim == 2`` this IS the reward-target error;
-        # under ``track_dim == 1`` it is the legacy diagnostic
-        # (forward-only reward; lateral component is logged but not
-        # penalized by the reward).
+        # ``cmd_velocity_xy_err`` — actual (vx, vy) vs (velocity_cmd,
+        # vy_cmd).  Under ``track_dim == 2`` this IS the reward-target
+        # error; under ``track_dim == 1`` it is a diagnostic distance
+        # to the full 2-axis command target (the forward axis still
+        # drives the dim=1 reward; the lateral axis is logged but not
+        # penalized).
         cmd_velocity_xy_err = jp.sqrt(
-            vx_err_cmd * vx_err_cmd + lateral_velocity * lateral_velocity
+            vx_err_cmd * vx_err_cmd + vy_err_cmd * vy_err_cmd
         ).astype(jp.float32)
         # ``ref_velocity_xy_err`` — diagnostic-only distance of actual
         # (vx, vy) from the selected reference's finite-diff pelvis
@@ -1412,6 +1424,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ).astype(jp.float32)
         lateral_velocity_abs = jp.abs(lateral_velocity).astype(jp.float32)
         return reward, cmd_velocity_xy_err, lateral_velocity_abs, ref_xy_err
+
+    @staticmethod
+    def _yaw_rate_track_reward(
+        *,
+        ang_vel_z: jax.Array,
+        yaw_rate_cmd: jax.Array,
+        alpha: jax.Array,
+    ) -> jax.Array:
+        """v0.21.0 P6.4 (H5) — TB-aligned yaw-rate tracking reward.
+
+        Mirrors ToddlerBot ``_reward_ang_vel_z``
+        (toddlerbot/locomotion/mjx_env.py:2437-2462):
+
+            reward = exp(-alpha * (ang_vel_z - yaw_rate_cmd)^2)
+
+        ``ang_vel_z`` is the body-frame angular velocity around z
+        (yaw rate); for an upright biped this is identical to the
+        heading-local yaw rate since yaw rotations commute with
+        themselves.  WR sources it from ``gyro_rad_s[2]`` at the
+        call site, matching TB's ``get_local_vec(ang)[2]``.
+
+        ``alpha`` should come from
+        ``reward_weights.cmd_yaw_rate_alpha`` (default 0.25 — TB
+        walk.gin ang_vel_tracking_sigma = 4.0 → 1/4.0).  Reusing the
+        much-tighter ``cmd_forward_velocity_alpha`` (4.0) here would
+        crush the reward to ~exp(-5.6) ≈ 0.004 at a typical 0.1 rad/s
+        error, suppressing the gradient on initialization."""
+        err = ang_vel_z - yaw_rate_cmd
+        return jp.exp(-alpha * err * err).astype(jp.float32)
 
     # --------------------------------------------------- offline window helpers
 
@@ -2060,8 +2101,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # TB parity: the velocity reward target is the COMMANDED
         # velocity, not the selected reference's pelvis velocity.
         # Under dim=2 the reward compares actual heading-local
-        # (vx, vy) to (velocity_cmd, 0) (WR has no lateral command);
-        # under dim=1 only the forward axis is penalized.  The
+        # (vx, vy) to (velocity_cmd[0], velocity_cmd[1]); under
+        # dim=1 only the forward axis is penalized.  The
         # cmd-conditioned reference selects the gait template (q_ref
         # / contact_mask / critic refs), but its finite-diff pelvis
         # velocity is exposed only as the ``ref_velocity_xy_err``
@@ -2069,21 +2110,41 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # toddlerbot/locomotion/mjx_env.py:_reward_lin_vel_xy +
         # integrate_path_state in walk_zmp_ref.py.
         #
-        # v0.21.0 P3: velocity_cmd is now (3,) [vx, vy, wz]; the
-        # forward-only reward helper keeps its scalar signature
-        # (vy / wz handling lands in P6.2 / P6.3).
+        # v0.21.0 P3: velocity_cmd is now (3,) [vx, vy, wz].
+        # v0.21.0 P6.3: pass ``velocity_cmd[1]`` as ``vy_cmd`` so the
+        # lateral axis tracks the commanded lateral velocity rather
+        # than unconditionally penalizing |vy|.
         ref_pelvis_vel_xy = win["pelvis_vel"][:2].astype(jp.float32)
         r_vx, cmd_velocity_xy_err, lateral_velocity_abs, ref_velocity_xy_err = (
             self._cmd_forward_velocity_track_reward(
                 forward_velocity=forward_velocity,
                 lateral_velocity=lateral_velocity,
                 velocity_cmd=velocity_cmd[0],
+                vy_cmd=velocity_cmd[1],
                 ref_forward_velocity=ref_pelvis_vel_xy[0],
                 ref_lateral_velocity=ref_pelvis_vel_xy[1],
                 alpha=jp.float32(weights.cmd_forward_velocity_alpha),
                 track_dim=self._cmd_velocity_track_dim,
             )
         )
+
+        # ---- cmd/yaw_rate_track (v0.21.0 P6.4, H5) ---------------------------
+        # TB parity: ``_reward_ang_vel_z`` (mjx_env.py:2437-2462)
+        # tracks ``info["state_ref"]["ang_vel"][2]`` with
+        # ``alpha = 1 / ang_vel_tracking_sigma`` (walk.gin
+        # ang_vel_tracking_sigma=4.0 → α=0.25).  WR's analogue is
+        # ``velocity_cmd[2]`` (the wz axis of the 3-vec command,
+        # which the path-state integrator maps to a yaw-rotating
+        # path orientation per P3).  Body-frame yaw rate from
+        # gyro is invariant to the yaw rotation, so ``gyro_rad_s[2]``
+        # is the local yaw rate.  Default weight 0.0 keeps legacy
+        # YAMLs unchanged; v0.21 smokes (P8) opt in.
+        r_yaw_rate_track = WildRobotEnv._yaw_rate_track_reward(
+            ang_vel_z=gyro_rad_s[2],
+            yaw_rate_cmd=velocity_cmd[2],
+            alpha=jp.float32(weights.cmd_yaw_rate_alpha),
+        )
+        yaw_rate_err = jp.abs(gyro_rad_s[2] - velocity_cmd[2]).astype(jp.float32)
 
         # ---- regularizers (raw squared-sums; weights are negative) ----------
         delta_action = applied_action - prev_applied_action
@@ -2366,6 +2427,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_contact_match=r_contact,
             contact_phase_match_diag=contact_phase_match_diag,
             r_cmd_forward_velocity_track=r_vx,
+            # v0.21.0 P6.4 (H5) — yaw-rate tracking term (TB-aligned
+            # alpha=0.25 via cmd_yaw_rate_alpha; weight defaults 0.0).
+            r_yaw_rate_track=r_yaw_rate_track.astype(jp.float32),
             penalty_action_rate=penalty_action_rate,
             penalty_torque=penalty_torque,
             penalty_joint_vel=penalty_joint_vel,
@@ -2398,6 +2462,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_velocity_xy_err=cmd_velocity_xy_err,
             lateral_velocity_abs=lateral_velocity_abs,
             ref_velocity_xy_err=ref_velocity_xy_err,
+            # v0.21.0 P6.4: yaw-rate tracking diagnostic
+            # (|ang_vel_z - velocity_cmd[2]|, rad/s).  Always
+            # populated regardless of cmd_yaw_rate_track weight.
+            yaw_rate_err=yaw_rate_err,
             # Reference-bin selection diagnostics (cmd-conditioned mode
             # picks the nearest-vx bin per call; legacy mode reports the
             # configured single-bin vx with zero error when no cmd is
@@ -2476,6 +2544,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * terms["r_contact_match"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
             * terms["r_cmd_forward_velocity_track"],
+            # v0.21.0 P6.4 (H5) — yaw-rate tracking weighted contribution.
+            # Default w.cmd_yaw_rate_track = 0.0 so legacy YAMLs are
+            # unaffected; v0.21 smokes (P8) opt in.
+            cmd_yaw_rate_track=jp.float32(w.cmd_yaw_rate_track)
+            * terms["r_yaw_rate_track"],
             action_rate=jp.float32(w.action_rate) * terms["penalty_action_rate"],
             torque=jp.float32(w.torque) * terms["penalty_torque"],
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
@@ -3342,10 +3415,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
             root_vel_h.linear[0] - velocity_cmd[0]
         ).astype(jp.float32)
+        # v0.21.0 P6.3: lateral component is now (vy_actual - vy_cmd),
+        # matching ``_cmd_forward_velocity_track_reward`` so reset and
+        # step report the same metric formula.
         metrics_dict["tracking/cmd_velocity_xy_err"] = jp.sqrt(
             (root_vel_h.linear[0] - velocity_cmd[0])
             * (root_vel_h.linear[0] - velocity_cmd[0])
-            + root_vel_h.linear[1] * root_vel_h.linear[1]
+            + (root_vel_h.linear[1] - velocity_cmd[1])
+            * (root_vel_h.linear[1] - velocity_cmd[1])
         ).astype(jp.float32)
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
@@ -3370,6 +3447,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/ref_velocity_xy_err"] = jp.sqrt(
             (root_vel_h.linear[0] - ref_pelvis_vel_xy0[0]) ** 2
             + (root_vel_h.linear[1] - ref_pelvis_vel_xy0[1]) ** 2
+        ).astype(jp.float32)
+        # v0.21.0 P6.4: yaw-rate error at reset.  Body-frame yaw rate is
+        # zero at reset; the diagnostic is just |velocity_cmd[2]|.
+        metrics_dict["tracking/yaw_rate_err"] = jp.abs(
+            velocity_cmd[2]
         ).astype(jp.float32)
         # Reference-bin selection diagnostics: ``win0`` was looked up
         # at the sampled velocity_cmd so the bin / err here reflect
@@ -3918,6 +4000,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/yaw_drift_signed_rad"] = (
             _yaw_delta_wrapped.astype(jp.float32)
         )
+        # v0.21.0 P6.4 (H5): body-frame yaw-rate error vs commanded wz.
+        terminal_metrics_dict["tracking/yaw_rate_err"] = reward_terms[
+            "yaw_rate_err"
+        ]
         # Reference-bin selection diagnostics: which vx bin was picked
         # this step and how far it is from the sampled velocity_cmd.
         terminal_metrics_dict["tracking/ref_selected_vx"] = reward_terms[
