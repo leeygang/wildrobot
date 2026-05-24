@@ -37,14 +37,16 @@ Usage:
   #   --flag=value (equals-sign) form. With a plain space argparse
   #   mis-parses the leading '-' as the next flag and errors out.
   #
-  # Canonical v0.21.0 grid (4 vx x 5 vy x 5 wz -> 24 bins after TB-split
-  # dedup at zero):
+  # Canonical v0.21.0 grid (plan-locked vy=+/-0.13, wz=+/-0.25; 5 vx
+  # x 5 vy x 5 wz -> 29 bins after TB-split dedup at zero). Defaults
+  # are read from ZMPWalkConfig (cycle_time=0.96s, step_height=0.05m)
+  # so build_library and the planner stay in lockstep:
   #
   #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib \
   #       --mode 3d \
   #       --vx-bins=0.0,0.18,0.20,0.22,0.26 \
-  #       --vy-bins=-0.10,-0.05,0.0,0.05,0.10 \
-  #       --yaw-rate-bins=-0.20,-0.10,0.0,0.10,0.20
+  #       --vy-bins=-0.13,-0.065,0.0,0.065,0.13 \
+  #       --yaw-rate-bins=-0.25,-0.125,0.0,0.125,0.25
   #
   # Equivalent build using symmetric ranges (vy/wz default to [0.0] when
   # the corresponding ``--*-max`` is 0, so axes you don't need can be
@@ -53,26 +55,60 @@ Usage:
   #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib \
   #       --mode 3d \
   #       --vx-bins=0.0,0.18,0.20,0.22,0.26 \
-  #       --vy-max 0.10 --vy-interval 0.05 \
-  #       --yaw-rate-max 0.20 --yaw-rate-interval 0.10
+  #       --vy-max 0.13 --vy-interval 0.065 \
+  #       --yaw-rate-max 0.25 --yaw-rate-interval 0.125
   #
   # Minimal 4-bin smoke build (handy for fast iteration on the viewer):
   #
   #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib_smoke \
-  #       --mode 3d --vx-bins=0.0,0.20 --vy-bins=0.0,0.10 --yaw-rate-bins=0.0
+  #       --mode 3d --vx-bins=0.0,0.20 --vy-bins=0.0,0.13 --yaw-rate-bins=0.0
   #
-  # Then visualize a lateral-walk bin:
-  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
-  #       --library-path /tmp/v0210_lib --vx 0.20 --vy 0.05
+  # ---------------------------------------------------------------------
+  # CHOOSE THE RIGHT VIEWER MODE FOR YOUR QUESTION
+  # ---------------------------------------------------------------------
+  # Open-loop dynamic playback (the default, free-floating, no policy
+  # and no useful balance controller) is BAD for evaluating the lateral
+  # / yaw prior. The prior is just joint targets + a ZMP plan; it
+  # encodes no balance policy. With WR's geometry the lateral prior
+  # has only ~24% safety margin above the CoM-over-foot lean threshold
+  # (TB has ~42%), so any tracking error or unmodeled dynamics tips
+  # the body and it falls. This is a property of OPEN-LOOP REPLAY,
+  # not of the prior. v0.20.x forward "kind of walks" at cycle=0.5s
+  # only because the short cycle prevented falls; at the Froude-correct
+  # cycle=0.96s, even forward open-loop falls.
   #
-  # Or a pure side-step (vx=0) lateral bin:
-  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
-  #       --library-path /tmp/v0210_lib --vx 0.0 --vy 0.10
+  # Match the question to the mode:
   #
-  # Or a pure-yaw bin:
-  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
-  #       --library-path /tmp/v0210_lib --vx 0.0 --vy 0.0 --yaw-rate 0.20
+  # (A) "Is the prior kinematically correct?" -> --kinematic
+  #     Sets qpos directly each step (no physics). Pelvis follows the
+  #     planned trajectory; legs follow q_ref. Pure visual check of
+  #     planner output.
   #
+  #       uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #           --library-path /tmp/v0210_lib --vx 0.0 --vy 0.13 --kinematic
+  #
+  # (B) "Do the legs actually do side-stepping motion under PD?" ->
+  #     --fixed-base (recommended for prior visual eval)
+  #     Pelvis pinned to its standing pose; the legs PD-track the
+  #     q_ref. Tests joint reference + PD tracking without conflating
+  #     with open-loop body balance. Lateral and forward both pass
+  #     300/300 steps with 0% saturation at the canonical grid above.
+  #
+  #       uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #           --library-path /tmp/v0210_lib --vx 0.0 --vy 0.13 --fixed-base
+  #       uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #           --library-path /tmp/v0210_lib --vx 0.20 --vy 0.0 --fixed-base
+  #
+  # (C) "Does the robot actually walk?" -> train a policy and watch
+  #     the rollout. The viewer's open-loop dynamic mode CANNOT
+  #     answer this for v0.21.0 lateral/yaw, regardless of cycle_time
+  #     or vy_max. Even --c2-stabilizer is too weak (roll-PD clip
+  #     saturation > 25% hard-fail at cycle=0.96s).
+  #
+  # If you still want to see the dynamic open-loop attempt (for
+  # diagnostics) just omit --kinematic / --fixed-base. Expect a fall.
+  #
+  # ---------------------------------------------------------------------
   # Library is TB-split (linear (vx, vy, 0) + pure-yaw (0, 0, wz), dedup
   # (0, 0, 0)), so mixed (vx>0, wz>0) queries snap per-axis to whichever
   # single-axis bin is closest. Always check the ``matched key=`` line in
