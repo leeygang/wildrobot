@@ -239,13 +239,30 @@ def deterministic_eval_gate(
       step_length_touchdown_event_m, forward_velocity_cmd_ratio.
 
     SOFT signals (report-only, do not block promotion) — smoke15
-    deploy-facing diagnostics:
-      lateral_velocity_abs, yaw_drift_signed_rad, world_y_drift_signed_m.
-    Each gets a ``soft_signals[name]`` boolean that is True when the
-    metric is missing or within the documented cap; promoted
-    checkpoints can still have these flagged.  The post-training
-    summary surfaces both gates + soft_signals so a regression on
-    sideways drift is visible even when the G4 gates pass.
+    deploy-facing diagnostics.  Each gets a
+    ``soft_signals[name]`` boolean that is True when the metric is
+    missing or within the documented cap; promoted checkpoints can
+    still have these flagged.  Soft-signal payload keys:
+
+      - ``lateral_velocity_abs`` — per-step mean of |vy|.
+      - ``yaw_drift_abs_rad`` — per-episode-terminal mean of
+        |yaw drift since spawn| (NOT the signed mean).  Falls back
+        to ``abs(yaw_drift_signed_rad)`` for legacy logs that
+        predate the abs-aggregation fix.
+      - ``world_y_drift_abs_m`` — per-episode-terminal mean of
+        |world-y drift since spawn|.  Falls back to
+        ``abs(world_y_drift_signed_m)`` for legacy logs.
+
+    The signed-variant fallback exists for back-compat only; under
+    cross-env sign cancellation the signed mean understates drift
+    (half the envs at +0.5 m and half at -0.5 m read as ~0 mean
+    even though every env is bad), which is why new runs always
+    emit the ``*_abs_*`` variants from per-episode aggregation
+    BEFORE cross-env reduction.
+
+    The post-training summary surfaces both gates + soft_signals
+    so a regression on sideways drift is visible even when the G4
+    gates pass.
     """
     forward_velocity = _metric(eval_metrics, "forward_velocity")
     cmd_err = _metric(eval_metrics, "cmd_vs_achieved_forward")

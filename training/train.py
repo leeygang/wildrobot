@@ -822,11 +822,35 @@ def start_training(
                     """Deterministic post-training eval rollout.
 
                     Returns a dict of deploy-facing metrics aggregated
-                    over the rollout.  Most metrics are MEAN-reduced
-                    over (T, N) steps; world-frame drift metrics are
-                    the per-env final-step value averaged across envs,
-                    so they read "total drift over the rollout" instead
-                    of "mean-since-spawn".
+                    over the rollout.  Two aggregation conventions:
+
+                    - Per-step metrics (forward_velocity,
+                      cmd_vs_achieved_forward, lateral_velocity_abs,
+                      step_length / touchdown event signals): plain
+                      MEAN over the (T, N) rollout window.
+
+                    - Cumulative-since-spawn drift metrics
+                      (world_x_progress_m, world_y_drift_*,
+                      yaw_drift_*): per-episode terminal-step value
+                      averaged across completed episodes via
+                      ``sum(metric * done) / total_done`` (same
+                      pattern as ``mean_episode_length``).  The env
+                      emits cumulative drift since the most-recent
+                      reset every step, so on the done step the
+                      value IS that episode's terminal drift; this
+                      aggregation captures the drift of every
+                      episode that finishes during the rollout
+                      (including envs that auto-reset mid-rollout).
+
+                    For sign-ambiguous drift (yaw, world-y) we also
+                    emit ``*_abs_*`` variants computed as
+                    ``mean(|terminal drift|)`` over completed
+                    episodes.  Those are the values the deploy gate
+                    reads — they're invariant under cross-env sign
+                    cancellation that would otherwise mask a bad
+                    policy (e.g. half the envs drifting +0.5 m and
+                    half drifting -0.5 m has signed mean ≈ 0 but
+                    abs mean = 0.5 m).
                     """
                     eval_env_state = post_eval_reset_fn(eval_rng)
 
