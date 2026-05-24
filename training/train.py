@@ -818,7 +818,16 @@ def start_training(
                     policy_params: Any,
                     processor_params: Any,
                     eval_rng: jax.Array,
-                ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+                ) -> Dict[str, jnp.ndarray]:
+                    """Deterministic post-training eval rollout.
+
+                    Returns a dict of deploy-facing metrics aggregated
+                    over the rollout.  Most metrics are MEAN-reduced
+                    over (T, N) steps; world-frame drift metrics are
+                    the per-env final-step value averaged across envs,
+                    so they read "total drift over the rollout" instead
+                    of "mean-since-spawn".
+                    """
                     eval_env_state = post_eval_reset_fn(eval_rng)
 
                     def eval_step(carry, _):
@@ -854,26 +863,63 @@ def start_training(
                         0.0,
                     )
                     mean_episode_reward = jnp.mean(jnp.sum(rollout["reward"], axis=0))
-                    mean_forward_velocity = jnp.mean(
-                        rollout["metrics_vec"][..., METRIC_INDEX["forward_velocity"]]
-                    )
-                    mean_cmd_err = jnp.mean(
-                        rollout["metrics_vec"][
-                            ..., METRIC_INDEX["tracking/cmd_vs_achieved_forward"]
-                        ]
-                    )
-                    mean_step_len = jnp.mean(
-                        rollout["metrics_vec"][
-                            ..., METRIC_INDEX["tracking/step_length_touchdown_event_m"]
-                        ]
-                    )
-                    return (
-                        mean_episode_reward,
-                        mean_episode_length,
-                        mean_forward_velocity,
-                        mean_cmd_err,
-                        mean_step_len,
-                    )
+
+                    def _mean(name: str) -> jnp.ndarray:
+                        return jnp.mean(
+                            rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        )
+
+                    def _last_step_mean(name: str) -> jnp.ndarray:
+                        # Per-env final-step value averaged across envs;
+                        # used for cumulative drift metrics so the gate
+                        # sees "total drift" not "mean-since-spawn".
+                        return jnp.mean(
+                            rollout["metrics_vec"][-1, :, METRIC_INDEX[name]]
+                        )
+
+                    eps_touchdown = jnp.float32(1e-6)
+                    td_left = _mean("tracking/touchdown_rate_left")
+                    td_right = _mean("tracking/touchdown_rate_right")
+                    step_left_event = _mean("tracking/step_length_left_event_m")
+                    step_right_event = _mean("tracking/step_length_right_event_m")
+                    return {
+                        "mean_episode_reward": mean_episode_reward,
+                        "mean_episode_length": mean_episode_length,
+                        "forward_velocity": _mean("forward_velocity"),
+                        "cmd_vs_achieved_forward": _mean(
+                            "tracking/cmd_vs_achieved_forward"
+                        ),
+                        "step_length_touchdown_event_m": _mean(
+                            "tracking/step_length_touchdown_event_m"
+                        ),
+                        # smoke15 deploy-facing eval metrics.
+                        "lateral_velocity_abs": _mean(
+                            "tracking/lateral_velocity_abs"
+                        ),
+                        "world_x_progress_m": _last_step_mean(
+                            "tracking/world_x_progress_m"
+                        ),
+                        "world_y_drift_signed_m": _last_step_mean(
+                            "tracking/world_y_drift_signed_m"
+                        ),
+                        "yaw_drift_signed_rad": _last_step_mean(
+                            "tracking/yaw_drift_signed_rad"
+                        ),
+                        "touchdown_rate_left_count": td_left,
+                        "touchdown_rate_right_count": td_right,
+                        "step_length_left_event_m": step_left_event,
+                        "step_length_right_event_m": step_right_event,
+                        # Per-touchdown stride length (guarded
+                        # divide-by-zero when foot never touches down).
+                        "step_length_left_per_touchdown_m": (
+                            step_left_event
+                            / jnp.maximum(td_left, eps_touchdown)
+                        ),
+                        "step_length_right_per_touchdown_m": (
+                            step_right_event
+                            / jnp.maximum(td_right, eps_touchdown)
+                        ),
+                    }
 
                 post_eval_base_rng = jax.random.PRNGKey(
                     training_cfg.seed + training_cfg.ppo.eval.seed_offset + 20_000
@@ -883,21 +929,62 @@ def start_training(
                 for rank, candidate in enumerate(ranked_candidates, 1):
                     ckpt_data = load_checkpoint(candidate.checkpoint_path)
                     eval_rng = jax.random.fold_in(post_eval_base_rng, int(candidate.iteration))
-                    eval_reward, eval_ep_len, eval_vx, eval_cmd_err, eval_step_len = (
-                        run_post_training_eval(
-                            ckpt_data["policy_params"],
-                            ckpt_data.get("processor_params", ()),
-                            eval_rng,
-                        )
+                    eval_result = run_post_training_eval(
+                        ckpt_data["policy_params"],
+                        ckpt_data.get("processor_params", ()),
+                        eval_rng,
                     )
-                    jax.block_until_ready(eval_reward)
-                    step_length_value = _safe_float(eval_step_len)
-                    eval_metrics = {
-                        "mean_reward": float(eval_reward),
-                        "mean_episode_length": float(eval_ep_len),
-                        "forward_velocity": float(eval_vx),
-                        "cmd_vs_achieved_forward": float(eval_cmd_err),
+                    jax.block_until_ready(eval_result["mean_episode_reward"])
+                    # Project the JAX dict to Python floats for the
+                    # gate + JSON summary.  Any None-equivalent values
+                    # (e.g. step_length when episode had no touchdowns)
+                    # get coerced to None via _safe_float so the gate's
+                    # "step_metric_available" branch fires correctly.
+                    step_length_value = _safe_float(
+                        eval_result["step_length_touchdown_event_m"]
+                    )
+                    eval_metrics: Dict[str, Any] = {
+                        "mean_reward": float(eval_result["mean_episode_reward"]),
+                        "mean_episode_length": float(eval_result["mean_episode_length"]),
+                        "forward_velocity": float(eval_result["forward_velocity"]),
+                        "cmd_vs_achieved_forward": float(
+                            eval_result["cmd_vs_achieved_forward"]
+                        ),
                         "step_length_touchdown_event_m": step_length_value,
+                        # smoke15 deploy-facing eval metrics — exposed
+                        # so the gate (lateral cap) and the JSON summary
+                        # can show sideways-walk / heading-drift even
+                        # when the G4 forward gates pass.
+                        "lateral_velocity_abs": float(
+                            eval_result["lateral_velocity_abs"]
+                        ),
+                        "world_x_progress_m": float(
+                            eval_result["world_x_progress_m"]
+                        ),
+                        "world_y_drift_signed_m": float(
+                            eval_result["world_y_drift_signed_m"]
+                        ),
+                        "yaw_drift_signed_rad": float(
+                            eval_result["yaw_drift_signed_rad"]
+                        ),
+                        "touchdown_rate_left_count": float(
+                            eval_result["touchdown_rate_left_count"]
+                        ),
+                        "touchdown_rate_right_count": float(
+                            eval_result["touchdown_rate_right_count"]
+                        ),
+                        "step_length_left_event_m": float(
+                            eval_result["step_length_left_event_m"]
+                        ),
+                        "step_length_right_event_m": float(
+                            eval_result["step_length_right_event_m"]
+                        ),
+                        "step_length_left_per_touchdown_m": float(
+                            eval_result["step_length_left_per_touchdown_m"]
+                        ),
+                        "step_length_right_per_touchdown_m": float(
+                            eval_result["step_length_right_per_touchdown_m"]
+                        ),
                     }
                     decision = deterministic_eval_gate(
                         eval_metrics=eval_metrics,
@@ -922,6 +1009,13 @@ def start_training(
                             "gates": dict(decision.gates),
                             "fail_reasons": [
                                 key for key, ok in decision.gates.items() if not ok
+                            ],
+                            # smoke15 deploy-facing report-only signals.
+                            "soft_signals": dict(decision.soft_signals),
+                            "soft_fail_reasons": [
+                                key
+                                for key, ok in decision.soft_signals.items()
+                                if not ok
                             ],
                             "step_metric_available": bool(decision.step_metric_available),
                             "ratio_gate_applied": bool(decision.ratio_gate_applied),
@@ -988,6 +1082,21 @@ def start_training(
                         "no promoted checkpoint written"
                     )
 
+                no_passing_message: Optional[str] = None
+                if selected_row is None:
+                    # Make the no-passing outcome unambiguous in the
+                    # JSON so downstream analyzer / reporting tools
+                    # cannot silently fall back to a train-side proxy.
+                    no_passing_message = (
+                        "No checkpoint passed the deterministic G4 gates "
+                        "(forward_velocity, cmd_vs_achieved_forward, "
+                        "mean_episode_length, step_length_touchdown_event_m, "
+                        "forward_velocity_cmd_ratio).  selected_checkpoint_path is "
+                        "null; do NOT promote any checkpoint from this run based on "
+                        "training-side proxies like env/episode_length.  See "
+                        "top_k_candidates[*].fail_reasons for per-candidate detail."
+                    )
+
                 summary_payload = {
                     "selected_checkpoint_path": promoted_checkpoint_path,
                     "selected_rank_before_eval": (
@@ -999,6 +1108,14 @@ def start_training(
                     "deterministic_eval_gates": (
                         None if selected_row is None else selected_row["gates"]
                     ),
+                    # smoke15 — explicit "no candidate passed" message
+                    # surfaced both for null and non-null
+                    # selected_checkpoint_path (None when a candidate
+                    # passes).  The analyzer / downstream reporting
+                    # should prefer this summary over train-side
+                    # selection heuristics when present.
+                    "no_passing_candidate_message": no_passing_message,
+                    "deterministic_selection_is_authoritative": True,
                     "top_k_candidates": [
                         {
                             "rank": row["rank"],
@@ -1010,6 +1127,9 @@ def start_training(
                             "passed": row["passed"],
                             "gates": row["gates"],
                             "fail_reasons": row["fail_reasons"],
+                            # smoke15 deploy-facing report-only signals.
+                            "soft_signals": row["soft_signals"],
+                            "soft_fail_reasons": row["soft_fail_reasons"],
                             "step_metric_available": row["step_metric_available"],
                             "ratio_gate_applied": row["ratio_gate_applied"],
                         }

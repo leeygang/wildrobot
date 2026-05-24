@@ -347,6 +347,21 @@ ENV_METRICS_KEYS = {
         "quantization error against the sampled command; bounded "
         "above by half the grid interval under cmd-conditioned mode."
     ),
+    "tracking/world_x_progress_m": (
+        "Signed world-x progress since episode spawn (m).  Smoke15 "
+        "deploy diagnostic; rollout-final value = total world "
+        "progress, MEAN-reducer here gives mean-since-spawn."
+    ),
+    "tracking/world_y_drift_signed_m": (
+        "Signed world-y drift since episode spawn (m).  Pairs with "
+        "lateral_velocity_abs as a sideways-walk detector that "
+        "doesn't cancel under symmetric DR."
+    ),
+    "tracking/yaw_drift_signed_rad": (
+        "Signed yaw drift since episode spawn (rad), wrapped to "
+        "(-pi, pi].  Catches heading drift invisible to body-local "
+        "lateral velocity."
+    ),
     "tracking/loc_ref_phase_progress": "Locomotion reference intra-step phase progress in [0, 1]",
     "tracking/loc_ref_stance_foot": "Locomotion reference stance foot id (0/1)",
     "tracking/loc_ref_mode_id": "Locomotion reference hybrid mode id",
@@ -593,6 +608,9 @@ def get_initial_env_metrics(
         "tracking/ref_velocity_xy_err": 0.0,
         "tracking/ref_selected_vx": 0.0,
         "tracking/ref_cmd_bin_abs_err": 0.0,
+        "tracking/world_x_progress_m": 0.0,
+        "tracking/world_y_drift_signed_m": 0.0,
+        "tracking/yaw_drift_signed_rad": 0.0,
         "tracking/loc_ref_phase_progress": 0.0,
         "tracking/loc_ref_stance_foot": 0.0,
         "tracking/loc_ref_mode_id": 0.0,
@@ -778,6 +796,9 @@ def get_initial_env_metrics_jax(
         "tracking/ref_velocity_xy_err": jp.zeros(()),
         "tracking/ref_selected_vx": jp.zeros(()),
         "tracking/ref_cmd_bin_abs_err": jp.zeros(()),
+        "tracking/world_x_progress_m": jp.zeros(()),
+        "tracking/world_y_drift_signed_m": jp.zeros(()),
+        "tracking/yaw_drift_signed_rad": jp.zeros(()),
         "tracking/loc_ref_phase_progress": jp.zeros(()),
         "tracking/loc_ref_stance_foot": jp.zeros(()),
         "tracking/loc_ref_mode_id": jp.zeros(()),

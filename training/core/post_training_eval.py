@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 
@@ -39,13 +39,41 @@ class RankedCheckpointCandidate:
 
 @dataclass(frozen=True)
 class DeterministicEvalDecision:
-    """Deterministic promotion gate decision."""
+    """Deterministic promotion gate decision.
+
+    ``passed`` reflects the HARD gates only — currently the v0.20.1 G4
+    set (forward_velocity, cmd_vs_achieved_forward, mean_episode_length,
+    step_length_touchdown_event_m, forward_velocity_cmd_ratio).
+
+    ``soft_signals`` is a separate dict of deploy-facing pass/fail
+    flags that are computed and logged but do NOT block promotion.
+    Lateral velocity, yaw drift, and world-y drift go here.  Track
+    these for SEV-style regressions without blocking the run.
+    """
 
     passed: bool
     step_metric_available: bool
     ratio_gate_applied: bool
     forward_velocity_cmd_ratio: Optional[float]
     gates: Mapping[str, bool]
+    soft_signals: Mapping[str, bool] = field(default_factory=dict)
+
+
+# Deploy-facing soft thresholds — report-only.  Picked to be lenient
+# enough that a healthy walking policy at WR's vx range comfortably
+# clears them; tighten once we have a passing baseline.
+#
+# Sources:
+#   LATERAL_VELOCITY_SOFT_CAP_MPS: 0.10 m/s ≈ 50% of WR cmd vx upper
+#     bound (0.20).  Smoke14's tail mean was 0.20 m/s — well above.
+#     A healthy forward gait should be below half of cmd.
+#   YAW_DRIFT_SOFT_CAP_RAD: 0.40 rad ≈ 23 deg over a 10 s rollout
+#     (500 steps × 0.02 s).  Catches material heading drift.
+#   WORLD_Y_DRIFT_SOFT_CAP_M: 0.30 m over a 10 s rollout — must be
+#     less than the policy's forward progress for any reasonable gait.
+LATERAL_VELOCITY_SOFT_CAP_MPS = 0.10
+YAW_DRIFT_SOFT_CAP_RAD = 0.40
+WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -204,7 +232,21 @@ def deterministic_eval_gate(
     eval_metrics: Mapping[str, Any],
     eval_velocity_cmd: float,
 ) -> DeterministicEvalDecision:
-    """Apply deterministic post-training promotion gates."""
+    """Apply deterministic post-training promotion gates.
+
+    HARD gates (block promotion) — v0.20.1 G4 set:
+      forward_velocity, cmd_vs_achieved_forward, mean_episode_length,
+      step_length_touchdown_event_m, forward_velocity_cmd_ratio.
+
+    SOFT signals (report-only, do not block promotion) — smoke15
+    deploy-facing diagnostics:
+      lateral_velocity_abs, yaw_drift_signed_rad, world_y_drift_signed_m.
+    Each gets a ``soft_signals[name]`` boolean that is True when the
+    metric is missing or within the documented cap; promoted
+    checkpoints can still have these flagged.  The post-training
+    summary surfaces both gates + soft_signals so a regression on
+    sideways drift is visible even when the G4 gates pass.
+    """
     forward_velocity = _metric(eval_metrics, "forward_velocity")
     cmd_err = _metric(eval_metrics, "cmd_vs_achieved_forward")
     episode_length = _metric(eval_metrics, "mean_episode_length")
@@ -231,10 +273,31 @@ def deterministic_eval_gate(
         "forward_velocity_cmd_ratio": ratio_ok,
     }
     passed = all(gates.values())
+
+    # Soft signals — report-only.  Missing metric => signal counted as
+    # OK (legacy gate behaviour preserved for old logs that don't have
+    # the smoke15 fields yet).
+    lateral = _metric(eval_metrics, "lateral_velocity_abs")
+    yaw_drift = _metric(eval_metrics, "yaw_drift_signed_rad")
+    world_y_drift = _metric(eval_metrics, "world_y_drift_signed_m")
+    soft_signals: Dict[str, bool] = {
+        "lateral_velocity_abs": (
+            lateral is None or abs(float(lateral)) <= LATERAL_VELOCITY_SOFT_CAP_MPS
+        ),
+        "yaw_drift_signed_rad": (
+            yaw_drift is None or abs(float(yaw_drift)) <= YAW_DRIFT_SOFT_CAP_RAD
+        ),
+        "world_y_drift_signed_m": (
+            world_y_drift is None
+            or abs(float(world_y_drift)) <= WORLD_Y_DRIFT_SOFT_CAP_M
+        ),
+    }
+
     return DeterministicEvalDecision(
         passed=passed,
         step_metric_available=step_metric_available,
         ratio_gate_applied=ratio_gate_applied,
         forward_velocity_cmd_ratio=ratio_value,
         gates=gates,
+        soft_signals=soft_signals,
     )

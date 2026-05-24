@@ -1767,6 +1767,51 @@ METRIC_SPECS: List[MetricSpec] = [
             "input is passed."
         ),
     ),
+    # =========================================================================
+    # Smoke15 deploy-facing eval metrics — world-frame drift since
+    # episode spawn.  Computed every step in the env against
+    # ``WildRobotInfo.init_root_pos_xy`` / ``init_root_yaw`` captured
+    # at reset; auto-reset rebuilds those baselines so each episode's
+    # drift is measured from its own spawn.  MEAN-reducer over a
+    # rollout gives "mean-since-spawn drift"; reading the final-step
+    # value gives "total drift over rollout" (use the latter when
+    # routing into the ``Evaluate/*`` namespace for deploy gates).
+    # =========================================================================
+    MetricSpec(
+        name="tracking/world_x_progress_m",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Signed world-x progress (m) since episode spawn.  "
+            "Positive = robot moved +x in world frame.  For deploy "
+            "rollouts compute the rollout-final value to get total "
+            "world progress; the MEAN-reducer here gives a rougher "
+            "mean-since-spawn signal."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/world_y_drift_signed_m",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Signed world-y drift (m) since episode spawn.  "
+            "Positive = drifted to +y.  Pairs with "
+            "tracking/lateral_velocity_abs as a deploy-facing "
+            "sideways-walk detector that doesn't average to zero "
+            "under symmetric DR."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/yaw_drift_signed_rad",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Smoke15 deploy diagnostic — signed yaw drift (rad) "
+            "since episode spawn, wrapped to (-pi, pi].  "
+            "Positive = rotated about +z.  Catches heading drift "
+            "that's invisible to body-local lateral_velocity_abs."
+        ),
+    ),
 ]
 
 # =============================================================================

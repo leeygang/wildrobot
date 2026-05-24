@@ -62,6 +62,14 @@ class RunAnalysis:
     ckpt_dir: Optional[Path]
     ckpt_file: Optional[Path]
     walking: WalkingSummary
+    # Smoke15 — when present, this is the AUTHORITATIVE deterministic
+    # post-training eval summary (top-k candidates + per-candidate
+    # gate/eval metrics + selected_checkpoint_path).  The analyzer
+    # prefers this over train-side ``best_it`` / ``ckpt_file`` for
+    # walking runs because train metrics like env/episode_length
+    # saturate on standing local minima.  None when the run has no
+    # ``post_training_eval_summary.json`` (older logs).
+    post_training_summary: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -607,6 +615,7 @@ def _load_run_analysis(
     ckpt_dir = _find_checkpoint_dir(run_id, checkpoints_root)
     ckpt_file = _find_checkpoint_file(ckpt_dir, best_it, best_step) if ckpt_dir else None
     walking = _classify_walking(rows, min_iter=min_iter, cfg=cfg)
+    post_training_summary = _load_post_training_summary(ckpt_dir)
 
     return RunAnalysis(
         run_dir=run_dir,
@@ -622,7 +631,26 @@ def _load_run_analysis(
         ckpt_dir=ckpt_dir,
         ckpt_file=ckpt_file,
         walking=walking,
+        post_training_summary=post_training_summary,
     )
+
+
+def _load_post_training_summary(
+    ckpt_dir: Optional[Path],
+) -> Optional[Dict[str, Any]]:
+    """Load ``post_training_eval_summary.json`` from the checkpoint dir if
+    present.  Surface it to the analyzer's caller so reporting can prefer
+    the deterministic eval verdict over train-side checkpoint picks."""
+    if ckpt_dir is None:
+        return None
+    summary_path = ckpt_dir / "post_training_eval_summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        with summary_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _find_previous_run_dir(current: RunAnalysis, *, wandb_root: Path) -> Optional[Path]:
@@ -919,6 +947,63 @@ def _build_tb_comparison_block(
     return block
 
 
+def _format_post_training_summary_block(
+    summary: Optional[Dict[str, Any]],
+) -> str:
+    """Render the smoke15 deterministic post-training summary as a
+    short markdown block.  Surfaces the AUTHORITATIVE deploy verdict
+    (selected checkpoint + gate pass/fail per candidate) so the
+    changelog reader doesn't have to dig into the JSON.  Returns an
+    empty string when no summary is available."""
+    if not summary:
+        return ""
+    lines: List[str] = []
+    lines.append("")
+    lines.append("### Deterministic post-training eval (AUTHORITATIVE)")
+    selected = summary.get("selected_checkpoint_path")
+    if selected is None:
+        lines.append("- selected_checkpoint_path: `null`")
+        no_pass = summary.get("no_passing_candidate_message")
+        if no_pass:
+            lines.append(f"- {no_pass}")
+        else:
+            lines.append(
+                "- No candidate passed the deterministic G4 gates; do NOT "
+                "promote from train-side proxies."
+            )
+    else:
+        lines.append(f"- selected_checkpoint_path: `{selected}`")
+        rank = summary.get("selected_rank_before_eval")
+        if rank is not None:
+            lines.append(f"- selected_rank_before_eval: {rank}")
+    candidates = summary.get("top_k_candidates") or []
+    if candidates:
+        lines.append(
+            "| rank | checkpoint | eval_fv | eval_cmd_err | eval_step_len | "
+            "eval_ratio | passed | soft fails |"
+        )
+        lines.append(
+            "|---:|---|---:|---:|---:|---:|---|---|"
+        )
+        for cand in candidates:
+            ckpt_path = cand.get("checkpoint_path", "")
+            name = Path(ckpt_path).name if ckpt_path else "?"
+            em = cand.get("eval_metrics", {}) or {}
+            ratio = cand.get("eval_ratio")
+            ratio_text = "n/a" if ratio is None else f"{float(ratio):.2f}"
+            passed = "✓" if cand.get("passed") else "✗"
+            soft_fails = cand.get("soft_fail_reasons") or []
+            soft_text = ", ".join(soft_fails) if soft_fails else "—"
+            lines.append(
+                f"| {cand.get('rank', '?')} | `{name}` | "
+                f"{_format_f(em.get('forward_velocity'), 3)} | "
+                f"{_format_f(em.get('cmd_vs_achieved_forward'), 3)} | "
+                f"{_format_f(em.get('step_length_touchdown_event_m'), 4)} | "
+                f"{ratio_text} | {passed} | {soft_text} |"
+            )
+    return "\n".join(lines)
+
+
 def _changelog_block(
     *,
     version: str,
@@ -931,6 +1016,7 @@ def _changelog_block(
     walking: WalkingSummary,
     regression: Optional[RegressionSummary],
     tb_comparison: Optional[Dict[str, Any]] = None,
+    post_training_summary: Optional[Dict[str, Any]] = None,
 ) -> str:
     def g(key: str) -> Optional[float]:
         return _get_float(best_row, key)
@@ -960,7 +1046,19 @@ def _changelog_block(
     if ckpt_dir is not None:
         lines.append(f"- Checkpoints: `{ckpt_dir.as_posix()}`")
     if best_ckpt is not None:
-        lines.append(f"- Best checkpoint ({keys.prefix or 'metric'}): `{best_ckpt.as_posix()}`")
+        # Smoke15 — flag the train-side best checkpoint as
+        # NON-AUTHORITATIVE when no Evaluate/* eval keys exist; the
+        # post-training summary block below is the deploy verdict.
+        eval_namespace_authoritative = keys.prefix in {"Evaluate", "eval_clean"}
+        if eval_namespace_authoritative or post_training_summary is None:
+            lines.append(
+                f"- Best checkpoint ({keys.prefix or 'metric'}): `{best_ckpt.as_posix()}`"
+            )
+        else:
+            lines.append(
+                f"- Best checkpoint (train-side proxy, NON-AUTHORITATIVE; see "
+                f"deterministic eval block below): `{best_ckpt.as_posix()}`"
+            )
     # ``keys.success`` is a probability in [0,1] for the legacy
     # ``*/success_rate`` keys (format as %), but a raw mean reward (often
     # tens) for ``Evaluate/mean_reward``.  Format accordingly so we don't
@@ -1138,6 +1236,13 @@ def _changelog_block(
                     gate=_format_gate_transition(metric.previous_gate, metric.current_gate),
                 )
             )
+    # Smoke15 — surface the AUTHORITATIVE deterministic post-training
+    # eval summary when present.  Train-side picks above are noisy on
+    # walking runs (standing local minima saturate env/episode_length);
+    # this block carries the deploy-facing verdict.
+    pt_block = _format_post_training_summary_block(post_training_summary)
+    if pt_block:
+        lines.append(pt_block)
     return "\n".join(lines)
 
 
@@ -1263,6 +1368,7 @@ def main() -> None:
             walking=current.walking,
             regression=regression,
             tb_comparison=tb_comparison,
+            post_training_summary=current.post_training_summary,
         )
     )
 

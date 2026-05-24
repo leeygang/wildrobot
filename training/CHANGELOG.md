@@ -8,6 +8,99 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.20.1-smoke15-eval-authority-deploy-metrics] - 2026-05-24: make walking eval authoritative + add deploy-facing eval metrics
+
+### Why
+
+Smoke14 (`offline-run-20260523_175517-13zk1p2v`) survived the full
+horizon but the post-training deterministic eval rejected every
+top-k candidate.  Train-side `forward_velocity = +0.13` at
+iter 1380; deterministic eval `forward_velocity = +0.03` at the
+SAME checkpoint — a 4.4× train→eval gap that would have been
+invisible if `selected_checkpoint_path` had been promoted from
+the train-side score.  Smoke14 also had `lateral_velocity_abs ≈
+0.20 m/s` (half the cmd) and large heading drift that the
+existing G4 forward-only gates couldn't see.
+
+Two failure modes to close:
+
+1. Walking checkpoint selection silently falls back to
+   `env/episode_length` when no `Evaluate/*` metrics exist.  A
+   standing local minimum saturates ep_len = 500 and reads as
+   "good" by that proxy.
+2. Eval metrics report only forward velocity / cmd_err / step
+   length — nothing on sideways walk or heading drift.  A policy
+   can pass the G4 gates and still be undeployable.
+
+### Code changes
+
+- `training/envs/env_info.py` — `WildRobotInfo` gains
+  `init_root_pos_xy: (2,)` + `init_root_yaw: ()` on both
+  backends; `get_expected_shapes` updated.
+- `training/envs/wildrobot_env.py` — reset captures
+  spawn pose; step carries it unchanged and emits
+  `tracking/world_x_progress_m`, `tracking/world_y_drift_signed_m`,
+  `tracking/yaw_drift_signed_rad` (yaw wrapped to (-pi, pi]).
+- `training/core/metrics_registry.py` + `training/core/experiment_tracking.py` —
+  register the three new tracking metrics + initial-zero schema.
+- `training/core/training_loop.py` —
+  - Walking-aware eval-authority guard at train start: if
+    `cmd_forward_velocity_track > 0` AND neither
+    `ppo.eval.enabled` nor `ppo.eval.post_training_enabled` is
+    true → raise `ValueError` referencing the smoke14 failure.
+  - `walking_metrics` (Evaluate/*) gains `lateral_velocity_abs`,
+    `touchdown_rate_left/right_count`, `step_length_*_event_m`,
+    `step_length_*_per_touchdown_m`, and the last-step world-drift
+    triplet (final-step value averaged across envs so eval reports
+    total drift, not rollout mean).
+- `training/core/post_training_eval.py` —
+  `DeterministicEvalDecision` gains `soft_signals` (report-only,
+  does NOT block promotion).  Soft caps as module constants:
+  `LATERAL_VELOCITY_SOFT_CAP_MPS=0.10`,
+  `YAW_DRIFT_SOFT_CAP_RAD=0.40`,
+  `WORLD_Y_DRIFT_SOFT_CAP_M=0.30`.
+- `training/train.py` — `run_post_training_eval` returns a dict
+  (was 5-tuple) so all deploy metrics flow into the gate + JSON.
+  `post_training_eval_summary.json` gains
+  `no_passing_candidate_message` + `deterministic_selection_is_authoritative`.
+  Per-candidate rows carry `soft_signals` + `soft_fail_reasons`.
+- `skills/wildrobot-training-analyze/scripts/analyze_offline_run.py` —
+  `RunAnalysis` carries the loaded `post_training_eval_summary`.
+  Train-side "Best checkpoint" flagged NON-AUTHORITATIVE when
+  Evaluate/* is absent AND post-training summary exists.  New
+  "Deterministic post-training eval (AUTHORITATIVE)" block
+  surfaces selected-checkpoint / per-candidate gate verdicts in
+  the changelog markdown.
+
+### Tests (109 passed across the target battery)
+
+- `training/tests/test_training_stability_controls.py` —
+  `test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics`,
+  `test_deterministic_eval_gate_soft_signals_default_ok_when_missing`,
+  `test_walking_config_without_eval_raises_at_train_loop_startup`,
+  `test_deterministic_eval_gate_soft_caps_are_documented`.
+- `tests/test_metrics_correctness.py` —
+  `test_world_drift_tracking_metrics_registered`,
+  `test_walking_eval_block_emits_smoke15_deploy_metrics`.
+- All existing config-load + critic-stacking + smoke7 eval-cmd
+  + reward-normalization tests still pass.
+
+End-to-end env sanity (zero-action 5-step probe on smoke14):
+world_x_progress = 9 mm, world_y_drift = 0.5 mm, yaw_drift =
+-0.016 rad, lateral_velocity_abs = 0.060 m/s.  Analyzer
+back-compat verified on the smoke14 run — the new AUTHORITATIVE
+post-training eval block surfaces correctly with the "no
+candidate passed" explicit message; train-side proxy best is
+labeled NON-AUTHORITATIVE.
+
+Existing smoke14 config (`ppo.eval.enabled=false`,
+`post_training_enabled=true`) passes the new walking-eval-authority
+guard.  Hypothetical walking configs without either eval path
+will now refuse to start instead of silently selecting on
+`env/episode_length`.
+
+---
+
 ## [v0.20.1-smoke12b-ot8zazo1-result] - 2026-05-20: gait emerges, but late checkpoints drift laterally and over-assign propulsion to one leg
 
 ### Run

@@ -364,3 +364,111 @@ def test_training_loop_has_no_online_promotion_eval_path() -> None:
     train_source = inspect.getsource(training_loop.train)
     assert "promotion_eval" not in train_source
     assert "run_promotion_eval" not in train_source
+
+
+# =============================================================================
+# Smoke15 — eval-authority enforcement + deploy-facing soft signals
+# =============================================================================
+
+
+def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> None:
+    """Smoke15 — deterministic eval gate must expose
+    ``soft_signals`` for the lateral / yaw / world-y deploy metrics.
+    Healthy values clear the cap; pathological values trip the soft
+    flag (report-only — passed remains True if hard gates pass)."""
+    healthy = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+            "lateral_velocity_abs": 0.02,
+            "yaw_drift_signed_rad": 0.05,
+            "world_y_drift_signed_m": 0.02,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert healthy.passed is True
+    assert healthy.soft_signals == {
+        "lateral_velocity_abs": True,
+        "yaw_drift_signed_rad": True,
+        "world_y_drift_signed_m": True,
+    }
+
+    # Smoke14 tail values: lateral 0.20 m/s — well above the 0.10
+    # m/s cap; yaw 0.6 rad — above 0.4 cap; world_y 0.5 m — above
+    # 0.30 m cap.  Soft signals should ALL flip to False but the
+    # hard ``passed`` flag still reflects only G4 gates.
+    pathological = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+            "lateral_velocity_abs": 0.20,
+            "yaw_drift_signed_rad": 0.60,
+            "world_y_drift_signed_m": 0.50,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert pathological.passed is True, (
+        "soft signals must NOT block promotion; only hard G4 gates do"
+    )
+    assert pathological.soft_signals["lateral_velocity_abs"] is False
+    assert pathological.soft_signals["yaw_drift_signed_rad"] is False
+    assert pathological.soft_signals["world_y_drift_signed_m"] is False
+
+
+def test_deterministic_eval_gate_soft_signals_default_ok_when_missing() -> None:
+    """Old-log back-compat: when the eval payload doesn't carry the
+    smoke15 deploy fields, the corresponding soft_signals must
+    default to True (signal not flagged, not unavailable)."""
+    decision = deterministic_eval_gate(
+        {
+            "forward_velocity": 0.09,
+            "cmd_vs_achieved_forward": 0.04,
+            "mean_episode_length": 500.0,
+            "step_length_touchdown_event_m": 0.031,
+        },
+        eval_velocity_cmd=0.1333333333,
+    )
+    assert decision.passed is True
+    assert decision.soft_signals["lateral_velocity_abs"] is True
+    assert decision.soft_signals["yaw_drift_signed_rad"] is True
+    assert decision.soft_signals["world_y_drift_signed_m"] is True
+
+
+def test_walking_config_without_eval_raises_at_train_loop_startup() -> None:
+    """Smoke15 walking-eval-authority guard: a walking config (one
+    with non-zero cmd_forward_velocity_track) MUST have either
+    mid-training or post-training eval enabled.  Otherwise the
+    training loop refuses to start so a standing local minimum
+    (smoke14 pattern) cannot misreport via env/episode_length.
+
+    Validates the structural check by inspecting the source.  A full
+    end-to-end test would need to actually spin up the training
+    loop, which is too expensive for unit tests; the inline source
+    inspection guards against the check being silently removed."""
+    from training.core import training_loop
+
+    src = inspect.getsource(training_loop.train)
+    assert "is_walking_config" in src, (
+        "training_loop.train must define is_walking_config to gate eval enforcement"
+    )
+    assert "Walking config detected" in src, (
+        "training_loop.train must raise a clear error when walking config has no eval"
+    )
+    # Spot-check the exact message references smoke14 so the
+    # rationale is preserved with the guard.
+    assert "smoke14" in src.lower() or "Smoke14" in src
+
+
+def test_deterministic_eval_gate_soft_caps_are_documented() -> None:
+    """The three soft caps must be defined as module-level constants
+    so they're easy to find / tighten later.  Pin the values used at
+    introduction so a future tightening is a visible diff."""
+    from training.core import post_training_eval as pte
+
+    assert pte.LATERAL_VELOCITY_SOFT_CAP_MPS == 0.10
+    assert pte.YAW_DRIFT_SOFT_CAP_RAD == 0.40
+    assert pte.WORLD_Y_DRIFT_SOFT_CAP_M == 0.30

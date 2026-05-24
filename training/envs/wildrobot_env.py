@@ -2808,6 +2808,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 [left_foot_pos[2], right_foot_pos[2]]
             ).astype(jp.float32),
             cmd_rng=cmd_rng.astype(jp.uint32),
+            # smoke15 deploy metrics — episode spawn pose for
+            # world-drift diagnostics.  Captured once at reset and
+            # passed through unchanged on every step (see step path).
+            init_root_pos_xy=root_pose.position[:2].astype(jp.float32),
+            init_root_yaw=root_pose.euler_angles()[2].astype(jp.float32),
         )
 
         obs = self._get_obs(
@@ -2874,6 +2879,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
         ).astype(jp.float32)
+        # smoke15 deploy metrics — world-frame drift since episode
+        # spawn.  At reset the deltas are exactly zero (current pose
+        # IS spawn pose).  Computed every step against
+        # ``wr.init_root_pos_xy`` / ``wr.init_root_yaw`` so a MEAN-
+        # reducer over a rollout gives "mean-since-spawn drift" and a
+        # final-step read gives "total drift over rollout".  Yaw
+        # delta wrapped to (-pi, pi] so a single forward-step rollout
+        # never aliases against ±pi.
+        metrics_dict["tracking/world_x_progress_m"] = jp.float32(0.0)
+        metrics_dict["tracking/world_y_drift_signed_m"] = jp.float32(0.0)
+        metrics_dict["tracking/yaw_drift_signed_rad"] = jp.float32(0.0)
         # ref_velocity_xy_err = sqrt((vx-ref_vx)^2 + (vy-ref_vy)^2)
         # where ref_vx, ref_vy come from the cmd-conditioned reference
         # window's pelvis velocity.  Zero at reset (root_vel_h is zero,
@@ -3261,6 +3277,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             feet_air_time=new_feet_air_time.astype(jp.float32),
             feet_air_dist=new_feet_air_dist.astype(jp.float32),
             cmd_rng=new_cmd_rng,
+            # smoke15 deploy metrics — spawn pose is episode-constant
+            # post-reset, so we carry the reset-time values unchanged
+            # across every step within an episode.  Auto-reset on
+            # ``done`` rebuilds wr_info from the reset path above, so
+            # next episode's drift baseline updates correctly.
+            init_root_pos_xy=wr.init_root_pos_xy,
+            init_root_yaw=wr.init_root_yaw,
         )
 
         obs = self._get_obs(
@@ -3348,6 +3371,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/ref_velocity_xy_err"] = reward_terms[
             "ref_velocity_xy_err"
         ]
+        # smoke15 deploy metrics — world-frame drift since this
+        # episode's spawn pose (captured at reset on ``wr``).  Yaw
+        # delta wrapped to (-pi, pi] via ``(d + pi) mod 2pi - pi``.
+        # Sign convention:
+        #   world_x_progress_m   > 0 = robot moved +x (forward in world)
+        #   world_y_drift_signed_m signed; positive = drifted to +y
+        #   yaw_drift_signed_rad signed; positive = rotated +z
+        _root_pos_xy_now = root_pose.position[:2].astype(jp.float32)
+        _yaw_now = root_pose.euler_angles()[2].astype(jp.float32)
+        _yaw_delta_raw = _yaw_now - wr.init_root_yaw
+        _yaw_delta_wrapped = jp.mod(
+            _yaw_delta_raw + jp.float32(jp.pi), jp.float32(2.0 * jp.pi)
+        ) - jp.float32(jp.pi)
+        terminal_metrics_dict["tracking/world_x_progress_m"] = (
+            _root_pos_xy_now[0] - wr.init_root_pos_xy[0]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/world_y_drift_signed_m"] = (
+            _root_pos_xy_now[1] - wr.init_root_pos_xy[1]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/yaw_drift_signed_rad"] = (
+            _yaw_delta_wrapped.astype(jp.float32)
+        )
         # Reference-bin selection diagnostics: which vx bin was picked
         # this step and how far it is from the sampled velocity_cmd.
         terminal_metrics_dict["tracking/ref_selected_vx"] = reward_terms[

@@ -207,6 +207,17 @@ try:
         # velocity_cmd stays episode-constant.
         cmd_rng: jnp.ndarray         # (2,) uint32
 
+        # Smoke15 deploy-facing eval metrics — per-episode spawn pose
+        # captured at reset.  Used to compute world-frame drift each
+        # step against the episode origin
+        # (world_x_progress_m, world_y_drift_signed_m,
+        # yaw_drift_signed_rad).  Overwritten on every reset; persists
+        # across steps within an episode.  ``init_root_yaw`` is WORLD-
+        # frame yaw at spawn (ZYX convention); wrap to (-pi, pi] when
+        # computing drift to handle the heading-discontinuity case.
+        init_root_pos_xy: jnp.ndarray   # (2,) world-frame (x, y) at reset
+        init_root_yaw: jnp.ndarray      # () world-frame yaw at reset (rad)
+
     # Mirror v0.20.1 ToddlerBot-alignment additions on the NamedTuple
     # fallback (declared below in the except branch) so both backends
     # stay shape-compatible.
@@ -256,6 +267,8 @@ except ImportError:
         domain_rand_joint_offsets: jnp.ndarray
         domain_rand_backlash: jnp.ndarray
         proprio_history: jnp.ndarray
+        init_root_pos_xy: jnp.ndarray
+        init_root_yaw: jnp.ndarray
         feet_air_time: jnp.ndarray
         feet_air_dist: jnp.ndarray
         feet_height_init: jnp.ndarray
@@ -334,6 +347,9 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "feet_air_dist": (2,),
         "feet_height_init": (2,),
         "cmd_rng": (2,),
+        # Smoke15 deploy metrics — per-episode spawn pose.
+        "init_root_pos_xy": (2,),
+        "init_root_yaw": (),
         "push_schedule": {
             "start_step": (),
             "end_step": (),

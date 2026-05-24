@@ -380,3 +380,77 @@ def test_analyzer_does_not_misclassify_relaxed_termination_as_posture_exploit() 
         f"Low pitch_soft + flat forward_vel + high survival should "
         f"be 'standing local minimum'; got {walking2.verdict!r}."
     )
+
+
+# -----------------------------------------------------------------------------
+# 6. Smoke15 deploy-facing tracking metrics — world-drift + yaw drift
+# -----------------------------------------------------------------------------
+
+
+def test_world_drift_tracking_metrics_registered() -> None:
+    """Smoke15 added three deploy-facing world-frame drift metrics.
+    They must appear in the registry with MEAN reducer so the
+    Evaluate/* projection can compute either the rollout mean OR
+    the per-env final-step value (see training_loop walking_idx)."""
+    from training.core.metrics_registry import METRIC_SPEC_BY_NAME, Reducer
+
+    expected = {
+        "tracking/world_x_progress_m",
+        "tracking/world_y_drift_signed_m",
+        "tracking/yaw_drift_signed_rad",
+    }
+    for name in expected:
+        spec = METRIC_SPEC_BY_NAME[name]
+        assert spec.reducer == Reducer.MEAN, (
+            f"{name} reducer={spec.reducer}; smoke15 expects MEAN so the "
+            "eval block can choose mean-over-rollout vs final-step manually."
+        )
+        # Description must mention smoke15 / deploy so future readers
+        # know why this metric exists.
+        desc = spec.description.lower()
+        assert "smoke15" in desc or "deploy" in desc, (
+            f"{name} description should reference smoke15/deploy: "
+            f"{spec.description!r}"
+        )
+
+
+def test_walking_eval_block_emits_smoke15_deploy_metrics() -> None:
+    """The training_loop walking_metrics dict (projected into
+    ``Evaluate/*`` keys) must include lateral / per-foot count /
+    world drift metrics so deploy-time eval reports sideways walk +
+    heading drift, not just forward velocity."""
+    import inspect
+    from training.core import training_loop
+
+    src = inspect.getsource(training_loop.train)
+    # Standard rollout-mean metrics.
+    for name in (
+        '"lateral_velocity_abs"',
+        '"touchdown_rate_left_count"',
+        '"touchdown_rate_right_count"',
+        '"step_length_left_event_m"',
+        '"step_length_right_event_m"',
+    ):
+        assert name in src, (
+            f"training_loop.train walking_idx must include {name} so it "
+            "lands in the Evaluate/* namespace for deploy reporting"
+        )
+    # Last-step world-drift metrics.
+    for name in (
+        '"world_x_progress_m"',
+        '"world_y_drift_signed_m"',
+        '"yaw_drift_signed_rad"',
+    ):
+        assert name in src, (
+            f"training_loop.train must emit {name} from the per-env "
+            "rollout-final value (not the rollout mean)"
+        )
+    # Per-touchdown stride derived metrics.
+    for name in (
+        '"step_length_left_per_touchdown_m"',
+        '"step_length_right_per_touchdown_m"',
+    ):
+        assert name in src, (
+            f"training_loop.train must compute {name} = step_length_event "
+            "/ touchdown_rate_count for deploy-facing per-touchdown stride"
+        )

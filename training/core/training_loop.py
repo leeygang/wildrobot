@@ -1134,6 +1134,38 @@ def train(
     eval_base_rng = jax.random.PRNGKey(config.seed + config.ppo.eval.seed_offset)
     checkpoint_interval = int(getattr(config.checkpoints, "interval", 0) or 0)
 
+    # Smoke15 walking-aware eval-authority guard.  A walking config
+    # (cmd_forward_velocity_track > 0) MUST have at least one
+    # deterministic eval path enabled — either periodic mid-training
+    # eval or post-training top-k eval.  Without either, checkpoint
+    # selection silently falls back to train-side proxies
+    # (env/episode_length, train_score) and a standing local minimum
+    # that survives the horizon will misreport as a successful
+    # walking policy.  Smoke14
+    # (offline-run-20260523_175517-13zk1p2v) exposed this failure
+    # mode: train fv +0.13 / eval fv +0.03 at the same checkpoint.
+    is_walking_config = (
+        float(getattr(config.reward_weights, "cmd_forward_velocity_track", 0.0))
+        > 0.0
+    )
+    post_training_eval_enabled = bool(
+        getattr(config.ppo.eval, "post_training_enabled", False)
+    )
+    if is_walking_config and not (eval_enabled or post_training_eval_enabled):
+        raise ValueError(
+            "Walking config detected (reward_weights.cmd_forward_velocity_track > 0) "
+            "but neither mid-training eval (ppo.eval.enabled + ppo.eval.interval) "
+            "nor post-training eval (ppo.eval.post_training_enabled) is enabled. "
+            "Walking checkpoint selection MUST be based on deterministic eval — "
+            "train-side metrics like env/episode_length saturate on standing local "
+            "minima and silently misreport policy quality. "
+            "Smoke14 (offline-run-20260523_175517-13zk1p2v) hit this failure: "
+            "train forward_velocity ~0.13 m/s; deterministic eval forward_velocity "
+            "~0.03 m/s at the SAME checkpoint. "
+            "Enable one of: ppo.eval.enabled=true + ppo.eval.interval>0, "
+            "OR ppo.eval.post_training_enabled=true."
+        )
+
     # Note: Training-time eval runs two passes for efficiency:
     # - eval_push: Uses training-configured push settings
     # - eval_clean: No pushes
@@ -1562,11 +1594,72 @@ def train(
                     "ref/ang_vel_xy_err_rad_s"
                 ],
                 "ref_contact_phase_match": METRIC_INDEX["ref/contact_phase_match"],
+                # smoke15 deploy-facing eval metrics (lateral / per-foot
+                # event signals).  MEAN over the rollout: lateral is a
+                # per-step quantity; touchdown_rate_* and
+                # step_length_*_event_m are 0/1-gated event signals so
+                # the rollout-mean gives event rates / event-weighted
+                # mean stride.  Combine downstream as
+                # ``step_length_left_event_m / touchdown_rate_left_count``
+                # for per-touchdown stride.
+                "lateral_velocity_abs": METRIC_INDEX[
+                    "tracking/lateral_velocity_abs"
+                ],
+                "touchdown_rate_left_count": METRIC_INDEX[
+                    "tracking/touchdown_rate_left"
+                ],
+                "touchdown_rate_right_count": METRIC_INDEX[
+                    "tracking/touchdown_rate_right"
+                ],
+                "step_length_left_event_m": METRIC_INDEX[
+                    "tracking/step_length_left_event_m"
+                ],
+                "step_length_right_event_m": METRIC_INDEX[
+                    "tracking/step_length_right_event_m"
+                ],
             }
             walking_metrics = {
                 key: jnp.mean(eval_rollout["metrics_vec"][..., idx])
                 for key, idx in walking_idx.items()
             }
+            # smoke15 deploy-facing world-drift metrics — the env emits
+            # cumulative drift since spawn at every step; we want the
+            # rollout-final value (total drift over the rollout) per
+            # env, then mean over envs.  Reading
+            # ``eval_rollout["metrics_vec"][-1, :, idx]`` gives the
+            # last-step value across all eval envs.
+            last_step_walking_idx = {
+                "world_x_progress_m": METRIC_INDEX[
+                    "tracking/world_x_progress_m"
+                ],
+                "world_y_drift_signed_m": METRIC_INDEX[
+                    "tracking/world_y_drift_signed_m"
+                ],
+                "yaw_drift_signed_rad": METRIC_INDEX[
+                    "tracking/yaw_drift_signed_rad"
+                ],
+            }
+            for key, idx in last_step_walking_idx.items():
+                walking_metrics[key] = jnp.mean(
+                    eval_rollout["metrics_vec"][-1, :, idx]
+                )
+            # Derived per-touchdown stride length: event-weighted mean
+            # step length divided by event rate.  Guarded against
+            # divide-by-zero when a foot never touches down in the
+            # rollout (e.g. a 100% stand-still policy).
+            _eps_touchdown = jnp.float32(1e-6)
+            walking_metrics["step_length_left_per_touchdown_m"] = (
+                walking_metrics["step_length_left_event_m"]
+                / jnp.maximum(
+                    walking_metrics["touchdown_rate_left_count"], _eps_touchdown
+                )
+            )
+            walking_metrics["step_length_right_per_touchdown_m"] = (
+                walking_metrics["step_length_right_event_m"]
+                / jnp.maximum(
+                    walking_metrics["touchdown_rate_right_count"], _eps_touchdown
+                )
+            )
             return (
                 episode_reward,
                 success_rate,
