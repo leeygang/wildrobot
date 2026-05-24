@@ -499,20 +499,29 @@ Expected additions:
     `min_velocity` / `max_velocity` range and a matching 3D reference
     library (P5+) so the negative-vx samples have a real reference to
     track.
-  - **Not yet landed (P5–P11)**: env-side 3D library wiring
+  - **Landed (P5–P10) as of `v0.21.0-code-shipped` in
+    `training/CHANGELOG.md`**: env-side 3D library wiring
     (`_init_offline_service`, `_lookup_offline_window` consume
-    `(vx, vy, wz)`), `wr_obs_v8_cmd3d` actor observation layout, real
-    `vy_cmd` / `yaw_rate_cmd` reward terms, eval/visualize/deploy parity
-    for the wider command, smoke YAML + G6/G7 gates, CHANGELOG entry.
-  - **Implication for smoke training**: P5–P7 still consume scalar vx
-    (the sampler returns a 3-vec but downstream callers index `[0]`
-    until P5/P7 wire the wider command through). A smoke run on
-    `smoke14_lateral` with an existing legacy YAML (e.g. smoke14)
-    leaves `cmd_sampler_3d_branched=False` and continues to sample
-    forward-only vx — bit-for-bit equivalent to its pre-P4 baseline.
-    The bidirectional / vy / wz behavior only activates when the P8
-    smoke YAML sets `cmd_sampler_3d_branched: true` alongside the
-    P5–P7 wiring.
+    `(vx, vy, wz)` via opt-in `loc_ref_command_axes_3d`),
+    `wr_obs_v8_cmd3d` actor observation layout (P7), real `vy_cmd` and
+    `cmd_yaw_rate_track` reward terms (P6), smoke YAML `ppo_walking_
+    v0210_smoke1_lateral_yaw.yaml` opting into all four v0.21 toggles
+    (P8), e2e env-step tests + Appendix C lateral/yaw pass criteria
+    (P9), and the `v0.21.0-code-shipped` CHANGELOG entry (P10).
+  - **Not yet landed (P11)**: eval/visualize/deploy parity for the
+    wider command — `policy_contract/numpy/obs.py` mirror,
+    `training/eval/eval_policy.py`, `eval_ladder_v0170.py`,
+    `v6_eval_adapter.py`, `visualize_policy.py` all still consume
+    scalar `velocity_cmd[0]`. Required before any on-device run or
+    off-policy visualization of a v8-trained policy. NOT blocking the
+    in-JAX `smoke1` training run.
+  - **Implication for smoke training**: legacy YAMLs (smoke14,
+    smoke12b, smoke7) leave all four v0.21 toggles unset and remain
+    bit-for-bit equivalent to their pre-P4 baseline. The `smoke1`
+    YAML activates the full lateral + yaw stack; running it on a GPU
+    host produces the in-JAX Evaluate/* metrics for the lateral and
+    yaw pass criteria. Visualizing the resulting checkpoint OR
+    deploying it to hardware requires P11 first.
 
 ### `v0.19.0` Platform Pivot
 
@@ -2248,32 +2257,50 @@ the control base — a zero policy action still composes to the
 constant `ref_init` ctrl target, matching the smoke9c residual
 architecture.
 
-## Appendix C — v0.21.0 lateral + yaw gate definitions
+## Appendix C — v0.21.0 lateral + yaw pass criteria
 
 `v0.20.1` defined two promotion gates G4 (eval-rollout floors) and G5
 (anti-exploit residual + ratio).  Both are forward-axis only and stay
-unchanged at v0.21.0.  This appendix adds the lateral-axis gate (G6)
-and the yaw-axis gate (G7) introduced by the lateral + yaw prior
-rollout (see `training/docs/v0210_lateral_yaw_prior_plan-final-r2.md`),
-plus the v0.21.0 promotion criterion that wires G4/G5 (forward) and
-G6/G7 (lateral + yaw) together.
+unchanged at v0.21.0.  This appendix adds the lateral and yaw pass
+criteria introduced by the lateral + yaw prior rollout (see
+`training/docs/v0210_lateral_yaw_prior_plan-final-r2.md`), plus the
+v0.21.0 promotion criterion that wires G4/G5 (forward) and the new
+criteria together.
 
-### G6 — Lateral command tracking (v0.21.0+)
+**Naming**: per the May 9 cleanup (`v0.20.1-retire-non-gate-G-ids`
+CHANGELOG entry), only G4 and G5 carry the `G*` gate prefix.  The new
+v0.21.0 criteria below are descriptive — they are pass criteria for
+smoke promotion, not new gate IDs.
 
-Definition: at eval cmd `(vx_eval, vy_eval, 0)` with `vy_eval > 0`, the
-signed ratio `lateral_velocity / vy_eval` is >= 0.5 averaged over the
-last 100 eval steps, across >=3 seeds.
+### Lateral command tracking pass criterion (v0.21.0+)
 
-### G7 — Yaw command tracking (v0.21.0+)
-
-Definition: at eval cmd `(0, 0, wz_eval)` with `wz_eval > 0`, the
-signed ratio `ang_vel_z / wz_eval` is >= 0.5 averaged over the last
+At eval cmd `(vx_eval, vy_eval, 0)` with `vy_eval > 0`, the signed
+ratio `lateral_velocity / vy_eval` is >= 0.5 averaged over the last
 100 eval steps, across >=3 seeds.
+
+### Yaw command tracking pass criterion (v0.21.0+)
+
+At eval cmd `(0, 0, wz_eval)` with `wz_eval > 0`, the signed ratio
+`ang_vel_z / wz_eval` is >= 0.5 averaged over the last 100 eval steps,
+across >=3 seeds.
 
 ### Promotion criterion (v0.21.0)
 
-G4 + G5 (forward) MUST NOT regress beyond 10% relative to the
-v0.20.1-smoke14 baseline at `eval_velocity_cmd = (0.18, 0, 0)`.
+**Forward (G4 + G5)**: smoke1 MUST NOT regress G4/G5 beyond 10%
+relative to the most recent `v0.20.1-smoke14` baseline at smoke14's
+own `eval_velocity_cmd = 0.26` (training/configs/ppo_walking_v0201
+_smoke14.yaml:114).  Because smoke1 pins its eval to a mixed point
+`(0.18, 0.04, 0.10)`, the forward comparison requires a separate
+deterministic eval rollout at `(0.26, 0, 0)` on the smoke1 checkpoint
+— this is part of the smoke1 runbook, not an extra training-time
+metric.  Compare seed-averaged G4 success rate and G5 residual ratio
+against the recorded smoke14 baseline.
 
-G6 + G7 MUST clear >=0.5 signed ratio on the first smoke before
-increasing vy / wz ranges or weights.
+**Lateral + yaw**: both pass criteria above MUST clear >=0.5 signed
+ratio on the first smoke before increasing vy / wz ranges or weights.
+
+> The original P9 plan referred to "G6" and "G7" labels; renamed to
+> descriptive names here (and in the v0.21.0-code-shipped CHANGELOG
+> entry) so the doc is consistent with the May 9 retire-non-gate-G-ids
+> convention.  Old plan references stay readable: G6 = lateral cmd
+> tracking pass criterion; G7 = yaw cmd tracking pass criterion.
