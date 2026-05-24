@@ -410,15 +410,73 @@ class ReferenceLibrary:
         vy: float = 0.0,
         yaw_rate: float = 0.0,
     ) -> ReferenceTrajectory:
-        """Nearest-neighbor command lookup."""
+        """Per-axis nearest-grid-point command lookup.
+
+        v0.21.0 review-fix (reviewer #5): the previous implementation
+        computed ``argmin_k ||(vx, vy, wz) - k||_2`` across all stored
+        command keys.  That mixed metres-per-second (vx, vy) with
+        radians-per-second (wz) in a single Euclidean — unit-incoherent,
+        and a small wz mismatch could push the selection into a
+        different vy bin (or vice-versa).
+
+        New behaviour: pick each axis independently from its own grid.
+        Since ``build_library_for_3d_values`` populates the full
+        Cartesian product ``vx × vy × wz``, the per-axis picks combine
+        into an exact key match.  Legacy 1D libraries (only the vx axis
+        was iterated) still work: empty per-axis grids fall back to the
+        unique values present in ``self._entries`` (vy / wz both pin
+        to 0.0 in that case so any vy / wz query maps to the 1D entry).
+        """
         if not self._entries:
             raise ValueError("Library is empty")
-        query = np.array([vx, vy, yaw_rate])
-        best_key = min(
-            self._entries.keys(),
-            key=lambda k: float(np.linalg.norm(np.array(k) - query)),
+
+        # Derive per-axis grids.  ``vy_grid`` / ``yaw_rate_grid`` were
+        # added in v0.21.0 P2.3 / P2.4; ``vx_grid`` isn't stored
+        # explicitly, so derive it from the keys (still per-axis, no
+        # mixed-unit metric).
+        vx_grid = sorted({float(k[0]) for k in self._entries})
+        vy_grid = (
+            sorted({float(v) for v in self.meta.vy_grid})
+            if self.meta.vy_grid
+            else sorted({float(k[1]) for k in self._entries})
         )
-        return self._entries[best_key]
+        wz_grid = (
+            sorted({float(v) for v in self.meta.yaw_rate_grid})
+            if self.meta.yaw_rate_grid
+            else sorted({float(k[2]) for k in self._entries})
+        )
+
+        def _pick(grid: List[float], q: float, fallback: float) -> float:
+            if not grid:
+                return fallback
+            arr = np.asarray(grid, dtype=np.float64)
+            idx = int(np.argmin(np.abs(arr - float(q))))
+            return float(grid[idx])
+
+        vx_pick = _pick(vx_grid, vx, fallback=float(vx))
+        vy_pick = _pick(vy_grid, vy, fallback=0.0)
+        wz_pick = _pick(wz_grid, yaw_rate, fallback=0.0)
+
+        # Exact key match for libraries built as a full Cartesian product.
+        # ``ReferenceTrajectory.command_key`` rounds to the values
+        # ``build_library_for_*`` stored, so the floats here line up
+        # bit-exactly (both sides came through the same sorted-grid path).
+        key = (vx_pick, vy_pick, wz_pick)
+        if key in self._entries:
+            return self._entries[key]
+
+        # Defensive fallback for non-Cartesian libraries: pick the
+        # stored key whose per-axis L1 distance to the per-axis pick
+        # is minimal.  Still unit-aware (each axis is compared to its
+        # own bin); avoids mixed-unit Euclidean.
+        def _per_axis_dist(k: Tuple[float, float, float]) -> float:
+            return (
+                abs(float(k[0]) - vx_pick)
+                + abs(float(k[1]) - vy_pick)
+                + abs(float(k[2]) - wz_pick)
+            )
+
+        return self._entries[min(self._entries.keys(), key=_per_axis_dist)]
 
     def get_preview(
         self,

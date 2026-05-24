@@ -47,3 +47,31 @@ def test_build_library_for_3d_values_populates_meta_grids() -> None:
     )
     assert tuple(lib.meta.vy_grid) == (-0.05, 0.0, 0.05)
     assert tuple(lib.meta.yaw_rate_grid) == (-0.10, 0.0, 0.10)
+
+
+def test_lookup_uses_per_axis_nearest_not_mixed_unit_euclidean() -> None:
+    """Reviewer #5: rad/s and m/s must not be mixed in a single L2.
+    A vy diff of 0.05 m/s should NOT compete with a wz diff of 0.05 rad/s
+    in the same metric.  Per-axis selection makes both choices independent.
+    """
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.20],
+        vy_values=[-0.05, 0.0, 0.05],
+        yaw_rate_values=[-0.20, 0.0, 0.20],
+    )
+    # Query at (0.20, +0.03, +0.18): per-axis nearest is (0.20, +0.05, +0.20).
+    # Under a mixed-unit L2 with naive weighting, the wz mismatch of 0.02
+    # could push the result toward a different vy bin.  Per-axis selection
+    # is invariant to that.
+    picked = lib.lookup(vx=0.20, vy=0.03, yaw_rate=0.18)
+    assert picked.command_vy == pytest.approx(0.05)
+    assert picked.command_yaw_rate == pytest.approx(0.20)
+
+
+def test_lookup_falls_back_to_zero_for_empty_axis_grid() -> None:
+    """Legacy 1D libraries (only vx_grid populated) must still work."""
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_vx_values([0.0, 0.20])  # 1D library
+    picked = lib.lookup(vx=0.18, vy=0.0, yaw_rate=0.0)
+    assert picked.command_vx == pytest.approx(0.20)

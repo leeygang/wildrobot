@@ -51,19 +51,25 @@ EPS = 1e-5
 def env_pinned():
     """Env constructed from the smoke7 YAML with eval_velocity_cmd pinned."""
     cfg = load_training_config(str(_SMOKE_CFG))
-    assert cfg.env.eval_velocity_cmd >= 0.0, (
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is the (vx, vy, wz) 3-tuple;
+    # the sentinel / pinned-vs-sentinel gate reads only the vx axis
+    # (the [0]th element).  Slice here so the inequality is a scalar.
+    _eval_vx = float(cfg.env.eval_velocity_cmd[0])
+    assert _eval_vx >= 0.0, (
         f"This test fixture assumes the smoke7 YAML pins eval_velocity_cmd; "
         f"got {cfg.env.eval_velocity_cmd}.  If smoke7 has been re-scoped, "
         f"update this fixture or the test."
     )
-    return WildRobotEnv(cfg), float(cfg.env.eval_velocity_cmd)
+    return WildRobotEnv(cfg), _eval_vx
 
 
 @pytest.fixture(scope="module")
 def env_sentinel():
     """Env with eval_velocity_cmd forced to -1.0 (sentinel: 'eval = training')."""
     cfg = load_training_config(str(_SMOKE_CFG))
-    cfg.env.eval_velocity_cmd = -1.0
+    # v0.21.0 P3 / H3: assign the full (vx, vy, wz) 3-tuple with the
+    # vx-only sentinel broadcast (vy / wz pin to 0.0 per the H3 policy).
+    cfg.env.eval_velocity_cmd = (-1.0, 0.0, 0.0)
     return WildRobotEnv(cfg)
 
 
@@ -72,7 +78,9 @@ def test_eval_cmd_pinned_at_initial_reset(env_pinned) -> None:
     env, expected_cmd = env_pinned
     for seed in range(4):
         state = env.reset_for_eval(jax.random.PRNGKey(seed))
-        cmd = float(state.info[WR_INFO_KEY].velocity_cmd)
+        # v0.21.0 P3 / H3: ``velocity_cmd`` is the (vx, vy, wz) 3-vec;
+        # this fixture pins vx only, so slice [0] for the scalar compare.
+        cmd = float(state.info[WR_INFO_KEY].velocity_cmd[0])
         assert abs(cmd - expected_cmd) < EPS, (
             f"seed={seed}: expected eval cmd {expected_cmd}, got {cmd}"
         )
@@ -96,7 +104,8 @@ def test_eval_cmd_survives_auto_reset(env_pinned) -> None:
     """
     env, expected_cmd = env_pinned
     state = env.reset_for_eval(jax.random.PRNGKey(0))
-    initial_cmd = float(state.info[WR_INFO_KEY].velocity_cmd)
+    # v0.21.0 P3 / H3: slice [0] (vx) — fixture pins vx-only.
+    initial_cmd = float(state.info[WR_INFO_KEY].velocity_cmd[0])
     assert abs(initial_cmd - expected_cmd) < EPS
 
     # Force termination by clobbering root z below min_height (typically 0.30).
@@ -119,7 +128,8 @@ def test_eval_cmd_survives_auto_reset(env_pinned) -> None:
 
     # The new cmd should still be pinned to the eval override, not a
     # freshly-sampled value.
-    post_reset_cmd = float(next_state.info[WR_INFO_KEY].velocity_cmd)
+    # v0.21.0 P3 / H3: slice [0] (vx) — fixture pins vx-only.
+    post_reset_cmd = float(next_state.info[WR_INFO_KEY].velocity_cmd[0])
     assert abs(post_reset_cmd - expected_cmd) < EPS, (
         f"Auto-reset corrupted the eval cmd pin: expected {expected_cmd}, "
         f"got {post_reset_cmd}.  The _do_reset closure in WildRobotEnv.step "
@@ -142,7 +152,10 @@ def test_eval_cmd_sentinel_falls_back_to_sampled(env_sentinel) -> None:
     cmds = []
     for seed in range(8):
         state = env.reset_for_eval(jax.random.PRNGKey(seed))
-        cmds.append(float(state.info[WR_INFO_KEY].velocity_cmd))
+        # v0.21.0 P3 / H3: sampler still varies the vx axis (smoke7 YAML
+        # has vy / wz fixed at 0 under the v0.20.x prior), so slicing [0]
+        # gives the same "distinct cmd value" signal the test asserts.
+        cmds.append(float(state.info[WR_INFO_KEY].velocity_cmd[0]))
 
     # Expect non-trivial variation across seeds.  With smoke7 YAML's
     # min_velocity=0.0, max_velocity=0.30, zero_chance=0.2, deadzone=0.05,

@@ -723,7 +723,13 @@ def main():
     )
     fixed_velocity = user_fixed_velocity
     if args.demo and fixed_velocity is None:
-        eval_cmd = float(getattr(training_cfg.env, "eval_velocity_cmd", -1.0))
+        # H3 / P3.6: ``eval_velocity_cmd`` is the (vx, vy, wz) 3-tuple.
+        # The demo-mode override below is vx-only (visualize_policy plumbs
+        # a scalar ``velocity_cmd`` through ``sample_velocity_cmd`` /
+        # ``get_observation``); slice the vx axis here at the boundary
+        # to preserve back-compat without widening the rest of the file.
+        _ecv = getattr(training_cfg.env, "eval_velocity_cmd", -1.0)
+        eval_cmd = float(_ecv[0] if hasattr(_ecv, "__len__") else _ecv)
         if eval_cmd >= 0.0:
             fixed_velocity = eval_cmd
         else:

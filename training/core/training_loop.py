@@ -2315,7 +2315,15 @@ def train(
             #                 has well-defined floors.
             # Collapsing them (the previous shape) made the G5-eval
             # ratio's ``n/a`` branch unreachable in sentinel mode.
-            raw_eval_vx = float(getattr(config.env, "eval_velocity_cmd", -1.0))
+            # H3: vx-only sentinel per P3.6.  ``eval_velocity_cmd`` is the
+            # (vx, vy, wz) 3-tuple; the sentinel / ratio gate reads only
+            # the vx axis (the [0]th element).  vy / wz pin to 0.0 by
+            # the H3 broadcast policy, so a scalar check here is correct
+            # and back-compat (a missing attr still yields -1.0 scalar).
+            _ecv_raw = getattr(config.env, "eval_velocity_cmd", -1.0)
+            raw_eval_vx = float(
+                _ecv_raw[0] if hasattr(_ecv_raw, "__len__") else _ecv_raw
+            )
             g4_floor_vx = raw_eval_vx if raw_eval_vx > 0 else 0.15
             from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPCfg
             cycle_time_s = float(_ZMPCfg.cycle_time_s)
