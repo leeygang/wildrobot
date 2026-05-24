@@ -230,11 +230,21 @@ class V6EvalAdapter:
         )
         offline_path = getattr(self._cfg.env, "loc_ref_offline_library_path", None)
         offline_vx = float(getattr(self._cfg.env, "loc_ref_offline_command_vx", 0.20))
+        # Mirror env _init_offline_service gate (training/envs/
+        # wildrobot_env.py:835): the 3D library only stands up when BOTH
+        # loc_ref_command_conditioned AND loc_ref_command_axes_3d are
+        # true.  A config with axes_3d=True but command_conditioned=False
+        # would otherwise diverge off-JAX (adapter builds 3D, env stays
+        # legacy 1D).  Not a smoke1 bug — smoke1 sets both true —- but
+        # closes the parity contract.
+        cmd_conditioned = bool(
+            getattr(self._cfg.env, "loc_ref_command_conditioned", False)
+        )
         axes_3d = bool(
             getattr(self._cfg.env, "loc_ref_command_axes_3d", False)
         )
 
-        if axes_3d:
+        if cmd_conditioned and axes_3d:
             # 3D library opt-in.  Build (or load) the full TB-split
             # library and stand up one service per bin.
             if offline_path:

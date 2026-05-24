@@ -44,13 +44,9 @@ SMOKE14_YAML = (
 )
 
 
-def _build_adapter(yaml_path: Path):
-    """Build (cfg, mj_model, mj_data, adapter, action_dim, policy_spec).
-
-    Disables DR + push for deterministic obs.  Returns ``None`` if the
-    config can't be loaded (e.g. asset paths missing in the test env).
-    """
-    cfg = load_training_config(str(yaml_path))
+def _build_adapter_from_cfg(cfg):
+    """Build adapter from an already-loaded cfg (allows dataclasses.replace
+    in tests that need to mutate the env config before adapter init)."""
     robot_cfg_path = cfg.env.robot_config_path
     if not Path(robot_cfg_path).is_absolute():
         robot_cfg_path = PROJECT_ROOT / robot_cfg_path
@@ -95,6 +91,16 @@ def _build_adapter(yaml_path: Path):
         "policy_spec": policy_spec,
         "action_dim": int(policy_spec.model.action_dim),
     }
+
+
+def _build_adapter(yaml_path: Path):
+    """Build (cfg, mj_model, mj_data, adapter, action_dim, policy_spec).
+
+    Disables DR + push for deterministic obs.  Returns ``None`` if the
+    config can't be loaded (e.g. asset paths missing in the test env).
+    """
+    cfg = load_training_config(str(yaml_path))
+    return _build_adapter_from_cfg(cfg)
 
 
 @pytest.fixture(scope="module")
@@ -285,6 +291,37 @@ def test_v6_adapter_3d_mode_matches_env_bin_selection(smoke1_setup) -> None:
                 f"max |Δ| = {float(np.abs(adapter_qref - env_qref).max()):.6e}"
             ),
         )
+
+
+def test_v6_adapter_requires_cmd_conditioned_for_3d_mode() -> None:
+    """Reviewer 2026-05-24 follow-up #3: 3D library must require BOTH
+    loc_ref_command_conditioned AND loc_ref_command_axes_3d, mirroring
+    the env gate at training/envs/wildrobot_env.py:835. A config with
+    axes_3d=True but command_conditioned=False must stay on the legacy
+    1D path off-JAX (matching what the env would do — it would NOT build
+    the 3D library either)."""
+    import dataclasses
+    from training.configs.training_config import load_training_config
+
+    cfg = load_training_config(str(SMOKE1_YAML))
+    cfg = dataclasses.replace(
+        cfg,
+        env=dataclasses.replace(
+            cfg.env,
+            loc_ref_command_conditioned=False,  # disable command-conditioning
+            loc_ref_command_axes_3d=True,       # but keep 3D opt-in
+        ),
+    )
+    s = _build_adapter_from_cfg(cfg)
+    a = s["adapter"]
+    # Adapter must NOT have stood up multi-bin services: command_conditioned
+    # is False, so the gate falls through to the legacy single-forward-bin
+    # path even though axes_3d is True.
+    assert len(a._services_by_bin) == 1, (
+        f"adapter built {len(a._services_by_bin)} bins under "
+        "(cmd_conditioned=False, axes_3d=True); should be 1 to match env"
+    )
+    assert a._services_by_bin[0] is a._service
 
 
 def test_v6_adapter_legacy_mode_keeps_single_service(smoke1_setup) -> None:
