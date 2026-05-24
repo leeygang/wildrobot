@@ -227,16 +227,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if layout_id not in (
             "wr_obs_v6_offline_ref_history",
             "wr_obs_v7_phase_proprio",
+            # v0.21.0 P7 (lateral+yaw prior): superset of v7 that
+            # appends a 2-dim ``velocity_cmd_lateral_yaw`` slot.
+            # See policy_contract/spec.py SUPPORTED_LAYOUT_IDS.
+            "wr_obs_v8_cmd3d",
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
-                "{'wr_obs_v6_offline_ref_history', 'wr_obs_v7_phase_proprio'}.  "
-                "v5 was deprecated along with the high-confidence prep "
-                "(proprio history is now always wired); v7 (smoke11) drops "
-                "every reference-trajectory channel from the actor obs except "
-                "the 2-dim gait phase clock — see policy_contract/spec.py "
-                "SUPPORTED_LAYOUT_IDS.  Older layouts depended on v1/v2 "
-                "reference state and were removed by the v3 rewrite."
+                "{'wr_obs_v6_offline_ref_history', 'wr_obs_v7_phase_proprio', "
+                "'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
+                "high-confidence prep (proprio history is now always wired); "
+                "v7 (smoke11) drops every reference-trajectory channel from "
+                "the actor obs except the 2-dim gait phase clock; v8 (v0.21.0 "
+                "P7) is a strict superset of v7 that appends a "
+                "``velocity_cmd_lateral_yaw`` (vy, wz) slot — see "
+                "policy_contract/spec.py SUPPORTED_LAYOUT_IDS.  Older layouts "
+                "depended on v1/v2 reference state and were removed by the "
+                "v3 rewrite."
             )
 
         if not self._config.env.scene_xml_path:
@@ -1772,19 +1779,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.21.0 P3: ``velocity_cmd`` from callers is now (3,) but the
         # v6 / v7 policy contract still uses a scalar ``velocity_cmd``
         # slot (size=1 ObsFieldSpec).  Slice the vx axis for the
-        # contract; P7.2 adds an explicit ``velocity_cmd_lateral_yaw``
-        # channel for v8.
+        # contract; v0.21.0 P7 adds an explicit
+        # ``velocity_cmd_lateral_yaw`` channel for v8.
         velocity_cmd_for_obs = jp.asarray(velocity_cmd, dtype=jp.float32)
         velocity_cmd_for_obs = (
             velocity_cmd_for_obs[0]
             if velocity_cmd_for_obs.ndim >= 1
             else velocity_cmd_for_obs
         )
+        # v0.21.0 P7: under the v8 layout, forward (vy, wz) to the obs
+        # builder.  Other layouts ignore the kwarg (None passthrough).
+        # The slice ``velocity_cmd[1:]`` always exists because the env
+        # sampler emits (3,) post-P3.
+        lateral_yaw = None
+        if self._policy_spec.observation.layout_id == "wr_obs_v8_cmd3d":
+            cmd_3vec = jp.asarray(velocity_cmd, dtype=jp.float32).reshape(3)
+            lateral_yaw = cmd_3vec[1:]
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
             velocity_cmd=velocity_cmd_for_obs,
+            velocity_cmd_lateral_yaw=lateral_yaw,
             loc_ref_phase_sin_cos=v4_compat["phase_sin_cos"],
             loc_ref_stance_foot=v4_compat["stance"],
             loc_ref_next_foothold=v4_compat["next_foothold"],

@@ -19,6 +19,14 @@ def build_observation_from_components(
     foot_switches: jnp.ndarray,
     prev_action: jnp.ndarray,
     velocity_cmd: jnp.ndarray,
+    # v0.21.0 P7 (wr_obs_v8_cmd3d): NEW size-2 actor channel carrying
+    # ``(vy_cmd, wz_cmd)`` in the heading frame.  v1-v7 do NOT read
+    # this kwarg (None passthrough is fine), so it stays optional.
+    # Only v8 requires it (the v8 dispatch raises if missing).  The
+    # shared scalar ``velocity_cmd`` slot still carries vx_cmd; the
+    # v8 layout appends ``velocity_cmd_lateral_yaw`` after the
+    # proprio_history block (see _build_obs_layout).
+    velocity_cmd_lateral_yaw: jnp.ndarray | None = None,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
     loc_ref_phase_sin_cos: jnp.ndarray | None = None,
@@ -47,6 +55,10 @@ def build_observation_from_components(
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
+        # v0.21.0 P7: see spec.py SUPPORTED_LAYOUT_IDS for the
+        # full motivation.  v8 is a strict superset of v7 that
+        # appends a 2-dim ``velocity_cmd_lateral_yaw`` slot.
+        "wr_obs_v8_cmd3d",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
@@ -148,7 +160,14 @@ def build_observation_from_components(
         joint_vel_normalized.reshape(-1),
         foot_switches.reshape(4),
         prev_action.reshape(-1),
-        jnp.atleast_1d(velocity_cmd).reshape(1),
+        # v0.21.0 P7: ``velocity_cmd`` may arrive as scalar, (1,), or
+        # (3,) — the env now always emits (3,) [vx, vy, wz] post-P3,
+        # but legacy callers (export tooling, parity tests) still feed
+        # scalars / (1,).  Take the first element to preserve v1-v7
+        # byte-identical behavior (vx_cmd lives at index 0 of the
+        # 3-vec).  The v8 layout dispatches (vy, wz) separately via
+        # the ``velocity_cmd_lateral_yaw`` kwarg.
+        jnp.atleast_1d(jnp.asarray(velocity_cmd, dtype=jnp.float32))[..., :1].reshape(1),
     ]
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
@@ -190,6 +209,27 @@ def build_observation_from_components(
                 "wr_obs_v7_phase_proprio requires proprio_history; got None."
             )
         parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
+    if spec.observation.layout_id == "wr_obs_v8_cmd3d":
+        # v0.21.0 P7: strict superset of v7 — same base + phase +
+        # proprio_history, with the new 2-dim ``velocity_cmd_lateral_yaw``
+        # slot APPENDED before the trailing padding.  The shared
+        # scalar ``velocity_cmd`` slot above already carries vx_cmd
+        # (sliced from the 3-vec at the parts builder), so v8 only
+        # needs to add (vy_cmd, wz_cmd) here.
+        parts.append(phase)
+        if proprio_history is None:
+            raise ValueError(
+                "wr_obs_v8_cmd3d requires proprio_history; got None."
+            )
+        parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
+        if velocity_cmd_lateral_yaw is None:
+            raise ValueError(
+                "wr_obs_v8_cmd3d requires velocity_cmd_lateral_yaw=(vy, wz); "
+                "got None.  Env must pass velocity_cmd[1:] for v8."
+            )
+        parts.append(
+            jnp.asarray(velocity_cmd_lateral_yaw, dtype=jnp.float32).reshape(2)
+        )
     parts.append(jnp.zeros((1,), dtype=jnp.float32))
 
     obs = jnp.concatenate(parts)
@@ -202,6 +242,8 @@ def build_observation(
     state: PolicyState,
     signals: Signals,
     velocity_cmd: jnp.ndarray,
+    # v0.21.0 P7 — see ``build_observation_from_components`` docstring.
+    velocity_cmd_lateral_yaw: jnp.ndarray | None = None,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
     loc_ref_phase_sin_cos: jnp.ndarray | None = None,
@@ -237,6 +279,7 @@ def build_observation(
         foot_switches=signals.foot_switches,
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
+        velocity_cmd_lateral_yaw=velocity_cmd_lateral_yaw,
         capture_point_error=capture_point_error,
         gait_clock=gait_clock,
         loc_ref_phase_sin_cos=loc_ref_phase_sin_cos,

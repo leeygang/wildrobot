@@ -159,6 +159,40 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
             ObsFieldSpec(name="loc_ref_history", size=4, units="recent_phase_sin_cos"),
             ObsFieldSpec(name="padding", size=1, units="unused"),
         ]
+    if layout_id == "wr_obs_v8_cmd3d":
+        # v0.21.0 P7 (lateral+yaw prior): superset of v7.  The shared
+        # ``velocity_cmd`` slot stays size=1 (vx_cmd) so v1-v7 remain
+        # BYTE-IDENTICAL when the v0.21 env feeds them a (3,) command
+        # (the obs builder slices ``[..., :1]``).  A NEW 2-dim slot
+        # ``velocity_cmd_lateral_yaw`` carries (vy_cmd, wz_cmd) and is
+        # APPENDED after the proprio_history block.  The trailing
+        # ``padding`` slot stays at the very end for downstream
+        # consumers that key off the last slot.  Order MUST match
+        # policy_contract/jax/obs.py ``build_observation_from_components``
+        # v8 dispatch block (see P7.3 sub-step).
+        proprio_bundle = 3 + 4 + 3 * action_dim
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="foot_switches", size=4, units="bool_as_float"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="loc_ref_phase_sin_cos", size=2, units="sin_cos_phase"),
+            ObsFieldSpec(
+                name="proprio_history",
+                size=PROPRIO_HISTORY_FRAMES * proprio_bundle,
+                units="stacked_proprio_oldest_to_newest",
+            ),
+            ObsFieldSpec(
+                name="velocity_cmd_lateral_yaw",
+                size=2,
+                frame="heading_local",
+                units="m_s_and_rad_s",
+            ),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
     if layout_id == "wr_obs_v7_phase_proprio":
         # smoke11 (post-home-migration de-hybridization).  Mirrors
         # ToddlerBot's default ``use_phase_signal=True`` actor obs

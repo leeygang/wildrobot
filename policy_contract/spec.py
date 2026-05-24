@@ -29,6 +29,14 @@ SUPPORTED_LAYOUT_IDS = {
     # terms.  Proprio history kept as a WR-specific signal-
     # engineering choice (lin_vel is privileged-only on WR).
     "wr_obs_v7_phase_proprio",
+    # v0.21.0 P7 (lateral+yaw prior): superset of v7 — adds a 2-dim
+    # ``velocity_cmd_lateral_yaw`` slot (vy_cmd, wz_cmd) APPENDED
+    # after the v7 proprio_history.  The shared scalar
+    # ``velocity_cmd`` slot still carries vx_cmd (size=1) so v1-v7
+    # remain BYTE-IDENTICAL when the v0.21 env feeds them a (3,)
+    # command (sliced to ``[..., :1]`` at the obs builder).  See
+    # training/docs/v0210_lateral_yaw_prior_plan-final-r2.md P7.
+    "wr_obs_v8_cmd3d",
 }
 # Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
 # channels that benefit from history (joint_pos + joint_vel + gyro +
@@ -436,6 +444,38 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
             raise ValueError(
                 "observation.layout mismatch for layout_id="
                 "'wr_obs_v7_phase_proprio':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v8_cmd3d":
+        # v0.21.0 P7: strict superset of v7 — appends a 2-dim
+        # ``velocity_cmd_lateral_yaw`` slot (vy_cmd, wz_cmd) AFTER the
+        # proprio_history block and BEFORE the trailing padding.  The
+        # shared scalar ``velocity_cmd`` slot keeps size=1 so v1-v7
+        # remain byte-identical when fed a (3,) command.
+        proprio_bundle = (
+            3  # angvel
+            + 4  # foot_switches
+            + 3 * int(model.action_dim)  # joint_pos + joint_vel + prev_action
+        )
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("foot_switches", 4),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("proprio_history", PROPRIO_HISTORY_FRAMES * proprio_bundle),
+            ("velocity_cmd_lateral_yaw", 2),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v8_cmd3d':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )
