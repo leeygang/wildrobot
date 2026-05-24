@@ -38,8 +38,10 @@
 # follow-up at control/zmp/zmp_walk.py:1685) so the static (0, 0, 0)
 # bin always exists for the cmd-zero branch of the sampler.
 #
-# vy grid:  {-0.10, -0.05, 0.0, 0.05, 0.10}   (5 bins; symmetric)
-# wz grid:  {-0.20, -0.10, 0.0, 0.10, 0.20}   (5 bins; symmetric)
+# vy grid:  {-0.13, -0.065, 0.0, 0.065, 0.13}   (5 bins; symmetric;
+#                                                 plan-locked max)
+# wz grid:  {-0.25, -0.125, 0.0, 0.125, 0.25}   (5 bins; symmetric;
+#                                                 plan-locked max)
 #
 # Library shape under TB-split structure (control/zmp/zmp_walk.py:1598):
 #   * Derived vx grid in env: arange(0.18, 0.26, 0.04) ∪ {0.20} =

@@ -14,22 +14,27 @@ Usage:
   #   --flag=value (equals-sign) form. With a plain space, argparse mis-
   #   parses the leading '-' as the next flag and errors out.
   #
-  # Canonical grid (4 vx x 5 vy x 5 wz -> 24 bins after TB-split dedup):
+  # Canonical v0.21.0 grid (5 vx x 5 vy x 5 wz -> 29 bins after
+  # TB-split dedup at zero: 25 linear + 5 pure-yaw - 1 dedup).
+  # vy / wz LOCKED to v0210_lateral_yaw_prior_plan-final-r2.md:259
+  # (vy=+/-0.13 m/s, wz=+/-0.25 rad/s).  Defaults (cycle_time=0.96s,
+  # step_height=0.05m) come from ZMPWalkConfig — the wrapper cannot
+  # drift from the planner:
   uv run python control/zmp/build_library.py --output /tmp/v0210_lib --mode 3d \\
       --vx-bins=0.0,0.18,0.20,0.22,0.26 \\
-      --vy-bins=-0.10,-0.05,0.0,0.05,0.10 \\
-      --yaw-rate-bins=-0.20,-0.10,0.0,0.10,0.20
+      --vy-bins=-0.13,-0.065,0.0,0.065,0.13 \\
+      --yaw-rate-bins=-0.25,-0.125,0.0,0.125,0.25
 
   # Same grid built from symmetric ranges instead of explicit bins
   # (no negative literals -> bare flags are fine):
   uv run python control/zmp/build_library.py --output /tmp/v0210_lib --mode 3d \\
       --vx-bins=0.0,0.18,0.20,0.22,0.26 \\
-      --vy-max 0.10 --vy-interval 0.05 \\
-      --yaw-rate-max 0.20 --yaw-rate-interval 0.10
+      --vy-max 0.13 --vy-interval 0.065 \\
+      --yaw-rate-max 0.25 --yaw-rate-interval 0.125
 
   # Minimal smoke (1 vx, 2 vy, 1 wz=0 -> a handful of bins):
   uv run python control/zmp/build_library.py --output /tmp/v0210_lib_smoke --mode 3d \\
-      --vx-bins=0.0,0.20 --vy-bins=0.0,0.10 --yaw-rate-bins=0.0
+      --vx-bins=0.0,0.20 --vy-bins=0.0,0.13 --yaw-rate-bins=0.0
 """
 
 from __future__ import annotations
