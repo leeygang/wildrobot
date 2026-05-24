@@ -26,22 +26,48 @@ Usage:
   uv run mjpython training/eval/view_zmp_in_mujoco.py \
       --library-path /tmp/zmp_ref_library --vx 0.15
 
+  # ---------------------------------------------------------------------
   # v0.21.0 lateral / yaw playback (requires a 3D-built library).
-  # First build the library to disk:
-  #   uv run python -c "
-  #   from control.zmp.zmp_walk import ZMPWalkGenerator
-  #   gen = ZMPWalkGenerator()
-  #   lib = gen.build_library_for_3d_values(
-  #       vx_values=[0.0, 0.18, 0.20, 0.22, 0.26],
-  #       vy_values=[-0.10, -0.05, 0.0, 0.05, 0.10],
-  #       yaw_rate_values=[-0.20, -0.10, 0.0, 0.10, 0.20],
-  #   )
-  #   lib.save('/tmp/v0210_lib')
-  #   "
+  # ---------------------------------------------------------------------
+  # The viewer only REPLAYS; it does not build. Generate the library on
+  # disk with ``control/zmp/build_library.py --mode 3d`` first, then point
+  # ``--library-path`` at the output directory.
+  #
+  # NOTE: bin lists that contain negative values MUST use the
+  #   --flag=value (equals-sign) form. With a plain space argparse
+  #   mis-parses the leading '-' as the next flag and errors out.
+  #
+  # Canonical v0.21.0 grid (4 vx x 5 vy x 5 wz -> 24 bins after TB-split
+  # dedup at zero):
+  #
+  #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib \
+  #       --mode 3d \
+  #       --vx-bins=0.0,0.18,0.20,0.22,0.26 \
+  #       --vy-bins=-0.10,-0.05,0.0,0.05,0.10 \
+  #       --yaw-rate-bins=-0.20,-0.10,0.0,0.10,0.20
+  #
+  # Equivalent build using symmetric ranges (vy/wz default to [0.0] when
+  # the corresponding ``--*-max`` is 0, so axes you don't need can be
+  # omitted; no negative literals -> bare flags are fine):
+  #
+  #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib \
+  #       --mode 3d \
+  #       --vx-bins=0.0,0.18,0.20,0.22,0.26 \
+  #       --vy-max 0.10 --vy-interval 0.05 \
+  #       --yaw-rate-max 0.20 --yaw-rate-interval 0.10
+  #
+  # Minimal 4-bin smoke build (handy for fast iteration on the viewer):
+  #
+  #   uv run python control/zmp/build_library.py --output /tmp/v0210_lib_smoke \
+  #       --mode 3d --vx-bins=0.0,0.20 --vy-bins=0.0,0.10 --yaw-rate-bins=0.0
   #
   # Then visualize a lateral-walk bin:
   #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
   #       --library-path /tmp/v0210_lib --vx 0.20 --vy 0.05
+  #
+  # Or a pure side-step (vx=0) lateral bin:
+  #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
+  #       --library-path /tmp/v0210_lib --vx 0.0 --vy 0.10
   #
   # Or a pure-yaw bin:
   #   uv run mjpython training/eval/view_zmp_in_mujoco.py \
@@ -49,7 +75,8 @@ Usage:
   #
   # Library is TB-split (linear (vx, vy, 0) + pure-yaw (0, 0, wz), dedup
   # (0, 0, 0)), so mixed (vx>0, wz>0) queries snap per-axis to whichever
-  # single-axis bin is closest.
+  # single-axis bin is closest. Always check the ``matched key=`` line in
+  # the startup log to confirm which bin you actually got.
 """
 
 from __future__ import annotations
