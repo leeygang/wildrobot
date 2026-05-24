@@ -483,18 +483,30 @@ Expected additions:
     migrated `() → (3,)`; H7 incremental `path_state` in `WildRobotInfo`;
     H3 `_load_three_axis` config helper (scalar `eval_velocity_cmd`
     broadcasts to `(vx, 0, 0)`).
-  - **Not yet landed (P4–P11)**: 3D branched command sampler, env-side
-    3D library wiring (`_init_offline_service`, `_lookup_offline_window`
-    consume `(vx, vy, wz)`), `wr_obs_v8_cmd3d` actor observation layout,
-    real `vy_cmd` / `yaw_rate_cmd` reward terms, eval/visualize/deploy
-    parity for the wider command, smoke YAML + G6/G7 gates, CHANGELOG
-    entry.
-  - **Implication for smoke training**: until P4–P11 land, the env still
-    samples scalar vx, the actor obs still exposes scalar vx, and the
-    `_lookup_offline_window` still selects the bin by `velocity_cmd[0]`
-    only — so a smoke run on `smoke14_lateral` is functionally equivalent
-    to v0.20.x. The 3-axis groundwork is in place to make P4–P11 small,
-    test-driven diffs.
+  - **Landed (P4)**: TB-style branched 3D command sampler in
+    `_sample_velocity_cmd` (zero / pure-turn / walk-ellipse). New
+    `EnvConfig` fields: `min_velocity_y`, `max_velocity_y`, `max_yaw_rate`
+    (all default 0.0 so legacy YAML stays scalar-vx-only).
+  - **Behavioral change for smoke14 baseline (P4)**: the TB walk-ellipse
+    legitimately produces negative vx when `min_velocity > 0` via the
+    `sin(θ)` sign-flip + deadzone clamp (TB `walk_env.py:267-272`).
+    smoke14 has `cmd_zero_chance=0, cmd_turn_chance=0, min_velocity=0.18`,
+    so re-running it on `smoke14_lateral` HEAD now produces
+    `vx ∈ [-0.18, -0.067]` half the walk-branch samples — bidirectional
+    walking instead of forward-only. This is TB-aligned and intentional
+    for v0.21.0; the v0.21 smoke target (P8,
+    `ppo_walking_v0210_smoke1_*`) will set `min_velocity=-0.26` to make
+    the bidirectional sampling explicit.
+  - **Not yet landed (P5–P11)**: env-side 3D library wiring
+    (`_init_offline_service`, `_lookup_offline_window` consume
+    `(vx, vy, wz)`), `wr_obs_v8_cmd3d` actor observation layout, real
+    `vy_cmd` / `yaw_rate_cmd` reward terms, eval/visualize/deploy parity
+    for the wider command, smoke YAML + G6/G7 gates, CHANGELOG entry.
+  - **Implication for smoke training**: P5–P7 still consume scalar vx
+    (the sampler now returns a 3-vec but downstream callers index `[0]`
+    until P5/P7 wire the wider command through). A smoke run on
+    `smoke14_lateral` will have bidirectional vx sampling (P4 change)
+    but no vy / wz behavior until P5–P7 land.
 
 ### `v0.19.0` Platform Pivot
 
