@@ -70,6 +70,15 @@ def _symmetric_range(maxv: float, interval: float) -> list[float]:
 
 
 def main() -> None:
+    # Canonical defaults live in ZMPWalkConfig (the planner). build_library.py
+    # is a thin CLI wrapper and MUST NOT override them silently; previous
+    # cycle_time=0.50 / step_height=0.025 defaults drifted from the
+    # 0.96 / 0.05 planner defaults and produced libraries whose lateral
+    # references had insufficient hip-roll authority (~4.6 deg vs the
+    # ~6.7 deg geometric lean threshold), causing visible backward drift
+    # in --vy playback. See CHANGELOG v0.21.0 lateral-prior diagnostic.
+    _DEFAULT_CFG = ZMPWalkConfig()
+
     parser = argparse.ArgumentParser(
         description="Build ZMP reference library for WildRobot v2")
     parser.add_argument("--output", type=str, required=True,
@@ -119,10 +128,18 @@ def main() -> None:
         help=("3d mode: optional comma-separated explicit yaw-rate bins (e.g. "
               "'-0.20,-0.10,0.0,0.10,0.20'). Overrides --yaw-rate-max/-interval."),
     )
-    # ZMPWalkConfig knobs (apply to both modes).
-    parser.add_argument("--cycle-time", type=float, default=0.50)
-    parser.add_argument("--dt", type=float, default=0.02)
-    parser.add_argument("--step-height", type=float, default=0.025)
+    # ZMPWalkConfig knobs (apply to both modes). Defaults pulled from
+    # ZMPWalkConfig() so build_library cannot drift from the planner.
+    parser.add_argument("--cycle-time", type=float,
+                        default=_DEFAULT_CFG.cycle_time_s,
+                        help=f"Walking cycle time (default "
+                             f"{_DEFAULT_CFG.cycle_time_s}s, Froude-scaled "
+                             f"to WR CoM height)")
+    parser.add_argument("--dt", type=float, default=_DEFAULT_CFG.dt_s)
+    parser.add_argument("--step-height", type=float,
+                        default=_DEFAULT_CFG.foot_step_height_m,
+                        help=f"Swing-foot peak height (default "
+                             f"{_DEFAULT_CFG.foot_step_height_m}m)")
     args = parser.parse_args()
 
     cfg = ZMPWalkConfig(
