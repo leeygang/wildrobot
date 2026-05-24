@@ -39,8 +39,14 @@ from training.envs.env_info import WR_INFO_KEY
 
 
 def _disable_cmd_resample_for_eval(env_cfg) -> bool:
-    """Match the training eval sentinel: non-negative eval cmd pins rollout cmd."""
-    return float(env_cfg.eval_velocity_cmd) >= 0.0
+    """Match the training eval sentinel: non-negative eval cmd pins rollout cmd.
+
+    v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); sentinel
+    detection reads only the [0]th axis (vx).
+    """
+    _ecv = env_cfg.eval_velocity_cmd
+    _vx = _ecv[0] if hasattr(_ecv, "__len__") else _ecv
+    return float(_vx) >= 0.0
 
 
 def _network_activation_name(training_cfg) -> str:
@@ -457,7 +463,12 @@ def main() -> int:
     if residual_base is not None:
         print(f"  residual_base: {residual_base}")
     if disable_cmd_resample:
-        print(f"  eval_cmd:   pinned vx={training_cfg.env.eval_velocity_cmd:.3f}")
+        # v0.21.0 P3 / H3: eval_velocity_cmd is (vx, vy, wz).
+        _ecv = training_cfg.env.eval_velocity_cmd
+        print(
+            f"  eval_cmd:   pinned vx={_ecv[0]:.3f}, "
+            f"vy={_ecv[1]:.3f}, wz={_ecv[2]:.3f}"
+        )
     cfg_push_enabled = bool(getattr(training_cfg.env, "push_enabled", False))
     if cfg_push_enabled:
         push_state = "disabled by --no-push" if disable_pushes else "ON (config)"

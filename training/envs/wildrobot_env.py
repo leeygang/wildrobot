@@ -1276,6 +1276,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             with no command input).  Quantifies how far the chosen
             bin's vx is from the actual sampled command.
         """
+        # v0.21.0 P3: velocity_cmd is now (3,) — the offline reference
+        # library is still indexed on vx alone (P4 wires the full 3D
+        # grid).  Extract the vx slice locally so callers can pass the
+        # full 3-vec untouched.  Scalar inputs (legacy callers / tests)
+        # are also accepted via the ``ndim`` check.
+        def _vx_of(cmd):
+            arr = jp.asarray(cmd, dtype=jp.float32)
+            return arr[0] if arr.ndim >= 1 else arr
+
         if not self._offline_command_conditioned:
             base = self._offline_service.lookup_jax(
                 step_idx, self._offline_jax_arrays
@@ -1287,7 +1296,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 cmd_bin_abs_err = jp.float32(0.0)
             else:
                 cmd_bin_abs_err = jp.abs(
-                    selected_vx - jp.asarray(velocity_cmd, dtype=jp.float32)
+                    selected_vx - _vx_of(velocity_cmd)
                 ).astype(jp.float32)
             base["selected_vx"] = selected_vx
             base["cmd_bin_abs_err"] = cmd_bin_abs_err
@@ -1303,7 +1312,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ).astype(jp.int32)
         else:
             bin_idx = jp.argmin(
-                jp.abs(self._offline_vx_grid - jp.asarray(velocity_cmd, dtype=jp.float32))
+                jp.abs(self._offline_vx_grid - _vx_of(velocity_cmd))
             ).astype(jp.int32)
 
         n_steps = self._offline_jax_arrays["n_steps"]
@@ -1318,7 +1327,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_bin_abs_err = jp.float32(0.0)
         else:
             cmd_bin_abs_err = jp.abs(
-                selected_vx - jp.asarray(velocity_cmd, dtype=jp.float32)
+                selected_vx - _vx_of(velocity_cmd)
             ).astype(jp.float32)
         return {
             "q_ref":          a["q_ref"][bin_idx, idx],
@@ -1457,11 +1466,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
             None if proprio_history is None
             else proprio_history.astype(jp.float32).reshape(-1)
         )
+        # v0.21.0 P3: ``velocity_cmd`` from callers is now (3,) but the
+        # v6 / v7 policy contract still uses a scalar ``velocity_cmd``
+        # slot (size=1 ObsFieldSpec).  Slice the vx axis for the
+        # contract; P7.2 adds an explicit ``velocity_cmd_lateral_yaw``
+        # channel for v8.
+        velocity_cmd_for_obs = jp.asarray(velocity_cmd, dtype=jp.float32)
+        velocity_cmd_for_obs = (
+            velocity_cmd_for_obs[0]
+            if velocity_cmd_for_obs.ndim >= 1
+            else velocity_cmd_for_obs
+        )
         return build_observation(
             spec=self._policy_spec,
             state=policy_state,
             signals=signals,
-            velocity_cmd=velocity_cmd,
+            velocity_cmd=velocity_cmd_for_obs,
             loc_ref_phase_sin_cos=v4_compat["phase_sin_cos"],
             loc_ref_stance_foot=v4_compat["stance"],
             loc_ref_next_foothold=v4_compat["next_foothold"],
@@ -1786,12 +1806,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # diagnostic — it never drives the reward.  See
         # toddlerbot/locomotion/mjx_env.py:_reward_lin_vel_xy +
         # integrate_path_state in walk_zmp_ref.py.
+        #
+        # v0.21.0 P3: velocity_cmd is now (3,) [vx, vy, wz]; the
+        # forward-only reward helper keeps its scalar signature
+        # (vy / wz handling lands in P6.2 / P6.3).
         ref_pelvis_vel_xy = win["pelvis_vel"][:2].astype(jp.float32)
         r_vx, cmd_velocity_xy_err, lateral_velocity_abs, ref_velocity_xy_err = (
             self._cmd_forward_velocity_track_reward(
                 forward_velocity=forward_velocity,
                 lateral_velocity=lateral_velocity,
-                velocity_cmd=velocity_cmd,
+                velocity_cmd=velocity_cmd[0],
                 ref_forward_velocity=ref_pelvis_vel_xy[0],
                 ref_lateral_velocity=ref_pelvis_vel_xy[1],
                 alpha=jp.float32(weights.cmd_forward_velocity_alpha),
@@ -1830,11 +1854,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # cmd_active gates feet_air_time / feet_clearance: ToddlerBot
         # zeros these on standstill (mjx_env.py walk_env.py:303 +330)
         # so the policy doesn't pay the air-time bonus for marching in
-        # place at zero command.  ``velocity_cmd`` is a scalar here; v3
-        # only commands forward vx.  The Gauss-band terms (torso_pitch
-        # / torso_roll / feet_distance) are NOT gated since they are
-        # posture-keeping rewards independent of cmd magnitude.
-        cmd_active = (jp.abs(velocity_cmd) > jp.float32(1e-6)).astype(jp.float32)
+        # place at zero command.  ``velocity_cmd`` is a 3-vec
+        # (vx, vy, wz) post-P3; use the L2 norm so the gate triggers
+        # on any non-zero axis (lateral / yaw alone is still motion).
+        # The Gauss-band terms (torso_pitch / torso_roll /
+        # feet_distance) are NOT gated since they are posture-keeping
+        # rewards independent of cmd magnitude.
+        cmd_active = (
+            jp.linalg.norm(velocity_cmd) > jp.float32(1e-6)
+        ).astype(jp.float32)
 
         # ``feet_air_time`` (toddlerbot/locomotion/walk_env.py:283-303).
         # Σ_per_foot (air_time * first_contact), only paid on touchdown.
@@ -2048,7 +2076,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # asymmetry at home is absorbed.
         left_foot_z_rel = left_foot_pos[2] - feet_height_init[0]
         right_foot_z_rel = right_foot_pos[2] - feet_height_init[1]
-        is_standing = jp.abs(velocity_cmd) < jp.float32(1e-6)
+        # v0.21.0 P3: velocity_cmd is (3,) — use L2 norm so the
+        # standing detection accounts for vy / wz axes too.
+        is_standing = jp.linalg.norm(velocity_cmd) < jp.float32(1e-6)
         r_feet_phase = self._feet_phase_reward(
             left_foot_z_rel=left_foot_z_rel,
             right_foot_z_rel=right_foot_z_rel,
@@ -2526,9 +2556,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         Training-side ``reset`` keeps perturbation enabled by default.
         """
         state = self.reset(rng, perturb_pose=False)
-        eval_cmd = jp.float32(self._config.env.eval_velocity_cmd)
+        # H3: sentinel applies to vx (index 0) only.  vy / wz default
+        # to 0.0; they are NOT a "use sampled cmd" signal.  A YAML
+        # writer who wants only vx overridden writes a scalar (legacy
+        # form, broadcasts to (vx, 0, 0)) or the explicit
+        # [vx, 0.0, 0.0] list.  Mixed-sign 3-vec configs (e.g.
+        # positive vx, negative vy) are still honored — the [0]th
+        # axis read intentionally does NOT do an ``all >= 0`` reduce.
+        eval_cmd = jp.asarray(
+            self._config.env.eval_velocity_cmd, dtype=jp.float32
+        )  # (3,)
+        use_override = eval_cmd[0] >= jp.float32(0.0)
         wr = state.info[WR_INFO_KEY]
-        new_cmd = jp.where(eval_cmd >= jp.float32(0.0), eval_cmd, wr.velocity_cmd)
+        new_cmd = jp.where(use_override, eval_cmd, wr.velocity_cmd)  # (3,)
         new_wr = wr.replace(velocity_cmd=new_cmd.astype(jp.float32))
         new_info = dict(state.info)
         new_info[WR_INFO_KEY] = new_wr
@@ -2561,7 +2601,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         rng, k_zero, k_branch, k_neg, k_pos, k_fallback = jax.random.split(rng, 6)
         min_velocity = jp.float32(self._config.env.min_velocity)
         max_velocity = jp.float32(self._config.env.max_velocity)
-        deadzone = jp.float32(self._config.env.cmd_deadzone)
+        # v0.21.0 P3: cmd_deadzone is now a length-3 tuple; the P3
+        # scalar sampler still pins vx only, so it reads the [0]
+        # axis.  P4 widens the sampler to 3D and uses all three.
+        deadzone = jp.float32(self._config.env.cmd_deadzone[0])
         zero_chance = jp.float32(self._config.env.cmd_zero_chance)
 
         def _sample_fixed_cmd() -> jax.Array:
@@ -2630,7 +2673,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             lambda _: nonzero_cmd,
             operand=None,
         )
-        return cmd.astype(jp.float32)
+        # v0.21.0 P3: return (vx, vy, wz) — the scalar vx sampler
+        # remains in P3; lateral / yaw axes pin to 0 until P4 wires
+        # the 3D branched sampler.
+        cmd_vx = cmd.astype(jp.float32)
+        return jp.stack(
+            [cmd_vx, jp.float32(0.0), jp.float32(0.0)]
+        ).astype(jp.float32)
 
     def _make_initial_state(
         self,
@@ -2760,6 +2809,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action=default_action,
             truncated=jp.zeros(()),
             velocity_cmd=velocity_cmd,
+            # H7: start the incremental path-state at the world origin /
+            # identity rotation so step 1's incremental update matches
+            # the closed-form integrator's value at t = dt (assuming
+            # the world-frame initial torso is at the configured
+            # ``init_qpos``; the env subtracts ``init_qpos[:3]``
+            # downstream to align ``path_pos`` with the closed-form
+            # zero-origin convention).
+            path_state_torso_pos=jp.zeros(3, dtype=jp.float32),
+            path_state_path_rot=jp.asarray(
+                [1.0, 0.0, 0.0, 0.0], dtype=jp.float32
+            ),
             prev_root_pos=root_pose.position.astype(jp.float32),
             prev_root_quat=root_pose.orientation.astype(jp.float32),
             prev_left_foot_pos=left_foot_pos.astype(jp.float32),
@@ -2837,7 +2897,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_switch_init = (left_force > contact_thresh).astype(jp.float32)
         right_switch_init = (right_force > contact_thresh).astype(jp.float32)
         metrics_dict = get_initial_env_metrics_jax(
-            velocity_cmd=velocity_cmd,
+            # v0.21.0 P3: ``velocity_command`` metric slot stays scalar
+            # for back-compat with the registry ``MetricSpec``; pass
+            # the vx axis only.  Per-axis vy / wz diagnostics are
+            # populated separately below.
+            velocity_cmd=velocity_cmd[0],
             height=root_pose.height,
             pitch=pitch_init.astype(jp.float32),
             roll=roll_init.astype(jp.float32),
@@ -2869,11 +2933,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(q_ref0)).astype(jp.float32)
         metrics_dict["tracking/residual_q_abs_mean"] = jp.float32(0.0)
         metrics_dict["tracking/residual_q_abs_max"] = jp.float32(0.0)
+        # v0.21.0 P3: velocity_cmd is (3,) [vx, vy, wz]; the
+        # forward-only diagnostics use [0].  Per-axis variants are
+        # logged below as ``tracking/velocity_cmd_v{x,y}_abs`` /
+        # ``tracking/velocity_cmd_wz_abs``.
         metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
-            root_vel_h.linear[0] - velocity_cmd
+            root_vel_h.linear[0] - velocity_cmd[0]
         ).astype(jp.float32)
         metrics_dict["tracking/cmd_velocity_xy_err"] = jp.sqrt(
-            (root_vel_h.linear[0] - velocity_cmd) * (root_vel_h.linear[0] - velocity_cmd)
+            (root_vel_h.linear[0] - velocity_cmd[0])
+            * (root_vel_h.linear[0] - velocity_cmd[0])
             + root_vel_h.linear[1] * root_vel_h.linear[1]
         ).astype(jp.float32)
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
@@ -2909,9 +2978,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/ref_cmd_bin_abs_err"] = win0[
             "cmd_bin_abs_err"
         ].astype(jp.float32)
-        metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(jp.float32)
+        # v0.21.0 P3: per-axis cmd diagnostics.  ``velocity_cmd_abs``
+        # stays as the vx-only legacy slot (back-compat with smoke14
+        # dashboards); the per-axis vy / wz fields and the L2 norm
+        # are new metric slots.
+        metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(
+            velocity_cmd[0]
+        ).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_vx_abs"] = jp.abs(
+            velocity_cmd[0]
+        ).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_vy_abs"] = jp.abs(
+            velocity_cmd[1]
+        ).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_wz_abs"] = jp.abs(
+            velocity_cmd[2]
+        ).astype(jp.float32)
+        metrics_dict["tracking/velocity_cmd_norm"] = jp.linalg.norm(
+            velocity_cmd
+        ).astype(jp.float32)
         metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
-            jp.abs(velocity_cmd) > jp.float32(1e-6)
+            jp.linalg.norm(velocity_cmd) > jp.float32(1e-6)
         ).astype(jp.float32)
         # G5 anti-exploit metrics — zeros at reset (no residual yet).
         metrics_dict["tracking/residual_hip_pitch_left_abs"] = jp.float32(0.0)
@@ -2920,7 +3007,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/residual_knee_right_abs"] = jp.float32(0.0)
         metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
             root_vel_h.linear[0]
-            / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
+            / jp.maximum(jp.abs(velocity_cmd[0]), jp.float32(1e-3))
         ).astype(jp.float32)
         metrics_dict["tracking/step_length_touchdown_event_m"] = jp.float32(0.0)
         metrics = {
@@ -2973,15 +3060,44 @@ class WildRobotEnv(mjx_env.MjxEnv):
         win = self._lookup_offline_window(next_step_idx, velocity_cmd=velocity_cmd)
         nominal_q_ref = win["q_ref"].astype(jp.float32)
         t_since_reset_s = next_step_idx.astype(jp.float32) * jp.float32(self.dt)
-        # Phase 4: keep planner pelvis_pos for diagnostics, but shift torso
-        # reward targets to TB-style command-integrated runtime path state.
-        path_state = self._offline_service.compute_command_integrated_path_state(
-            t_since_reset_s=t_since_reset_s,
-            velocity_cmd_mps=velocity_cmd,
-            yaw_rate_cmd_rps=jp.float32(0.0),
-            dt_s=jp.float32(self.dt),
-            default_root_pos_xyz=self._init_qpos[:3].astype(jp.float32),
+        # H7: use the incremental helper so cmd resampling at
+        # smoke14's ``cmd_resample_steps=150`` (or any non-zero value)
+        # produces a continuous path-state instead of integrating the
+        # new cmd back from t=0.  The closed-form integrator remains
+        # available for unit tests / library-build paths; we just
+        # don't drive the env reward chain off it under resample.
+        path_state_torso_pos, path_state_path_rot = (
+            self._offline_service.incremental_path_state_step(
+                prev_torso_pos=wr.path_state_torso_pos,
+                prev_path_rot_wxyz=wr.path_state_path_rot,
+                velocity_cmd=velocity_cmd,
+                dt_s=jp.float32(self.dt),
+            )
         )
+        # Compose dict in the shape ``_compute_reward_terms`` expects
+        # so the downstream callers don't need to know which
+        # integrator was used.
+        #
+        # H7 wiring: ``path_state_torso_pos`` is integrated from the
+        # world origin (matches the H7 reset / continuity tests:
+        # path_state_torso_pos == zeros(3) at reset, grows monotonically
+        # under positive cmd).  The closed-form helper returned
+        # ``torso_pos = default_root_pos_xyz + path_pos`` (absolute world);
+        # we replicate that here by adding ``init_qpos[:3]`` so the
+        # reward target stays absolute-world and
+        # ``ref/torso_pos_xy_err_m`` keeps the same magnitude as pre-P3.
+        init_xyz_f32 = self._init_qpos[:3].astype(jp.float32)
+        path_state = {
+            "path_pos": path_state_torso_pos,
+            "path_rot": path_state_path_rot,
+            "torso_pos": path_state_torso_pos + init_xyz_f32,
+            "lin_vel": jp.asarray(
+                [velocity_cmd[0], velocity_cmd[1], 0.0], dtype=jp.float32
+            ),
+            "ang_vel": jp.asarray(
+                [0.0, 0.0, velocity_cmd[2]], dtype=jp.float32
+            ),
+        }
         # Prev-frame window for finite-diff reference velocity (lin_vel_z).
         # Clamp at 0 so step 0's "previous" is itself (zero velocity for the
         # very first step; subsequent steps see real bobbing).
@@ -3244,6 +3360,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action=policy_state.prev_action,
             truncated=truncated,
             velocity_cmd=new_velocity_cmd,
+            # H7: persist the integrated path-state for the next step.
+            path_state_torso_pos=path_state_torso_pos.astype(jp.float32),
+            path_state_path_rot=path_state_path_rot.astype(jp.float32),
             prev_root_pos=root_pose.position.astype(jp.float32),
             prev_root_quat=root_pose.orientation.astype(jp.float32),
             prev_left_foot_pos=left_foot_pos.astype(jp.float32),
@@ -3323,7 +3442,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # quantity in both modes by construction.
         residual_q_abs = jp.abs(applied_residual_delta)
         terminal_metrics_dict = get_initial_env_metrics_jax(
-            velocity_cmd=velocity_cmd,
+            # v0.21.0 P3: ``velocity_command`` metric slot stays
+            # scalar (see reset() above).  Per-axis vy / wz / norm
+            # variants emitted in this dict below.
+            velocity_cmd=velocity_cmd[0],
             height=root_pose.height,
             pitch=pitch_post.astype(jp.float32),
             roll=roll_post.astype(jp.float32),
@@ -3359,8 +3481,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/loc_ref_right_reachable"] = jp.float32(1.0)
         # G4 promotion-horizon gate: |achieved_vx - cmd_vx|.  The gate is
         # ``<= 0.075 m/s`` per walking_training.md v0.20.1 §.
+        # v0.21.0 P3: velocity_cmd is (3,); use vx slice.
         terminal_metrics_dict["tracking/cmd_vs_achieved_forward"] = jp.abs(
-            forward_velocity - velocity_cmd
+            forward_velocity - velocity_cmd[0]
         ).astype(jp.float32)
         terminal_metrics_dict["tracking/cmd_velocity_xy_err"] = reward_terms[
             "cmd_velocity_xy_err"
@@ -3401,11 +3524,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/ref_cmd_bin_abs_err"] = reward_terms[
             "ref_cmd_bin_abs_err"
         ]
-        terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(velocity_cmd).astype(
-            jp.float32
-        )
+        # v0.21.0 P3: per-axis cmd diagnostics matching the reset path.
+        terminal_metrics_dict["tracking/velocity_cmd_abs"] = jp.abs(
+            velocity_cmd[0]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/velocity_cmd_vx_abs"] = jp.abs(
+            velocity_cmd[0]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/velocity_cmd_vy_abs"] = jp.abs(
+            velocity_cmd[1]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/velocity_cmd_wz_abs"] = jp.abs(
+            velocity_cmd[2]
+        ).astype(jp.float32)
+        terminal_metrics_dict["tracking/velocity_cmd_norm"] = jp.linalg.norm(
+            velocity_cmd
+        ).astype(jp.float32)
         terminal_metrics_dict["tracking/velocity_cmd_nonzero_frac"] = (
-            jp.abs(velocity_cmd) > jp.float32(1e-6)
+            jp.linalg.norm(velocity_cmd) > jp.float32(1e-6)
         ).astype(jp.float32)
         # G5 anti-exploit hard gate (walking_training.md v0.20.1 §, line 980).
         # Per-joint |residual_delta_q| for hip_pitch L+R, knee L+R, and
@@ -3426,7 +3562,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # ≤ 1.5 to catch both undershoot and v0.19.5 "lean and skate"
         # overshoot.  Guard against cmd≈0 to avoid log explosions.
         terminal_metrics_dict["tracking/forward_velocity_cmd_ratio"] = (
-            forward_velocity / jp.maximum(jp.abs(velocity_cmd), jp.float32(1e-3))
+            forward_velocity
+            / jp.maximum(jp.abs(velocity_cmd[0]), jp.float32(1e-3))
         ).astype(jp.float32)
         # G4 step-length-on-touchdown.  CARRY PROXY: this slot holds the
         # last-touchdown step length and is carried unchanged between
@@ -3450,7 +3587,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["debug/forward_vel"] = forward_velocity
         terminal_metrics_dict["debug/lateral_vel"] = root_vel_h.linear[1].astype(jp.float32)
         terminal_metrics_dict["tracking/vel_error"] = jp.abs(
-            forward_velocity - velocity_cmd
+            forward_velocity - velocity_cmd[0]
         ).astype(jp.float32)
         # Action saturation diagnostics.  Both raw (pre-filter, pre-delay)
         # and applied (post-filter, post-delay) variants — useful for

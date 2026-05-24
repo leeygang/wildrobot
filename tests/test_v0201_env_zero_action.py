@@ -216,10 +216,15 @@ def test_torso_pos_xy_error_uses_command_integrated_path_target(
     step_idx = int(wr.loc_ref_offline_step_idx)
     win = env._lookup_offline_window(jp.asarray(step_idx, dtype=jp.int32))
     t_since_reset_s = jp.float32(step_idx) * jp.float32(env.dt)
+    # v0.21.0 P3 / H3: ``wr.velocity_cmd`` is now (3,) [vx, vy, wz];
+    # this probe asks the closed-form integrator about the vx-only
+    # path under zero action (yaw / lateral kept zero so the helper
+    # reproduces the pre-P3 behavior exactly).
     path_state = env._offline_service.compute_command_integrated_path_state(
         t_since_reset_s=t_since_reset_s,
-        velocity_cmd_mps=wr.velocity_cmd,
-        yaw_rate_cmd_rps=jp.float32(0.0),
+        velocity_cmd_mps=wr.velocity_cmd[0],
+        velocity_cmd_y_mps=wr.velocity_cmd[1],
+        yaw_rate_cmd_rps=wr.velocity_cmd[2],
         dt_s=jp.float32(env.dt),
         default_root_pos_xyz=env._init_qpos[:3].astype(jp.float32),
     )
@@ -1033,23 +1038,38 @@ def _sampler_only_env(
     cmd_zero_chance: float,
     cmd_deadzone: float,
 ) -> WildRobotEnv:
-    """Build a minimal env stub for unit-testing `_sample_velocity_cmd`."""
+    """Build a minimal env stub for unit-testing `_sample_velocity_cmd`.
+
+    v0.21.0 P3 / H3: ``cmd_deadzone`` is a length-3 tuple; the scalar
+    sampler still pins vx only, so it reads ``cmd_deadzone[0]``.  The
+    stub broadcasts the scalar arg to ``(d, d, d)`` to match the
+    config dataclass layout (and so vx-only sampler logic gets the
+    expected vx deadzone).
+    """
     env = WildRobotEnv.__new__(WildRobotEnv)
+    _dz = float(cmd_deadzone)
     env._config = SimpleNamespace(
         env=SimpleNamespace(
             min_velocity=float(min_velocity),
             max_velocity=float(max_velocity),
             cmd_zero_chance=float(cmd_zero_chance),
-            cmd_deadzone=float(cmd_deadzone),
+            cmd_deadzone=(_dz, _dz, _dz),
         )
     )
     return env
 
 
 def _sample_scalar_cmds(env: WildRobotEnv, *, seed: int, count: int) -> np.ndarray:
+    """Return the vx column of the sampler output.
+
+    v0.21.0 P3: ``_sample_velocity_cmd`` now returns ``(vx, vy, wz)``;
+    these sampler unit tests are scoped to the vx branch (vy / wz are
+    pinned to 0 until P4 wires the 3D branched sampler).
+    """
     keys = jax.random.split(jax.random.PRNGKey(seed), count)
     sampler = jax.jit(jax.vmap(env._sample_velocity_cmd))
-    return np.asarray(sampler(keys), dtype=np.float32)
+    out = np.asarray(sampler(keys), dtype=np.float32)
+    return out[:, 0]
 
 
 def test_scalar_sampler_nonzero_branch_stays_outside_deadzone() -> None:
@@ -1079,13 +1099,15 @@ def test_scalar_sampler_explicit_zero_branch_returns_exact_zero() -> None:
 
 
 def test_scalar_sampler_fixed_command_behavior_is_preserved() -> None:
+    # v0.21.0 P3: _sample_velocity_cmd now returns (vx, vy, wz);
+    # the fixed-cmd assertions still apply to the vx axis.
     env_fixed_walk = _sampler_only_env(
         min_velocity=0.08,
         max_velocity=0.08,
         cmd_zero_chance=0.0,
         cmd_deadzone=0.05,
     )
-    assert float(env_fixed_walk._sample_velocity_cmd(jax.random.PRNGKey(2))) == pytest.approx(0.08)
+    assert float(env_fixed_walk._sample_velocity_cmd(jax.random.PRNGKey(2))[0]) == pytest.approx(0.08)
 
     env_fixed_in_deadzone = _sampler_only_env(
         min_velocity=0.04,
@@ -1093,7 +1115,7 @@ def test_scalar_sampler_fixed_command_behavior_is_preserved() -> None:
         cmd_zero_chance=0.0,
         cmd_deadzone=0.05,
     )
-    assert float(env_fixed_in_deadzone._sample_velocity_cmd(jax.random.PRNGKey(3))) == pytest.approx(0.0)
+    assert float(env_fixed_in_deadzone._sample_velocity_cmd(jax.random.PRNGKey(3))[0]) == pytest.approx(0.0)
 
     env_fixed_zeroed = _sampler_only_env(
         min_velocity=0.08,
@@ -1101,7 +1123,7 @@ def test_scalar_sampler_fixed_command_behavior_is_preserved() -> None:
         cmd_zero_chance=1.0,
         cmd_deadzone=0.0,
     )
-    assert float(env_fixed_zeroed._sample_velocity_cmd(jax.random.PRNGKey(4))) == pytest.approx(0.0)
+    assert float(env_fixed_zeroed._sample_velocity_cmd(jax.random.PRNGKey(4))[0]) == pytest.approx(0.0)
 
 
 def test_scalar_sampler_smoke9c_zero_mix_is_not_old_sixty_percent() -> None:

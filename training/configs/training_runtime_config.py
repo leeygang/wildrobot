@@ -622,7 +622,10 @@ class EnvConfig(Freezable):
     cmd_resample_steps: int = 0
     cmd_zero_chance: float = 0.0  # P(resampled cmd == 0)
     cmd_turn_chance: float = 0.0  # P(resampled cmd == turn) — placeholder
-    cmd_deadzone: float = 0.0     # |cmd| below this is zeroed (ToddlerBot 0.05)
+    # v0.21.0 H3: per-axis deadzone for the (vx, vy, wz) command space.
+    # Scalar YAML entries broadcast symmetrically to all three axes
+    # (legacy behavior); explicit length-3 lists pin per-axis floors.
+    cmd_deadzone: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     # v0.20.1-smoke7: eval-rollout cmd override.  When training enables
     # multi-cmd sampling (cmd_resample_steps > 0, vx range [min, max]),
     # the eval pass would otherwise sample cmds uniformly across the same
@@ -632,7 +635,10 @@ class EnvConfig(Freezable):
     # value AND suppresses mid-episode resample during eval, so G4 metrics
     # stay interpretable as "behavior at this specific cmd".
     # Sentinel value -1.0 means "no override; eval samples like training".
-    eval_velocity_cmd: float = -1.0
+    # v0.21.0 H3: tuple form (vx, vy, wz).  Scalar legacy YAML entries
+    # broadcast to ``(s, 0.0, 0.0)`` — vy / wz pin to 0.0 since the
+    # sentinel-detection in env code reads only the [0]th axis (vx).
+    eval_velocity_cmd: Tuple[float, float, float] = (-1.0, 0.0, 0.0)
 
     # ToddlerBot soft-pitch / soft-roll behavior gates
     # (toddlerbot/locomotion/mjx_config.py:110-111).  When these

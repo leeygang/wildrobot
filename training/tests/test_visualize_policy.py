@@ -109,6 +109,8 @@ def test_visualizer_v7_layout_uses_native_eval_adapter_contract() -> None:
     adapter.reset_native_mj_state(mj_data, apply_noise=False, rng=None)
     obs = adapter.compute_obs(
         mj_data=mj_data,
-        velocity_cmd=float(cfg.env.eval_velocity_cmd),
+        # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); the
+        # visualize-policy v6/v7 obs adapter still takes a scalar vx.
+        velocity_cmd=float(cfg.env.eval_velocity_cmd[0]),
     )
     assert obs.shape == (policy_spec.model.obs_dim,)

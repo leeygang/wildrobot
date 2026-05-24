@@ -104,7 +104,17 @@ try:
         prev_action: jnp.ndarray           # (action_size,) — action applied this step
         pending_action: jnp.ndarray        # (action_size,) — next filtered action
         truncated: jnp.ndarray             # () — sticky through auto-reset
-        velocity_cmd: jnp.ndarray          # () — episode-constant target velocity (m/s)
+        velocity_cmd: jnp.ndarray          # (3,) — episode target velocity [vx, vy, wz] (m/s, m/s, rad/s)
+
+        # H7: incremental path-state for runtime-correct integration
+        # under ``cmd_resample_steps > 0``.  Updated in ``step`` from
+        # the sampled velocity_cmd via ``incremental_path_state_step``.
+        # Closed-form integration drifts under mid-episode cmd resamples
+        # because it integrates the *new* cmd back from t=0; the
+        # incremental form composes the per-step delta so the path stays
+        # continuous across resamples.
+        path_state_torso_pos: jnp.ndarray   # (3,) world-frame torso target
+        path_state_path_rot: jnp.ndarray    # (4,) wxyz integrated rotation
 
         # Finite-diff velocity (post-step values used by privileged critic)
         prev_root_pos: jnp.ndarray         # (3,)
@@ -230,7 +240,10 @@ except ImportError:
         prev_action: jnp.ndarray
         pending_action: jnp.ndarray
         truncated: jnp.ndarray
-        velocity_cmd: jnp.ndarray
+        velocity_cmd: jnp.ndarray  # (3,) [vx, vy, wz]
+        # H7: incremental path-state (see flax dataclass above).
+        path_state_torso_pos: jnp.ndarray   # (3,)
+        path_state_path_rot: jnp.ndarray    # (4,) wxyz
         prev_root_pos: jnp.ndarray
         prev_root_quat: jnp.ndarray
         prev_left_foot_pos: jnp.ndarray
@@ -295,7 +308,10 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_action": (action_size,),
         "pending_action": (action_size,),
         "truncated": (),
-        "velocity_cmd": (),
+        "velocity_cmd": (3,),
+        # H7: incremental path-state (see WildRobotInfo).
+        "path_state_torso_pos": (3,),
+        "path_state_path_rot": (4,),
         "prev_root_pos": (3,),
         "prev_root_quat": (4,),
         "prev_left_foot_pos": (3,),

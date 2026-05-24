@@ -49,7 +49,12 @@ def test_velocity_range_matches_smoke13_026(cfg14) -> None:
     env = cfg14.env
     assert env.min_velocity == pytest.approx(0.18, abs=1e-6)
     assert env.max_velocity == pytest.approx(0.26, abs=1e-6)
-    assert env.eval_velocity_cmd == pytest.approx(0.26, abs=1e-6)
+    # v0.21.0 P3 / H3: scalar YAML ``eval_velocity_cmd`` broadcasts
+    # to ``(vx, 0.0, 0.0)`` (vy / wz pin to 0 — sentinel detection
+    # reads only the vx axis).
+    assert tuple(env.eval_velocity_cmd) == pytest.approx(
+        (0.26, 0.0, 0.0), abs=1e-6
+    )
     assert env.loc_ref_offline_command_vx == pytest.approx(0.26, abs=1e-6)
     assert env.cmd_zero_chance == pytest.approx(0.0)
     assert env.cmd_turn_chance == pytest.approx(0.0)
@@ -67,7 +72,9 @@ def test_effective_vx_grid_018_to_026(cfg14) -> None:
     grid = np.asarray(env._offline_vx_grid)
     expected = np.array([0.18, 0.20, 0.22, 0.24, 0.26], dtype=np.float32)
     np.testing.assert_allclose(grid, expected, atol=1e-5)
-    eval_cmd = float(cfg14.env.eval_velocity_cmd)
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); use vx
+    # (the [0]th axis) for the grid bin selection.
+    eval_cmd = float(cfg14.env.eval_velocity_cmd[0])
     nearest = float(grid[int(np.argmin(np.abs(grid - eval_cmd)))])
     assert nearest == pytest.approx(eval_cmd, abs=1e-6)
 
@@ -103,8 +110,9 @@ def test_smoke14_diverges_from_smoke13_026_only_on_critic_and_dim(cfg14) -> None
     # Velocity range parity (the load-bearing inheritance):
     assert cfg14.env.min_velocity == pytest.approx(cfg026.env.min_velocity)
     assert cfg14.env.max_velocity == pytest.approx(cfg026.env.max_velocity)
-    assert cfg14.env.eval_velocity_cmd == pytest.approx(
-        cfg026.env.eval_velocity_cmd
+    # v0.21.0 P3 / H3: tuple comparison via ``tuple(...)``.
+    assert tuple(cfg14.env.eval_velocity_cmd) == pytest.approx(
+        tuple(cfg026.env.eval_velocity_cmd)
     )
     assert cfg14.env.loc_ref_offline_command_vx == pytest.approx(
         cfg026.env.loc_ref_offline_command_vx

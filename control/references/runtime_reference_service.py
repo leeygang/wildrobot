@@ -183,6 +183,7 @@ class RuntimeReferenceService:
         *,
         t_since_reset_s,
         velocity_cmd_mps,
+        velocity_cmd_y_mps=0.0,
         yaw_rate_cmd_rps=0.0,
         dt_s=0.02,
         default_root_pos_xyz=None,
@@ -190,32 +191,61 @@ class RuntimeReferenceService:
         """TB-style runtime path integration for constant command inputs.
 
         Mirrors ``toddlerbot.reference.motion_ref.MotionReference``
-        ``integrate_path_state`` semantics for the v0.20 smoke command space:
-        local linear velocity ``[vx, 0, 0]`` and yaw rate ``[0, 0, wz]``.
+        ``integrate_path_state`` semantics for the v0.21 (vx, vy, wz)
+        command space: local linear velocity ``[vx, vy, 0]`` and yaw
+        rate ``[0, 0, wz]``.
 
-        The helper is stateless and JAX-friendly: it reconstructs the path
-        state from elapsed time plus command, so env code can consume a
-        command-integrated torso/path target without mutating service state.
-        If ``default_root_pos_xyz`` is provided, the returned ``torso_pos``
-        matches TB's absolute-world semantics:
+        The helper is stateless and JAX-friendly: it reconstructs the
+        path state from elapsed time plus command, so env code can
+        consume a command-integrated torso/path target without mutating
+        service state.  If ``default_root_pos_xyz`` is provided, the
+        returned ``torso_pos`` matches TB's absolute-world semantics:
         ``path_rot.apply(default_root_pos_xyz) + path_pos``.
+
+        v0.21.0 / NEW-5 extension:
+
+          - ``velocity_cmd_y_mps`` (default ``0.0``) adds the local
+            lateral component.  Closed-form 2D path sum:
+
+                p_n = dt * Σ_{k=1..n} Rz(k * θ) · [vx, vy]
+
+            with ``θ = wz * dt``.  Expanding gives
+
+                C(n) = Σ_{k=1..n} cos(k * θ)
+                S(n) = Σ_{k=1..n} sin(k * θ)
+                p_n.x = dt * (vx * C(n) - vy * S(n))
+                p_n.y = dt * (vx * S(n) + vy * C(n))
+
+            and the half-angle closed form
+
+                ratio = sin(n * θ / 2) / sin(θ / 2)
+                C(n)  = ratio * cos((n + 1) * θ / 2)
+                S(n)  = ratio * sin((n + 1) * θ / 2)
+
+            with a ``θ -> 0`` fallback ``C(n) -> n``, ``S(n) -> 0``.
+          - The closed form preserves backward-compat for the
+            ``velocity_cmd_y_mps == 0`` (vx-only) case: ``S(n)`` term
+            drops out and ``p_n.x = vx * dt * C(n)``,
+            ``p_n.y = vx * dt * S(n)`` — identical to the pre-P3 form.
+
+        ``lin_vel`` reports the instantaneous *body-frame* lin vel
+        (matches TB ``integrate_path_state`` where ``lin_vel`` is
+        reported pre-rotation), and ``ang_vel = [0, 0, wz]``.
         """
         import jax.numpy as jnp
 
         t = jnp.asarray(t_since_reset_s, dtype=jnp.float32)
         vx = jnp.asarray(velocity_cmd_mps, dtype=jnp.float32)
+        vy = jnp.asarray(velocity_cmd_y_mps, dtype=jnp.float32)
         yaw_rate = jnp.asarray(yaw_rate_cmd_rps, dtype=jnp.float32)
         dt = jnp.maximum(jnp.asarray(dt_s, dtype=jnp.float32), jnp.float32(1e-8))
 
-        # Step-count view of elapsed time keeps parity with the env's discrete
-        # ctrl updates (t_since_reset = step_idx * dt).
+        # Step-count view of elapsed time keeps parity with the env's
+        # discrete ctrl updates (t_since_reset = step_idx * dt).
         n_steps = jnp.maximum(jnp.rint(t / dt).astype(jnp.int32), 0)
         n = n_steps.astype(jnp.float32)
         theta = yaw_rate * dt
 
-        # Closed-form discrete sum for:
-        #   p_n = dt * sum_{k=1..n} Rz(k*theta) * [vx, 0]
-        # with a numerically stable theta->0 fallback.
         half_theta = 0.5 * theta
         sin_half = jnp.sin(half_theta)
         sin_half_safe = jnp.where(
@@ -224,11 +254,23 @@ class RuntimeReferenceService:
             jnp.float32(1.0),
         )
         ratio_closed = jnp.sin(0.5 * n * theta) / sin_half_safe
-        ratio = jnp.where(jnp.abs(sin_half) > jnp.float32(1e-6), ratio_closed, n)
-        x_sum = ratio * jnp.cos(0.5 * (n + 1.0) * theta)
-        y_sum = ratio * jnp.sin(0.5 * (n + 1.0) * theta)
+        ratio = jnp.where(
+            jnp.abs(sin_half) > jnp.float32(1e-6), ratio_closed, n
+        )
+        C = ratio * jnp.cos(0.5 * (n + 1.0) * theta)
+        S_ = ratio * jnp.sin(0.5 * (n + 1.0) * theta)
+        # theta -> 0 fallback for S explicitly:
+        #   cos((n+1)*0/2)=1, sin(...)=0; ratio collapses to n.
+        S_ = jnp.where(
+            jnp.abs(sin_half) > jnp.float32(1e-6),
+            S_,
+            jnp.float32(0.0),
+        )
 
-        path_pos = jnp.asarray([vx * dt * x_sum, vx * dt * y_sum, 0.0], dtype=jnp.float32)
+        px = dt * (vx * C - vy * S_)
+        py = dt * (vx * S_ + vy * C)
+        path_pos = jnp.asarray([px, py, jnp.float32(0.0)], dtype=jnp.float32)
+
         yaw = n * theta
         half_yaw = 0.5 * yaw
         yaw_cos = jnp.cos(yaw)
@@ -250,7 +292,7 @@ class RuntimeReferenceService:
             dtype=jnp.float32,
         )
         torso_pos = (default_root_rotated + path_pos).astype(jnp.float32)
-        lin_vel = jnp.asarray([vx, 0.0, 0.0], dtype=jnp.float32)
+        lin_vel = jnp.asarray([vx, vy, 0.0], dtype=jnp.float32)
         ang_vel = jnp.asarray([0.0, 0.0, yaw_rate], dtype=jnp.float32)
         return {
             "path_pos": path_pos,
@@ -259,6 +301,65 @@ class RuntimeReferenceService:
             "lin_vel": lin_vel,
             "ang_vel": ang_vel,
         }
+
+    @staticmethod
+    def incremental_path_state_step(
+        *,
+        prev_torso_pos,
+        prev_path_rot_wxyz,
+        velocity_cmd,
+        dt_s,
+    ):
+        """One-step incremental path-state update (H7).
+
+        Mirrors TB ``toddlerbot/reference/motion_ref.py::integrate_path_state``::
+
+            delta_rot      = axis_angle_quat([0, 0, 1], wz * dt)  # wxyz
+            path_rot       = quat_mul(prev_path_rot, delta_rot)   # wxyz
+            lin_vel_world  = rotate_vec_by_quat([vx, vy, 0], path_rot)
+            torso_pos      = prev_torso_pos + lin_vel_world * dt
+
+        Used at runtime under ``cmd_resample_steps > 0`` where the
+        closed-form integrator drifts because the cmd changes
+        mid-episode (the closed form integrates the *new* cmd back
+        from t=0).  The closed-form helper stays for unit tests
+        (it's the analytic ground truth for constant cmd) and for
+        library-build code paths.
+        """
+        import jax.numpy as jnp
+
+        cmd = jnp.asarray(velocity_cmd, dtype=jnp.float32)
+        dt = jnp.asarray(dt_s, dtype=jnp.float32)
+        prev_pos = jnp.asarray(prev_torso_pos, dtype=jnp.float32)
+        prev_rot = jnp.asarray(prev_path_rot_wxyz, dtype=jnp.float32)
+        vx, vy, wz = cmd[0], cmd[1], cmd[2]
+        half = 0.5 * wz * dt
+        delta_rot = jnp.asarray(
+            [jnp.cos(half), 0.0, 0.0, jnp.sin(half)], dtype=jnp.float32,
+        )  # wxyz
+        # quat_mul (wxyz):  (w1, v1) * (w2, v2)
+        #   w = w1*w2 - v1 . v2
+        #   v = w1*v2 + w2*v1 + v1 x v2
+        w1, x1, y1, z1 = prev_rot[0], prev_rot[1], prev_rot[2], prev_rot[3]
+        w2, x2, y2, z2 = (
+            delta_rot[0], delta_rot[1], delta_rot[2], delta_rot[3]
+        )
+        new_w = w1 * w2 - (x1 * x2 + y1 * y2 + z1 * z2)
+        new_x = w1 * x2 + w2 * x1 + (y1 * z2 - z1 * y2)
+        new_y = w1 * y2 + w2 * y1 + (z1 * x2 - x1 * z2)
+        new_z = w1 * z2 + w2 * z1 + (x1 * y2 - y1 * x2)
+        new_rot = jnp.stack([new_w, new_x, new_y, new_z]).astype(jnp.float32)
+        # rotate body-frame [vx, vy, 0] by new_rot (wxyz).  The
+        # yaw-only (z-axis) restriction collapses the q * v * q^{-1}
+        # expansion to a 2D rotation in xy:
+        #   yaw = 2 * atan2(new_z, new_w)   (axis = +z)
+        yaw = 2.0 * jnp.arctan2(new_z, new_w)
+        c, s = jnp.cos(yaw), jnp.sin(yaw)
+        vw_x = c * vx - s * vy
+        vw_y = s * vx + c * vy
+        lin_vel_world = jnp.stack([vw_x, vw_y, jnp.float32(0.0)])
+        new_pos = (prev_pos + lin_vel_world * dt).astype(jnp.float32)
+        return new_pos, new_rot
 
     @staticmethod
     def _build_stack(traj: ReferenceTrajectory) -> _StackedTrajectory:

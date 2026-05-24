@@ -119,6 +119,23 @@ def test_env_round_trip(smoke_yaml_raw, smoke_cfg) -> None:
         pytest.skip("smoke YAML has no env: section")
 
     env_cfg = smoke_cfg.env
+    # v0.21.0 P3 / H3: three-axis fields parse scalar YAML to a
+    # length-3 tuple per ``_load_three_axis`` (cmd_deadzone broadcasts
+    # symmetrically; eval_velocity_cmd broadcasts vx-only).  Map them
+    # explicitly so the round-trip stays meaningful.
+    _three_axis_specs = {
+        "cmd_deadzone": "all",
+        "eval_velocity_cmd": "vx_only",
+    }
+
+    def _expected_three_axis(yaml_value, mode):
+        if isinstance(yaml_value, (list, tuple)):
+            return tuple(float(v) for v in yaml_value)
+        s = float(yaml_value)
+        if mode == "all":
+            return (s, s, s)
+        return (s, 0.0, 0.0)  # vx_only
+
     failures: list[str] = []
     for key, yaml_value in yaml_env.items():
         # Some env keys are nested (e.g. push schedules); skip dicts here
@@ -131,6 +148,17 @@ def test_env_round_trip(smoke_yaml_raw, smoke_cfg) -> None:
             # the load-bearing one for the smoke6 bug class.  Just record.
             continue
         loaded_value = getattr(env_cfg, key)
+        if key in _three_axis_specs:
+            expected = _expected_three_axis(
+                yaml_value, _three_axis_specs[key]
+            )
+            if tuple(loaded_value) != expected:
+                failures.append(
+                    f"YAML key env.{key} = {yaml_value!r} but loaded "
+                    f"config has {key} = {tuple(loaded_value)!r} "
+                    f"(expected three-axis tuple {expected!r})"
+                )
+            continue
         if loaded_value != yaml_value:
             failures.append(
                 f"YAML key env.{key} = {yaml_value!r} but "

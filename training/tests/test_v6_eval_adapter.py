@@ -435,7 +435,7 @@ def test_v6_eval_adapter_env_parity_deterministic_slice(smoke_setup) -> None:
     adapter = s["adapter"]
     adapter.reset()
     adapter_obs = adapter.compute_obs(
-        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd[0])  # v0.21.0 P3: (vx, vy, wz); v6 adapter still scalar
     )
 
     assert adapter_obs.shape == env_obs.shape, (
@@ -543,7 +543,7 @@ def test_adapter_obs_history_matches_env_for_three_steps(smoke_setup) -> None:
 
     # ---- iter 1: both at reset; both must show all-zero history.
     adapter_obs = adapter.compute_obs(
-        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd[0])  # v0.21.0 P3: (vx, vy, wz); v6 adapter still scalar
     )
     np.testing.assert_array_equal(
         slot_occupancy(adapter_obs),
@@ -572,7 +572,7 @@ def test_adapter_obs_history_matches_env_for_three_steps(smoke_setup) -> None:
         mujoco.mj_forward(mj_model, mj_data)
 
         adapter_obs = adapter.compute_obs(
-            mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+            mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd[0])  # v0.21.0 P3: (vx, vy, wz); v6 adapter still scalar
         )
         adapter_occ = slot_occupancy(adapter_obs)
         env_occ = slot_occupancy(env_state.obs)
@@ -814,7 +814,7 @@ def test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state(
         perturb_pose=False,
     )
     native_obs = adapter.compute_obs(
-        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd)
+        mj_data, velocity_cmd=float(cfg.env.eval_velocity_cmd[0])  # v0.21.0 P3: (vx, vy, wz); v6 adapter still scalar
     )
 
     env_q = np.asarray(env_state.data.qpos[env._actuator_qpos_addrs], dtype=np.float32)

@@ -257,7 +257,11 @@ def is_eval_cmd_pinned(env_cfg) -> bool:
     value" — used by smoke7+ to keep G4 metrics interpretable when
     training is multi-cmd.
     """
-    return float(env_cfg.eval_velocity_cmd) >= 0.0
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); sentinel
+    # detection reads only the [0]th axis (vx).
+    _ecv = env_cfg.eval_velocity_cmd
+    _vx = _ecv[0] if hasattr(_ecv, "__len__") else _ecv
+    return float(_vx) >= 0.0
 
 
 def eval_step_kwargs(env_cfg) -> dict:
@@ -992,7 +996,10 @@ def start_training(
                 post_eval_base_rng = jax.random.PRNGKey(
                     training_cfg.seed + training_cfg.ppo.eval.seed_offset + 20_000
                 )
-                eval_velocity_cmd = float(training_cfg.env.eval_velocity_cmd)
+                # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz);
+                # the post-training gate is a vx-only ratio so we read
+                # the [0]th axis.  P6 will add a wider lateral / yaw gate.
+                eval_velocity_cmd = float(training_cfg.env.eval_velocity_cmd[0])
                 eval_rows: list[dict[str, Any]] = []
                 for rank, candidate in enumerate(ranked_candidates, 1):
                     ckpt_data = load_checkpoint(candidate.checkpoint_path)

@@ -1708,11 +1708,45 @@ METRIC_SPECS: List[MetricSpec] = [
             "remains meaningful under symmetric +/- command sampling."
         ),
     ),
+    # v0.21.0 P3: per-axis (vx, vy, wz) command diagnostics.
+    # ``velocity_cmd_abs`` (above) stays as the legacy vx-only slot
+    # for back-compat with smoke14 dashboards; the per-axis variants
+    # and L2 norm are new.
+    MetricSpec(
+        name="tracking/velocity_cmd_vx_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Mean |vx_cmd| (m/s); v0.21.0 per-axis cmd diagnostic.",
+    ),
+    MetricSpec(
+        name="tracking/velocity_cmd_vy_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Mean |vy_cmd| (m/s); v0.21.0 per-axis cmd diagnostic.",
+    ),
+    MetricSpec(
+        name="tracking/velocity_cmd_wz_abs",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description="Mean |wz_cmd| (rad/s); v0.21.0 per-axis cmd diagnostic.",
+    ),
+    MetricSpec(
+        name="tracking/velocity_cmd_norm",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Mean L2 norm of the (vx, vy, wz) cmd vector "
+            "(mixed units; m/s for vx/vy, rad/s for wz).  v0.21.0."
+        ),
+    ),
     MetricSpec(
         name="tracking/velocity_cmd_nonzero_frac",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
-        description="Fraction of sampled commands with |vx_cmd| > 1e-6.",
+        description=(
+            "Fraction of sampled commands with ||cmd|| > 1e-6 "
+            "(any axis active).  v0.21.0: was |vx_cmd| under pre-P3."
+        ),
     ),
     MetricSpec(
         name="tracking/cmd_velocity_xy_err",

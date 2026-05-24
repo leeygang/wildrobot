@@ -100,8 +100,12 @@ def test_smoke12b_eval_cmd_stays_in_training_range() -> None:
     push the eval cmd out of training distribution."""
     cfg = _load_cfg(_SMOKE12B_CFG)
     env = cfg.env
-    assert env.min_velocity <= env.eval_velocity_cmd <= env.max_velocity, (
-        f"smoke12b eval_velocity_cmd ({env.eval_velocity_cmd}) is "
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); the
+    # training-range gate is vx-only (the lateral / yaw axes have
+    # their own ranges, added in P4).
+    eval_vx = env.eval_velocity_cmd[0]
+    assert env.min_velocity <= eval_vx <= env.max_velocity, (
+        f"smoke12b eval_velocity_cmd vx ({eval_vx}) is "
         f"outside the training range [{env.min_velocity}, "
         f"{env.max_velocity}]."
     )
@@ -116,8 +120,11 @@ def test_smoke12b_deadzone_is_inert_under_forward_only_range() -> None:
     """
     cfg = _load_cfg(_SMOKE12B_CFG)
     env = cfg.env
-    assert env.cmd_deadzone < env.min_velocity, (
-        f"smoke12b cmd_deadzone ({env.cmd_deadzone}) must stay below "
+    # v0.21.0 P3: ``cmd_deadzone`` is now per-axis; the scalar
+    # sampler (P3) still reads only the [0]th axis (vx).
+    deadzone_vx = env.cmd_deadzone[0]
+    assert deadzone_vx < env.min_velocity, (
+        f"smoke12b cmd_deadzone vx ({deadzone_vx}) must stay below "
         f"min_velocity ({env.min_velocity}) so the sampler's "
         "deadzone snap is inert.  If the deadzone is raised above "
         "min_velocity, ALL forward cmds would snap to 0 and break "
@@ -257,7 +264,8 @@ def test_smoke12b_sampler_never_produces_negative_cmd() -> None:
     samples = []
     for i in range(1024):
         rng, sub = jax.random.split(rng)
-        samples.append(float(sample_fn(sub)))
+        # v0.21.0 P3: sampler returns (vx, vy, wz); test the vx axis.
+        samples.append(float(sample_fn(sub)[0]))
     samples = np.asarray(samples)
     assert samples.min() >= 0.08 - 1e-6, (
         f"smoke12b velocity sampler returned min={samples.min():+.4f}; "

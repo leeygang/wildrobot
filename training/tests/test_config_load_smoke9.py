@@ -222,9 +222,11 @@ def test_smoke9b_eval_velocity_matches_max_tb_band(smoke9b_cfg) -> None:
     """Eval pinned to 0.10 (top of the TB-aligned vx range).  G4
     promotion gate becomes |achieved - 0.10| ≤ 0.05 (= 0.5 × 0.10).
     """
-    assert smoke9b_cfg.env.eval_velocity_cmd == 0.10, (
+    # v0.21.0 P3 / H3: scalar YAML eval_velocity_cmd broadcasts to
+    # (vx, 0.0, 0.0); compare via the vx slice.
+    assert smoke9b_cfg.env.eval_velocity_cmd[0] == 0.10, (
         f"smoke9b eval_velocity_cmd = {smoke9b_cfg.env.eval_velocity_cmd}; "
-        f"expected 0.10."
+        f"expected (0.10, 0.0, 0.0)."
     )
 
 
@@ -302,8 +304,14 @@ def test_smoke9c_uses_wr_size_normalized_tb_curriculum(smoke9c_cfg) -> None:
     env = smoke9c_cfg.env
     assert env.min_velocity == -0.1333333333
     assert env.max_velocity == 0.1333333333
-    assert env.cmd_deadzone == 0.0666666667
-    assert env.eval_velocity_cmd == 0.1333333333
+    # v0.21.0 P3 / H3: cmd_deadzone scalar -> (s, s, s);
+    # eval_velocity_cmd scalar -> (s, 0.0, 0.0).
+    assert tuple(env.cmd_deadzone) == pytest.approx(
+        (0.0666666667, 0.0666666667, 0.0666666667), abs=1e-7
+    )
+    assert tuple(env.eval_velocity_cmd) == pytest.approx(
+        (0.1333333333, 0.0, 0.0), abs=1e-7
+    )
     assert env.loc_ref_offline_command_vx == 0.1333333333
 
 
@@ -455,8 +463,13 @@ def test_smoke10_command_curriculum_inherited_from_smoke9c(smoke10_cfg) -> None:
     env = smoke10_cfg.env
     assert env.min_velocity == -0.1333333333
     assert env.max_velocity == 0.1333333333
-    assert env.cmd_deadzone == 0.0666666667
-    assert env.eval_velocity_cmd == 0.1333333333
+    # v0.21.0 P3 / H3: tuple-form fields (see smoke9c test).
+    assert tuple(env.cmd_deadzone) == pytest.approx(
+        (0.0666666667, 0.0666666667, 0.0666666667), abs=1e-7
+    )
+    assert tuple(env.eval_velocity_cmd) == pytest.approx(
+        (0.1333333333, 0.0, 0.0), abs=1e-7
+    )
     assert env.loc_ref_offline_command_vx == 0.1333333333
 
 

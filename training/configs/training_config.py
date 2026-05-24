@@ -102,6 +102,57 @@ def _parse_list_to_tuple(value: Any, default: Tuple) -> Tuple[int, ...]:
     return default
 
 
+def _broadcast_scalar(s: float, mode: str) -> Tuple[float, float, float]:
+    """Scalar -> length-3 broadcast helper for v0.21.0 three-axis fields.
+
+    See ``_load_three_axis`` for the scalar-broadcast policy (H3).
+    """
+    if mode == "all":
+        return (s, s, s)
+    if mode == "vx_only":
+        return (s, 0.0, 0.0)
+    raise ValueError(f"unknown scalar_broadcast_axis: {mode!r}")
+
+
+def _load_three_axis(
+    value: Any,
+    *,
+    default_scalar: float,
+    scalar_broadcast_axis: str = "all",
+) -> Tuple[float, float, float]:
+    """Coerce a scalar OR length-3 list/tuple to a ``(float, float, float)``.
+
+    Handles legitimate YAML shapes for v0.21.0 three-axis fields:
+
+      * missing / ``None``  -> broadcast ``default_scalar`` per ``scalar_broadcast_axis``
+      * scalar (int / float) -> broadcast per ``scalar_broadcast_axis``
+      * length-3 list / tuple -> ``tuple(map(float, value))``
+
+    ``scalar_broadcast_axis`` controls scalar handling (H3):
+
+      * ``"all"``     -> ``(s, s, s)`` — for symmetric fields like ``cmd_deadzone``.
+      * ``"vx_only"`` -> ``(s, 0.0, 0.0)`` — for ``eval_velocity_cmd``: the
+        legacy scalar form pins ``vx`` only; ``vy`` / ``wz`` pin to ``0.0``.
+
+    Any other shape raises ``ValueError`` with the offending value.
+    """
+    if value is None:
+        return _broadcast_scalar(default_scalar, scalar_broadcast_axis)
+    if isinstance(value, (int, float)):
+        return _broadcast_scalar(float(value), scalar_broadcast_axis)
+    if isinstance(value, (list, tuple)):
+        if len(value) != 3:
+            raise ValueError(
+                f"three-axis field must have length 3 "
+                f"(got {len(value)}: {value!r})"
+            )
+        return (float(value[0]), float(value[1]), float(value[2]))
+    raise ValueError(
+        f"three-axis field must be a number or length-3 list/tuple "
+        f"(got {type(value).__name__}: {value!r})"
+    )
+
+
 def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
@@ -546,8 +597,20 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         cmd_resample_steps=int(env.get("cmd_resample_steps", 0)),
         cmd_zero_chance=float(env.get("cmd_zero_chance", 0.0)),
         cmd_turn_chance=float(env.get("cmd_turn_chance", 0.0)),
-        cmd_deadzone=float(env.get("cmd_deadzone", 0.0)),
-        eval_velocity_cmd=float(env.get("eval_velocity_cmd", -1.0)),
+        # v0.21.0 H3 + NEW-4: per-axis (vx, vy, wz) deadzone / eval cmd.
+        # Scalar YAML entries broadcast: cmd_deadzone symmetrically to
+        # all axes, eval_velocity_cmd to (s, 0.0, 0.0) (vy / wz pin
+        # to 0.0; sentinel detection reads only the [0]th axis).
+        cmd_deadzone=_load_three_axis(
+            env.get("cmd_deadzone"),
+            default_scalar=0.0,
+            scalar_broadcast_axis="all",
+        ),
+        eval_velocity_cmd=_load_three_axis(
+            env.get("eval_velocity_cmd"),
+            default_scalar=-1.0,
+            scalar_broadcast_axis="vx_only",
+        ),
         torso_pitch_soft_min_rad=float(env.get("torso_pitch_soft_min_rad", -0.2)),
         torso_pitch_soft_max_rad=float(env.get("torso_pitch_soft_max_rad", 0.2)),
         torso_roll_soft_min_rad=float(env.get("torso_roll_soft_min_rad", -0.1)),

@@ -45,9 +45,13 @@ def test_velocity_range_and_eval(cfg026) -> None:
     env = cfg026.env
     assert env.min_velocity == pytest.approx(0.18, abs=1e-6)
     assert env.max_velocity == pytest.approx(0.26, abs=1e-6)
-    assert env.eval_velocity_cmd == pytest.approx(0.26, abs=1e-6)
+    # v0.21.0 P3 / H3: scalar YAML eval_velocity_cmd broadcasts to
+    # ``(vx, 0.0, 0.0)``; tuple comparison.
+    assert tuple(env.eval_velocity_cmd) == pytest.approx(
+        (0.26, 0.0, 0.0), abs=1e-6
+    )
     assert env.loc_ref_offline_command_vx == pytest.approx(0.26, abs=1e-6)
-    assert env.eval_velocity_cmd == pytest.approx(
+    assert env.eval_velocity_cmd[0] == pytest.approx(
         env.loc_ref_offline_command_vx, abs=1e-9
     )
 
@@ -73,7 +77,8 @@ def test_effective_vx_grid_matches_spec(cfg026) -> None:
     expected = np.array([0.18, 0.20, 0.22, 0.24, 0.26], dtype=np.float32)
     np.testing.assert_allclose(grid, expected, atol=1e-5)
     # eval_velocity_cmd must hit its own bin exactly.
-    eval_cmd = float(cfg026.env.eval_velocity_cmd)
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); use vx.
+    eval_cmd = float(cfg026.env.eval_velocity_cmd[0])
     nearest = float(grid[int(np.argmin(np.abs(grid - eval_cmd)))])
     assert nearest == pytest.approx(eval_cmd, abs=1e-6)
 

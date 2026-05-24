@@ -473,7 +473,8 @@ def test_smoke13_command_grid_uses_reward_sensitivity_interval(smoke13_cfg) -> N
     np.testing.assert_allclose(grid, expected, atol=1e-5)
     # eval cmd must hit its own bin exactly so post-training
     # deterministic eval doesn't snap to the nearest arange step.
-    eval_cmd = float(smoke13_cfg.env.eval_velocity_cmd)
+    # v0.21.0 P3 / H3: ``eval_velocity_cmd`` is (vx, vy, wz); use vx.
+    eval_cmd = float(smoke13_cfg.env.eval_velocity_cmd[0])
     nearest = float(grid[int(np.argmin(np.abs(grid - eval_cmd)))])
     assert nearest == pytest.approx(eval_cmd, abs=1e-5), (
         f"eval_velocity_cmd={eval_cmd} should hit its own bin "
