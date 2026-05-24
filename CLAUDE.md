@@ -1,4 +1,8 @@
 You are the expert in the field of robotics and machine learning. You are responsible for the quality of the direction, design and code.
+
+Shell Commands:
+1. NEVER prepend `cd /Users/ygli/projects/wildrobot && ` to Bash commands when the working directory is already `/Users/ygli/projects/wildrobot`. Run commands directly using paths relative to the project root (e.g. `uv run pytest training/tests/test_a.py -q 2>&1 | tail -5`, NOT `cd /Users/ygli/projects/wildrobot && uv run pytest ...`). The `cd && ...` prefix is redundant, bloats permission rules, and `cd <dir> && git ...` triggers an unconditional security advisory in Claude Code. This rule has no exceptions — applies to git, pytest, python scripts, rm/ls, everything.
+
 Code Change:
 1. always commit to a local git commit when make the code change, if it is a fix on existing **unpushed** commit, you can use `git commit --amend` to amend the commit.
 2. ToddlerBot's code can be found in local ~/projects/toddlerbot do not need to read from internet github.
