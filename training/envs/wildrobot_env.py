@@ -2921,35 +2921,56 @@ class WildRobotEnv(mjx_env.MjxEnv):
         rng: jax.Array,
         cmd_override: Optional[jax.Array] = None,
     ) -> WildRobotEnvState:
-        """Eval-only reset that honors ``env.eval_velocity_cmd`` override
-        OR a per-call ``cmd_override``.
+        """Eval-only reset that pins ``velocity_cmd`` via ``env.reset``'s
+        ``velocity_cmd_override`` arg — see follow-up #2 note below for
+        why post-hoc patching is forbidden on this path.
 
-        v0.20.1-smoke7: when training enables multi-cmd sampling
-        (cmd_resample_steps > 0, vx range [min, max]), the regular
-        reset() draws cmd uniformly across the same range — which makes
-        the G4 promotion-horizon eval gate (`Evaluate/forward_velocity
-        >= 0.075 m/s`) ambiguous because E[cmd] across the range may
-        sit near or below the floor.  This method calls reset() then
-        overrides velocity_cmd to the configured fixed value, so eval
-        rollouts run at a deterministic cmd point that's directly
-        comparable to single-cmd smokes.
+        Eval-cmd resolution priority:
 
-        v0.21.0 follow-up: ``cmd_override`` (3-vec, optional) lets a
-        single env instance run multiple eval probes (e.g. lateral
-        / yaw pass criteria from walking_training.md Appendix C)
-        without rebuilding the env per probe.  When supplied, it
-        unconditionally replaces the YAML-pinned cmd; the override
-        wins regardless of whether ``eval_velocity_cmd`` is the
-        sentinel.  Pass ``None`` to keep the legacy behavior
-        (YAML-pinned ``eval_velocity_cmd``).
+          1. ``cmd_override`` (per-call, 3-vec).  Wins outright.  Lets
+             a single env instance run multiple Appendix C probes
+             (e.g. lateral / yaw pass criteria) without rebuilding
+             the env per probe.
+          2. ``env.eval_velocity_cmd`` if its vx slot is ``>= 0``
+             (YAML-pinned mode).  Threaded through
+             ``velocity_cmd_override=`` so obs / window / metrics
+             see it from step 0.
+          3. Otherwise sentinel mode: fall through to plain
+             ``reset(perturb_pose=False)`` with sampled cmd.
+
+        v0.20.1-smoke7 rationale: when training enables multi-cmd
+        sampling (``cmd_resample_steps > 0``, vx range
+        ``[min, max]``), the regular reset() draws cmd uniformly
+        across the same range — which makes the G4 promotion-horizon
+        eval gate (`Evaluate/forward_velocity >= 0.075 m/s`)
+        ambiguous because E[cmd] across the range may sit near or
+        below the floor.  Pinning the eval cmd makes G4 metrics
+        interpretable as "behavior at this specific cmd".
+
+        v0.21.0 follow-up #1: ``cmd_override`` enabled per-probe eval
+        for the walking_training.md Appendix C lateral / yaw cmd
+        tracking pass criteria.  Smoke1's primary
+        ``eval_velocity_cmd`` is a mixed point that can't isolate
+        either signal; configure
+        ``env.eval_velocity_cmd_probes`` and the post-training eval
+        runs one extra rollout per probe using this arg.
+
+        v0.21.0 follow-up #2: the override / YAML cmd is resolved
+        BEFORE ``self.reset`` runs and threaded into
+        ``_make_initial_state`` via ``velocity_cmd_override=`` so the
+        initial obs / win0 lookup / metrics_dict ALL see the eval
+        cmd from step 0.  An earlier implementation post-patched
+        ``wr.velocity_cmd`` AFTER ``reset()`` returned, which left
+        the first-action obs populated from the sampled cmd's
+        velocity_cmd slot, v8 (vy, wz) tail, and reference-window
+        channels — a real eval bug that mattered most on the new
+        per-probe path.  Don't reintroduce the post-patch pattern;
+        ``test_reset_for_eval_cmd_override_threads_through_reset_not_post_patch``
+        guards against it.
 
         Pair with ``step(..., disable_cmd_resample=True)`` in the eval
-        loop so mid-episode resample doesn't re-randomize the cmd.
-
-        When ``eval_velocity_cmd < 0`` (the sentinel default) AND
-        ``cmd_override`` is ``None``, this is identical to
-        ``reset(rng, perturb_pose=False)`` (no cmd override, no pose
-        perturbation).
+        loop so mid-episode resample doesn't re-randomize the pinned
+        cmd.
 
         Always disables the smoke9c reset-time pose perturbation so eval
         rollouts stay deterministic.  G4/G5 promotion thresholds are
