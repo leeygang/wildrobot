@@ -287,10 +287,10 @@ env:
   action_delay_steps: 1
 
 ppo:
-  num_envs: 2048
+  num_envs: 1024
   rollout_steps: 20
-  # 30M run: 750 * 2048 * 20 = 30,720,000 env-steps.  Matches smoke14.
-  iterations: 750
+  # 30M run: 1500 * 1024 * 20 = 30,720,000 env-steps.  Matches smoke14.
+  iterations: 1500
 
   learning_rate: 3.0e-5
   gamma: 0.97
