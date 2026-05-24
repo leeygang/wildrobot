@@ -181,6 +181,28 @@ def test_build_library_for_vx_values_still_builds_forward_only_library() -> None
     assert (0.20, 0.0, 0.0) in lib
 
 
+def test_library_meta_command_range_vx_includes_stored_static_bin() -> None:
+    """Reviewer round-2 follow-up: pure-yaw bins always add vx=0.0 keys
+    even when the caller omits 0.0 from vx_values.  meta.command_range_vx
+    must cover every actually-stored key, not just what the caller listed.
+    """
+    gen = ZMPWalkGenerator()
+    lib = gen.build_library_for_3d_values(
+        vx_values=[0.18, 0.22, 0.26],  # NB: no 0.0
+        vy_values=[0.0],
+        yaw_rate_values=[-0.10, 0.0, 0.10],
+    )
+    # Pure-yaw bins are stored at vx=0.0 regardless.
+    assert (0.0, 0.0, -0.10) in lib
+    assert (0.0, 0.0, 0.10) in lib
+    # meta.command_range_vx must cover the stored 0.0.
+    lo, hi = lib.meta.command_range_vx
+    assert lo <= 0.0 <= hi, (
+        f"command_range_vx=({lo}, {hi}) excludes stored vx=0.0 from "
+        f"pure-yaw bins"
+    )
+
+
 def test_pure_yaw_command_propagates_to_left_foot_rpy_yaw() -> None:
     """Reviewer #3: yaw must propagate into the foot orientation trajectory,
     not stop at the pelvis.  Under pure-yaw cmd, left_foot_rpy[:, 2] must

@@ -1684,6 +1684,13 @@ class ZMPWalkGenerator:
         for wz in wz_sorted:
             _generate_and_store(0.0, 0.0, wz)
 
+        # Reviewer round-2 follow-up: pure-yaw bins always add a vx=0.0 key
+        # regardless of whether the caller included 0.0 in ``vx_values``.
+        # Derive the metadata range from the ACTUALLY-STORED vx set so
+        # downstream consumers never see a stored key that falls outside
+        # ``command_range_vx``.
+        stored_vx_sorted = sorted(set(vx_sorted) | {0.0})
+
         meta = ReferenceLibraryMeta(
             generator="zmp_walk",
             generator_version="0.21.0",
@@ -1691,10 +1698,10 @@ class ZMPWalkGenerator:
             dt=self.cfg.dt_s,
             cycle_time=self.cfg.cycle_time_s,
             n_joints=self._load_actuator_layout()["n_joints"],
-            command_range_vx=(float(vx_sorted[0]), float(vx_sorted[-1])),
+            command_range_vx=(float(stored_vx_sorted[0]), float(stored_vx_sorted[-1])),
             command_range_vy=(float(vy_sorted[0]), float(vy_sorted[-1])),
             command_range_yaw=(float(wz_sorted[0]), float(wz_sorted[-1])),
-            command_interval=_interval(vx_sorted),
+            command_interval=_interval(stored_vx_sorted),
             # H2 (P2.4): record the per-axis grids the factory iterated
             # so downstream consumers (env command sampler, eval grid
             # plots, parity tooling) can read them off ``lib.meta``
