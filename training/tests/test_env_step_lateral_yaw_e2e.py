@@ -184,3 +184,118 @@ def test_smoke14_env_still_initializes_under_v7() -> None:
     assert env._policy_spec.observation.layout_id == "wr_obs_v7_phase_proprio"
     wr = state.info[WR_INFO_KEY]
     assert wr.velocity_cmd.shape == (3,)
+
+
+# ---------------------------------------------------------------------------
+# v0.21.0 follow-up — reset_for_eval(cmd_override) must rebuild obs from
+# the override.  Pre-fix, the override was applied AFTER reset() returned
+# (post-patched wr.velocity_cmd), leaving state.obs / win0-derived
+# channels populated from the SAMPLED cmd.  The first action of every
+# eval / probe rollout consumed the wrong velocity_cmd slot + v8
+# (vy, wz) tail + reference-window channels.
+# ---------------------------------------------------------------------------
+def test_reset_for_eval_override_propagates_to_obs() -> None:
+    """Under cmd_override, state.obs MUST reflect the override
+    (velocity_cmd channel + ref-window-derived channels), not the
+    cmd that ``_sample_velocity_cmd`` would have drawn.
+
+    Behavioral test: two reset_for_eval calls with the SAME rng but
+    DIFFERENT cmd_override values must produce DIFFERENT obs
+    vectors.  Under the pre-fix code path both obs would be identical
+    (both came from the sampled cmd; the override only swapped
+    ``wr.velocity_cmd`` after the fact)."""
+    import numpy as np
+
+    env = _env(_SMOKE1)
+    rng = jax.random.PRNGKey(7)
+    cmd_lateral_pos = jp.asarray([0.18, 0.13, 0.0], dtype=jp.float32)
+    cmd_lateral_neg = jp.asarray([0.18, -0.13, 0.0], dtype=jp.float32)
+
+    state_pos = env.reset_for_eval(rng, cmd_override=cmd_lateral_pos)
+    state_neg = env.reset_for_eval(rng, cmd_override=cmd_lateral_neg)
+
+    # wr.velocity_cmd must match the override exactly.
+    wr_pos = state_pos.info[WR_INFO_KEY]
+    wr_neg = state_neg.info[WR_INFO_KEY]
+    np.testing.assert_allclose(
+        np.asarray(wr_pos.velocity_cmd),
+        np.asarray(cmd_lateral_pos),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(wr_neg.velocity_cmd),
+        np.asarray(cmd_lateral_neg),
+        atol=1e-6,
+    )
+
+    # state.obs must differ between the two overrides — they pin
+    # different vy values which feed both the v8 cmd tail AND the
+    # cmd-conditioned reference bin selection.  Pre-fix the obs
+    # would be byte-equal (sampled-from-same-rng cmd was used to
+    # build both obs).
+    obs_pos = np.asarray(state_pos.obs)
+    obs_neg = np.asarray(state_neg.obs)
+    assert obs_pos.shape == obs_neg.shape
+    diff = np.abs(obs_pos - obs_neg)
+    assert diff.max() > 1e-6, (
+        "obs must differ under different cmd_override values; "
+        "pre-fix bug: obs was built from the sampled cmd, not the override"
+    )
+
+
+def test_reset_for_eval_override_matches_yaml_pinned_cmd_path() -> None:
+    """Equivalence pin: when the cmd_override equals the YAML-pinned
+    eval cmd, reset_for_eval(rng, cmd_override=X) must produce the
+    same obs as reset_for_eval(rng) (no override; YAML pins X).
+    Smoke1 pins ``eval_velocity_cmd = [0.18, 0.04, 0.10]``."""
+    import numpy as np
+
+    env = _env(_SMOKE1)
+    rng = jax.random.PRNGKey(11)
+    yaml_eval_cmd = jp.asarray(
+        env._config.env.eval_velocity_cmd, dtype=jp.float32
+    )
+
+    state_yaml = env.reset_for_eval(rng)  # YAML pin path
+    state_override = env.reset_for_eval(rng, cmd_override=yaml_eval_cmd)
+
+    np.testing.assert_allclose(
+        np.asarray(state_yaml.info[WR_INFO_KEY].velocity_cmd),
+        np.asarray(state_override.info[WR_INFO_KEY].velocity_cmd),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(state_yaml.obs),
+        np.asarray(state_override.obs),
+        atol=1e-6,
+        err_msg=(
+            "reset_for_eval(rng, cmd_override=yaml_cmd) and "
+            "reset_for_eval(rng) (YAML pin path) must produce "
+            "identical obs when the override matches the YAML cmd"
+        ),
+    )
+
+
+def test_reset_for_eval_cmd_override_threads_through_reset_not_post_patch() -> None:
+    """Source-level regression: ``reset_for_eval`` must thread the
+    override through ``self.reset(..., velocity_cmd_override=...)``
+    so the obs / window / metrics are all built from the override
+    inside ``_make_initial_state``.
+
+    Pre-fix the override was applied AFTER reset returned via
+    ``wr.replace(velocity_cmd=...)`` post-patching — the obs was
+    already built from the sampled cmd.  Guard against a refactor
+    reintroducing the post-patch pattern."""
+    import inspect
+    from training.envs import wildrobot_env
+
+    src = inspect.getsource(wildrobot_env.WildRobotEnv.reset_for_eval)
+    assert "velocity_cmd_override=" in src, (
+        "reset_for_eval must pass velocity_cmd_override= into reset()"
+    )
+    # The buggy pattern would be ``wr.replace(velocity_cmd=...)``
+    # after reset() returns.  That must not reappear.
+    assert "wr.replace(velocity_cmd=" not in src, (
+        "post-patch ``wr.replace(velocity_cmd=...)`` pattern was the "
+        "pre-fix bug — must not reappear in reset_for_eval"
+    )

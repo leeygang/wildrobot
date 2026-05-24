@@ -159,6 +159,36 @@ env:
   # which would eval forward-only and skip the 3-axis tracking signal.
   eval_velocity_cmd: [0.18, 0.04, 0.10]
 
+  # v0.21.0 follow-up — Appendix C lateral / yaw cmd tracking pass
+  # criteria need pure-axis probes to evaluate.  The primary
+  # ``eval_velocity_cmd`` above mixes axes ``(vx, vy, wz) = (0.18,
+  # 0.04, 0.10)`` and is what the G4 forward gate runs against; it
+  # CANNOT isolate the lateral or yaw signed-ratio criterion (both
+  # axes are active and dilute each other).  Configure two
+  # deterministic extra rollouts:
+  #
+  #   1. ``[0.18, 0.13, 0.00]`` — pure-lateral probe at the upper end
+  #      of the WR-scaled vy range (``max_velocity_y``).  Checks the
+  #      Appendix C lateral pass criterion: signed
+  #      ``lateral_velocity / vy_eval >= 0.5`` averaged over the
+  #      deterministic rollout.
+  #
+  #   2. ``[0.00, 0.00, 0.25]`` — pure-yaw probe at the upper end of
+  #      ``max_yaw_rate``.  Checks the Appendix C yaw pass criterion:
+  #      signed ``ang_vel_z / wz_eval >= 0.5``.
+  #
+  # Each probe runs once per top-k candidate in the post-training
+  # eval and is surfaced in ``post_training_eval_summary.json`` as
+  # ``top_k_candidates[*].lateral_yaw_probes``.  Probes are
+  # REPORT-ONLY — they do not block the primary G4 promotion, but
+  # without them the JSON summary's
+  # ``lateral_yaw_probes_message`` explicitly states the criteria
+  # were NOT evaluated.  See ``walking_training.md`` Appendix C
+  # (v0.21.0+) for the contract.
+  eval_velocity_cmd_probes:
+    - [0.18, 0.13, 0.00]
+    - [0.00, 0.00, 0.25]
+
   # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
   # (zero / pure-turn / ellipse-walk).  When false, env emits the
   # legacy (vx, 0, 0) sampler regardless of the lateral/yaw ranges.

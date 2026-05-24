@@ -2674,7 +2674,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         pitch_lo, pitch_hi = self._reset_torso_pitch_range_py
         return (roll_lo != roll_hi) or (pitch_lo != pitch_hi)
 
-    def reset(self, rng: jax.Array, perturb_pose: bool = True) -> WildRobotEnvState:
+    def reset(
+        self,
+        rng: jax.Array,
+        perturb_pose: bool = True,
+        velocity_cmd_override: Optional[jax.Array] = None,
+    ) -> WildRobotEnvState:
         """Sample velocity_cmd / push schedule / DR params; build initial
         WildRobotInfo at offline step 0.
 
@@ -2698,12 +2703,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         rollouts stay deterministic (G4/G5 promotion thresholds and the
         v6 eval-adapter native-reset parity both require a noise-free
         eval reset).
+
+        ``velocity_cmd_override`` (v0.21.0 follow-up): when supplied
+        (3-vec ``[vx, vy, wz]``), unconditionally replaces the sampled
+        ``velocity_cmd`` BEFORE it threads into ``_make_initial_state``.
+        Required by ``reset_for_eval`` so that the initial obs +
+        reference window + per-frame metrics see the pinned eval cmd
+        from step 0 (post-hoc patching of ``wr.velocity_cmd`` after
+        reset() returns was a bug — the obs was already built from
+        the sampled cmd, so the first action consumed wrong
+        velocity_cmd / v8 (vy, wz) / ref-window channels).  ``None``
+        keeps the sampled-cmd behavior (training-side reset path).
         """
         rng, key_vel, key_qnoise, key_push, key_dr, key_imu, key_cmd, key_pert = (
             jax.random.split(rng, 8)
         )
 
-        velocity_cmd = self._sample_velocity_cmd(key_vel)
+        if velocity_cmd_override is None:
+            velocity_cmd = self._sample_velocity_cmd(key_vel)
+        else:
+            # v0.21.0 follow-up — eval-side override.  Threaded into
+            # ``_make_initial_state`` so the initial obs + win0
+            # lookup + metrics_dict ALL see the pinned cmd.  Splitting
+            # ``key_vel`` is still useful (advances the rng deterministically)
+            # so eval rollouts produced under override + None remain
+            # rng-deterministic in their other random draws.
+            velocity_cmd = jp.asarray(
+                velocity_cmd_override, dtype=jp.float32
+            ).reshape(3)
 
         dr_params = self._sample_domain_rand_params(key_dr)
 
@@ -2931,29 +2958,51 @@ class WildRobotEnv(mjx_env.MjxEnv):
         sim-to-real parity (``test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state``).
         Training-side ``reset`` keeps perturbation enabled by default.
         """
-        state = self.reset(rng, perturb_pose=False)
-        wr = state.info[WR_INFO_KEY]
+        # v0.21.0 follow-up — eval cmd is now resolved BEFORE
+        # ``self.reset`` runs so the initial obs / window / metrics
+        # are built from the eval cmd, not the sampled one.  The
+        # previous implementation post-patched ``wr.velocity_cmd``
+        # AFTER reset returned, which left the first-action obs
+        # populated with the sampled cmd's velocity_cmd slot,
+        # v8 (vy, wz) tail, and reference-window-derived channels —
+        # a real eval bug that mattered most on the new per-probe
+        # pass/fail path.
         if cmd_override is not None:
-            # v0.21.0 follow-up — explicit per-call override wins.
-            new_cmd = jp.asarray(cmd_override, dtype=jp.float32).reshape(3)
-        else:
-            # H3: sentinel applies to vx (index 0) only.  vy / wz
-            # default to 0.0; they are NOT a "use sampled cmd"
-            # signal.  A YAML writer who wants only vx overridden
-            # writes a scalar (legacy form, broadcasts to
-            # (vx, 0, 0)) or the explicit [vx, 0.0, 0.0] list.
-            # Mixed-sign 3-vec configs (e.g. positive vx, negative
-            # vy) are still honored — the [0]th axis read
-            # intentionally does NOT do an ``all >= 0`` reduce.
-            eval_cmd = jp.asarray(
-                self._config.env.eval_velocity_cmd, dtype=jp.float32
-            )  # (3,)
-            use_override = eval_cmd[0] >= jp.float32(0.0)
-            new_cmd = jp.where(use_override, eval_cmd, wr.velocity_cmd)
-        new_wr = wr.replace(velocity_cmd=new_cmd.astype(jp.float32))
-        new_info = dict(state.info)
-        new_info[WR_INFO_KEY] = new_wr
-        return state.replace(info=new_info)
+            # Explicit per-call override wins outright.  Resolution
+            # happens inside ``reset`` so all downstream obs /
+            # window / metrics see the same cmd from step 0.
+            resolved_cmd = jp.asarray(
+                cmd_override, dtype=jp.float32
+            ).reshape(3)
+            return self.reset(
+                rng, perturb_pose=False, velocity_cmd_override=resolved_cmd
+            )
+
+        # No per-call override — decide between YAML-pinned eval cmd
+        # and the sentinel sampled-cmd fallback at PYTHON time using
+        # the config value.  This avoids a trace-time ``jp.where`` on
+        # a sentinel that would have to dynamically discard the
+        # override branch; the config value is known at construction
+        # so the branch is static.
+        #
+        # H3: sentinel applies to vx (index 0) only.  vy / wz default
+        # to 0.0; they are NOT a "use sampled cmd" signal.  A YAML
+        # writer who wants only vx overridden writes a scalar (legacy
+        # form, broadcasts to (vx, 0, 0)) or the explicit
+        # [vx, 0.0, 0.0] list.  Mixed-sign 3-vec configs (e.g.
+        # positive vx, negative vy) are still honored — the [0]th
+        # axis read intentionally does NOT do an ``all >= 0`` reduce.
+        config_eval_cmd = self._config.env.eval_velocity_cmd
+        if float(config_eval_cmd[0]) >= 0.0:
+            yaml_eval_cmd = jp.asarray(
+                config_eval_cmd, dtype=jp.float32
+            )
+            return self.reset(
+                rng,
+                perturb_pose=False,
+                velocity_cmd_override=yaml_eval_cmd,
+            )
+        return self.reset(rng, perturb_pose=False)
 
     # ----------------------------------------------------- cmd resampling
 

@@ -187,3 +187,68 @@ def test_smoke1_env_init_succeeds(cfg_smoke1) -> None:
     has_yaw = any(abs(k[2]) > 1e-6 for k in cmd_keys)
     assert has_lateral, f"Expected at least one vy != 0 bin; got {cmd_keys}"
     assert has_yaw, f"Expected at least one wz != 0 bin; got {cmd_keys}"
+
+
+# ---------------------------------------------------------------------------
+# v0.21.0 follow-up — Appendix C lateral / yaw cmd tracking pass criterion
+# requires pure-axis probes; smoke1's primary mixed eval_velocity_cmd
+# cannot isolate either signal.  Pin the probes so the YAML always
+# evaluates the pass criteria.
+# ---------------------------------------------------------------------------
+def test_smoke1_yaml_configures_lateral_and_yaw_probes() -> None:
+    """The smoke1 YAML MUST include
+    ``eval_velocity_cmd_probes`` covering both pass criteria, else
+    the post-training summary records the criteria as NOT evaluated
+    (the v0.21.0 follow-up made this explicit; this test pins the
+    YAML so the launch config is authoritative)."""
+    cfg = load_training_config(str(_SMOKE1))
+    probes = tuple(cfg.env.eval_velocity_cmd_probes)
+    assert len(probes) >= 2, (
+        "smoke1 must configure at least two probes: one pure-lateral "
+        "(vx, vy, 0) and one pure-yaw (0, 0, wz).  See "
+        "walking_training.md Appendix C."
+    )
+    # Pure-lateral probe — vy non-trivial, wz ≈ 0.
+    lateral_probes = [
+        p for p in probes if abs(p[1]) >= 0.02 and abs(p[2]) < 0.02
+    ]
+    assert lateral_probes, (
+        "smoke1 must include at least one pure-lateral probe "
+        "((vx, vy, 0) with |vy| >= 0.02)"
+    )
+    # Pure-yaw probe — wz non-trivial, vy ≈ 0.
+    yaw_probes = [
+        p for p in probes if abs(p[2]) >= 0.02 and abs(p[1]) < 0.02
+    ]
+    assert yaw_probes, (
+        "smoke1 must include at least one pure-yaw probe "
+        "((0, 0, wz) with |wz| >= 0.02)"
+    )
+
+
+def test_smoke1_lateral_probe_vy_within_command_range() -> None:
+    """Each pure-lateral probe's |vy| must sit within the YAML's
+    ``max_velocity_y`` so the probe is a real in-distribution
+    operating point, not an extrapolation that the policy was never
+    trained on."""
+    cfg = load_training_config(str(_SMOKE1))
+    max_vy = float(cfg.env.max_velocity_y)
+    for probe in cfg.env.eval_velocity_cmd_probes:
+        vy = probe[1]
+        if abs(vy) >= 0.02:  # lateral probe
+            assert abs(vy) <= max_vy + 1e-6, (
+                f"lateral probe vy={vy} exceeds max_velocity_y={max_vy}"
+            )
+
+
+def test_smoke1_yaw_probe_wz_within_command_range() -> None:
+    """Each pure-yaw probe's |wz| must sit within
+    ``max_yaw_rate``."""
+    cfg = load_training_config(str(_SMOKE1))
+    max_wz = float(cfg.env.max_yaw_rate)
+    for probe in cfg.env.eval_velocity_cmd_probes:
+        wz = probe[2]
+        if abs(wz) >= 0.02:  # yaw probe
+            assert abs(wz) <= max_wz + 1e-6, (
+                f"yaw probe wz={wz} exceeds max_yaw_rate={max_wz}"
+            )
