@@ -4202,14 +4202,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # G4 0.030 m gate at ~0.022 m, but the dispatched-carry signal can't
         # tell us whether one foot is doing all the stepping or the gait
         # really is short on both sides.  Log per-foot raw values *only on
-        # the touchdown step of that foot*, plus the touchdown event mask.
+        # the touchdown step of that foot*, plus the touchdown event count.
         # All MEAN-reduced (see metrics_registry).  Per-event mean step
-        # length is then ``step_length_left_event_m / touchdown_rate_left``
-        # post-aggregation.
+        # length is then
+        # ``step_length_left_event_m / touchdown_rate_left_count`` after
+        # aggregation.
         left_event_f = left_touchdown.astype(jp.float32)
         right_event_f = right_touchdown.astype(jp.float32)
-        terminal_metrics_dict["tracking/touchdown_rate_left"] = left_event_f
-        terminal_metrics_dict["tracking/touchdown_rate_right"] = right_event_f
+        terminal_metrics_dict["tracking/touchdown_rate_left_count"] = left_event_f
+        terminal_metrics_dict["tracking/touchdown_rate_right_count"] = right_event_f
         terminal_metrics_dict["tracking/swing_air_time_left_event_s"] = (
             wr.feet_air_time[0] * left_event_f
         ).astype(jp.float32)

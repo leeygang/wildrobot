@@ -1018,8 +1018,10 @@ def _changelog_block(
     tb_comparison: Optional[Dict[str, Any]] = None,
     post_training_summary: Optional[Dict[str, Any]] = None,
 ) -> str:
-    def g(key: str) -> Optional[float]:
-        return _get_float(best_row, key)
+    def g(key: str, *legacy_keys: str) -> Optional[float]:
+        return _first_present(
+            *(_get_float(best_row, candidate) for candidate in (key, *legacy_keys))
+        )
 
     eval_s = g(keys.success)
     eval_L = g(keys.ep_len)
@@ -1203,15 +1205,23 @@ def _changelog_block(
 
         # Per-foot stride / swing-time diagnostics (v0.20.1-smoke2).
         per_foot_rows = [
-            ("tracking/touchdown_rate_left", "tracking/touchdown_rate_left"),
-            ("tracking/touchdown_rate_right", "tracking/touchdown_rate_right"),
+            (
+                "tracking/touchdown_rate_left_count",
+                "tracking/touchdown_rate_left_count",
+                "tracking/touchdown_rate_left",
+            ),
+            (
+                "tracking/touchdown_rate_right_count",
+                "tracking/touchdown_rate_right_count",
+                "tracking/touchdown_rate_right",
+            ),
             ("tracking/swing_air_time_left_event_s (mean over rollout)", "tracking/swing_air_time_left_event_s"),
             ("tracking/swing_air_time_right_event_s (mean over rollout)", "tracking/swing_air_time_right_event_s"),
             ("tracking/step_length_left_event_m (mean over rollout)", "tracking/step_length_left_event_m"),
             ("tracking/step_length_right_event_m (mean over rollout)", "tracking/step_length_right_event_m"),
         ]
-        for label, key in per_foot_rows:
-            v = g(key)
+        for label, key, *legacy_keys in per_foot_rows:
+            v = g(key, *legacy_keys)
             if v is not None:
                 lines.append(f"| {label} | {_format_f(v, 5)} |")
     if regression is not None:

@@ -155,11 +155,11 @@ Added in v0.20.1-smoke2. Use to debug short-stride failures (smoke1 hit step_len
 
 | Metric | Reducer | Per-event mean computation |
 |---|---|---|
-| `tracking/touchdown_rate_left/right` | MEAN | rate = events / ctrl_step |
-| `tracking/swing_air_time_left/right_event_s` | MEAN | mean swing time per event = value / touchdown_rate |
-| `tracking/step_length_left/right_event_m` | MEAN | mean step length per event = value / touchdown_rate |
+| `tracking/touchdown_rate_left/right_count` | MEAN | touchdown event count per ctrl step |
+| `tracking/swing_air_time_left/right_event_s` | MEAN | mean swing time per event = value / matching touchdown count |
+| `tracking/step_length_left/right_event_m` | MEAN | mean step length per event = value / matching touchdown count |
 
-Symmetry check: `touchdown_rate_left ≈ touchdown_rate_right`; gross asymmetry indicates the policy is stepping with one leg only.
+Symmetry check: `touchdown_rate_left_count ≈ touchdown_rate_right_count`; gross asymmetry indicates the policy is stepping with one leg only.
 
 ### Walking failure signatures (v0.19.5 / v0.20.1-aware)
 

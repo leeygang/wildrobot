@@ -1658,18 +1658,19 @@ METRIC_SPECS: List[MetricSpec] = [
     ),
     # Per-foot stride / swing-time diagnostics (v0.20.1-smoke2).  All values
     # are nonzero only on the touchdown step of that foot; aggregation gives
-    # rates.  Per-event mean = ``<value>_event / touchdown_rate``.
+    # counts per control step.  Per-event mean =
+    # ``<value>_event / touchdown_rate_*_count``.
     MetricSpec(
-        name="tracking/touchdown_rate_left",
+        name="tracking/touchdown_rate_left_count",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
-        description="Left-foot touchdown events per ctrl step (rollout mean)",
+        description="Left-foot touchdown event count per ctrl step (rollout mean)",
     ),
     MetricSpec(
-        name="tracking/touchdown_rate_right",
+        name="tracking/touchdown_rate_right_count",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
-        description="Right-foot touchdown events per ctrl step (rollout mean)",
+        description="Right-foot touchdown event count per ctrl step (rollout mean)",
     ),
     MetricSpec(
         name="tracking/swing_air_time_left_event_s",
@@ -1677,7 +1678,7 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="tracking",
         description=(
             "Left-foot swing-air-time at touchdown (s), zeroed elsewhere. "
-            "Per-event mean = value / touchdown_rate_left."
+            "Per-event mean = value / touchdown_rate_left_count."
         ),
     ),
     MetricSpec(
@@ -1686,7 +1687,7 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="tracking",
         description=(
             "Right-foot swing-air-time at touchdown (s), zeroed elsewhere. "
-            "Per-event mean = value / touchdown_rate_right."
+            "Per-event mean = value / touchdown_rate_right_count."
         ),
     ),
     MetricSpec(
@@ -1695,7 +1696,7 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="tracking",
         description=(
             "Left-foot step length at touchdown (m), zeroed elsewhere. "
-            "Per-event mean = value / touchdown_rate_left."
+            "Per-event mean = value / touchdown_rate_left_count."
         ),
     ),
     MetricSpec(
@@ -1704,7 +1705,7 @@ METRIC_SPECS: List[MetricSpec] = [
         log_prefix="tracking",
         description=(
             "Right-foot step length at touchdown (m), zeroed elsewhere. "
-            "Per-event mean = value / touchdown_rate_right."
+            "Per-event mean = value / touchdown_rate_right_count."
         ),
     ),
     MetricSpec(
