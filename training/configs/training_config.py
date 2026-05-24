@@ -187,6 +187,13 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         use_relaxed_termination=bool(env.get("use_relaxed_termination", False)),
         min_velocity=env.get("min_velocity", 0.0),
         max_velocity=env.get("max_velocity", 1.0),
+        # v0.21.0 P4: lateral / yaw-rate command ranges for the 3D
+        # branched sampler.  Default 0.0 keeps legacy scalar-vx YAML
+        # configs byte-equivalent (ellipse degenerates to vx axis,
+        # turn branch emits zero wz).
+        min_velocity_y=float(env.get("min_velocity_y", 0.0)),
+        max_velocity_y=float(env.get("max_velocity_y", 0.0)),
+        max_yaw_rate=float(env.get("max_yaw_rate", 0.0)),
         contact_threshold_force=env.get("contact_threshold_force", 5.0),
         contact_scale=env.get("contact_scale", 10.0),
         foot_switch_threshold=env.get("foot_switch_threshold", 2.0),

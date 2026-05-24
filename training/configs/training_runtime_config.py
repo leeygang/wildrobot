@@ -108,6 +108,14 @@ class EnvConfig(Freezable):
     # Commands
     min_velocity: float = 0.0
     max_velocity: float = 1.0
+    # v0.21.0 P4: lateral (vy) and yaw-rate (wz) ranges for the
+    # branched 3D command sampler (zero / pure-turn / ellipse-walk).
+    # Defaults of 0.0 preserve the v0.20.x scalar-vx behavior — the
+    # ellipse degenerates to the vx axis and the turn branch emits
+    # zero wz, so legacy YAML configs are byte-equivalent.
+    min_velocity_y: float = 0.0
+    max_velocity_y: float = 0.0
+    max_yaw_rate: float = 0.0
 
     # Contacts
     contact_threshold_force: float = 5.0
