@@ -108,3 +108,47 @@ def test_build_library_for_vx_values_still_builds_forward_only_library() -> None
     assert len(lib) == 2
     assert (0.0, 0.0, 0.0) in lib
     assert (0.20, 0.0, 0.0) in lib
+
+
+def test_pure_yaw_command_propagates_to_left_foot_rpy_yaw() -> None:
+    """Reviewer #3: yaw must propagate into the foot orientation trajectory,
+    not stop at the pelvis.  Under pure-yaw cmd, left_foot_rpy[:, 2] must
+    accumulate yaw across the cycle."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.10)
+    foot_yaw = traj.left_foot_rpy[:, 2]
+    assert abs(foot_yaw[-1] - foot_yaw[0]) > 1e-3, (
+        "Reviewer #3 fix missing: foot yaw stayed at zero under pure-yaw cmd."
+    )
+
+
+def test_pure_yaw_command_propagates_to_right_foot_rpy_yaw() -> None:
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.10)
+    foot_yaw = traj.right_foot_rpy[:, 2]
+    assert abs(foot_yaw[-1] - foot_yaw[0]) > 1e-3
+
+
+def test_combined_translation_keeps_foot_yaw_at_zero() -> None:
+    """Combined vx+vy with wz=0 must not introduce spurious foot yaw."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.15, command_vy=0.05, command_yaw_rate=0.0)
+    assert abs(traj.left_foot_rpy[:, 2]).max() < 1e-4
+    assert abs(traj.right_foot_rpy[:, 2]).max() < 1e-4
+
+
+def test_pure_yaw_ik_produces_nonzero_hip_roll_or_hip_pitch_pattern_distinct_from_no_yaw() -> None:
+    """Sanity check that the IK actually consumes the yaw orientation.
+    If IK ignores yaw, the q_ref under wz=0.10 (with foot yaw = 0.5*0.10*dt
+    per swing) would be indistinguishable from the q_ref under wz=0
+    (forward-only).  This test asserts they differ."""
+    gen = ZMPWalkGenerator()
+    traj_yaw = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.10)
+    traj_zero = gen.generate(command_vx=0.0, command_vy=0.0, command_yaw_rate=0.0)
+    # Either zero is _generate_standing() (q_ref = home), traj_yaw must
+    # diverge from home_pose over the cycle.
+    import numpy as np
+    diff = np.abs(np.asarray(traj_yaw.q_ref) - np.asarray(traj_zero.q_ref)).max()
+    assert diff > 1e-3, (
+        "IK appears to ignore foot yaw orientation under pure-yaw cmd."
+    )

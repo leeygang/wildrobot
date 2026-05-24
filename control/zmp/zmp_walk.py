@@ -948,6 +948,15 @@ class ZMPWalkGenerator:
         # otherwise interpolates between the consecutive footstep angles
         # over each swing/double-support phase.
         pelvis_yaw_out = np.zeros(n_total, dtype=np.float64)
+        # P1.5 (reviewer #3 fix): per-frame foot yaw (rad), one per side.
+        # Mirrors TB's ``compute_foot_trajectories`` lines 446-509: a
+        # foot's yaw equals its stance footstep yaw while it's stance,
+        # and linearly interpolates from the previous footstep yaw to
+        # the next footstep yaw while it's the swing leg.  Stays
+        # uniformly zero outside pure-rotation so combined-translation
+        # (vx, vy with wz=0) introduces no spurious foot yaw.
+        left_foot_yaw_out = np.zeros(n_total, dtype=np.float64)
+        right_foot_yaw_out = np.zeros(n_total, dtype=np.float64)
 
         for k in range(n_cycles):
             cycle_offset = 2 * k * sl_x
@@ -1015,10 +1024,20 @@ class ZMPWalkGenerator:
                 if is_pure_rotation:
                     # Left stance at left_a_pos
                     left_world[idx] = [left_a_pos[0], left_a_pos[1], 0]
+                    # P1.5 (reviewer #3): left foot is in stance during
+                    # phase A, so its yaw is pinned to ``left_a_yaw``
+                    # the entire half-cycle.  Mirrors TB's
+                    # ``compute_foot_trajectories`` lines 462-470 where
+                    # ``current_ori[support_leg*3+2] = fs_curr[2]``.
+                    left_foot_yaw_out[idx] = left_a_yaw
                     if i < n_ds:
                         right_world[idx] = [right_a_start_pos[0], right_a_start_pos[1], 0]
                         contact_out[idx] = [1, 1]
                         pelvis_yaw_out[idx] = left_a_yaw
+                        # Right foot is grounded at its previous
+                        # placement (yaw = right_a_start_yaw) during
+                        # double-support, then begins to swing.
+                        right_foot_yaw_out[idx] = right_a_start_yaw
                     else:
                         i_swing = i - n_ds
                         frac = i_swing / max(1, swing_window - 1)
@@ -1034,6 +1053,15 @@ class ZMPWalkGenerator:
                         contact_out[idx] = [1, 0]
                         # Interpolate yaw linearly across the swing.
                         pelvis_yaw_out[idx] = (
+                            right_a_start_yaw
+                            + (right_target_yaw - right_a_start_yaw) * frac
+                        )
+                        # P1.5: right foot yaw interpolates from its
+                        # previous placement yaw to the next target
+                        # yaw across the swing window — same linear
+                        # ramp as the pelvis here (matches TB
+                        # ``ori_delta`` at line 500).
+                        right_foot_yaw_out[idx] = (
                             right_a_start_yaw
                             + (right_target_yaw - right_a_start_yaw) * frac
                         )
@@ -1073,10 +1101,17 @@ class ZMPWalkGenerator:
                 if is_pure_rotation:
                     # Right stance at right_a_target (= the foot just placed)
                     right_world[idx] = [right_a_target[0], right_a_target[1], 0]
+                    # P1.5 (reviewer #3): right foot is in stance during
+                    # phase B, so its yaw is pinned to ``right_target_yaw``
+                    # the entire half-cycle (mirrors TB stance-yaw assign).
+                    right_foot_yaw_out[idx] = right_target_yaw
                     if i < n_ds:
                         left_world[idx] = [left_a_pos[0], left_a_pos[1], 0]
                         contact_out[idx] = [1, 1]
                         pelvis_yaw_out[idx] = right_target_yaw
+                        # Left foot grounded at left_a_pos (yaw =
+                        # left_a_yaw) during the double-support window.
+                        left_foot_yaw_out[idx] = left_a_yaw
                     else:
                         i_swing = i - n_ds
                         frac = i_swing / max(1, swing_window - 1)
@@ -1091,6 +1126,13 @@ class ZMPWalkGenerator:
                         ]
                         contact_out[idx] = [0, 1]
                         pelvis_yaw_out[idx] = (
+                            left_a_yaw
+                            + (left_b_target_yaw - left_a_yaw) * frac
+                        )
+                        # P1.5: left foot yaw interpolates from its
+                        # previous placement to the next target across
+                        # the swing window (mirrors TB ``ori_delta``).
+                        left_foot_yaw_out[idx] = (
                             left_a_yaw
                             + (left_b_target_yaw - left_a_yaw) * frac
                         )
@@ -1128,9 +1170,9 @@ class ZMPWalkGenerator:
             pelvis_x = com_world[i, 0]
             com_y = com_world[i, 1]
 
-            for side, foot_world_i in [
-                ("left", left_world[i]),
-                ("right", right_world[i]),
+            for side, foot_world_i, foot_yaw_i in [
+                ("left", left_world[i], left_foot_yaw_out[i]),
+                ("right", right_world[i], right_foot_yaw_out[i]),
             ]:
                 lat = cfg.hip_lateral_offset_m
                 hip_y = com_y + (lat if side == "left" else -lat)
@@ -1172,7 +1214,32 @@ class ZMPWalkGenerator:
                 # The hip joint sits ``pelvis_to_hip_m`` below the
                 # pelvis frame in the MJCF, so the IK's chain length
                 # excludes that offset.
-                foot_rel_x = foot_world_i[0] - pelvis_x
+                #
+                # P1.5 (reviewer #3): WR has no hip-yaw joint (unlike
+                # TB's 6-DoF leg in ``foot_ik`` which outputs ``hip_yaw
+                # = -target_yaw`` at line 649), so we cannot physically
+                # reorient the foot.  The closest analogue is to rotate
+                # the world-frame (foot - hip) displacement into the
+                # foot's local frame by ``-foot_yaw_i`` and then run
+                # the sagittal + hip-roll IK on that rotated delta.
+                # This mirrors TB ``foot_ik`` lines 624-625:
+                #     transformed_x = x * cos(yaw) + y * sin(yaw)
+                #     transformed_y = x * sin(yaw) - y * cos(yaw)
+                # (TB's transform also mirrors y; WR keeps the
+                # hip_roll convention ``foot_rel_y = world_y - hip_y``,
+                # so we apply a pure z-axis rotation by ``-yaw`` —
+                # which is what carries the yaw into the IK output
+                # even without a yaw DoF, since the rotated x feeds
+                # hip_pitch and the rotated y feeds hip_roll.)  Outside
+                # pure-rotation ``foot_yaw_i`` is zero and the rotation
+                # is the identity (no change to forward-only / lateral
+                # IK output).
+                world_dx = foot_world_i[0] - pelvis_x
+                world_dy = foot_world_i[1] - hip_y
+                cy = float(np.cos(foot_yaw_i))
+                sy = float(np.sin(foot_yaw_i))
+                foot_rel_x = world_dx * cy + world_dy * sy
+                foot_rel_y = -world_dx * sy + world_dy * cy
                 foot_z_above_ground = foot_world_i[2]
                 hip_to_foot_z = -(cfg.com_height_m - cfg.pelvis_to_hip_m
                                   - cfg.ankle_to_ground_m
@@ -1186,7 +1253,6 @@ class ZMPWalkGenerator:
                 )
 
                 # Hip roll: foot lateral offset from hip
-                foot_rel_y = foot_world_i[1] - hip_y
                 hip_r = np.arctan2(foot_rel_y, -hip_to_foot_z)
                 hip_r = np.clip(hip_r, -0.15, 0.15)
 
@@ -1237,7 +1303,16 @@ class ZMPWalkGenerator:
         pelvis_rpy[:, 2] = pelvis_yaw_out.astype(np.float32)
 
         com_pos = pelvis_pos.copy()
-        foot_rpy = np.zeros((n, 3), dtype=np.float32)
+        # P1.5 (reviewer #3): each foot gets its own rpy buffer so the
+        # yaw column tracks the per-foot stance/swing yaw assembled in
+        # the cycle loop above.  Roll/pitch stay zero (the planner
+        # does not command non-zero foot roll/pitch).  Outside
+        # pure-rotation both ``*_foot_yaw_out`` arrays are zero, so
+        # the foot rpy is unchanged for forward-only / combined-vy.
+        left_foot_rpy_arr = np.zeros((n, 3), dtype=np.float32)
+        right_foot_rpy_arr = np.zeros((n, 3), dtype=np.float32)
+        left_foot_rpy_arr[:, 2] = left_foot_yaw_out.astype(np.float32)
+        right_foot_rpy_arr[:, 2] = right_foot_yaw_out.astype(np.float32)
 
         # Phase 3: TB-style realized FK enrichment (mujoco_replay).
         body_pos, body_quat, body_lin_vel, body_ang_vel, site_pos, body_names, site_names = (
@@ -1256,9 +1331,9 @@ class ZMPWalkGenerator:
             pelvis_rpy=pelvis_rpy,
             com_pos=com_pos,
             left_foot_pos=left_out.astype(np.float32),
-            left_foot_rpy=foot_rpy.copy(),
+            left_foot_rpy=left_foot_rpy_arr,
             right_foot_pos=right_out.astype(np.float32),
-            right_foot_rpy=foot_rpy.copy(),
+            right_foot_rpy=right_foot_rpy_arr,
             stance_foot_id=stance_out.astype(np.float32),
             contact_mask=contact_out.astype(np.float32),
             body_pos=body_pos,
