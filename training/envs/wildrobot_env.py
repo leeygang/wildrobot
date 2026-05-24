@@ -817,6 +817,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # own bin exactly instead of the nearest grid step.  Mirrors
         # ``ZMPWalk.build_lookup_table(interval=...)`` from
         # ``toddlerbot/algorithms/zmp_walk.py:84``.
+        # v0.21.0 P5 — 3D library opt-in.  ``loc_ref_command_axes_3d``
+        # is the explicit opt-in (mirrors the ``cmd_sampler_3d_branched``
+        # gating pattern); legacy YAML configs unaffected.
+        axes_3d = bool(
+            getattr(self._config.env, "loc_ref_command_axes_3d", False)
+        )
+
         if cmd_conditioned:
             min_vx = float(self._config.env.min_velocity)
             max_vx = float(self._config.env.max_velocity)
@@ -839,12 +846,62 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             vx_grid = [offline_vx]
 
-        if offline_path:
+        if cmd_conditioned and axes_3d:
+            # v0.21.0 P5 — TB-split 3D library: linear-walk
+            # ``vx × vy`` (wz=0) plus pure-yaw ``(0, 0, wz)`` bins
+            # with ``(0, 0, 0)`` dedup.  See ``build_library_for_3d_values``
+            # (control/zmp/zmp_walk.py).  ``vx_grid`` from the cmd-conditioned
+            # branch above feeds the linear-walk axis; vy / wz grids come
+            # from explicit YAML (fall back to ``[0.0]`` if omitted so the
+            # 3D mode degenerates to vx-only without crashing).
+            from control.zmp.zmp_walk import ZMPWalkGenerator
+            vy_grid_cfg = list(
+                getattr(
+                    self._config.env, "loc_ref_offline_command_vy_grid", ()
+                )
+            ) or [0.0]
+            wz_grid_cfg = list(
+                getattr(
+                    self._config.env,
+                    "loc_ref_offline_command_yaw_rate_grid",
+                    (),
+                )
+            ) or [0.0]
+            assert len(vx_grid) > 0 and len(vy_grid_cfg) > 0 and len(wz_grid_cfg) > 0
+            lib = ZMPWalkGenerator().build_library_for_3d_values(
+                vx_values=list(vx_grid),
+                vy_values=vy_grid_cfg,
+                yaw_rate_values=wz_grid_cfg,
+            )
+            # Iterate trajectories in library insertion order so the
+            # stacked per-bin arrays' axis-0 index matches
+            # ``_offline_cmd_keys``.  ``build_library_for_3d_values``
+            # constructs its internal dict as: linear-walk bins
+            # (Cartesian over ``vx_sorted × vy_sorted`` with wz=0) then
+            # pure-yaw bins ``(0, 0, wz)`` with dedup against existing
+            # linear bins.  We DRIVE ``cmd_keys`` off the actual stored
+            # trajectories' ``command_key`` so dedup + force-unioned
+            # ``vx=0.0`` from the factory's round-2 fix are honored
+            # without re-deriving the rules here.
+            stored_trajectories = list(lib._entries.values())
+            cmd_keys: list[tuple[float, float, float]] = [
+                (
+                    float(traj.command_vx),
+                    float(traj.command_vy),
+                    float(traj.command_yaw_rate),
+                )
+                for traj in stored_trajectories
+            ]
+        elif offline_path:
             from control.references.reference_library import ReferenceLibrary
             lib = ReferenceLibrary.load(offline_path)
+            stored_trajectories = None
+            cmd_keys = [(float(vx), 0.0, 0.0) for vx in vx_grid]
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
             lib = ZMPWalkGenerator().build_library_for_vx_values(list(vx_grid))
+            stored_trajectories = None
+            cmd_keys = [(float(vx), 0.0, 0.0) for vx in vx_grid]
 
         # Build a service per bin (cheap: it just wraps the trajectory
         # arrays).  Keep the legacy single-bin service as
@@ -855,28 +912,84 @@ class WildRobotEnv(mjx_env.MjxEnv):
         per_bin_arrays: list[dict] = []
         per_bin_services: list[RuntimeReferenceService] = []
         n_steps_ref: int | None = None
-        for vx in vx_grid:
-            traj = lib.lookup(vx)
+        # Under the 3D-axes path the per-bin iteration order MUST match
+        # the library's stored-trajectory order so axis-0 of the stacked
+        # arrays lines up bit-exactly with ``_offline_cmd_keys`` — the
+        # 3D nearest-key lookup indexes the stacked arrays at the same
+        # bin index it picks from ``_offline_cmd_keys``.  Under the
+        # legacy 1D path the iteration walks ``vx_grid`` and looks each
+        # value up by vx; both orderings are deterministic.
+        if stored_trajectories is not None:
+            iter_trajectories = list(stored_trajectories)
+        else:
+            iter_trajectories = [lib.lookup(vx) for vx in vx_grid]
+        for traj in iter_trajectories:
             svc = RuntimeReferenceService(traj, n_anchor=2)
-            if n_steps_ref is None:
-                n_steps_ref = int(svc.n_steps)
-            elif int(svc.n_steps) != n_steps_ref:
-                raise ValueError(
-                    f"Command-conditioned reference: trajectory at vx={vx} "
-                    f"has n_steps={svc.n_steps}, expected {n_steps_ref}.  "
-                    "All bins must share the same length so the stacked "
-                    "lookup arrays are well-defined."
-                )
             per_bin_arrays.append(svc.to_jax_arrays())
             per_bin_services.append(svc)
+        # Resolve the common n_steps reference: pick the max across
+        # bins so the static bin (``(0, 0, 0)`` produces a degenerate
+        # 1-step trajectory under the ZMP generator — TB's planner
+        # similarly returns a single sample for zero command) tiles up
+        # to the walking-bin length without error.  Non-static bins all
+        # share the same n_steps (walking horizon) so the max equals
+        # any of them under the legacy 1D path.
+        n_steps_per_bin = [int(svc.n_steps) for svc in per_bin_services]
+        n_steps_ref = max(n_steps_per_bin)
+        # Validate that any short bin (< n_steps_ref) is exactly the
+        # degenerate static bin — silently tiling a 100-step trajectory
+        # up to a 1104-step walking horizon would mask a planner bug.
+        for traj, n in zip(iter_trajectories, n_steps_per_bin):
+            if n == n_steps_ref:
+                continue
+            if n == 1 and (
+                abs(traj.command_vx) < 1e-9
+                and abs(traj.command_vy) < 1e-9
+                and abs(traj.command_yaw_rate) < 1e-9
+            ):
+                continue
+            raise ValueError(
+                f"Command-conditioned reference: trajectory at cmd_key="
+                f"{traj.command_key} has n_steps={n}, expected "
+                f"{n_steps_ref}.  Non-static bins must share the same "
+                "horizon so the stacked lookup arrays are well-defined; "
+                "only the degenerate (0, 0, 0) static bin may be 1-step."
+            )
+
+        def _tile_to_n_steps(arr, target_n_steps: int):
+            """Tile axis-0 of a per-bin JAX array up to ``target_n_steps``.
+
+            The static bin's 1-step arrays repeat the static pose for
+            every step in the walking horizon; downstream callers index
+            with a clipped ``step_idx`` so the stacked array shape
+            stays uniform across bins.
+            """
+            cur = int(arr.shape[0])
+            if cur == target_n_steps:
+                return arr
+            # Repeat axis 0 ``target_n_steps`` times via broadcasting on
+            # the leading axis.  For 1-step arrays this trivially
+            # broadcasts; for any other mismatch the caller would have
+            # already raised above.
+            reps = (target_n_steps,) + (1,) * (arr.ndim - 1)
+            return jp.tile(arr, reps)
+
+        for per_bin in per_bin_arrays:
+            for key, val in per_bin.items():
+                if key == "n_steps":
+                    continue
+                per_bin[key] = _tile_to_n_steps(val, n_steps_ref)
+            per_bin["n_steps"] = jp.asarray(n_steps_ref, dtype=jp.int32)
         # Pick the bin closest to the configured offline vx as the
         # "primary" service (used by win0 readouts + path-state
         # integration — those callers still operate on a single
-        # service object, not on the stacked arrays).
+        # service object, not on the stacked arrays).  Under 3D mode we
+        # minimize over the per-bin vx component of ``cmd_keys`` so the
+        # primary still tracks the configured offline_vx.
         primary_idx = int(
             min(
-                range(len(vx_grid)),
-                key=lambda i: abs(vx_grid[i] - offline_vx),
+                range(len(cmd_keys)),
+                key=lambda i: abs(cmd_keys[i][0] - offline_vx),
             )
         )
         primary_service = per_bin_services[primary_idx]
@@ -895,12 +1008,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
                         [b[key] for b in per_bin_arrays], axis=0
                     )
             self._offline_jax_arrays = stacked
-            self._offline_vx_grid = jp.asarray(vx_grid, dtype=jp.float32)
+            self._offline_vx_grid = jp.asarray(
+                [k[0] for k in cmd_keys], dtype=jp.float32
+            )
         else:
             self._offline_jax_arrays = per_bin_arrays[0]
             # Sentinel grid (single bin); _lookup_offline_window picks
             # bin 0 unconditionally under legacy mode.
-            self._offline_vx_grid = jp.asarray(vx_grid, dtype=jp.float32)
+            self._offline_vx_grid = jp.asarray(
+                [k[0] for k in cmd_keys], dtype=jp.float32
+            )
+        # v0.21.0 P5 — 3D nearest-key lookup uses the full (vx, vy, wz)
+        # array; legacy callers (``_lookup_offline_window`` legacy path)
+        # never read this, so the array is harmless when 3D mode is off.
+        self._offline_cmd_keys = jp.asarray(cmd_keys, dtype=jp.float32)
+        self._offline_axes_3d = axes_3d
 
         self._offline_command_conditioned = cmd_conditioned
         self._offline_service = primary_service
@@ -1249,6 +1371,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         step_idx: jax.Array,
         velocity_cmd: Optional[jax.Array] = None,
+        path_rot_wxyz: Optional[jax.Array] = None,
+        heading_rot_wxyz: Optional[jax.Array] = None,
     ) -> Dict[str, jax.Array]:
         """Pure JAX lookup into the pre-staged service arrays.
 
@@ -1257,34 +1381,46 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``RuntimeReferenceService.lookup_jax`` path runs unchanged.
 
         Under command-conditioned mode the stacked arrays have a
-        leading ``n_bins`` axis; ``bin_idx = argmin(|vx_grid -
-        velocity_cmd|)`` selects the nearest-vx bin per call and the
-        result has the same single-trajectory shape the legacy path
-        produces.  No interpolation between bins (the
-        ``RuntimeReferenceService`` lookup contract is nearest-frame,
-        and bin-to-bin trajectories aren't time-aligned to support
-        per-field linear blending cleanly).
+        leading ``n_bins`` axis.  Bin selection:
 
-        The returned dict always carries two diagnostic scalars:
+          - 1D mode (``loc_ref_command_axes_3d=False``):
+            ``bin_idx = argmin(|vx_grid - velocity_cmd[0]|)`` —
+            nearest-vx along the single command axis (smoke13+ behavior).
 
-          - ``selected_vx``: the vx value of the selected reference
-            bin (the configured ``loc_ref_offline_command_vx`` under
-            legacy mode, or ``_offline_vx_grid[bin_idx]`` under
-            command-conditioned mode).
-          - ``cmd_bin_abs_err``: ``|selected_vx - velocity_cmd|`` when
-            ``velocity_cmd`` is supplied; zero otherwise (legacy mode
-            with no command input).  Quantifies how far the chosen
-            bin's vx is from the actual sampled command.
+          - 3D mode (``loc_ref_command_axes_3d=True``; v0.21.0 P5):
+            ``bin_idx = argmin(||_offline_cmd_keys - cmd_corrected||_2)``
+            over the full ``(vx, vy, wz)`` library keys.  When BOTH
+            ``path_rot_wxyz`` and ``heading_rot_wxyz`` are supplied the
+            ``(vx, vy)`` command is first rotated into the actor's
+            heading-frame (mirrors TB ``walk_zmp_ref.py:132-137``).  The
+            wz axis is unaffected by the heading rotation.
+
+        No interpolation between bins (the ``RuntimeReferenceService``
+        lookup contract is nearest-frame, and bin-to-bin trajectories
+        aren't time-aligned to support per-field linear blending
+        cleanly).
+
+        The returned dict always carries diagnostic scalars:
+
+          - ``selected_vx`` / ``selected_vy`` / ``selected_yaw_rate``:
+            the (vx, vy, wz) of the selected reference bin.  Under the
+            1D-path the vy / wz fields are zero.
+          - ``cmd_bin_abs_err`` (1D / legacy): ``|selected_vx -
+            velocity_cmd[0]|`` when ``velocity_cmd`` is supplied.
+          - ``cmd_bin_l2_err`` (3D): L2 distance between the corrected
+            cmd and the selected bin's ``(vx, vy, wz)`` key.
         """
-        # v0.21.0 P3: velocity_cmd is now (3,) — the offline reference
-        # library is still indexed on vx alone (P4 wires the full 3D
-        # grid).  Extract the vx slice locally so callers can pass the
-        # full 3-vec untouched.  Scalar inputs (legacy callers / tests)
-        # are also accepted via the ``ndim`` check.
+        # v0.21.0 P3: velocity_cmd is now (3,) — extract the vx slice
+        # for the legacy / 1D lookup paths; the 3D path reshapes the
+        # full 3-vec.  Scalar inputs (legacy callers / tests) are also
+        # accepted via the ``ndim`` check.
         def _vx_of(cmd):
             arr = jp.asarray(cmd, dtype=jp.float32)
             return arr[0] if arr.ndim >= 1 else arr
 
+        # ------------------------------------------------------------
+        # Legacy single-bin path (loc_ref_command_conditioned=False).
+        # ------------------------------------------------------------
         if not self._offline_command_conditioned:
             base = self._offline_service.lookup_jax(
                 step_idx, self._offline_jax_arrays
@@ -1299,21 +1435,103 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     selected_vx - _vx_of(velocity_cmd)
                 ).astype(jp.float32)
             base["selected_vx"] = selected_vx
+            base["selected_vy"] = jp.float32(0.0)
+            base["selected_yaw_rate"] = jp.float32(0.0)
             base["cmd_bin_abs_err"] = cmd_bin_abs_err
+            base["cmd_bin_l2_err"] = cmd_bin_abs_err
             return base
-        if velocity_cmd is None:
-            # Command-conditioned mode without a cmd input: fall back
-            # to the bin closest to the configured offline_vx so
-            # legacy call sites (e.g. tests probing window[0]) stay
-            # deterministic.
-            bin_idx = jp.argmin(
-                jp.abs(self._offline_vx_grid
-                       - jp.float32(self._config.env.loc_ref_offline_command_vx))
-            ).astype(jp.int32)
+
+        # ------------------------------------------------------------
+        # Command-conditioned path — 1D or 3D depending on the
+        # ``loc_ref_command_axes_3d`` toggle.
+        # ------------------------------------------------------------
+        axes_3d = bool(getattr(self, "_offline_axes_3d", False))
+
+        if axes_3d:
+            # 3D nearest-key path.  Apply optional heading-frame
+            # correction to the (vx, vy) cmd, then L2-argmin over the
+            # full ``(vx, vy, wz)`` key array.  v0.21.0 P5 / NEW-3 / C11
+            # — every op below is JAX-native (no scipy.spatial).
+            if velocity_cmd is None:
+                cmd = jp.asarray(
+                    [
+                        float(self._config.env.loc_ref_offline_command_vx),
+                        0.0,
+                        0.0,
+                    ],
+                    dtype=jp.float32,
+                )
+            else:
+                cmd = jp.asarray(velocity_cmd, dtype=jp.float32).reshape(3)
+
+            if path_rot_wxyz is not None and heading_rot_wxyz is not None:
+                from control.references.runtime_reference_service import (
+                    _yaw_from_quat_wxyz,
+                )
+                yaw_path = _yaw_from_quat_wxyz(path_rot_wxyz)
+                yaw_heading = _yaw_from_quat_wxyz(heading_rot_wxyz)
+                # Rotate cmd by R_z(yaw_path - yaw_heading).  Mirrors TB
+                # walk_zmp_ref.py:132-137 — the cmd is expressed in
+                # actor-heading frame, the library bins live in the
+                # path frame, so we rotate the cmd into the path frame
+                # by the heading-error rotation.
+                delta_yaw = yaw_path - yaw_heading
+                c = jp.cos(delta_yaw)
+                s = jp.sin(delta_yaw)
+                vx_corr = c * cmd[0] - s * cmd[1]
+                vy_corr = s * cmd[0] + c * cmd[1]
+                cmd_corrected = jp.stack(
+                    [vx_corr, vy_corr, cmd[2]]
+                ).astype(jp.float32)
+            else:
+                cmd_corrected = cmd
+
+            diffs = self._offline_cmd_keys - cmd_corrected  # (n_bins, 3)
+            bin_idx = jp.argmin(jp.linalg.norm(diffs, axis=-1)).astype(
+                jp.int32
+            )
+            selected_key = self._offline_cmd_keys[bin_idx]
+            selected_vx = selected_key[0].astype(jp.float32)
+            selected_vy = selected_key[1].astype(jp.float32)
+            selected_yaw_rate = selected_key[2].astype(jp.float32)
+            cmd_bin_l2_err = jp.linalg.norm(
+                selected_key - cmd_corrected
+            ).astype(jp.float32)
+            # Back-compat 1D scalar for callers that still read
+            # ``cmd_bin_abs_err`` (e.g. legacy diagnostics): pin to
+            # |selected_vx - cmd_vx_corrected| so the existing
+            # logged-value semantics hold.
+            cmd_bin_abs_err = jp.abs(
+                selected_vx - cmd_corrected[0]
+            ).astype(jp.float32)
         else:
-            bin_idx = jp.argmin(
-                jp.abs(self._offline_vx_grid - _vx_of(velocity_cmd))
-            ).astype(jp.int32)
+            # 1D vx-only path (smoke13+ pre-P5 behavior).
+            if velocity_cmd is None:
+                # Fall back to the bin closest to the configured
+                # offline_vx so legacy call sites (e.g. tests probing
+                # window[0]) stay deterministic.
+                bin_idx = jp.argmin(
+                    jp.abs(
+                        self._offline_vx_grid
+                        - jp.float32(
+                            self._config.env.loc_ref_offline_command_vx
+                        )
+                    )
+                ).astype(jp.int32)
+            else:
+                bin_idx = jp.argmin(
+                    jp.abs(self._offline_vx_grid - _vx_of(velocity_cmd))
+                ).astype(jp.int32)
+            selected_vx = self._offline_vx_grid[bin_idx].astype(jp.float32)
+            selected_vy = jp.float32(0.0)
+            selected_yaw_rate = jp.float32(0.0)
+            if velocity_cmd is None:
+                cmd_bin_abs_err = jp.float32(0.0)
+            else:
+                cmd_bin_abs_err = jp.abs(
+                    selected_vx - _vx_of(velocity_cmd)
+                ).astype(jp.float32)
+            cmd_bin_l2_err = cmd_bin_abs_err
 
         n_steps = self._offline_jax_arrays["n_steps"]
         n_anchor = self._offline_service.n_anchor
@@ -1322,13 +1540,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
         future_idx = jp.clip(idx + future_offsets, 0, n_steps - 1)
 
         a = self._offline_jax_arrays
-        selected_vx = self._offline_vx_grid[bin_idx].astype(jp.float32)
-        if velocity_cmd is None:
-            cmd_bin_abs_err = jp.float32(0.0)
-        else:
-            cmd_bin_abs_err = jp.abs(
-                selected_vx - _vx_of(velocity_cmd)
-            ).astype(jp.float32)
         return {
             "q_ref":          a["q_ref"][bin_idx, idx],
             "phase_sin":      a["phase_sin"][bin_idx, idx],
@@ -1351,7 +1562,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "future_phase_cos":        a["phase_cos"][bin_idx][future_idx],
             "future_contact_mask":     a["contact_mask"][bin_idx][future_idx],
             "selected_vx":             selected_vx,
+            "selected_vy":             selected_vy,
+            "selected_yaw_rate":       selected_yaw_rate,
             "cmd_bin_abs_err":         cmd_bin_abs_err,
+            "cmd_bin_l2_err":          cmd_bin_l2_err,
         }
 
     def _v4_compat_channels_from_window(

@@ -51,6 +51,39 @@ from control.references.reference_library import ReferenceTrajectory
 
 
 # ---------------------------------------------------------------------------
+# JAX quaternion helpers (NEW-3 / C11)
+# ---------------------------------------------------------------------------
+
+
+def _yaw_from_quat_wxyz(quat_wxyz):
+    """Extract yaw (rad) from a wxyz quaternion.
+
+    Pure-JAX implementation: no ``scipy.spatial.transform`` (the v0.21.0
+    C11 invariant — heading-frame correction in the env must stay
+    JIT-traceable).  Mirrors
+    ``policy_contract.jax.frames._yaw_from_quat_xyzw`` with the index
+    layout shifted for the wxyz convention used by the offline
+    ``RuntimeReferenceService`` / MuJoCo root quat.
+
+    Returns a scalar ``jnp.float32`` (or whatever dtype the input
+    promotes to).  The standard ZYX-Euler yaw formula::
+
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw       = atan2(siny_cosp, cosy_cosp)
+    """
+    import jax.numpy as jnp
+
+    w = quat_wxyz[0]
+    x = quat_wxyz[1]
+    y = quat_wxyz[2]
+    z = quat_wxyz[3]
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return jnp.arctan2(siny_cosp, cosy_cosp)
+
+
+# ---------------------------------------------------------------------------
 # Pre-stacked arrays + window dataclass
 # ---------------------------------------------------------------------------
 

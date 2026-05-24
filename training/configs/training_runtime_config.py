@@ -342,6 +342,26 @@ class EnvConfig(Freezable):
     # grid (one extra trajectory built per added bin); widening
     # collapses toward the legacy "endpoints-only" 2-bin layout.
     loc_ref_command_grid_interval: float = 0.05
+    # v0.21.0 P5 — 3D reference library plumbing.
+    #
+    # ``loc_ref_command_axes_3d`` is the explicit opt-in toggle that makes
+    # ``_init_offline_service`` build a TB-split 3D library (linear-walk
+    # ``vx × vy`` bins with ``wz=0`` plus pure-yaw ``(0, 0, wz)`` bins) via
+    # ``ZMPWalkGenerator.build_library_for_3d_values``.  When False
+    # (default; smoke14 / smoke12b / smoke7 path) the env stays on the
+    # legacy 1D ``vx`` library built by ``build_library_for_vx_values``.
+    # Mirrors the gating pattern used by ``cmd_sampler_3d_branched`` so
+    # legacy YAML configs remain byte-equivalent.
+    #
+    # ``loc_ref_offline_command_vy_grid`` / ``loc_ref_offline_command_yaw_rate_grid``
+    # supply the vy / wz axis values consumed by the 3D library factory.
+    # Empty defaults are tolerated by the env (falls back to ``[0.0]``)
+    # so an early enable-toggle doesn't silently crash if grids are
+    # omitted.  Lists are stored as tuples so the dataclass remains
+    # hashable + safe across ``dataclasses.replace``.
+    loc_ref_command_axes_3d: bool = False
+    loc_ref_offline_command_vy_grid: Tuple[float, ...] = field(default_factory=tuple)
+    loc_ref_offline_command_yaw_rate_grid: Tuple[float, ...] = field(default_factory=tuple)
     # Walking reference v1 parameters (kept explicit for conservative M3 tuning).
     loc_ref_step_time_s: float = 0.36
     loc_ref_walking_pelvis_height_m: float = 0.40

@@ -261,6 +261,20 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_command_grid_interval=float(
             env.get("loc_ref_command_grid_interval", 0.05)
         ),
+        # v0.21.0 P5 — 3D reference library toggle + vy / yaw_rate grids.
+        # Default False keeps legacy 1D library path for smoke14 / smoke12b /
+        # smoke7 unchanged.  Grids default to empty tuples; the env's
+        # ``_init_offline_service`` falls back to ``[0.0]`` per axis when
+        # absent so partial configs don't crash.
+        loc_ref_command_axes_3d=bool(
+            env.get("loc_ref_command_axes_3d", False)
+        ),
+        loc_ref_offline_command_vy_grid=tuple(
+            float(v) for v in (env.get("loc_ref_offline_command_vy_grid") or [])
+        ),
+        loc_ref_offline_command_yaw_rate_grid=tuple(
+            float(v) for v in (env.get("loc_ref_offline_command_yaw_rate_grid") or [])
+        ),
         loc_ref_step_time_s=float(env.get("loc_ref_step_time_s", 0.36)),
         loc_ref_walking_pelvis_height_m=float(env.get("loc_ref_walking_pelvis_height_m",
             env.get("loc_ref_nominal_com_height_m", 0.40))),
