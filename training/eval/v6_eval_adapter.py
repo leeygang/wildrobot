@@ -255,8 +255,36 @@ class V6EvalAdapter:
                         (),
                     )
                 ) or [0.0]
+                # Mirror env _init_offline_service vx_grid derivation
+                # (training/envs/wildrobot_env.py:835-855): arange over
+                # [min_velocity, max_velocity] at
+                # loc_ref_command_grid_interval, unioned with
+                # loc_ref_offline_command_vx so the eval-cmd anchor
+                # snaps to its own bin exactly.  Previously the adapter
+                # built [offline_vx] only, so any 3D cmd whose vx
+                # axis was NOT offline_vx selected the wrong bin off-JAX
+                # (reviewer 2026-05-24 follow-up #2).
+                min_vx = float(self._cfg.env.min_velocity)
+                max_vx = float(self._cfg.env.max_velocity)
+                interval = float(
+                    getattr(
+                        self._cfg.env, "loc_ref_command_grid_interval", 0.05
+                    )
+                )
+                if interval <= 0.0:
+                    raise ValueError(
+                        f"loc_ref_command_grid_interval must be positive; "
+                        f"got {interval!r}"
+                    )
+                arange_vals = np.arange(
+                    min_vx, max_vx + 1e-6, interval, dtype=np.float64
+                )
+                vx_grid = sorted(
+                    {round(float(v), 6) for v in arange_vals}
+                    | {round(offline_vx, 6)}
+                )
                 lib = ZMPWalkGenerator().build_library_for_3d_values(
-                    vx_values=[offline_vx],
+                    vx_values=vx_grid,
                     vy_values=vy_grid_cfg,
                     yaw_rate_values=wz_grid_cfg,
                 )

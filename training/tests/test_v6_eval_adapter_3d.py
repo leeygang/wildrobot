@@ -236,6 +236,15 @@ def test_v6_adapter_3d_mode_matches_env_bin_selection(smoke1_setup) -> None:
         np.array([0.20, -0.10, 0.0], dtype=np.float32),
         np.array([0.0, 0.0, 0.20], dtype=np.float32),
         np.array([0.0, 0.0, -0.20], dtype=np.float32),
+        # Reviewer 2026-05-24 follow-up #2: probe vx != offline_vx so
+        # a single-bin adapter library (the bug being fixed) would
+        # snap to (0.20, *, *) while env would correctly use (0.18, *, *)
+        # / (0.26, *, *).  Locks the full env vx_grid parity.
+        np.array([0.18, 0.05, 0.0], dtype=np.float32),
+        np.array([0.18, -0.05, 0.0], dtype=np.float32),
+        np.array([0.26, 0.10, 0.0], dtype=np.float32),
+        np.array([0.26, -0.10, 0.0], dtype=np.float32),
+        np.array([0.22, 0.05, 0.0], dtype=np.float32),
     ]
     for cmd in cmds:
         adapter_bin_idx = a._select_bin_idx(cmd)
