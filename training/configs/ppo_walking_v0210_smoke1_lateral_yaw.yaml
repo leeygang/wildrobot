@@ -1,0 +1,354 @@
+# =============================================================================
+# WildRobot v0.21.0 PPO Smoke 1 — first lateral + yaw prior smoke
+# =============================================================================
+# This is the FIRST v0.21.0 config that opts into the full 3-axis
+# velocity_cmd stack.  It extends the v0.20.1 smoke14 baseline
+# (smoke13_026 + critic-stack-15 + 1D vel reward) along four
+# simultaneous v0.21 gates:
+#
+#   1. ``env.actor_obs_layout_id: wr_obs_v8_cmd3d``     (P7 — 3-axis cmd obs)
+#   2. ``env.cmd_sampler_3d_branched: true``            (P4 — TB-branched sampler)
+#   3. ``env.loc_ref_command_axes_3d: true``            (P5 — 3D library lookup)
+#   4. ``reward_weights.cmd_yaw_rate_track > 0``        (P6 — yaw-rate term on)
+#
+# All four gates default OFF in legacy YAML so pre-v0.21 configs stay
+# byte-equivalent.  Smoke1 is intentionally the first config to flip ALL
+# four simultaneously — running them in isolation would dilute the
+# attribution because they're synergistic (e.g. the 3D library is
+# useless without a 3D cmd in the actor obs).
+#
+# -----------------------------------------------------------------------------
+# WR-scaled lateral + yaw ranges
+# -----------------------------------------------------------------------------
+# * vy ±0.13 m/s — same vy/vx ratio as ToddlerBot (TB has 0.10 m/s
+#   lateral against a 0.20 m/s forward range; WR's forward range is
+#   ±0.26 m/s scaled by the 4/3 leg-length ratio, so WR vy = 0.10 *
+#   1.3 ≈ 0.13).
+# * wz ±0.25 rad/s — TB foot-arc-per-swing kinematic scaling (TB
+#   uses 0.30 rad/s with a 0.0536 m stance half-width and 0.16 s
+#   single-support; WR shares the same stance half-width but a
+#   slower cycle, so wz drops to ~0.25 rad/s before the arc-radius
+#   IK saturates).
+#
+# -----------------------------------------------------------------------------
+# 3D reference library shape
+# -----------------------------------------------------------------------------
+# vx grid (derived from min/max/interval): {0.18, 0.22, 0.26}, plus
+# vx=0.0 force-unioned by ``build_library_for_3d_values`` (the round-2
+# follow-up at control/zmp/zmp_walk.py:1685) so the static (0, 0, 0)
+# bin always exists for the cmd-zero branch of the sampler.
+#
+# vy grid:  {-0.10, -0.05, 0.0, 0.05, 0.10}   (5 bins; symmetric)
+# wz grid:  {-0.20, -0.10, 0.0, 0.10, 0.20}   (5 bins; symmetric)
+#
+# Library shape under TB-split structure (control/zmp/zmp_walk.py:1598):
+#   * Linear-walk bins: ``vx_sorted × vy_sorted`` with wz=0 → 3 × 5 = 15
+#   * Pure-yaw bins:    ``(0, 0, wz)`` for each wz → 5 (factory force-
+#                       unions vx=0.0 even if not in vx_sorted)
+#   * Dedup:            (0, 0, 0) appears in both → keep one
+#   * Total:            15 + 5 - 1 = 19 trajectories
+# (The unconditional vx=0.0 force-union adds the (0, 0, 0) static bin
+# even though the derived vx grid starts at 0.18.)
+#
+# -----------------------------------------------------------------------------
+# H6 — lateral residual scale bump (hip_roll + ankle_roll only)
+# -----------------------------------------------------------------------------
+# To give PPO authority to add the lateral correction that the prior
+# can't represent (the 3D library's ZMP trajectories are sl_x/sl_y
+# planar with no torso-roll compensation), we bump the lateral DoF
+# residual scales 1.5× over smoke14:
+#
+#   * left_hip_roll, right_hip_roll:    0.25 → 0.375
+#   * left_ankle_roll, right_ankle_roll: 0.25 → 0.375
+#
+# WR has NO hip_yaw joints (verified at assets/v2/wildrobot.xml — the
+# pelvis-to-hip chain is roll → pitch only).  Do NOT add hip_yaw
+# entries here; the actuator layout would reject them.
+#
+# Pitch DoFs (hip_pitch, knee_pitch, ankle_pitch) inherit smoke14
+# values unchanged.
+#
+# -----------------------------------------------------------------------------
+# H3 — explicit 3-tuple eval_velocity_cmd
+# -----------------------------------------------------------------------------
+# A scalar eval_velocity_cmd broadcasts via ``_load_three_axis(...
+# scalar_broadcast_axis="vx_only")`` to ``(s, 0.0, 0.0)`` — that
+# would eval at a forward-only point.  For smoke1 we want eval to
+# probe a mixed (vx, vy, wz) point so the new 3-axis tracking machinery
+# is actually exercised at eval time, not just during PPO rollouts.
+#
+# -----------------------------------------------------------------------------
+# Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
+# =============================================================================
+version: "0.21.0"
+version_name: "v0.21.0 PPO smoke1 (lateral+yaw prior; v8 obs, 3D library, branched sampler, yaw-rate reward)"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  max_episode_steps: 500
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # Forward command range identical to smoke14.  vx grid derived from
+  # arange(0.18, 0.26+eps, 0.04) ∪ {loc_ref_offline_command_vx=0.20} =
+  # {0.18, 0.20, 0.22, 0.26}; the 3D library factory then force-unions
+  # vx=0.0 for pure-yaw bins (see control/zmp/zmp_walk.py:1685).
+  min_velocity: 0.18
+  max_velocity: 0.26
+  # v0.21.0 P4 — lateral / yaw-rate command ranges for the branched
+  # 3D sampler.  WR-scaled (see header comment on TB ratios).
+  min_velocity_y: -0.13
+  max_velocity_y:  0.13
+  max_yaw_rate:    0.25
+
+  cmd_resample_steps: 150
+  # v0.21.0 P4 — branched sampler probabilities (TB defaults).
+  cmd_zero_chance: 0.20
+  cmd_turn_chance: 0.20
+  # Per-axis deadzone replaces the smoke14 scalar (0.0666...).  The
+  # values come from the TB sampler reference: vx / vy at 0.02 m/s
+  # (~7% of the WR vx range) and wz at 0.05 rad/s (~20% of max_yaw_rate),
+  # picked to suppress micro-commands that would dither the prior.
+  cmd_deadzone: [0.02, 0.02, 0.05]
+  # H3 — explicit 3-tuple form.  A scalar here would broadcast to
+  # (0.18, 0.0, 0.0) under the "vx_only" rule (training_config.py:134),
+  # which would eval forward-only and skip the 3-axis tracking signal.
+  eval_velocity_cmd: [0.18, 0.04, 0.10]
+
+  # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
+  # (zero / pure-turn / ellipse-walk).  When false, env emits the
+  # legacy (vx, 0, 0) sampler regardless of the lateral/yaw ranges.
+  cmd_sampler_3d_branched: true
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v8_cmd3d
+  # Eval cmd anchor; primary single-bin trajectory selected by L2
+  # distance to (offline_vx, 0, 0).
+  loc_ref_offline_command_vx: 0.20
+
+  loc_ref_residual_base: home
+  loc_ref_reset_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: true
+  close_feet_threshold: 0.146
+
+  critic_imitation_refs: true
+
+  # TB c_frame_stack parity; inherited from smoke14.
+  critic_obs_history_frames: 15
+
+  loc_ref_command_conditioned: true
+  # Spec: interval=0.04 over [0.18, 0.26] → vx grid {0.18, 0.22, 0.26}.
+  # (Smoke14 used 0.02 → 5 bins; smoke1 widens to 3 bins to keep the
+  # 3D library trajectory count bounded — total 15 linear + 5 yaw - 1
+  # dedup = 19 trajectories.)
+  loc_ref_command_grid_interval: 0.04
+
+  # v0.21.0 P5 — opt-in for 3D reference library lookup (heading-frame
+  # nearest-key over (vx, vy, wz)).  Required for the new vy / wz
+  # tracking rewards to read non-degenerate prior trajectories.
+  loc_ref_command_axes_3d: true
+  loc_ref_offline_command_vy_grid: [-0.10, -0.05, 0.0, 0.05, 0.10]
+  loc_ref_offline_command_yaw_rate_grid: [-0.20, -0.10, 0.0, 0.10, 0.20]
+  # Note (vs spec): the v0.21 plan mentions a YAML knob
+  # ``loc_ref_offline_command_vx_grid`` for explicitly listing the vx
+  # bins.  That field is NOT wired in ``EnvConfig`` /
+  # ``_init_offline_service`` (it's only referenced in the plan doc).
+  # The static (0, 0, 0) bin is still guaranteed because
+  # ``build_library_for_3d_values`` unconditionally force-unions
+  # vx=0.0 for the pure-yaw branch (control/zmp/zmp_walk.py:1685, and
+  # the round-2 follow-up that derives ``command_range_vx`` from the
+  # ACTUALLY-stored vx set).  If a future revision wires the explicit
+  # grid knob, we can opt in here and drop the derived-grid comment.
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.2
+  # H6 — bump lateral DoF residual scales 1.5× over smoke14 to give
+  # PPO authority for the lateral correction the planar ZMP prior
+  # can't represent.  WR has no *_hip_yaw joints (assets/v2/wildrobot.xml).
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.3534     # unchanged from smoke14
+    left_hip_roll: 0.375       # smoke14 0.25 * 1.5  (H6)
+    left_knee_pitch: 0.667     # unchanged
+    left_ankle_pitch: 0.25     # unchanged
+    left_ankle_roll: 0.375     # smoke14 0.25 * 1.5  (H6)
+    right_hip_pitch: 0.3867    # unchanged
+    right_hip_roll: 0.375      # smoke14 0.25 * 1.5  (H6)
+    right_knee_pitch: 0.6657   # unchanged
+    right_ankle_pitch: 0.25    # unchanged
+    right_ankle_roll: 0.375    # smoke14 0.25 * 1.5  (H6)
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+ppo:
+  num_envs: 2048
+  rollout_steps: 20
+  # 30M run: 750 * 2048 * 20 = 30,720,000 env-steps.  Matches smoke14.
+  iterations: 750
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+
+  eval:
+    enabled: false
+    interval: 10
+    num_envs: 64
+    num_steps: 500
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 3
+    post_training_num_envs: 8
+    post_training_num_steps: 500
+    post_training_checkpoint_label: eval_promoted
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 562.5
+  # v0.21.0 — TB-parity 2D velocity tracking: penalize (vx_actual,
+  # vy_actual) against (cmd_vx, cmd_vy).  Smoke14 used dim=1 because
+  # WR had no vy_cmd; smoke1 introduces a real vy_cmd from the
+  # branched sampler so dim=2 is now meaningful.
+  cmd_velocity_track_dim: 2
+  cmd_velocity_track: 2.0
+  # v0.21.0 P6 — new yaw-rate tracking term.  Default 0.0 keeps
+  # legacy configs byte-equivalent; smoke1 turns it on at TB-aligned
+  # weight (1.5) and alpha (0.25).
+  cmd_yaw_rate_track:  1.5
+  cmd_yaw_rate_alpha:  0.25
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.21.0, smoke1, lateral_yaw_prior, obs_v8_cmd3d, library_3d, sampler_branched, reward_yaw_rate, home_anchored_residual]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
