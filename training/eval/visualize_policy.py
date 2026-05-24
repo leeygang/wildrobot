@@ -174,6 +174,108 @@ def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd) -> np.ndarray:
     return np.array([vx, vy, wz], dtype=np.float32)
 
 
+def _build_sample_velocity_cmd(training_cfg, rng):
+    """Build the per-episode velocity-cmd sampler closure.
+
+    Two modes, mirroring ``WildRobotEnv._sample_velocity_cmd`` dispatch
+    (wildrobot_env.py:_sample_velocity_cmd):
+
+      - ``cfg.env.cmd_sampler_3d_branched=False`` (default; smoke14 /
+        smoke12b / smoke7): legacy scalar-vx sampler.  ``vx`` is
+        uniform over ``[min_velocity, max_velocity]``; ``vy`` and
+        ``wz`` always zero.  Keeps back-compat for forward-only YAMLs.
+
+      - ``cfg.env.cmd_sampler_3d_branched=True`` (smoke1 opt-in): TB
+        branched 3D sampler.  A single uniform ``u`` partitions
+        probability mass across three branches:
+          * ``u < cmd_zero_chance``                  -> ``(0, 0, 0)``
+          * ``u < cmd_zero_chance + cmd_turn_chance`` -> pure-turn:
+            ``vx=vy=0``, ``wz`` signed-uniform outside the wz deadzone
+            and within ``|wz| <= max_yaw_rate``.
+          * otherwise                                 -> walk-ellipse:
+            TB-style ``(vx, vy)`` ellipse sweep where ``theta`` is
+            uniform in ``[0, 2pi)``; magnitude on each axis is uniform
+            in ``[deadzone, max]`` scaled by ``sin(theta)`` / ``cos(theta)``.
+
+    Mirrors the env's numpy semantics, not its JAX RNG -- per-seed
+    bit-equality between visualizer and env is not asserted (JAX vs
+    numpy PRNG keys differ).  What IS asserted (and tested):
+      * vy / wz vary under branched mode (test_visualize_sampler_uses_
+        branched_3d_when_smoke1_opt_in).
+      * vy / wz exactly zero under legacy mode (test_visualize_sampler_
+        stays_scalar_vx_for_smoke14).
+
+    Built as a closure so per-cfg constants (chances, deadzones,
+    ranges) bind at builder time -- the returned sampler takes no args
+    and emits ``(3,) float32 (vx, vy, wz)`` on each call.
+    """
+    env_cfg = training_cfg.env
+    min_vx = float(env_cfg.min_velocity)
+    max_vx = float(env_cfg.max_velocity)
+
+    branched = bool(getattr(env_cfg, "cmd_sampler_3d_branched", False))
+    if not branched:
+        def _sample_scalar_vx() -> np.ndarray:
+            vx = float(rng.uniform(min_vx, max_vx))
+            return np.array([vx, 0.0, 0.0], dtype=np.float32)
+        return _sample_scalar_vx
+
+    # Branched 3D sampler: mirror env helpers.
+    min_vy = float(getattr(env_cfg, "min_velocity_y", 0.0))
+    max_vy = float(getattr(env_cfg, "max_velocity_y", 0.0))
+    max_wz = float(getattr(env_cfg, "max_yaw_rate", 0.0))
+    zero_chance = float(getattr(env_cfg, "cmd_zero_chance", 0.0))
+    turn_chance = float(getattr(env_cfg, "cmd_turn_chance", 0.0))
+    # cmd_deadzone is length-3 under the v0.21.0 P3 contract; tolerate
+    # scalar (back-compat YAMLs that pre-date the change).
+    deadzone_raw = getattr(env_cfg, "cmd_deadzone", (0.0, 0.0, 0.0))
+    if np.isscalar(deadzone_raw):
+        dz_x = float(deadzone_raw)
+        dz_y = float(deadzone_raw)
+        dz_wz = float(deadzone_raw)
+    else:
+        dz_seq = list(deadzone_raw)
+        dz_x = float(dz_seq[0]) if len(dz_seq) > 0 else 0.0
+        dz_y = float(dz_seq[1]) if len(dz_seq) > 1 else 0.0
+        dz_wz = float(dz_seq[2]) if len(dz_seq) > 2 else 0.0
+
+    def _sample_walk_command() -> np.ndarray:
+        """Ellipse sweep on (vx, vy), wz=0.  Mirrors env's
+        ``_sample_walk_command``."""
+        theta = float(rng.uniform(0.0, 2.0 * np.pi))
+        sin_t = float(np.sin(theta))
+        cos_t = float(np.cos(theta))
+
+        x_hi = max_vx if sin_t > 0.0 else -min_vx
+        x_max_clamped = max(abs(x_hi), dz_x)
+        x = float(rng.uniform(dz_x, x_max_clamped)) * sin_t
+
+        y_hi = max_vy if cos_t > 0.0 else -min_vy
+        y_max_clamped = max(abs(y_hi), dz_y)
+        y = float(rng.uniform(dz_y, y_max_clamped)) * cos_t
+
+        return np.array([x, y, 0.0], dtype=np.float32)
+
+    def _sample_turn_command() -> np.ndarray:
+        """Pure-yaw: vx=vy=0; wz signed-uniform outside deadzone.
+        Mirrors env's ``_sample_turn_command``."""
+        wz_max_clamped = max(max_wz, dz_wz)
+        wz_mag = float(rng.uniform(dz_wz, wz_max_clamped))
+        sign_bit = bool(rng.uniform() < 0.5)
+        wz = wz_mag if sign_bit else -wz_mag
+        return np.array([0.0, 0.0, wz], dtype=np.float32)
+
+    def _sample_branched_3d() -> np.ndarray:
+        u = float(rng.uniform())
+        if u < zero_chance:
+            return np.zeros(3, dtype=np.float32)
+        if u < zero_chance + turn_chance:
+            return _sample_turn_command()
+        return _sample_walk_command()
+
+    return _sample_branched_3d
+
+
 def _is_terminated_from_pose(
     *,
     height: float,
@@ -704,18 +806,7 @@ def main():
 
     rng_env = np.random.default_rng()
 
-    def sample_velocity_cmd() -> np.ndarray:
-        """v0.21.0 P11: return (3,) [vx, vy, wz] even though visualize
-        historically only sampled vx — keeps the rest of the pipeline
-        layout-agnostic (v8 needs the full 3-vec; v6/v7 ignore the tail
-        via the index-0 slice in build_observation_from_components).
-        """
-        vx = float(
-            rng_env.uniform(
-                training_cfg.env.min_velocity, training_cfg.env.max_velocity
-            )
-        )
-        return np.array([vx, 0.0, 0.0], dtype=np.float32)
+    sample_velocity_cmd = _build_sample_velocity_cmd(training_cfg, rng_env)
 
     def reset_robot(mj_model, mj_data, apply_noise=True):
         """Reset robot to initial state (training parity)."""

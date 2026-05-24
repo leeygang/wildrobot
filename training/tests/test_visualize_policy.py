@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import mujoco
+import numpy as np
 import pytest
 
 from assets.robot_config import load_robot_config
@@ -10,6 +11,7 @@ from training.configs.training_config import load_training_config
 from training.eval.v6_eval_adapter import V6EvalAdapter
 from training.eval.visualize_policy import (
     _adapter_layout_enabled,
+    _build_sample_velocity_cmd,
     _is_terminated_from_pose,
     _network_activation_name,
     _validate_user_fixed_velocity_cmd,
@@ -24,6 +26,12 @@ SMOKE11_CFG = (
 )
 SMOKE12B_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke12b.yaml"
+)
+SMOKE1_CFG = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0210_smoke1_lateral_yaw.yaml"
+)
+SMOKE14_CFG = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke14.yaml"
 )
 
 
@@ -117,3 +125,59 @@ def test_visualizer_v7_layout_uses_native_eval_adapter_contract() -> None:
         velocity_cmd=float(cfg.env.eval_velocity_cmd[0]),
     )
     assert obs.shape == (policy_spec.model.obs_dim,)
+
+
+# =============================================================================
+# Reviewer bug 2: visualize sampler must mirror env branched 3D sampler
+# under cmd_sampler_3d_branched opt-in.
+# =============================================================================
+
+
+def test_visualize_sampler_uses_branched_3d_when_smoke1_opt_in() -> None:
+    """Reviewer bug 2: when cfg.env.cmd_sampler_3d_branched=True the
+    visualize sampler must mirror the env's branched sampler -- at
+    least one of (vy, wz) must vary across many samples.  Without this
+    fix, smoke1 visualization without --velocity-cmd / --demo defaults
+    to scalar-vx only and never exercises lateral / turning bins."""
+    if not SMOKE1_CFG.exists():
+        pytest.skip(f"{SMOKE1_CFG.name} not found")
+    cfg = load_training_config(str(SMOKE1_CFG))
+    assert bool(getattr(cfg.env, "cmd_sampler_3d_branched", False)) is True, (
+        "smoke1 yaml must set cmd_sampler_3d_branched=True for this test"
+    )
+    rng = np.random.default_rng(0)
+    sampler = _build_sample_velocity_cmd(cfg, rng)
+    cmds = np.stack([sampler() for _ in range(512)])
+    assert cmds.shape == (512, 3) and cmds.dtype == np.float32
+    assert np.any(np.abs(cmds[:, 1]) > 1e-3), (
+        "vy was always zero under branched 3D mode; sampler did not route "
+        "through the walk-ellipse / pure-turn branches"
+    )
+    assert np.any(np.abs(cmds[:, 2]) > 1e-3), (
+        "wz was always zero under branched 3D mode; sampler did not route "
+        "through the pure-turn branch"
+    )
+
+
+def test_visualize_sampler_stays_scalar_vx_for_smoke14() -> None:
+    """Back-compat: smoke14 (cmd_sampler_3d_branched=False) must still
+    sample (vx, 0, 0).  Catches an over-aggressive flip that would have
+    smoke14 / smoke12b / smoke7 visualization start emitting lateral
+    or yaw commands the underlying 1D reference library can't honor."""
+    if not SMOKE14_CFG.exists():
+        pytest.skip(f"{SMOKE14_CFG.name} not found")
+    cfg = load_training_config(str(SMOKE14_CFG))
+    assert bool(getattr(cfg.env, "cmd_sampler_3d_branched", False)) is False
+    rng = np.random.default_rng(0)
+    sampler = _build_sample_velocity_cmd(cfg, rng)
+    cmds = np.stack([sampler() for _ in range(64)])
+    assert cmds.shape == (64, 3) and cmds.dtype == np.float32
+    assert np.all(np.abs(cmds[:, 1]) < 1e-9), (
+        f"vy must be exactly zero under legacy scalar-vx sampler; got "
+        f"max |vy| = {float(np.abs(cmds[:, 1]).max()):.6e}"
+    )
+    assert np.all(np.abs(cmds[:, 2]) < 1e-9), (
+        f"wz must be exactly zero under legacy scalar-vx sampler; got "
+        f"max |wz| = {float(np.abs(cmds[:, 2]).max()):.6e}"
+    )
+

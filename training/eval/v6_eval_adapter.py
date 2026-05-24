@@ -189,11 +189,109 @@ class V6EvalAdapter:
     # ------------------------------------------------------------------ init
 
     def _init_offline_service(self) -> None:
+        """Build the offline reference service(s) for this episode.
+
+        Three modes, mirroring ``WildRobotEnv._init_offline_reference``
+        (env.py lines 800-1080):
+
+          - **Legacy / 1D mode** (``loc_ref_command_axes_3d=False`` or
+            unset): single forward-vx trajectory; ``_service`` is the
+            canonical lookup, ``_services_by_bin`` collapses to a
+            single-entry list pointing at ``_service`` for adapter-side
+            uniformity, ``_cmd_keys`` is ``[[offline_vx, 0, 0]]``.
+
+          - **3D mode** (``loc_ref_command_axes_3d=True``; v0.21.0 P5
+            opt-in, exercised by smoke1): build the full TB-split 3D
+            library via ``build_library_for_3d_values`` over the YAML
+            vy / yaw_rate grids.  Per-bin services are stored in
+            ``_services_by_bin``; ``_cmd_keys`` is the (n_bins, 3)
+            ``(vx, vy, wz)`` matrix driven off the stored trajectories'
+            command_key (matches env P5 plumbing).
+
+          - **On-disk library** (``loc_ref_offline_library_path``): load
+            from disk; iterate stored trajectories under 3D mode, or
+            single-vx lookup under 1D.
+
+        ``_service`` is selected by L2 distance to the canonical
+        straight-walk anchor ``(offline_vx, 0, 0)`` so ``_ref_init_q_rad``
+        / ``_init_ref_init_q_rad`` reads the same anchor frame the env
+        uses (env P5-fix at line 1039-1050).
+
+        Degenerate static bins (``(0, 0, 0)`` reduces to a 1-step
+        trajectory under the ZMP planner) are handled by
+        ``RuntimeReferenceService.lookup_np``'s built-in
+        ``np.clip(step_idx, 0, n_steps - 1)`` -- the numpy lookup just
+        re-reads the same frame for every step.  Env tiles them via
+        ``jp.tile`` for the stacked-arrays contract; the numpy adapter
+        doesn't need that because each bin keeps its own service.
+        """
         from control.references.runtime_reference_service import (
             RuntimeReferenceService,
         )
         offline_path = getattr(self._cfg.env, "loc_ref_offline_library_path", None)
         offline_vx = float(getattr(self._cfg.env, "loc_ref_offline_command_vx", 0.20))
+        axes_3d = bool(
+            getattr(self._cfg.env, "loc_ref_command_axes_3d", False)
+        )
+
+        if axes_3d:
+            # 3D library opt-in.  Build (or load) the full TB-split
+            # library and stand up one service per bin.
+            if offline_path:
+                from control.references.reference_library import ReferenceLibrary
+                lib = ReferenceLibrary.load(offline_path)
+                stored_trajectories = list(lib._entries.values())
+            else:
+                from control.zmp.zmp_walk import ZMPWalkGenerator
+                vy_grid_cfg = list(
+                    getattr(
+                        self._cfg.env, "loc_ref_offline_command_vy_grid", ()
+                    )
+                ) or [0.0]
+                wz_grid_cfg = list(
+                    getattr(
+                        self._cfg.env,
+                        "loc_ref_offline_command_yaw_rate_grid",
+                        (),
+                    )
+                ) or [0.0]
+                lib = ZMPWalkGenerator().build_library_for_3d_values(
+                    vx_values=[offline_vx],
+                    vy_values=vy_grid_cfg,
+                    yaw_rate_values=wz_grid_cfg,
+                )
+                stored_trajectories = list(lib._entries.values())
+
+            services: list[RuntimeReferenceService] = []
+            cmd_keys: list[tuple[float, float, float]] = []
+            for traj in stored_trajectories:
+                services.append(RuntimeReferenceService(traj, n_anchor=2))
+                cmd_keys.append(
+                    (
+                        float(traj.command_vx),
+                        float(traj.command_vy),
+                        float(traj.command_yaw_rate),
+                    )
+                )
+            self._services_by_bin = services
+            self._cmd_keys = np.asarray(cmd_keys, dtype=np.float32)
+
+            # Pick the canonical straight-walk anchor as the primary
+            # service (drives _ref_init_q_rad and any single-service
+            # callsite).  L2 distance over (vx, vy, wz) — matches env
+            # line 1039-1050.
+            anchor = np.array([offline_vx, 0.0, 0.0], dtype=np.float32)
+            diffs = self._cmd_keys - anchor[np.newaxis, :]
+            primary_idx = int(np.argmin(np.linalg.norm(diffs, axis=-1)))
+            self._service = services[primary_idx]
+            # Use the MAX n_steps across bins as the canonical horizon
+            # so static (0, 0, 0) bin (n_steps=1) doesn't shorten the
+            # advertised episode length.  Per-bin lookup_np clamps the
+            # idx internally so the short bin re-reads its single frame.
+            self._n_steps = max(int(s.n_steps) for s in services)
+            return
+
+        # Legacy / 1D path: single forward-vx service.
         if offline_path:
             from control.references.reference_library import ReferenceLibrary
             lib = ReferenceLibrary.load(offline_path)
@@ -202,7 +300,36 @@ class V6EvalAdapter:
             lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
         traj = lib.lookup(offline_vx)
         self._service = RuntimeReferenceService(traj, n_anchor=2)
+        self._services_by_bin = [self._service]
+        self._cmd_keys = np.array(
+            [[offline_vx, 0.0, 0.0]], dtype=np.float32
+        )
         self._n_steps = int(self._service.n_steps)
+
+    def _select_bin_idx(self, velocity_cmd: np.ndarray) -> int:
+        """Return the per-bin index nearest to ``velocity_cmd``.
+
+        Mirrors ``WildRobotEnv._lookup_offline_window`` 3D path
+        (env line 1585-1588): L2-argmin over the (vx, vy, wz) cmd_keys.
+        Heading-frame correction is NOT applied here -- the env default
+        is also without correction unless both ``path_rot_wxyz`` and
+        ``heading_rot_wxyz`` are supplied, and the adapter is the
+        eager-eval / visualizer path where the path-frame anchor isn't
+        available at the obs site.
+
+        Under 1D / legacy mode this collapses to index 0 because
+        ``_cmd_keys`` is a single-row array.
+        """
+        cmd = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
+        if cmd.size == 1:
+            cmd = np.array([float(cmd[0]), 0.0, 0.0], dtype=np.float32)
+        elif cmd.size != 3:
+            raise ValueError(
+                "V6EvalAdapter._select_bin_idx: velocity_cmd must be "
+                f"scalar or length-3; got size {cmd.size}"
+            )
+        diffs = self._cmd_keys - cmd[np.newaxis, :]
+        return int(np.argmin(np.linalg.norm(diffs, axis=-1)))
 
     def _init_residual_scale(self) -> None:
         per_joint = dict(
@@ -646,9 +773,29 @@ class V6EvalAdapter:
           - v4_compat["history"] is computed from the previous
             ``loc_ref_history``, then stored as the new
             ``loc_ref_history`` for the next obs (env's wr.loc_ref_history).
+
+        v0.21.0 P11 follow-up — 3D bin selection: when the env opts into
+        ``loc_ref_command_axes_3d=True``, the reference window MUST come
+        from the per-bin service nearest the incoming ``(vx, vy, wz)``
+        cmd (mirrors env ``_lookup_offline_window`` 3D path).  Under
+        legacy / 1D mode ``_select_bin_idx`` returns 0 and the lookup
+        falls back to the single forward-vx service.
         """
         signals = self._signals_adapter.read(mj_data)
-        win = self._service.lookup_np(self._state.step_idx)
+        # Normalize velocity_cmd EARLY so the bin selector and the obs
+        # builder see the same canonical (3,) form.
+        cmd_arr = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
+        if cmd_arr.size == 1:
+            cmd_arr = np.array(
+                [float(cmd_arr[0]), 0.0, 0.0], dtype=np.float32
+            )
+        elif cmd_arr.size != 3:
+            raise ValueError(
+                "V6EvalAdapter.compute_obs: velocity_cmd must be scalar or "
+                f"length-3 (vx, vy, wz); got size {cmd_arr.size}"
+            )
+        bin_idx = self._select_bin_idx(cmd_arr)
+        win = self._services_by_bin[bin_idx].lookup_np(self._state.step_idx)
 
         phase_sin_cos = np.array(
             [float(win.phase_sin), float(win.phase_cos)], dtype=np.float32
@@ -689,23 +836,12 @@ class V6EvalAdapter:
         policy_state = PolicyState(
             prev_action=np.asarray(self._state.last_applied_action, dtype=np.float32)
         )
-        # v0.21.0 P11: ``velocity_cmd`` can be a scalar (legacy v6/v7 path)
-        # or a (3,) [vx, vy, wz] vector (post-P3 env emission, v8 layout).
-        # Normalize to (3,) by broadcasting vx-only when given a scalar
-        # (H3 semantics — visualize_policy historically only exercises vx).
-        # The numpy obs builder slices index 0 for the shared scalar slot
-        # so v1-v7 layouts stay byte-identical; v8 additionally consumes
-        # the (vy, wz) tail via ``velocity_cmd_lateral_yaw``.
-        cmd_arr = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
-        if cmd_arr.size == 1:
-            cmd_arr = np.array(
-                [float(cmd_arr[0]), 0.0, 0.0], dtype=np.float32
-            )
-        elif cmd_arr.size != 3:
-            raise ValueError(
-                "V6EvalAdapter.compute_obs: velocity_cmd must be scalar or "
-                f"length-3 (vx, vy, wz); got size {cmd_arr.size}"
-            )
+        # v0.21.0 P11: ``cmd_arr`` was normalized up-front above so the
+        # bin selector and the obs builder share a single canonical (3,)
+        # representation.  The numpy obs builder slices index 0 for the
+        # shared scalar slot so v1-v7 layouts stay byte-identical; v8
+        # additionally consumes the (vy, wz) tail via
+        # ``velocity_cmd_lateral_yaw``.
         obs_kwargs: dict[str, object] = dict(
             spec=self._policy_spec,
             state=policy_state,
