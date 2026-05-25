@@ -362,9 +362,16 @@ reward_weights:
   # that let the policy settle into a posture / standing minimum
   # because the cost function had no slope to follow.  alpha=40 gives
   # exp(-40 * 0.17^2) ~ 0.315 (reachable gradient) while still
-  # preferring lower error.  Once the policy is reliably tracking
-  # (err < 0.05), tighten back toward TB-active sigma=1000 (alpha
-  # equivalent ~1e-3 in WR's numerator-alpha convention).
+  # preferring lower error.
+  #
+  # Once the policy is reliably tracking (err < 0.05), tighten back
+  # toward TB-active.  TB's reward formula is exp(-sigma * error**2)
+  # with lin_vel_tracking_sigma = 1000.0 (walk.gin:111, mjx_env.py:
+  # 2346), so under WR's exp(-alpha * error**2) the DIRECT equivalent
+  # target is **alpha = 1000.0** (NOT alpha = 1/1000; sigma here
+  # multiplies -error², same role as alpha).  At err=0.05, TB-tight
+  # alpha=1000 gives exp(-2.5) ~ 0.082 — a sharp basin that's only
+  # informative once tracking is already close.
   cmd_forward_velocity_alpha: 40.0
   # v0.21.0 — TB-parity 2D velocity tracking: penalize (vx_actual,
   # vy_actual) against (cmd_vx, cmd_vy).  Smoke14 used dim=1 because

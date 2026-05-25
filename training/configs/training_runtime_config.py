@@ -1086,13 +1086,20 @@ class RewardWeightsConfig(Freezable):
     #
     # ``cmd_yaw_rate_alpha`` is a SEPARATE numerator-α field, NOT a
     # reuse of ``cmd_forward_velocity_alpha`` (H5 from the r2 plan
-    # review).  TB's walk.gin has two distinct tracking sigmas:
-    #   lin_vel_tracking_sigma = 1000.0  →  WR α = 1/1000 = 0.001
-    #   ang_vel_tracking_sigma = 4.0     →  WR α = 1/4.0  = 0.25
-    # WR keeps its historically tighter lin-vel α (4.0) for
-    # cmd_forward_velocity, but adopts TB's broader yaw-rate width
-    # (α = 0.25) directly so the policy isn't punished out of the
-    # gate for the noisy first-step yaw rate.
+    # review).  TB's walk.gin has two distinct tracking sigmas;
+    # TB's reward formula is ``exp(-sigma * error**2)`` (mjx_env.py:
+    # 2346 — sigma multiplies -error², same role as WR's alpha), so
+    # the direct WR equivalence is **alpha = sigma**, NOT 1/sigma:
+    #   TB lin_vel_tracking_sigma = 1000.0  →  WR-direct α = 1000.0
+    #   TB ang_vel_tracking_sigma = 4.0     →  WR-direct α = 4.0
+    # NOTE: prior versions of this comment had the mapping inverted
+    # (α = 1/sigma), which made WR's α=4 look "tighter than TB" when
+    # it is actually 250x broader than TB.  This is corrected here
+    # for future tuning; the dataclass default below (0.25) is a
+    # deliberate WR-specific broad choice — even broader than TB's
+    # direct α=4.0 — picked so the policy isn't punished out of the
+    # gate for the noisy first-step yaw rate.  Tightening toward
+    # TB-direct (α≈4) is on the table once yaw_rate_err < ~0.2.
     cmd_yaw_rate_track: float = 0.0
     cmd_yaw_rate_alpha: float = 0.25
 
