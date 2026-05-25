@@ -11,8 +11,11 @@ that opts into all four lateral+yaw gates simultaneously:
 Plus the WR-scaled command range (vy ±0.13 m/s, wz ±0.25 rad/s), the
 bumped lateral residual scales (H6: hip_roll + ankle_roll × 1.5; WR has
 NO hip_yaw joints), and the explicit ``eval_velocity_cmd`` 3-tuple at
-(0.18, 0.04, 0.10) so eval probes a mixed (vx, vy, wz) point instead of
-defaulting to forward-only via the H3 scalar broadcast rule.
+(0.18, 0.04, 0.00) — walk-branch in-distribution for the TB-style split
+sampler (smoke2 follow-up: the original (0.18, 0.04, 0.10) was OOD —
+the sampler never produces simultaneous nonzero vy AND wz, and the
+3D library has no mixed (vx>0, wz>0) bins).  Pure-axis Appendix C
+criteria are isolated via ``eval_velocity_cmd_probes``.
 
 These tests pin the YAML contract so a later edit can't silently turn
 off one of the four gates or drift the vy/wz range and break the run
@@ -75,7 +78,8 @@ def test_smoke1_yaml_loads_and_has_3d_axes_enabled(cfg_smoke1) -> None:
     # Per-axis deadzone (was a scalar before v0.21).
     assert tuple(env.cmd_deadzone) == pytest.approx((0.02, 0.02, 0.05))
     # H3: explicit 3-tuple eval cmd (avoid scalar→(s, 0, 0) broadcast).
-    assert tuple(env.eval_velocity_cmd) == pytest.approx((0.18, 0.04, 0.10))
+    # smoke2 follow-up: walk-branch in-distribution (not mixed walk+turn).
+    assert tuple(env.eval_velocity_cmd) == pytest.approx((0.18, 0.04, 0.00))
 
 
 # ---------------------------------------------------------------------------
@@ -255,3 +259,31 @@ def test_smoke1_yaw_probe_wz_within_command_range() -> None:
             assert abs(wz) <= max_wz + 1e-6, (
                 f"yaw probe wz={wz} exceeds max_yaw_rate={max_wz}"
             )
+
+
+# ---------------------------------------------------------------------------
+# v0.21.0 smoke2 follow-up — primary eval MUST be in-distribution for
+# the TB-style split sampler.
+# ---------------------------------------------------------------------------
+def test_smoke1_primary_eval_is_in_distribution_walk_branch(cfg_smoke1) -> None:
+    """The TB-style branched sampler (env.cmd_sampler_3d_branched=True)
+    emits exactly one of {zero, pure-turn (0,0,wz), walk (vx,vy,0)};
+    it NEVER produces simultaneous nonzero vy AND wz.  The 3D
+    reference library mirrors this with NO mixed (vx>0, wz>0) bins
+    (control/zmp/zmp_walk.py::build_library_for_3d_values).
+
+    A primary ``eval_velocity_cmd`` that mixes walk + turn (e.g.
+    (0.18, 0.04, 0.10)) is OOD for both the sampler and the library;
+    the env would silently snap to the nearest bin and report
+    misleading tracking errors.  Pin: at most ONE of (|vy|, |wz|)
+    may be non-trivial (>= 0.02).
+    """
+    vx, vy, wz = (float(c) for c in cfg_smoke1.env.eval_velocity_cmd)
+    vy_active = abs(vy) >= 0.02
+    wz_active = abs(wz) >= 0.02
+    assert not (vy_active and wz_active), (
+        f"primary eval_velocity_cmd=({vx:.3f}, {vy:.3f}, {wz:.3f}) is "
+        "OOD for the TB-split sampler (mixed walk+turn).  Use a walk-"
+        "branch cmd (vx, vy, 0) and isolate yaw via "
+        "eval_velocity_cmd_probes."
+    )

@@ -29,6 +29,7 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -798,9 +799,34 @@ def _parse_networks_config(config: Dict[str, Any]) -> NetworksConfig:
 
 
 def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
-    """Parse reward weights from YAML dict."""
+    """Parse reward weights from YAML dict.
+
+    Strict: any YAML key under ``reward_weights:`` (or the legacy
+    ``rewards:``) that does NOT correspond to a ``RewardWeightsConfig``
+    dataclass field raises ``ValueError`` at load time.  The previous
+    silent-accept behaviour let typos (e.g. ``cmd_velocity_track``
+    when the real field is ``cmd_forward_velocity_track`` /
+    ``cmd_velocity_track_dim``) become dead config — the YAML loaded,
+    the field defaulted to 0, and the policy trained against the
+    wrong reward weights.  See v0.21.0 smoke1 post-mortem.
+    """
     # Support both 'rewards:' (old) and 'reward_weights:' (new) format
     rewards = config.get("reward_weights", config.get("rewards", {}))
+
+    # Validate every YAML key matches a RewardWeightsConfig field.
+    _valid_field_names = {f.name for f in dataclass_fields(RewardWeightsConfig)}
+    _yaml_keys = set(rewards.keys())
+    _unknown = _yaml_keys - _valid_field_names
+    if _unknown:
+        raise ValueError(
+            f"Unknown reward_weights key(s): {sorted(_unknown)}. "
+            f"Valid keys are RewardWeightsConfig fields "
+            f"(see training/configs/training_runtime_config.py::RewardWeightsConfig). "
+            f"This loader is strict so a typo cannot silently become dead config. "
+            f"If you meant a real field, fix the name; if you intended to add a "
+            f"new reward term, add the field to RewardWeightsConfig first."
+        )
+
     return RewardWeightsConfig(
         alive=rewards.get("alive", 0.0),
         tracking_lin_vel=rewards.get("tracking_lin_vel", 2.0),

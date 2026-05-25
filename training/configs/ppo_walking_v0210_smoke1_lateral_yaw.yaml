@@ -159,7 +159,20 @@ env:
   # H3 — explicit 3-tuple form.  A scalar here would broadcast to
   # (0.18, 0.0, 0.0) under the "vx_only" rule (training_config.py:134),
   # which would eval forward-only and skip the 3-axis tracking signal.
-  eval_velocity_cmd: [0.18, 0.04, 0.10]
+  #
+  # v0.21.0 smoke2 follow-up: primary eval MUST be in-distribution
+  # for the TB-style split sampler (zero / pure-turn (0,0,wz) /
+  # walk (vx,vy,0)).  Mixed walk+turn ``(0.18, 0.04, 0.10)`` is OOD
+  # — the sampler never produces simultaneous nonzero vy AND wz, and
+  # the 3D reference library has no mixed (vx>0, wz>0) bins either
+  # (TB-split: 25 linear + 5 pure-yaw, no mixed; see
+  # control/zmp/zmp_walk.py::build_library_for_3d_values).  Evaluating
+  # at an OOD command would silently snap to the nearest bin in the
+  # library and report misleading tracking errors.
+  #
+  # Use a walk-branch cmd as the primary eval; isolate pure-axis
+  # lateral / yaw criteria via ``eval_velocity_cmd_probes`` below.
+  eval_velocity_cmd: [0.18, 0.04, 0.00]
 
   # v0.21.0 follow-up — Appendix C lateral / yaw cmd tracking pass
   # criteria need pure-axis probes to evaluate.  The primary
@@ -343,13 +356,25 @@ networks:
 reward_weights:
   alive: 1.0
   cmd_forward_velocity_track: 2.0
-  cmd_forward_velocity_alpha: 562.5
+  # v0.21.0 smoke2 follow-up: broaden the velocity tracking kernel.
+  # smoke1 ran at alpha=562.5, which gives exp(-562.5 * 0.17^2) ~ 8.7e-8
+  # at the observed steady-state error of 0.17 m/s — a dead gradient
+  # that let the policy settle into a posture / standing minimum
+  # because the cost function had no slope to follow.  alpha=40 gives
+  # exp(-40 * 0.17^2) ~ 0.315 (reachable gradient) while still
+  # preferring lower error.  Once the policy is reliably tracking
+  # (err < 0.05), tighten back toward TB-active sigma=1000 (alpha
+  # equivalent ~1e-3 in WR's numerator-alpha convention).
+  cmd_forward_velocity_alpha: 40.0
   # v0.21.0 — TB-parity 2D velocity tracking: penalize (vx_actual,
   # vy_actual) against (cmd_vx, cmd_vy).  Smoke14 used dim=1 because
   # WR had no vy_cmd; smoke1 introduces a real vy_cmd from the
-  # branched sampler so dim=2 is now meaningful.
+  # branched sampler so dim=2 is now meaningful.  The 2D weight IS
+  # ``cmd_forward_velocity_track`` above (the env extends the existing
+  # 1D term to (vx, vy) when ``cmd_velocity_track_dim=2``); there is
+  # NO separate ``cmd_velocity_track`` field — adding one as a YAML
+  # key would now fail at load (strict reward_weights validator).
   cmd_velocity_track_dim: 2
-  cmd_velocity_track: 2.0
   # v0.21.0 P6 — new yaw-rate tracking term.  Default 0.0 keeps
   # legacy configs byte-equivalent; smoke1 turns it on at TB-aligned
   # weight (1.5) and alpha (0.25).

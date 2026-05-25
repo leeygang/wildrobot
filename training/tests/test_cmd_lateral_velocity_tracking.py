@@ -203,3 +203,134 @@ def test_training_config_loader_reads_yaw_rate_fields() -> None:
     # smoke14 does NOT set these — defaults must hold.
     assert cfg.reward_weights.cmd_yaw_rate_alpha == pytest.approx(0.25)
     assert cfg.reward_weights.cmd_yaw_rate_track == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# v0.21.0 smoke2 follow-up — strict reward_weights loader, end-to-end
+# emission of cmd_yaw_rate_track, and dim=2 vy_cmd contract.
+# ---------------------------------------------------------------------------
+def test_reward_weights_loader_rejects_unknown_key(tmp_path) -> None:
+    """A YAML key under ``reward_weights:`` that does NOT correspond
+    to a ``RewardWeightsConfig`` dataclass field must raise at load
+    time.  The previous silent-accept behaviour let typos (e.g.
+    ``cmd_velocity_track`` when the real field is
+    ``cmd_velocity_track_dim`` / ``cmd_forward_velocity_track``)
+    become dead config — see v0.21.0 smoke1 post-mortem."""
+    if not _SMOKE14.exists():
+        pytest.skip(f"{_SMOKE14.name} not found")
+
+    # Build a smoke14 copy with one bogus reward_weights key.
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(_SMOKE14.read_text())
+    raw["reward_weights"]["cmd_velocity_track"] = 2.0  # the smoke1 typo
+    bad = tmp_path / "smoke14_with_bogus_reward.yaml"
+    bad.write_text(_yaml.safe_dump(raw))
+
+    with pytest.raises(ValueError, match="Unknown reward_weights key"):
+        load_training_config(str(bad))
+
+
+def test_reward_weights_loader_accepts_all_valid_dataclass_fields() -> None:
+    """Sanity: a real smoke YAML (smoke14) MUST load cleanly under
+    the strict validator.  Catches regressions where the loader
+    drops a legitimate field from its accepted set."""
+    if not _SMOKE14.exists():
+        pytest.skip(f"{_SMOKE14.name} not found")
+    cfg = load_training_config(str(_SMOKE14))
+    # If we got here, the strict validator passed every smoke14 key.
+    assert cfg.reward_weights is not None
+
+
+def test_reward_cmd_yaw_rate_track_emits_when_weight_positive() -> None:
+    """End-to-end: when ``cmd_yaw_rate_track > 0`` and the env is
+    stepped with a non-zero yaw cmd, the per-step
+    ``reward/cmd_yaw_rate_track`` metric MUST be present in the
+    emitted ``metrics_vec`` and become non-zero capable (positive
+    weight × non-zero kernel value).  This catches the smoke1
+    silent-drop where the term was wired in the dataclass + env +
+    metrics registry but never appeared in the W&B logs."""
+    import jax
+    import jax.numpy as jp
+
+    from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
+    from training.envs.env_info import WR_INFO_KEY
+
+    cfg = _load_smoke14_dim2_lateral_active_cfg()  # turns cmd_yaw_rate_track=1.0
+    env = WildRobotEnv(config=cfg)
+    state = env.reset(jax.random.PRNGKey(0))
+    wr = state.info[WR_INFO_KEY]
+    new_wr = wr.replace(
+        velocity_cmd=jp.array([0.0, 0.0, 0.10], dtype=jp.float32)
+    )
+    state = state.replace(info={**state.info, WR_INFO_KEY: new_wr})
+    state2 = env.step(state, jp.zeros(env.action_size))
+    metrics = unpack_metrics(state2.metrics[METRICS_VEC_KEY])
+
+    # Key MUST exist (registered + emitted via terminal_metrics_dict).
+    assert "reward/cmd_yaw_rate_track" in metrics, (
+        "reward/cmd_yaw_rate_track was registered + emitted in env "
+        "code but is missing from unpacked metrics_vec.  This is the "
+        "smoke1 silent-drop signature."
+    )
+    val = float(metrics["reward/cmd_yaw_rate_track"])
+    # Non-zero capable: weight=1.0, TB alpha=0.25, settling gyro_z ~ 0,
+    # cmd_wz=0.10 → unweighted kernel = exp(-0.25 * 0.10^2) ≈ 0.9975;
+    # post-dt rescale (ctrl_dt = 0.02, CLAUDE.md "reward = sum(...) * dt")
+    # gives per-step contribution ≈ 0.020.  Floor the assertion well
+    # below that so first-step kernel jitter doesn't fail this
+    # regression — the point is to catch silent ZERO (the smoke1
+    # W&B-log signature), not to gate magnitude.
+    assert abs(val) > 1e-3, (
+        f"reward/cmd_yaw_rate_track={val} is effectively zero with "
+        f"weight=1.0 and a tracking cmd.  Silent zero means the "
+        f"weight × reward multiply was bypassed somewhere."
+    )
+
+
+def test_dim2_makes_reward_metric_reflect_vy_cmd() -> None:
+    """Sharper variant of ``test_env_reward_consumes_real_vy_cmd_from_3vec``.
+    When ``cmd_velocity_track_dim == 2``, the EMITTED
+    ``reward/cmd_forward_velocity_track`` value MUST depend on
+    ``vy_cmd``.  Concretely: at a fixed vx_cmd, swapping vy_cmd
+    between 0 and 0.10 must change the emitted reward (otherwise
+    the 2D path silently degenerated to 1D)."""
+    import jax
+    import jax.numpy as jp
+
+    from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
+    from training.envs.env_info import WR_INFO_KEY
+
+    cfg = _load_smoke14_dim2_lateral_active_cfg()
+    env = WildRobotEnv(config=cfg)
+
+    def _step_with_cmd(vy_cmd: float) -> float:
+        state = env.reset(jax.random.PRNGKey(0))
+        wr = state.info[WR_INFO_KEY]
+        new_wr = wr.replace(
+            velocity_cmd=jp.array([0.20, vy_cmd, 0.0], dtype=jp.float32)
+        )
+        state = state.replace(info={**state.info, WR_INFO_KEY: new_wr})
+        state2 = env.step(state, jp.zeros(env.action_size))
+        m = unpack_metrics(state2.metrics[METRICS_VEC_KEY])
+        return float(m["reward/cmd_forward_velocity_track"])
+
+    r_vy0 = _step_with_cmd(0.0)
+    r_vy10 = _step_with_cmd(0.10)
+    # If dim=2 actually consumes vy_cmd, the 0.10 m/s lateral target
+    # MUST change the emitted reward vs vy_cmd=0.  smoke14 has
+    # alpha=562.5 + weight 2.0 + post-dt rescale (CLAUDE.md), so the
+    # absolute kernel value at large error (~0.20) is ~exp(-562.5 *
+    # 0.04) ≈ 1.7e-10 — tiny in absolute terms.  Assert RELATIVE
+    # dependence (the dim=2 path must change reward as vy_cmd
+    # changes); abs threshold floored at numerical noise.
+    assert max(abs(r_vy0), abs(r_vy10)) > 0, (
+        "both rewards were exactly zero; cannot evaluate dependence"
+    )
+    denom = max(abs(r_vy0), abs(r_vy10))
+    rel_diff = abs(r_vy0 - r_vy10) / denom
+    assert rel_diff > 0.05, (
+        f"reward/cmd_forward_velocity_track did NOT vary with vy_cmd "
+        f"(r_vy0={r_vy0}, r_vy10={r_vy10}, rel_diff={rel_diff}); "
+        f"cmd_velocity_track_dim=2 has degenerated to dim=1."
+    )
