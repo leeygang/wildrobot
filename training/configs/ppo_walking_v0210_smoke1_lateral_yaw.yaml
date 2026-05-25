@@ -308,20 +308,17 @@ ppo:
   critic_privileged_enabled: true
 
   eval:
-    # v0.21.0 smoke1 reviewer follow-up: enable training-time eval so
-    # the new mixed eval_velocity_cmd=[0.18, 0.04, 0.10] actually
-    # exercises the lateral/yaw tracking machinery and emits
-    # Evaluate/tracking/yaw_rate_err, Evaluate/tracking/cmd_velocity_xy_err
-    # etc. during training instead of only in the post-training pass.
-    enabled: true
-    # interval=50 -> 15 in-training evals across the 750-iter run.
-    # smoke14 inherited interval=10 was inert (enabled=false); flipping
-    # enabled=true without raising interval would run eval at every
-    # log step (75 evals, ~8% wall-clock overhead from the
-    # 64-env x 500-step eval rollout).  50 keeps the cadence aligned
-    # with log_interval=10 (eval every 5 log windows) while dropping
-    # overhead to ~1.6%.
-    interval: 50
+    # Training-time eval DISABLED for smoke1 (smoke14 baseline).
+    # The reviewer follow-up that flipped this to true ran a
+    # 64-env x 500-step rollout every log window — ~8% wall-clock
+    # overhead and spammed "Evaluate:" lines into the console.
+    # Lateral / yaw tracking machinery is still exercised at the
+    # authoritative post-training eval (post_training_enabled=true,
+    # top_k=3) which sees the full eval_velocity_cmd plus the
+    # eval_velocity_cmd_probes below, so the new metrics ARE checked
+    # — just once at the end, not 75 times in-flight.
+    enabled: false
+    interval: 10
     num_envs: 64
     num_steps: 500
     deterministic: true
