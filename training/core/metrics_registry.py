@@ -1614,6 +1614,44 @@ METRIC_SPECS: List[MetricSpec] = [
     # the spec calls out, plus the realized-vs-commanded forward velocity
     # ratio.  MEAN aggregation approximates the spec's p50 (close for the
     # symmetric residual distribution we expect under PPO exploration).
+    #
+    # IMPORTANT — semantics depend on ``loc_ref_residual_base``:
+    #
+    # G5 was originally specified under ``loc_ref_residual_base: q_ref``
+    # (smoke7), where the action contract is
+    #   ``q_target = clip(q_ref(t) + action × scale, joint_limits)``
+    # and ``residual_delta_q = action × scale`` IS the deviation from the
+    # prior at every step.  Under that contract, ``residual_*_abs > 0.20``
+    # correctly signals "policy is inventing >11° of correction the prior
+    # should own" — a real propulsion-mis-assignment exploit.
+    #
+    # Smoke8 onward switched to ``loc_ref_residual_base: home``
+    # (TB-aligned; see training/CHANGELOG entry "v0.20.1-smoke8-tb-aligned-
+    # home-base-residual" 2026-05-10).  Under home base the action contract
+    # is ``q_target = clip(home_q + action × scale, joint_limits)`` and
+    # ``residual_delta_q`` measures deviation from the constant home pose,
+    # NOT from the per-step prior.  A walking policy SHOULD use most of
+    # the ±0.25 scale to swing the leg through the gait cycle, so
+    # ``residual_*_abs`` approaching 0.20 under home-base is NOT
+    # necessarily an exploit — it can just be a normal walking range.
+    #
+    # The v0.21.0 smoke1 30M run (lblub15y, 2026-05-24) hit
+    # ``residual_knee_left_abs = 0.261 > 0.20 cap`` while converged to a
+    # standing-tap-dance minimum.  Original reading: "propulsion mis-
+    # assigned to left knee; tighten G1 residual bound 50%".  Corrected
+    # reading: the policy is using its full ±0.25 knee range to alternate
+    # near-home and near-extended within home-base bounds; tightening
+    # ``scale`` would actively suppress the gait amplitude the policy
+    # needs to escape standing, making the standing minimum stronger.
+    #
+    # Under home-base, prefer L/R asymmetry of these metrics
+    # (touchdown_rate, step_length_left/right_event_m) as the exploit
+    # signal — it directly detects the one-legged-shuffle failure mode
+    # that scale bounds cannot fix.  G5's residual_*_abs values remain
+    # useful as range-utilization diagnostics but should NOT be read as
+    # propulsion-mis-assignment under home-base.  When loc_ref_residual_
+    # base is "q_ref" or "ref_init", the original 0.20 anti-exploit
+    # semantics apply.
     # =========================================================================
     MetricSpec(
         name="tracking/residual_hip_pitch_left_abs",
