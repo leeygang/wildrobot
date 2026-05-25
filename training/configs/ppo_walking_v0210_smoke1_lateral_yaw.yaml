@@ -314,7 +314,14 @@ ppo:
     # Evaluate/tracking/yaw_rate_err, Evaluate/tracking/cmd_velocity_xy_err
     # etc. during training instead of only in the post-training pass.
     enabled: true
-    interval: 10
+    # interval=50 -> 15 in-training evals across the 750-iter run.
+    # smoke14 inherited interval=10 was inert (enabled=false); flipping
+    # enabled=true without raising interval would run eval at every
+    # log step (75 evals, ~8% wall-clock overhead from the
+    # 64-env x 500-step eval rollout).  50 keeps the cadence aligned
+    # with log_interval=10 (eval every 5 log windows) while dropping
+    # overhead to ~1.6%.
+    interval: 50
     num_envs: 64
     num_steps: 500
     deterministic: true
