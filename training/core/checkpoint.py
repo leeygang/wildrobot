@@ -155,6 +155,12 @@ def save_checkpoint_from_cpu(
             "num_minibatches": config.ppo.num_minibatches,
             "epochs": config.ppo.epochs,
             "critic_privileged_enabled": config.ppo.critic_privileged_enabled,
+            # v0.21.0 Lever 7: value-head input shape depends on this
+            # flag (privileged_dim alone vs obs_dim + privileged_dim).
+            # Persist so resume validation can hard-fail an incompatible
+            # checkpoint instead of silently loading a wrong-shape
+            # value_params and crashing later in value_network.apply.
+            "critic_includes_actor_obs": config.ppo.critic_includes_actor_obs,
             "actor_hidden_sizes": config.networks.actor.hidden_sizes,
             "critic_hidden_sizes": config.networks.critic.hidden_sizes,
             "iterations": config.ppo.iterations,

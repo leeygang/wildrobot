@@ -181,3 +181,98 @@ def test_rollout_critic_obs_shape_when_lever7_on() -> None:
         f"obs_dim({obs_dim}) + privileged_dim({privileged_dim}); "
         f"got {trajectory.critic_obs.shape[-1]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Resume validator: hard-fail when critic_includes_actor_obs differs
+# ---------------------------------------------------------------------------
+def test_resume_validator_hard_fails_on_lever7_mismatch(tmp_path) -> None:
+    """A pre-Lever-7 ckpt (critic_includes_actor_obs=False) under a
+    Lever-7 config (True) would silently load wrong-shape value_params
+    and crash later in value_network.apply.  The resume validator
+    MUST hard-fail this combination."""
+    from training.core.training_loop import _validate_resume_checkpoint
+
+    if not _SMOKE2.exists():
+        pytest.skip(f"{_SMOKE2.name} not found")
+    cfg = load_training_config(str(_SMOKE2))
+    assert cfg.ppo.critic_includes_actor_obs is True  # smoke2 opts in
+
+    # Simulate loading a pre-Lever-7 ckpt (flag absent in stored config
+    # OR explicitly False).  Resume validator must raise.
+    # policy_spec_hash must be present + matching so the validator reaches
+    # the hard_mismatch raise (the spec-hash check raises earlier on its own).
+    fake_hash = "deadbeef"
+    ckpt_config_pre_lever7 = {
+        "num_envs": cfg.ppo.num_envs,
+        "rollout_steps": cfg.ppo.rollout_steps,
+        "num_minibatches": cfg.ppo.num_minibatches,
+        "epochs": cfg.ppo.epochs,
+        "max_grad_norm": cfg.ppo.max_grad_norm,
+        "gamma": cfg.ppo.gamma,
+        "gae_lambda": cfg.ppo.gae_lambda,
+        "clip_epsilon": cfg.ppo.clip_epsilon,
+        "value_loss_coef": cfg.ppo.value_loss_coef,
+        "critic_privileged_enabled": cfg.ppo.critic_privileged_enabled,
+        "critic_includes_actor_obs": False,  # pre-Lever-7 / smoke1
+        "actor_hidden_sizes": cfg.networks.actor.hidden_sizes,
+        "critic_hidden_sizes": cfg.networks.critic.hidden_sizes,
+        "policy_spec_hash": fake_hash,
+    }
+    with pytest.raises(ValueError, match="critic_includes_actor_obs"):
+        _validate_resume_checkpoint(
+            ckpt_metrics={},
+            ckpt_config=ckpt_config_pre_lever7,
+            config=cfg,
+            current_policy_spec_hash=fake_hash,
+        )
+
+
+def test_resume_validator_accepts_lever7_match() -> None:
+    """Sanity: matching Lever-7 flag passes validation cleanly."""
+    from training.core.training_loop import _validate_resume_checkpoint
+
+    if not _SMOKE2.exists():
+        pytest.skip(f"{_SMOKE2.name} not found")
+    cfg = load_training_config(str(_SMOKE2))
+
+    fake_hash = "deadbeef"
+    ckpt_config_matching = {
+        "num_envs": cfg.ppo.num_envs,
+        "rollout_steps": cfg.ppo.rollout_steps,
+        "num_minibatches": cfg.ppo.num_minibatches,
+        "epochs": cfg.ppo.epochs,
+        "max_grad_norm": cfg.ppo.max_grad_norm,
+        "gamma": cfg.ppo.gamma,
+        "gae_lambda": cfg.ppo.gae_lambda,
+        "clip_epsilon": cfg.ppo.clip_epsilon,
+        "value_loss_coef": cfg.ppo.value_loss_coef,
+        "critic_privileged_enabled": cfg.ppo.critic_privileged_enabled,
+        "critic_includes_actor_obs": cfg.ppo.critic_includes_actor_obs,  # matches
+        "actor_hidden_sizes": cfg.networks.actor.hidden_sizes,
+        "critic_hidden_sizes": cfg.networks.critic.hidden_sizes,
+        "policy_spec_hash": fake_hash,
+    }
+    # Should not raise.
+    _validate_resume_checkpoint(
+        ckpt_metrics={},
+        ckpt_config=ckpt_config_matching,
+        config=cfg,
+        current_policy_spec_hash=fake_hash,
+    )
+
+
+def test_checkpoint_save_includes_critic_includes_actor_obs() -> None:
+    """The checkpoint config metadata MUST carry critic_includes_actor_obs
+    so the resume validator can hard-check it.  Inline source check
+    guards against a refactor silently dropping the field."""
+    import inspect
+    from training.core import checkpoint
+
+    src = inspect.getsource(checkpoint)
+    assert '"critic_includes_actor_obs": config.ppo.critic_includes_actor_obs' in src, (
+        'checkpoint save MUST persist "critic_includes_actor_obs" in the '
+        "config dict so resume validation can hard-fail an incompatible "
+        "value-head shape (pre-Lever-7 ckpt vs Lever-7 config or vice "
+        "versa)."
+    )

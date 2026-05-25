@@ -861,6 +861,17 @@ def _validate_resume_checkpoint(
         ckpt_config.get("critic_privileged_enabled", False),
         config.ppo.critic_privileged_enabled,
     )
+    # v0.21.0 Lever 7: value-head input shape depends on this flag
+    # (privileged_dim alone vs obs_dim + privileged_dim).  Default False
+    # for legacy ckpts that pre-date the flag preserves their original
+    # contract; resuming a pre-Lever-7 ckpt under a Lever-7 config (or
+    # vice versa) would silently load wrong-shape value_params and crash
+    # later in value_network.apply, so hard-fail the resume here.
+    _check_mismatch(
+        "critic_includes_actor_obs",
+        ckpt_config.get("critic_includes_actor_obs", False),
+        config.ppo.critic_includes_actor_obs,
+    )
     _warn_if_mismatch(
         "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate
     )
