@@ -857,8 +857,8 @@ def start_training(
                         )
 
                     eps_touchdown = jnp.float32(1e-6)
-                    td_left = _mean("tracking/touchdown_rate_left")
-                    td_right = _mean("tracking/touchdown_rate_right")
+                    td_left = _mean("tracking/touchdown_rate_left_count")
+                    td_right = _mean("tracking/touchdown_rate_right_count")
                     step_left_event = _mean("tracking/step_length_left_event_m")
                     step_right_event = _mean("tracking/step_length_right_event_m")
                     return {

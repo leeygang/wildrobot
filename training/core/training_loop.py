@@ -1606,10 +1606,10 @@ def train(
                     "tracking/lateral_velocity_abs"
                 ],
                 "touchdown_rate_left_count": METRIC_INDEX[
-                    "tracking/touchdown_rate_left"
+                    "tracking/touchdown_rate_left_count"
                 ],
                 "touchdown_rate_right_count": METRIC_INDEX[
-                    "tracking/touchdown_rate_right"
+                    "tracking/touchdown_rate_right_count"
                 ],
                 "step_length_left_event_m": METRIC_INDEX[
                     "tracking/step_length_left_event_m"
