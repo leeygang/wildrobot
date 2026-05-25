@@ -69,7 +69,13 @@ cd "$SCRIPT_DIR/.."
 
 sync_file() {
     local FILE="$1"
-    local REMOTE_PATH="$REMOTE_BASE/$FILE"
+    local REMOTE_PATH
+    if [[ "$FILE" == /* ]]; then
+        # Absolute path: mirror to same absolute path on remote
+        REMOTE_PATH="$FILE"
+    else
+        REMOTE_PATH="$REMOTE_BASE/$FILE"
+    fi
 
     if [ ! -e "$FILE" ]; then
         echo -e "${RED}Error: '$FILE' does not exist${NC}"
