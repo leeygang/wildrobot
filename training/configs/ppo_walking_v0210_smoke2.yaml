@@ -65,6 +65,32 @@
 # RSI (env complexity), reset perturbation ±0.2 (TB defaults are ±0.1
 # too; ±0.2 in walk.gin is commented optional).
 #
+# -----------------------------------------------------------------------------
+# Success criterion: FORWARD basin-break under v0.21 plumbing
+# -----------------------------------------------------------------------------
+# Smoke2 is named "lateral+yaw basin-break retry" because it INHERITS
+# v0.21.0's full 3-axis stack (sampler / library / reward / obs all 3D).
+# But the HARD G4 promotion gates in deterministic_eval_gate only check
+# FORWARD locomotion (forward_velocity, cmd_vs_achieved_forward,
+# mean_episode_length, step_length, forward_velocity_cmd_ratio).  The
+# Appendix C lateral / yaw probes (eval_velocity_cmd_probes) are
+# REPORT-ONLY -- they surface in post_training_eval_summary.json but
+# do NOT block promotion.
+#
+# Pass criterion for smoke2:
+#   * MUST PASS: G4 forward gates (forward_velocity >= +0.075,
+#     mean_episode_length >= 0.95*post_training_num_steps,
+#     cmd_vs_achieved_forward <= 0.075, step_length >= 0.030,
+#     forward_velocity_cmd_ratio in [0.6, 1.5]).
+#   * MUST OBSERVE: lateral_yaw_probes signed_ratio >= 0.5 on at
+#     least one of the lateral or yaw probes (report-only).
+#   * STRETCH: both probes pass.
+#
+# If smoke2 passes G4 (forward basin-break recovered under v0.21
+# plumbing) but lateral/yaw probes fail -> smoke3 makes the probe
+# pass criterion a hard gate.  If smoke2 fails G4 too -> need to
+# escalate (warm-start, RSI, vx range curriculum).
+#
 # Plan reference: /tmp/wildrobot_v021_smoke2_plan.md (v3 final)
 #
 # -----------------------------------------------------------------------------
@@ -429,7 +455,14 @@ ppo:
     post_training_enabled: true
     post_training_top_k: 3
     post_training_num_envs: 8
-    post_training_num_steps: 500
+    # smoke2 fb #1: must match max_episode_steps=1000.  At 500 a healthy
+    # policy never reaches truncation -> total_done=0 -> mean_episode_length=0
+    # in the deterministic eval -> the mean_episode_length gate (now scaled
+    # to 0.95*post_training_num_steps via the horizon-aware gate from
+    # smoke2 fb #2) would FAIL a good policy.  Lifting to 1000 keeps the
+    # gate semantics ("survive >= 95% of the rollout") invariant to the
+    # 500 -> 1000 horizon bump.
+    post_training_num_steps: 1000
     post_training_checkpoint_label: eval_promoted
 
 networks:

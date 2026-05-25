@@ -734,3 +734,57 @@ def test_env_step_passes_heading_frame_rotations_to_lookup() -> None:
         "_lookup_offline_window so the heading correction has the "
         "actor's current orientation"
     )
+
+
+# ---------------------------------------------------------------------------
+# v0.21.0 smoke2 fb #2: horizon-aware mean_episode_length gate.
+# ---------------------------------------------------------------------------
+def test_deterministic_eval_gate_episode_length_scales_with_horizon() -> None:
+    """The mean_episode_length gate floor MUST scale to 0.95 * eval_num_steps.
+
+    smoke2 raised max_episode_steps from 500 -> 1000.  Before this fix,
+    deterministic_eval_gate hardcoded the floor at 475 (= 0.95 * 500),
+    so a healthy 1000-step policy that reaches ~999 still got marked as
+    a length-gate FAIL only when eval_num_steps was set short of the
+    horizon (truncation never fired -> mean=0).  The horizon-aware
+    floor (0.95 * eval_num_steps) makes the gate semantics ("survive
+    >= 95% of the rollout") invariant to horizon choice."""
+    base_metrics = {
+        "forward_velocity": 0.10,
+        "cmd_vs_achieved_forward": 0.05,
+        "step_length_touchdown_event_m": 0.040,
+        "forward_velocity_cmd_ratio_metric_unused": 0.0,  # not used; ratio computed from vel/cmd
+    }
+
+    # At 1000-step horizon, ep_len 950 must PASS (= 95% of 1000).
+    decision_pass_1000 = deterministic_eval_gate(
+        eval_metrics={**base_metrics, "mean_episode_length": 950.0},
+        eval_velocity_cmd=0.10,
+        eval_num_steps=1000,
+    )
+    assert decision_pass_1000.gates["mean_episode_length"] is True
+
+    # At 1000-step horizon, ep_len 475 must FAIL (= 47.5% of 1000;
+    # previously this would have passed the hardcoded 475 floor).
+    decision_fail_1000 = deterministic_eval_gate(
+        eval_metrics={**base_metrics, "mean_episode_length": 475.0},
+        eval_velocity_cmd=0.10,
+        eval_num_steps=1000,
+    )
+    assert decision_fail_1000.gates["mean_episode_length"] is False
+
+    # Back-compat: default eval_num_steps=500 preserves the historical
+    # 475 floor (so existing smoke12b/13/14 callers without the kwarg
+    # behave exactly as before).
+    decision_back_compat = deterministic_eval_gate(
+        eval_metrics={**base_metrics, "mean_episode_length": 475.0},
+        eval_velocity_cmd=0.10,
+        # eval_num_steps NOT passed -> defaults to 500
+    )
+    assert decision_back_compat.gates["mean_episode_length"] is True
+
+    decision_back_compat_fail = deterministic_eval_gate(
+        eval_metrics={**base_metrics, "mean_episode_length": 470.0},
+        eval_velocity_cmd=0.10,
+    )
+    assert decision_back_compat_fail.gates["mean_episode_length"] is False

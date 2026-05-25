@@ -349,12 +349,22 @@ def rank_checkpoint_candidates(
 def deterministic_eval_gate(
     eval_metrics: Mapping[str, Any],
     eval_velocity_cmd: float,
+    *,
+    eval_num_steps: int = 500,
 ) -> DeterministicEvalDecision:
     """Apply deterministic post-training promotion gates.
 
     HARD gates (block promotion) — v0.20.1 G4 set:
       forward_velocity, cmd_vs_achieved_forward, mean_episode_length,
       step_length_touchdown_event_m, forward_velocity_cmd_ratio.
+
+    Horizon-aware gates (smoke2 follow-up): the mean_episode_length
+    floor scales with ``eval_num_steps`` (= ``post_training_num_steps``,
+    which the caller MUST pass when it differs from the legacy 500).
+    A 1000-step horizon evaluated for 1000 steps gives the same 95%
+    survival floor (950) that 500 used to (475).  Callers that
+    pre-date this kwarg keep the historical 475/500 contract via the
+    ``eval_num_steps=500`` default.
 
     SOFT signals (report-only, do not block promotion) — smoke15
     deploy-facing diagnostics.  Each gets a
@@ -400,10 +410,18 @@ def deterministic_eval_gate(
             ratio_value = float(forward_velocity) / float(eval_velocity_cmd)
             ratio_ok = 0.6 <= ratio_value <= 1.5
 
+    # smoke2 follow-up: scale the mean_episode_length floor with the
+    # eval horizon.  Historical 500-step horizon used 475 (=0.95*500);
+    # 1000-step horizon at the same survival ratio yields 950.
+    # Keeping the 0.95 ratio means the gate semantics ("policy must
+    # survive 95% of the rollout") are invariant to horizon choice.
+    episode_length_floor = 0.95 * float(eval_num_steps)
     gates: Dict[str, bool] = {
         "forward_velocity": (forward_velocity is not None and forward_velocity >= 0.075),
         "cmd_vs_achieved_forward": (cmd_err is not None and cmd_err <= 0.075),
-        "mean_episode_length": (episode_length is not None and episode_length >= 475.0),
+        "mean_episode_length": (
+            episode_length is not None and episode_length >= episode_length_floor
+        ),
         "step_length_touchdown_event_m": step_ok,
         "forward_velocity_cmd_ratio": ratio_ok,
     }

@@ -1116,6 +1116,7 @@ def start_training(
                     decision = deterministic_eval_gate(
                         eval_metrics=eval_metrics,
                         eval_velocity_cmd=eval_velocity_cmd,
+                        eval_num_steps=post_training_num_steps,
                     )
                     eval_rows.append(
                         {

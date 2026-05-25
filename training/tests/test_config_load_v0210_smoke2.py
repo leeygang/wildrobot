@@ -171,3 +171,30 @@ def test_smoke2_env_init_succeeds(cfg_smoke2) -> None:
     assert env is not None
     assert env._config.env.max_episode_steps == 1000
     assert env._config.env.cmd_sampler_walk_vx_positive_only is True
+
+
+# ---------------------------------------------------------------------------
+# Smoke2 feedback fixes (smoke2 fb #1, #2, #3)
+# ---------------------------------------------------------------------------
+def test_smoke2_fb1_post_training_num_steps_matches_horizon(cfg_smoke2) -> None:
+    """fb #1: post_training_num_steps must equal max_episode_steps so the
+    deterministic eval can reach truncation -> total_done > 0 ->
+    mean_episode_length > 0.  Mismatch would silently fail a healthy
+    policy on the length gate."""
+    assert (
+        cfg_smoke2.ppo.eval.post_training_num_steps
+        == cfg_smoke2.env.max_episode_steps
+    ), (
+        "post_training_num_steps must match max_episode_steps to avoid "
+        "total_done=0 -> mean_episode_length=0 false failures."
+    )
+    assert cfg_smoke2.ppo.eval.post_training_num_steps == 1000
+
+
+def test_smoke2_fb3_success_criterion_documented(cfg_smoke2) -> None:
+    """fb #3: smoke2 YAML header MUST explicitly document that the hard
+    G4 gate is forward-only and lateral_yaw_probes are report-only.
+    Inline source check so a refactor can't silently drop the note."""
+    yaml_text = _SMOKE2.read_text()
+    assert "Success criterion: FORWARD basin-break under v0.21 plumbing" in yaml_text
+    assert "REPORT-ONLY" in yaml_text
