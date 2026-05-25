@@ -653,6 +653,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # explicit YAML opt-in.  Default False keeps smoke14 / smoke12b /
         # smoke7 on the v0.20.x scalar-vx sampler (forward-only).
         cmd_sampler_3d_branched=bool(env.get("cmd_sampler_3d_branched", False)),
+        cmd_sampler_walk_vx_positive_only=bool(
+            env.get("cmd_sampler_walk_vx_positive_only", False)
+        ),
         # v0.21.0 H3 + NEW-4: per-axis (vx, vy, wz) deadzone / eval cmd.
         # Scalar YAML entries broadcast: cmd_deadzone symmetrically to
         # all axes, eval_velocity_cmd to (s, 0.0, 0.0) (vy / wz pin

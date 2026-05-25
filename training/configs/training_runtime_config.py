@@ -662,6 +662,20 @@ class EnvConfig(Freezable):
     # (P5+ wiring).  The v0.21 smoke YAML (P8) sets this True; legacy YAML
     # leaves it False so smoke14 / smoke12b / smoke7 are unaffected.
     cmd_sampler_3d_branched: bool = False
+    # v0.21.0 smoke2 post-mortem: TB's ``_sample_walk_command`` ellipse
+    # legitimately emits negative vx via the ``sin_theta < 0`` branch
+    # (x_max = -min_velocity).  WR's reference library has only positive
+    # vx bins (built via ``build_library_for_3d_values`` with
+    # vx_values starting at 0).  Negative cmds snap to the nearest
+    # positive bin and the policy receives contradictory cmd-vs-prior
+    # signals (cmd says backward, prior shows forward).  Smoke12b's
+    # scalar 1D sampler never emitted negative vx — that property is
+    # what made the basin-break possible.  When this flag is True the
+    # walk branch clamps vx >= 0 (sign forced positive via |sin_theta|);
+    # vy is NOT clamped (library has symmetric +/- vy bins so negative
+    # vy_cmd has a real reference).  Default False preserves the TB
+    # symmetric-ellipse default for legacy / smoke1 reproducibility.
+    cmd_sampler_walk_vx_positive_only: bool = False
     # v0.21.0 H3: per-axis deadzone for the (vx, vy, wz) command space.
     # Scalar YAML entries broadcast symmetrically to all three axes
     # (legacy behavior); explicit length-3 lists pin per-axis floors.

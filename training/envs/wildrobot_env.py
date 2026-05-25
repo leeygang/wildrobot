@@ -3052,7 +3052,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         sin_theta = jp.sin(theta)
         cos_theta = jp.cos(theta)
 
-        x_max = jp.where(sin_theta > 0.0, x_hi, -x_lo)
+        # v0.21.0 smoke2 post-mortem: optionally clamp vx >= 0.  When
+        # ``cmd_sampler_walk_vx_positive_only`` is True the walk branch
+        # forces sign_x non-negative (uses |sin_theta|) and uses the
+        # upper x_hi bound, so the sampled vx_cmd is always in
+        # [deadzone_x, x_hi].  This restores smoke12b's strictly-positive
+        # vx property (scalar 1D sampler never emitted negative vx) and
+        # avoids the contract mismatch with WR's positive-only reference
+        # library.  Default False = TB symmetric ellipse (legacy / smoke1).
+        if getattr(self._config.env, "cmd_sampler_walk_vx_positive_only", False):
+            sign_x = jp.abs(sin_theta)
+            x_max = x_hi
+        else:
+            sign_x = sin_theta
+            x_max = jp.where(sin_theta > 0.0, x_hi, -x_lo)
         # ``maxval`` must be >= ``minval`` for jax.random.uniform.  When
         # the active half-axis is empty (e.g. min_velocity_y == 0 ⇒
         # both ``y_hi`` and ``-y_lo`` collapse to 0), clamp upward so
@@ -3063,7 +3076,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (),
             minval=deadzone_x,
             maxval=x_max_clamped,
-        ) * sin_theta
+        ) * sign_x
 
         y_max = jp.where(cos_theta > 0.0, y_hi, -y_lo)
         y_max_clamped = jp.maximum(jp.abs(y_max), deadzone_y)
