@@ -80,7 +80,8 @@
 # Pass criterion for smoke2:
 #   * MUST PASS: G4 forward gates (forward_velocity >= +0.075,
 #     mean_episode_length >= 0.95*post_training_num_steps,
-#     cmd_vs_achieved_forward <= 0.075, step_length >= 0.030,
+#     cmd_vs_achieved_forward <= 0.075,
+#     step_length >= max(0.030, 0.50*vx*cycle_time/2),
 #     forward_velocity_cmd_ratio in [0.6, 1.5]).
 #   * MUST OBSERVE: lateral_yaw_probes signed_ratio >= 0.5 on at
 #     least one of the lateral or yaw probes (report-only).
@@ -449,7 +450,7 @@ ppo:
   eval:
     # Training-time eval DISABLED for smoke1 (smoke14 baseline).
     # The reviewer follow-up that flipped this to true ran a
-    # 64-env x 500-step rollout every log window — ~8% wall-clock
+    # 64-env x 1000-step rollout every log window — non-trivial wall-clock
     # overhead and spammed "Evaluate:" lines into the console.
     # Lateral / yaw tracking machinery is still exercised at the
     # authoritative post-training eval (post_training_enabled=true,
@@ -459,7 +460,7 @@ ppo:
     enabled: false
     interval: 10
     num_envs: 64
-    num_steps: 500
+    num_steps: 1000
     deterministic: true
     seed_offset: 10000
     post_training_enabled: true

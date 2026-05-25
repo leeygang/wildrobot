@@ -43,6 +43,7 @@ from training.core.metrics_registry import (
     METRICS_VEC_KEY,
     unpack_metrics,
 )
+from training.core.post_training_eval import step_length_touchdown_floor_m
 from training.envs.env_info import WR_INFO_KEY
 from training.policy_spec_utils import build_policy_spec_from_training_config
 
@@ -2309,8 +2310,8 @@ def train(
             #   cmd_vs_achieved_forward ≤ 0.50 × eval_vx
             #     — same scaling as the velocity floor
             #   step_length ≥ max(0.030, 0.50 × vx × cycle/2)
-            #     — equivalent to ≥0.030 m at vx=0.15 cycle=0.72 (the old
-            #     calibration), ≥0.048 m at Phase 9D vx=0.20 cycle=0.96
+            #     — retains the old 0.030 m shuffle floor and scales to
+            #     ≥0.048 m at Phase 9D / smoke2 vx=0.20 cycle=0.96
             # The 0.030 lower bound is retained as the "absolute
             # shuffle floor" — any operating point where the scaled
             # value is below 0.030 m is below the shuffling regime.
@@ -2334,11 +2335,9 @@ def train(
                 _ecv_raw[0] if hasattr(_ecv_raw, "__len__") else _ecv_raw
             )
             g4_floor_vx = raw_eval_vx if raw_eval_vx > 0 else 0.15
-            from control.zmp.zmp_walk import ZMPWalkConfig as _ZMPCfg
-            cycle_time_s = float(_ZMPCfg.cycle_time_s)
             g4_vel_floor = 0.50 * g4_floor_vx
             g4_cmd_err_ceiling = 0.50 * g4_floor_vx
-            g4_step_len_floor = max(0.030, 0.50 * g4_floor_vx * cycle_time_s / 2.0)
+            g4_step_len_floor = step_length_touchdown_floor_m(g4_floor_vx)
             g4_vel_ok = fwd >= g4_vel_floor
             g4_cmd_err_ok = cmd_err <= g4_cmd_err_ceiling
             g4_step_len_ok = step_len >= g4_step_len_floor

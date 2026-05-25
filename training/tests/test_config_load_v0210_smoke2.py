@@ -189,6 +189,7 @@ def test_smoke2_fb1_post_training_num_steps_matches_horizon(cfg_smoke2) -> None:
         "total_done=0 -> mean_episode_length=0 false failures."
     )
     assert cfg_smoke2.ppo.eval.post_training_num_steps == 1000
+    assert cfg_smoke2.ppo.eval.num_steps == cfg_smoke2.env.max_episode_steps
 
 
 def test_smoke2_fb3_success_criterion_documented(cfg_smoke2) -> None:

@@ -6,6 +6,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from control.zmp.zmp_walk import ZMPWalkConfig
+
 
 @dataclass(frozen=True)
 class CheckpointMetricCandidate:
@@ -87,6 +89,28 @@ LATERAL_YAW_PASS_RATIO_MIN = 0.5
 # tiny commands sit within the cmd_deadzone region anyway, and
 # dividing by them inflates noise on the signed ratio.
 LATERAL_YAW_PROBE_MIN_CMD_ABS = 0.02
+
+# G4 touchdown-stride gate.  The absolute floor is the historical
+# v0.20.1 anti-shuffle sanity check; the vx-scaled branch requires at
+# least half of the nominal per-touchdown reference stride
+# (cmd_vx * cycle_time / 2).
+STEP_LENGTH_TOUCHDOWN_ABS_FLOOR_M = 0.030
+STEP_LENGTH_TOUCHDOWN_FRACTION_OF_NOMINAL = 0.50
+
+
+def step_length_touchdown_floor_m(
+    eval_velocity_cmd: Optional[float],
+    *,
+    cycle_time_s: float = ZMPWalkConfig.cycle_time_s,
+) -> float:
+    """Return the G4 touchdown step-length floor for a commanded vx."""
+    if eval_velocity_cmd is None or float(eval_velocity_cmd) <= 0.0:
+        return STEP_LENGTH_TOUCHDOWN_ABS_FLOOR_M
+    nominal_step = float(eval_velocity_cmd) * float(cycle_time_s) / 2.0
+    return max(
+        STEP_LENGTH_TOUCHDOWN_ABS_FLOOR_M,
+        STEP_LENGTH_TOUCHDOWN_FRACTION_OF_NOMINAL * nominal_step,
+    )
 
 
 @dataclass(frozen=True)
@@ -231,14 +255,22 @@ def _train_candidate_filter_failures(
     cmd_ratio: Optional[float],
 ) -> list[str]:
     failures: list[str] = []
+    inferred_cmd_vx: Optional[float] = None
+    if (
+        forward_velocity is not None
+        and cmd_ratio is not None
+        and abs(float(cmd_ratio)) > 1e-6
+    ):
+        inferred_cmd_vx = abs(float(forward_velocity) / float(cmd_ratio))
+    step_floor = step_length_touchdown_floor_m(inferred_cmd_vx)
     if forward_velocity is not None and forward_velocity < 0.075:
         failures.append("forward_velocity<0.075")
     if cmd_err is not None and cmd_err > 0.075:
         failures.append("cmd_vs_achieved_forward>0.075")
     if episode_length is not None and episode_length < 475.0:
         failures.append("episode_length<475")
-    if step_length is not None and step_length < 0.030:
-        failures.append("step_length<0.030")
+    if step_length is not None and step_length < step_floor:
+        failures.append(f"step_length<{step_floor:.3f}")
     if cmd_ratio is not None and not (0.6 <= cmd_ratio <= 1.5):
         failures.append("forward_velocity_cmd_ratio∉[0.6,1.5]")
     return failures
@@ -366,6 +398,11 @@ def deterministic_eval_gate(
     pre-date this kwarg keep the historical 475/500 contract via the
     ``eval_num_steps=500`` default.
 
+    The touchdown step-length floor is vx-scaled:
+    ``max(0.030, 0.50 * eval_velocity_cmd * ZMP_cycle_time / 2)``.
+    The absolute 30 mm floor keeps old low-vx anti-shuffle behavior;
+    smoke2's vx=0.20 with WR's 0.96 s cycle requires 48 mm.
+
     SOFT signals (report-only, do not block promotion) — smoke15
     deploy-facing diagnostics.  Each gets a
     ``soft_signals[name]`` boolean that is True when the metric is
@@ -397,8 +434,9 @@ def deterministic_eval_gate(
     episode_length = _metric(eval_metrics, "mean_episode_length")
     step_length = _metric(eval_metrics, "step_length_touchdown_event_m")
 
+    step_floor = step_length_touchdown_floor_m(eval_velocity_cmd)
     step_metric_available = step_length is not None
-    step_ok = True if step_length is None else step_length >= 0.030
+    step_ok = True if step_length is None else step_length >= step_floor
 
     ratio_gate_applied = float(eval_velocity_cmd) > 0.0
     ratio_value: Optional[float] = None

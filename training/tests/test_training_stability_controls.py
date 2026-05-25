@@ -13,6 +13,7 @@ from training.core.post_training_eval import (
     CheckpointMetricCandidate,
     deterministic_eval_gate,
     rank_checkpoint_candidates,
+    step_length_touchdown_floor_m,
 )
 from training.core.training_loop import (
     _effective_ppo_epochs,
@@ -188,7 +189,7 @@ def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
         },
         eval_velocity_cmd=0.1333333333,
     )
@@ -201,7 +202,7 @@ def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
             "forward_velocity": 0.04,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
         },
         eval_velocity_cmd=0.1333333333,
     )
@@ -213,7 +214,7 @@ def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.12,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
         },
         eval_velocity_cmd=0.1333333333,
     )
@@ -237,7 +238,7 @@ def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.048,
         },
         eval_velocity_cmd=0.20,
     )
@@ -249,12 +250,48 @@ def test_deterministic_eval_gate_pass_and_fail_cases() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
         },
         eval_velocity_cmd=-1.0,
     )
     assert decision_ratio_skipped.passed is True
     assert decision_ratio_skipped.ratio_gate_applied is False
+
+
+def test_deterministic_eval_gate_step_length_scales_with_eval_vx() -> None:
+    """Smoke2: the touchdown stride floor scales with commanded vx.
+
+    At vx=0.20 and WR's 0.96 s ZMP cycle, nominal per-touchdown stride
+    is 0.20 * 0.96 / 2 = 0.096 m; G4 requires at least half of that
+    (0.048 m), not only the historical 0.030 m anti-shuffle floor.
+    """
+    assert step_length_touchdown_floor_m(0.20) == pytest.approx(0.048)
+    assert step_length_touchdown_floor_m(0.0) == pytest.approx(0.030)
+
+    base_metrics = {
+        "forward_velocity": 0.13,
+        "cmd_vs_achieved_forward": 0.05,
+        "mean_episode_length": 1000.0,
+    }
+    decision_fail = deterministic_eval_gate(
+        {
+            **base_metrics,
+            "step_length_touchdown_event_m": 0.047,
+        },
+        eval_velocity_cmd=0.20,
+        eval_num_steps=1000,
+    )
+    assert decision_fail.gates["step_length_touchdown_event_m"] is False
+
+    decision_pass = deterministic_eval_gate(
+        {
+            **base_metrics,
+            "step_length_touchdown_event_m": 0.048,
+        },
+        eval_velocity_cmd=0.20,
+        eval_num_steps=1000,
+    )
+    assert decision_pass.gates["step_length_touchdown_event_m"] is True
 
 
 def test_post_training_eval_defaults_are_backward_compatible() -> None:
@@ -388,7 +425,7 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
             "lateral_velocity_abs": 0.02,
             "yaw_drift_abs_rad": 0.05,
             "world_y_drift_abs_m": 0.02,
@@ -411,7 +448,7 @@ def test_deterministic_eval_gate_exposes_soft_signals_for_deploy_metrics() -> No
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
             "lateral_velocity_abs": 0.20,
             "yaw_drift_abs_rad": 0.60,
             "world_y_drift_abs_m": 0.50,
@@ -435,7 +472,7 @@ def test_deterministic_eval_gate_soft_signals_default_ok_when_missing() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
         },
         eval_velocity_cmd=0.1333333333,
     )
@@ -456,7 +493,7 @@ def test_deterministic_eval_gate_back_compat_signed_only_payload() -> None:
             "forward_velocity": 0.09,
             "cmd_vs_achieved_forward": 0.04,
             "mean_episode_length": 500.0,
-            "step_length_touchdown_event_m": 0.031,
+            "step_length_touchdown_event_m": 0.033,
             # Signed-only — abs(0.60) > 0.40 and abs(0.50) > 0.30.
             "yaw_drift_signed_rad": -0.60,
             "world_y_drift_signed_m": -0.50,
@@ -788,3 +825,12 @@ def test_deterministic_eval_gate_episode_length_scales_with_horizon() -> None:
         eval_velocity_cmd=0.10,
     )
     assert decision_back_compat_fail.gates["mean_episode_length"] is False
+
+
+def test_post_training_eval_selection_score_uses_configured_horizon() -> None:
+    """Smoke2: post-training checkpoint ranking must not assume 500 steps."""
+    import training.train as train_mod
+
+    src = inspect.getsource(train_mod)
+    assert "mean_episode_length\"]) / 500.0" not in src
+    assert "/ float(max(1, post_training_num_steps))" in src

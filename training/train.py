@@ -1298,7 +1298,8 @@ def start_training(
                         float(eval_metrics["forward_velocity"])
                         - float(eval_metrics["cmd_vs_achieved_forward"])
                         + step
-                        + float(eval_metrics["mean_episode_length"]) / 500.0
+                        + float(eval_metrics["mean_episode_length"])
+                        / float(max(1, post_training_num_steps))
                     )
 
                 passing_rows = [row for row in eval_rows if row["passed"]]
