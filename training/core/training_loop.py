@@ -408,6 +408,7 @@ def make_train_iteration_fn(
             rng=rollout_rng,
             num_steps=config.ppo.rollout_steps,
             use_privileged_critic=config.ppo.critic_privileged_enabled,
+            critic_includes_actor_obs=config.ppo.critic_includes_actor_obs,
         )
 
         total_rewards = trajectory.task_rewards
@@ -981,6 +982,14 @@ def train(
                 f"got {critic_history_frames}"
             )
         critic_obs_dim = PRIVILEGED_OBS_DIM * critic_history_frames
+        # Lever 7 (smoke2+): when critic_includes_actor_obs is True,
+        # the rollout pre-concats actor_obs (already history-stacked
+        # by the env into obs_dim) onto the privileged_obs_history
+        # before passing to the value network.  Size the value head
+        # for that concat shape so init_network_params allocates the
+        # correct first-layer weight matrix.
+        if bool(config.ppo.critic_includes_actor_obs):
+            critic_obs_dim = obs_dim + critic_obs_dim
     from policy_contract.spec import policy_spec_hash
 
     current_spec_hash = policy_spec_hash(spec)

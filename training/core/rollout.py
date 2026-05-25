@@ -75,6 +75,7 @@ def collect_rollout(
     rng: jax.Array,
     num_steps: int,
     use_privileged_critic: bool = False,
+    critic_includes_actor_obs: bool = False,
 ) -> Tuple[Any, TrajectoryBatch]:
     """Collect rollout using jax.lax.scan (fully on GPU).
 
@@ -109,9 +110,16 @@ def collect_rollout(
             processor_params, policy_params, ppo_network, obs, action_rng
         )
 
-        # Get value estimate
+        # Get value estimate.  Lever 7 (smoke2+): when
+        # ``critic_includes_actor_obs`` is True under the privileged-critic
+        # path, pre-concat actor_obs into the value-network input so the
+        # critic sees cmd / phase / quat / abs motor_pos (the signals
+        # WR's concise privileged_obs omits).  Standard asymmetric AC
+        # pattern; mirrors TB's already-concatenated privileged payload.
         if use_privileged_critic:
             critic_obs = env_state.info[WR_INFO_KEY].critic_obs
+            if critic_includes_actor_obs:
+                critic_obs = jnp.concatenate([obs, critic_obs], axis=-1)
         else:
             critic_obs = obs
         value = compute_values(
@@ -150,9 +158,16 @@ def collect_rollout(
         step_fn, init_carry, None, length=num_steps
     )
 
-    # Get bootstrap value for final state
+    # Get bootstrap value for final state (Lever 7: same concat logic
+    # as the per-step path above, so trajectory.critic_obs and the
+    # bootstrap critic input go through the value head with the same
+    # shape and meaning).
     if use_privileged_critic:
         bootstrap_critic_obs = final_env_state.info[WR_INFO_KEY].critic_obs
+        if critic_includes_actor_obs:
+            bootstrap_critic_obs = jnp.concatenate(
+                [final_env_state.obs, bootstrap_critic_obs], axis=-1
+            )
     else:
         bootstrap_critic_obs = final_env_state.obs
 

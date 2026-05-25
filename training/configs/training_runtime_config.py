@@ -835,6 +835,19 @@ class PPOConfig(Freezable):
     lr_schedule_end_factor: float = 1.0
     entropy_schedule_end_factor: float = 1.0
     critic_privileged_enabled: bool = False
+    # v0.21.0 smoke2 (Lever 7): when True, the value network's input is
+    # concat([actor_obs_history, privileged_obs_history]) instead of the
+    # privileged_obs_history alone.  Standard asymmetric actor-critic
+    # pattern; mirrors TB whose ``num_single_privileged_obs = 151``
+    # ALREADY includes the noiseless actor obs (84) + privileged extras
+    # (67).  WR's privileged_obs (52 dims with history -> 780) is a
+    # concise privileged-ONLY payload that omits cmd / phase / quat /
+    # absolute motor_pos -- signals the critic needs to estimate V(s)
+    # accurately at the standing local minimum.  Default False preserves
+    # pre-Lever-7 behavior (smoke1 / smoke14 / smoke12b remain byte-
+    # equivalent); v0.21.0 smoke2 opts in.  Only consumed when
+    # ``critic_privileged_enabled`` is True.
+    critic_includes_actor_obs: bool = False
 
     eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
     rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())

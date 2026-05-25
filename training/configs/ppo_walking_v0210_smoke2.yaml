@@ -435,6 +435,16 @@ ppo:
 
   log_interval: 10
   critic_privileged_enabled: true
+  # smoke2 (Lever 7): include actor_obs in the value-network input.
+  # WR's privileged_obs is concise (52 dims) and omits cmd / phase /
+  # quat / abs motor_pos -- TB's 151-dim privileged ALREADY includes
+  # actor obs inline.  With this flag, the value network sees
+  # concat([actor_obs_history, privileged_obs_history]) so V(s) can
+  # use full context for cold-start exploration value estimates.
+  # See PPOConfig.critic_includes_actor_obs docstring + commit
+  # ``Lever 7 (option A): critic sees actor obs + privileged'' for
+  # the full rationale.
+  critic_includes_actor_obs: true
 
   eval:
     # Training-time eval DISABLED for smoke1 (smoke14 baseline).

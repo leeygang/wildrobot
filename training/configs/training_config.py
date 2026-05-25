@@ -740,6 +740,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         lr_schedule_end_factor=ppo.get("lr_schedule_end_factor", 1.0),
         entropy_schedule_end_factor=ppo.get("entropy_schedule_end_factor", 1.0),
         critic_privileged_enabled=bool(ppo.get("critic_privileged_enabled", False)),
+        critic_includes_actor_obs=bool(
+            ppo.get("critic_includes_actor_obs", False)
+        ),
         eval=PPOEvalConfig(
             enabled=eval_cfg.get("enabled", False),
             interval=eval_cfg.get("interval", 0),
