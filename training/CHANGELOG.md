@@ -8,6 +8,102 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke2-pre-launch] - 2026-05-25: smoke1 post-mortem (posture exploit) + 7 changes for basin-break retry
+
+### Smoke1 result — failed (posture exploit, walking did not emerge)
+
+- **Run**: `training/wandb/offline-run-20260524_170136-wxir4gsj` (id `lblub15y` / `wxir4gsj`, 30M env-steps, 1500 iters × 1024 envs × 20 rollout-steps).
+- **Checkpoint dir**: `training/checkpoints/ppo_walking_v0210_smoke1_lateral_yaw_v00210_20260524_170148-wxir4gsj`.
+- **Best ckpt (by `Evaluate/mean_reward`)**: `checkpoint_430_8806400.pkl` @ iter 430 (8.8M env-steps) — `Evaluate/mean_reward = 66.258`, `Evaluate/mean_episode_length = 494.0 / 500`.
+- **Verdict** (analyzer): `posture exploit`, tracking `flat`, stability `poor`.
+
+#### G4 forward gate — FAIL on 3 of 5 sub-gates @ best ckpt
+
+| Metric | Gate | Best ckpt | Result |
+|---|---:|---:|:--:|
+| `Evaluate/forward_velocity` | ≥ +0.075 m/s | **−0.044** | ❌ wrong sign |
+| `Evaluate/mean_episode_length` | ≥ 475 / 500 | 494 | ✅ |
+| `Evaluate/cmd_vs_achieved_forward` | ≤ 0.075 m/s | **0.224** | ❌ 3× over |
+| `tracking/step_length_touchdown_event_m` | ≥ 0.030 m | **−0.0077** | ❌ wrong sign |
+| `tracking/forward_velocity_cmd_ratio` | 0.6 – 1.5 | **−9.407** | ❌ wrong sign |
+
+#### G5 anti-exploit — FAIL on hip-pitch / knee left
+
+| Metric | Bound | Best ckpt | Result |
+|---|---:|---:|:--:|
+| `residual_hip_pitch_left_abs` | ≤ 0.20 rad | **0.229** | ❌ |
+| `residual_hip_pitch_right_abs` | ≤ 0.20 rad | 0.066 | ✅ |
+| `residual_knee_left_abs` | ≤ 0.20 rad | **0.219** | ❌ |
+| `residual_knee_right_abs` | ≤ 0.20 rad | 0.075 | ✅ |
+
+Residual saturates ONLY on the left leg → consistent with the L/R touchdown asymmetry below; the policy uses the left leg to absorb the impulse of the falling-backward home crouch while keeping the right leg planted.
+
+#### Mechanism — V(stand) > V(walk) at cold-start, locked-in by 5.5× L/R asymmetry
+
+- **Touchdown rate**: L = 0.111 events/step, R = 0.020 events/step → **5.5× left-heavy** asymmetry (full-run post-mortem trace shows up to 18× in late iters).
+- **Per-foot step length**: L = R = **−0.00031 m** per touchdown — the rare "step" is actually a backwards slip, not a stride.
+- **Body forward velocity is negative across the eval rollout**: the robot drifts backward while a positive vx is commanded.
+- **Reward terms at iter 430** (per-step post-dt contribution):
+  - `reward/cmd_forward_velocity_track` = 0.0071 (vs survival 0.0200, alive bias dominates the standing posture).
+  - `reward/ref_q_track` ≈ 0 — `ref/q_track_err_rmse = 0.22 rad` (above the 0.10 healthy band; gradient is dead at α=1).
+  - `reward/ref_contact_match` ≈ 0 — `ref/contact_phase_match = 0.619` (below 0.85 alive-gradient band).
+  - `reward/feet_air_time/feet_clearance/feet_distance/torso_*_soft` all = 0.0 (cmd-gated terms never trigger because the policy never enters swing).
+- **Stability**: average `term_height_low_frac = 50.5%` and `term_pitch_frac = 20.7%` across the run — half the episodes died from height collapse, ⅕ from pitch fault. The policy "wins" by surviving stand-ups, not by walking.
+
+Root cause: smoke1's `cmd_forward_velocity_alpha = 40.0` paid `exp(−40·0.18²) = 0.273` per-step partial credit for standing at `cmd_vx = 0.18` (≈ +5.5 units / episode standing bonus) while the cold-start fall risk dominated any per-step walking advantage. At α = 562.5 (smoke12b basin-break value) the same row pays `exp(−18.2) ≈ 1.2e−8` — leak closed.
+
+### Smoke2 changes (7 levers vs smoke1)
+
+YAML: `training/configs/ppo_walking_v0210_smoke2.yaml`. Smoke2 inherits the full v0.21.0 3-axis stack (P4 / P5 / P6 / P7 all on) and changes the items below.
+
+| # | Lever | smoke1 | smoke2 | Why |
+|---|---|---|---|---|
+| A1 | `reward_weights.cmd_forward_velocity_alpha` | 40.0 | **562.5** | Close Problem A: kill the +5.5 / ep standing-during-walk-cmd reward leak. Matches smoke12b. |
+| A2 | `reward_weights.action_rate` | −2.0 | **−1.0** | Restore smoke12b basin-break value; the TB-faithful −2.0 over-penalized stride exploration and smoke12b's header explicitly defers reverting it. |
+| B | `env.cmd_zero_chance` / `cmd_turn_chance` | 0.20 / 0.20 | **0.05 / 0.05** | Shrink the 40% zero-or-turn-episode reservoir that reinforces "stand reliably" learning. TB defaults are also 0.2/0.2 but TB's σ=1000 cmd kernel has no Problem A leak; WR retains a partial leak even after A1, so lower zero/turn compounds protection. |
+| C | `env.cmd_sampler_walk_vx_positive_only` | — (default False) | **true** (new flag) | Close library-vs-sampler contract mismatch: TB `_sample_walk_command` emits negative vx via `sin_theta < 0` (`wildrobot_env.py:3055`), but WR's reference library has only positive vx bins — negative cmds snap to the nearest positive bin and produce contradictory cmd-vs-prior signals. smoke12b's 1D sampler never emitted negative vx; this flag restores that without disabling the rest of the 3D sampler. |
+| D | `env.max_episode_steps` | 500 | **1000** | Longer horizon → a walking episode that survives cold-start (first ~100 steps) gets 900 productive steps vs 400. Per-iter compute unchanged. |
+| E | `env.eval_velocity_cmd` | `[0.18, 0.04, 0.0]` | **`[0.20, 0.065, 0.0]`** | Align eval cmd to library bins (library vy bins are `{−0.13, −0.065, 0.0, 0.065, 0.13}`; smoke1's vy=0.04 was off-grid → phantom cmd-vs-snap mismatch on every eval step). vx=0.20 is an exact-bin `loc_ref_offline_command_vx` union anchor. |
+| F | `ppo.critic_includes_actor_obs` (Lever 7) | — (default False) | **true** (new flag) | Value-network input changes from privileged-only (52 × 15 = 780 dims) to `concat(actor_obs, privileged_obs)`. The pre-Lever-7 critic could not see cmd / phase / quat / abs motor_pos — exactly the slots that distinguish V(stand) from V(walk) at the standing local minimum. Asymmetric actor-critic pattern; TB's `num_single_privileged_obs = 151` already includes noiseless actor obs inline. Resume validator hard-fails on flag mismatch (value-head shape change). |
+
+**Held constant (Option B per review)**: `min_velocity / max_velocity` stay at smoke14's 0.18 / 0.26 (NOT smoke12b's slower 0.08 / 0.1333). Smoke2 tests whether levers A–F can break the basin at the smoke14 range; revert to 12b range if not. **Deferred per review**: warm-start from smoke12b (needs obs-translation work), RSI (env complexity), reset perturbation widening (TB defaults are also ±0.1; ±0.2 is the optional commented value in `walk.gin`).
+
+### Supporting code shipped for smoke2
+
+| Commit | Scope |
+|---|---|
+| `d30fdaf` | smoke2 YAML — 6 of 7 lever changes (A–E above) + reward-weights strict loader |
+| `7333e08` | post-training eval — horizon-aware ep-len gate (95% of `max_episode_steps`) + vx-scaled step-length floor docs |
+| `97b8f5f` | post-training eval — `step_length_touchdown_floor_m(vx)` helper scales the 0.030 floor by `0.50·vx·cycle_time/2` |
+| `6b0d7ab` | Lever 7 Option A — `critic_includes_actor_obs` flag + per-step concat at the rollout call site (compute_values JIT body unchanged) |
+| `78d19fb` | Lever 7 follow-up — checkpoint config persists `critic_includes_actor_obs`; resume validator hard-fails on mismatch (default absent ckpt field to False = pre-Lever-7 contract) |
+
+### Pass criterion for smoke2
+
+- **MUST PASS** (G4 forward gates, deterministic eval): `forward_velocity ≥ +0.075`, `mean_episode_length ≥ 0.95·max_episode_steps = 950`, `cmd_vs_achieved_forward ≤ 0.075`, `step_length ≥ max(0.030, 0.50·vx·cycle_time/2)`, `forward_velocity_cmd_ratio ∈ [0.6, 1.5]`.
+- **MUST OBSERVE** (Appendix C lateral / yaw probes, report-only): `signed_ratio ≥ 0.5` on at least one of the lateral or yaw probes via `post_training_eval_summary.json::lateral_yaw_probes`.
+- **STRETCH**: both probes pass.
+
+If smoke2 passes G4 but lateral / yaw probes fail → smoke3 promotes the probe to a hard gate. If G4 fails too → escalate (warm-start from smoke12b, RSI, or vx-range curriculum).
+
+### Run command
+
+```
+UV_CACHE_DIR=/tmp/uv-cache uv run python -m training.train \
+  --config training/configs/ppo_walking_v0210_smoke2.yaml
+```
+
+`--verify` (10 iter / 4 envs) is recommended before the full 30M run to catch Lever 7 wiring / library-build issues in ~2 min.
+
+### Source-of-truth check
+
+- Smoke1 data from `wildrobot-training-analyze` skill against `offline-run-20260524_170136-wxir4gsj`, best ckpt iter 430 (eval namespace `Evaluate/*` present).
+- Smoke2 YAML header (lines 1–95) is the canonical inline rationale for every lever; this entry summarizes.
+- Lever 7 implementation: `training/core/rollout.py` (per-step concat), `training/configs/training_runtime_config.py` (flag default False = back-compat), `training/core/training_loop.py` (value-net dim sizing + resume validator), `training/core/checkpoint.py` (persist flag).
+- All 8 Lever-7 + 58 related config / stability tests pass (`test_critic_includes_actor_obs.py`, `test_config_load_v0210_smoke2.py`, `test_config_load_v0210_smoke1.py`, `test_training_stability_controls.py`).
+
+---
+
 ## [v0.21.0-eval-lateral-yaw-pass + heading-correction-wiring] - 2026-05-24: authoritative lateral/yaw probes + wire TB heading-frame correction at call sites
 
 ### Why
