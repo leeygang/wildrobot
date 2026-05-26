@@ -127,14 +127,13 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
-    # v0.19.3: reference-guided locomotion (M2 nominal + PPO residual)
-    loc_ref_enabled: bool = False
     # Reference implementation selector.  v0.20.1 deleted v1/v2; the
     # only supported value is "v3_offline_library", which loads the
     # offline ZMP ReferenceLibrary (requires
     # loc_ref_offline_library_path on disk, or omit the path to build
     # one on-the-fly via ZMPWalkGenerator at the configured
-    # loc_ref_offline_command_vx).
+    # loc_ref_offline_command_vx).  WildRobotEnv hard-requires
+    # this value at init; there is no separate enable flag.
     loc_ref_version: str = "v3_offline_library"
     # Residual joint delta scale.  Interpretation depends on
     # loc_ref_residual_mode (see below).
@@ -463,8 +462,10 @@ class EnvConfig(Freezable):
     loc_ref_v2_support_entry_shaping_window_s: float = 0.12
     loc_ref_v2_support_pelvis_height_offset_m: float = 0.00
     # M2.5: start episodes from the support posture B (squat) instead of
-    # keyframe A (standing).  Requires loc_ref_enabled=True and
-    # loc_ref_version="v2".
+    # keyframe A (standing).  Was gated on the now-removed v2 reference
+    # path (loc_ref_version="v2"); under the v3-only env this flag has
+    # no live consumer and is retained only for back-compat with
+    # checkpoint configs that serialize it.
     start_from_support_posture: bool = False
     # M3.0: DCM COM trajectory — let the body fall forward over the stance
     # foot following LIPM dynamics during stance phase.

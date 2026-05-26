@@ -41,7 +41,6 @@ def main() -> None:
     cfg.ppo.rollout_steps = 60
     cfg.env.min_velocity = 0.10
     cfg.env.max_velocity = 0.10
-    cfg.env.loc_ref_enabled = True
     cfg.env.controller_stack = "ppo"
     cfg.env.base_ctrl_enabled = False
     cfg.env.fsm_enabled = False
