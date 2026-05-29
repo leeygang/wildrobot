@@ -3052,31 +3052,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
         sin_theta = jp.sin(theta)
         cos_theta = jp.cos(theta)
 
-        # v0.21.0 smoke2 post-mortem: optionally clamp vx >= 0.  When
-        # ``cmd_sampler_walk_vx_positive_only`` is True the walk branch
-        # forces sign_x non-negative (uses |sin_theta|) and uses the
-        # upper x_hi bound, so the sampled vx_cmd is always in
-        # [deadzone_x, x_hi].  This restores smoke12b's strictly-positive
-        # vx property (scalar 1D sampler never emitted negative vx) and
-        # avoids the contract mismatch with WR's positive-only reference
-        # library.  Default False = TB symmetric ellipse (legacy / smoke1).
+        # v0.21.0 smoke2 fix: optionally make the walk-branch vx range
+        # literal.  TB's ellipse multiplies the sampled x magnitude by
+        # sin(theta), so even with min_velocity=0.18 the realized |vx|
+        # can collapse near zero.  That is fine for TB's symmetric command
+        # convention, but WR's forward-only basin-break configs need the
+        # YAML range to mean what it says: vx in [min_velocity, max_velocity].
+        # Default False = TB symmetric ellipse (legacy / smoke1).
         if getattr(self._config.env, "cmd_sampler_walk_vx_positive_only", False):
-            sign_x = jp.abs(sin_theta)
-            x_max = x_hi
+            x_min = jp.maximum(x_lo, deadzone_x)
+            x_max = jp.maximum(x_hi, x_min)
+            x = jax.random.uniform(rng_4, (), minval=x_min, maxval=x_max)
         else:
             sign_x = sin_theta
             x_max = jp.where(sin_theta > 0.0, x_hi, -x_lo)
-        # ``maxval`` must be >= ``minval`` for jax.random.uniform.  When
-        # the active half-axis is empty (e.g. min_velocity_y == 0 ⇒
-        # both ``y_hi`` and ``-y_lo`` collapse to 0), clamp upward so
-        # the sample degenerates to 0 instead of producing NaN.
-        x_max_clamped = jp.maximum(jp.abs(x_max), deadzone_x)
-        x = jax.random.uniform(
-            rng_4,
-            (),
-            minval=deadzone_x,
-            maxval=x_max_clamped,
-        ) * sign_x
+            # ``maxval`` must be >= ``minval`` for jax.random.uniform.
+            # Clamp upward so zero-width axes degenerate to the deadzone
+            # instead of producing NaN.
+            x_max_clamped = jp.maximum(jp.abs(x_max), deadzone_x)
+            x = jax.random.uniform(
+                rng_4,
+                (),
+                minval=deadzone_x,
+                maxval=x_max_clamped,
+            ) * sign_x
 
         y_max = jp.where(cos_theta > 0.0, y_hi, -y_lo)
         y_max_clamped = jp.maximum(jp.abs(y_max), deadzone_y)
@@ -3129,12 +3128,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         * otherwise                                -> ``_sample_walk_command``
 
         Returns a length-3 ``float32`` vector ``(vx, vy, wz)``.  Unlike
-        the v0.20.x scalar-vx sampler, the TB walk-ellipse legitimately
-        produces NEGATIVE ``vx`` when ``min_velocity > 0`` via the
-        ``sin(theta)`` sign-flip + deadzone clamp (TB
-        ``walk_env.py:267-272``).  This is only well-defined when the
-        reference library has matching bidirectional coverage (P5+); use
-        the v0.20.x scalar sampler for forward-only legacy configs.
+        the v0.20.x scalar-vx sampler, the default TB walk-ellipse can
+        produce negative or near-zero ``vx`` when ``min_velocity > 0``
+        via the ``sin(theta)`` factor (TB ``walk_env.py:267-272``).  For
+        forward-only WR basin-break configs,
+        ``cmd_sampler_walk_vx_positive_only`` makes the walk branch
+        sample vx directly from ``[min_velocity, max_velocity]``.
         """
         rng_2, rng_3, rng_4, rng_5, rng_6 = jax.random.split(rng, 5)
         u = jax.random.uniform(rng_2, ())
@@ -3273,9 +3272,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
           smoke12b / smoke7 baselines bit-for-bit.
 
         * ``True`` (v0.21.0 opt-in): TB-mirrored branched 3D sampler
-          (zero / pure-turn / walk-ellipse).  Produces negative vx when
-          ``min_velocity > 0`` via TB's ``sin(theta)`` sign-flip, so
-          requires a bidirectional reference library (P5+).
+          (zero / pure-turn / walk-ellipse).  By default the walk branch
+          follows TB's symmetric ellipse; forward-only basin-break
+          configs can set ``cmd_sampler_walk_vx_positive_only`` so the
+          walk branch samples vx directly from ``[min_velocity,
+          max_velocity]``.
 
         ``cmd_sampler_3d_branched`` is a compile-time Python ``bool`` on
         ``EnvConfig`` (not a traced JAX value), so the dispatch is a

@@ -32,14 +32,14 @@
 #     Problem A even after alpha=562.5, so lower zero/turn compounds
 #     protection.
 #
-# (C) Sampler vx-clamp — close library-vs-sampler contract mismatch
+# (C) Sampler vx-range — close library-vs-sampler contract mismatch
 #   * cmd_sampler_walk_vx_positive_only: true (new env flag; default False)
 #     TB's _sample_walk_command ellipse emits negative vx via the
-#     sin_theta<0 branch (wildrobot_env.py:3055).  WR's reference
-#     library has only positive vx bins; negative cmds snap to nearest
-#     positive bin -> contradictory cmd-vs-prior signals.  smoke12b's
-#     scalar 1D sampler never emitted negative vx; this flag restores
-#     that property without disabling the rest of the 3D sampler.
+#     sin_theta<0 branch and can shrink |vx| near zero via |sin_theta|.
+#     WR's smoke2 reference/library and basin-break contract are
+#     forward-only; this flag makes the walk branch sample vx directly
+#     from [min_velocity, max_velocity] without disabling the rest of the
+#     3D sampler.
 #
 # (D) Episode horizon — longer productive walking after cold-start
 #   * max_episode_steps: 500 -> 1000

@@ -1,18 +1,16 @@
-"""Tests for v0.21.0 smoke2 vx-clamp: env.cmd_sampler_walk_vx_positive_only.
+"""Tests for v0.21.0 smoke2 vx-range: env.cmd_sampler_walk_vx_positive_only.
 
 Background — smoke2 post-mortem (lblub15y, 2026-05-24):
 TB's `_sample_walk_command` ellipse legitimately emits negative vx via the
 ``sin_theta < 0`` branch (wildrobot_env.py:3055: ``x_max = -x_lo`` when
-``sin_theta < 0``).  WR's reference library has only positive vx bins
-(``build_library_for_3d_values`` with ``vx_values=[0, +0.18, ...]``).
-Negative cmds snap to the nearest positive bin in the lookup, giving the
-policy contradictory cmd-vs-prior signals (cmd says backward, prior shows
-forward).  smoke12b's scalar 1D sampler never emitted negative vx — this
-flag restores that property without disabling the rest of the 3D sampler.
+``sin_theta < 0``), and it can shrink |vx| near zero via |sin_theta| even
+when min_velocity is positive.  WR smoke2's basin-break contract is
+forward-only at [min_velocity, max_velocity], so this flag makes the
+walk-branch vx range literal without disabling the rest of the 3D sampler.
 
 Tests:
   * Field has correct default (False) for back-compat.
-  * When True: sampled walk-branch vx >= 0 over many trials.
+  * When True: sampled walk-branch vx stays in [min_velocity, max_velocity].
   * When False (default): sampled walk-branch vx spans both signs
     (preserves TB symmetric-ellipse behavior).
   * vy is NOT clamped under either setting (library has symmetric +/- vy
@@ -92,9 +90,10 @@ def _sample_n_walk_commands(env: WildRobotEnv, n: int) -> list[tuple[float, floa
     return out
 
 
-def test_walk_branch_vx_strictly_positive_when_clamp_on() -> None:
-    """With clamp=True, every walk-branch vx sample must be >= 0
-    (>= deadzone in magnitude actually, but the sign must be non-negative)."""
+def test_walk_branch_vx_uses_config_range_when_clamp_on() -> None:
+    """With clamp=True, every walk-branch vx sample must stay inside
+    the configured forward range.  This catches the smoke2 bug where
+    vx was positive but still shrunk toward zero by abs(sin(theta))."""
     env = _build_env_with_walk_vx_clamp(clamp=True)
     samples = _sample_n_walk_commands(env, 200)
     vxs = [vx for vx, _, _ in samples]
@@ -102,6 +101,13 @@ def test_walk_branch_vx_strictly_positive_when_clamp_on() -> None:
     assert n_neg == 0, (
         f"Expected zero negative vx samples under clamp=True; got {n_neg}/{len(vxs)}.  "
         f"Sample of negatives: {[v for v in vxs if v < 0][:5]}"
+    )
+    min_vx = float(env._config.env.min_velocity)
+    max_vx = float(env._config.env.max_velocity)
+    out_of_range = [v for v in vxs if v < min_vx or v > max_vx]
+    assert not out_of_range, (
+        f"Expected vx samples in [{min_vx}, {max_vx}] under clamp=True; "
+        f"got out-of-range sample(s): {out_of_range[:5]}"
     )
     # wz is always pinned to 0 in the walk branch.
     wzs = [wz for _, _, wz in samples]
