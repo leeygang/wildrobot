@@ -3276,7 +3276,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
           follows TB's symmetric ellipse; forward-only basin-break
           configs can set ``cmd_sampler_walk_vx_positive_only`` so the
           walk branch samples vx directly from ``[min_velocity,
-          max_velocity]``.
+          max_velocity]``.  That flag only de-projects the vx axis; vy
+          intentionally keeps TB's ellipse projection so lateral samples
+          still include near-zero values and both signs.
 
         ``cmd_sampler_3d_branched`` is a compile-time Python ``bool`` on
         ``EnvConfig`` (not a traced JAX value), so the dispatch is a

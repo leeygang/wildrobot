@@ -1800,9 +1800,11 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         log_prefix="tracking",
         description=(
-            "Legacy diagnostic: sqrt((vx-cmd_vx)^2 + vy^2) in "
-            "heading-local frame.  Always actual-vs-commanded; "
-            "kept for back-comparison against pre-smoke13 runs."
+            "Heading-local actual-vs-commanded XY speed error: "
+            "sqrt((vx-cmd_vx)^2 + (vy-cmd_vy)^2).  Under legacy "
+            "cmd_velocity_track_dim=1, cmd_vy is 0 for the reward path "
+            "and the metric remains a diagnostic for the lateral axis; "
+            "under dim=2 it is the velocity reward-target error."
         ),
     ),
     MetricSpec(

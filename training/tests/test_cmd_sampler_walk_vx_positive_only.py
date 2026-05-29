@@ -109,6 +109,12 @@ def test_walk_branch_vx_uses_config_range_when_clamp_on() -> None:
         f"Expected vx samples in [{min_vx}, {max_vx}] under clamp=True; "
         f"got out-of-range sample(s): {out_of_range[:5]}"
     )
+    expected_mean = 0.5 * (min_vx + max_vx)
+    actual_mean = sum(vxs) / len(vxs)
+    assert abs(actual_mean - expected_mean) < 0.02, (
+        f"Expected roughly uniform vx samples under clamp=True; "
+        f"mean={actual_mean:.4f}, expected midpoint={expected_mean:.4f}"
+    )
     # wz is always pinned to 0 in the walk branch.
     wzs = [wz for _, _, wz in samples]
     assert all(abs(wz) < 1e-6 for wz in wzs)
