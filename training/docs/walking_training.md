@@ -98,6 +98,13 @@ The policy remains the deployed artifact. The reference and IK layers are part
 of the locomotion stack, but they must be strong enough that PPO is refining a
 real walk rather than fabricating one.
 
+> **Note (active config drift):** the diagram shows the *intended*
+> prior-guided contract where the policy corrects a nominal `q_ref`. The
+> active v0.21.0 smoke lineage anchors the residual to the **home pose**
+> (`loc_ref_residual_base: home`) and gates the imitation reward to 0, so
+> the prior is currently an observation-only signal. See the **Reward
+> Design** active-config drift callout below for specifics and rationale.
+
 Active decision:
 
 - runtime FSM is deprecated and removed from the active path
@@ -286,6 +293,49 @@ Future upgrade path:
 ---
 
 ## Reward Design
+
+> **⚠️ Active-config drift (as of v0.21.0 smoke2, 2026-05-29).** The
+> imitation-dominant recipe described in this section is the *original
+> v0.20.1 design intent*, retained below as the rationale of record. It
+> is **not** what the active smoke lineage runs. The basin-break lineage
+> (`smoke12b` → `smoke14` → `v0.21.0 smoke1` → `smoke2`) deliberately
+> pivoted to a ToddlerBot-style **prior-free reward** recipe after the
+> imitation-dominant recipe repeatedly stalled in the standing local
+> minimum. In the active config (`training/configs/ppo_walking_v0210_smoke2.yaml`):
+>
+> - **All `ref_*` imitation reward weights are gated to 0**
+>   (`ref_q_track`, `ref_contact_match`, `ref_feet_z_track`,
+>   `torso_pos_xy`, `lin_vel_z`, plus `feet_air_time/clearance/distance`,
+>   `torso_pitch/roll_soft` — smoke2 YAML lines 537-552).
+> - **The residual is anchored to the home pose, not `q_ref`**
+>   (`loc_ref_residual_base: home` → `q_target = home_q + clip(action)·0.25`,
+>   `wildrobot_env.py:1197`). This is the smoke8 form in the Action
+>   Contract above.
+> - **Active reward terms** are therefore: `alive`,
+>   `cmd_forward_velocity_track` (α=562.5), `cmd_yaw_rate_track`,
+>   `ref_body_quat_track` (torso *orientation* only), `ang_vel_xy`,
+>   `feet_phase`, `penalty_pose`, `penalty_close_feet_xy`,
+>   `penalty_feet_ori`, `action_rate`.
+>
+> **Consequence for the runtime contract:** under the active lineage the
+> offline prior (ZMP library: `q_ref`, foot targets, contact mask) is a
+> **passive observation channel only** — it no longer owns the action
+> base point (home does) nor is it rewarded (all `ref_*` weights 0). The
+> "Prior owns step length / cadence / foothold geometry" division of
+> labor in the **Mainline Runtime Contract** and the
+> wildrobot-training-analyze skill's G5 narrative describes the *intended*
+> v0.20.1 architecture, not the running smoke2 config. The huge
+> `ref/feet_pos_err_l2` / `ref/torso_pos_xy_err` values seen in smoke runs
+> are expected unweighted diagnostics, not failures.
+>
+> **Rationale (per CLAUDE.md, divergences need explicit reason):** the
+> imitation-dominant recipe could not break the standing basin from a
+> cold start; the TB prior-free recipe (`smoke12b ot8zazo1`) was the first
+> to produce a real gait, but only at the slow vx range (0.08–0.1333).
+> See `training/CHANGELOG.md` entries `v0.20.1-smoke12b-ot8zazo1-result`
+> and `v0.21.0-smoke2-*`. The imitation block remains in the env and is
+> re-enableable per-weight; reviving it is an open option if the prior is
+> later strengthened.
 
 The `v0.20.1` reward family should be imitation-dominant hybrid reward.
 
