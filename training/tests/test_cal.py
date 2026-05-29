@@ -157,8 +157,9 @@ class TestActionTransformation:
 
     def test_ctrl_to_policy_action_is_inverse(self, cal_instance):
         """ctrl_to_policy_action should be inverse of policy_action_to_ctrl."""
-        # Generate random action in [-1, 1]
-        original_action = jnp.array([0.5, -0.3, 0.7, -0.1, 0.2, -0.8, 0.4, -0.6])
+        # Deterministic action in [-1, 1] sized to current actuator count.
+        n = cal_instance.num_actuators
+        original_action = jnp.linspace(-0.8, 0.8, n)
         ctrl = cal_instance.policy_action_to_ctrl(original_action)
         recovered_action = cal_instance.ctrl_to_policy_action(ctrl)
 

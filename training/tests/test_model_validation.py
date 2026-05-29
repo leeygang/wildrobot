@@ -52,17 +52,17 @@ class TestModelStability:
         """
         Purpose: Verify model dimensions match expectations.
 
-        WildRobot:
-        - nq = 15 (7 base + 8 joints)
-        - nv = 14 (6 base + 8 joints)
-        - nu = 8 (8 actuators)
+        WildRobot v2:
+        - nq = 28 (7 floating base + 21 joint qpos)
+        - nv = 27 (6 floating base + 21 joint qvel)
+        - nu = 21 (21 actuated joints: legs + waist + arms)
 
         Assertions:
         - Dimensions match expected values
         """
-        assert mj_model.nq == 15, f"Expected nq=15, got {mj_model.nq}"
-        assert mj_model.nv == 14, f"Expected nv=14, got {mj_model.nv}"
-        assert mj_model.nu == 8, f"Expected nu=8, got {mj_model.nu}"
+        assert mj_model.nq == 28, f"Expected nq=28, got {mj_model.nq}"
+        assert mj_model.nv == 27, f"Expected nv=27, got {mj_model.nv}"
+        assert mj_model.nu == 21, f"Expected nu=21, got {mj_model.nu}"
 
 
 # =============================================================================

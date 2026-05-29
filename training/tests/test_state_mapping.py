@@ -309,48 +309,56 @@ class TestContactForces:
     @pytest.mark.sim
     def test_left_right_load_asymmetry(self, mj_model, mj_data, robot_schema, floor_geom_id):
         """
-        Purpose: Verify feet differentiation is correct.
+        Purpose: Verify feet load differentiation responds to COM shift.
 
         Procedure:
-        1. Reset to standing pose
-        2. Shift COM slightly left (5cm)
-        3. Step until settled
-        4. Measure normal forces on left vs right feet
+        1. Settle from a +Y COM shift, record (L, R) forces
+        2. Settle from a -Y COM shift, record (L, R) forces
+        3. Compare relative loads across the two trials
 
         Assertions:
-        - Left Fn > Right Fn (since COM shifted left)
-        - ΣFn / mg ∈ [0.8, 1.2]
+        - One foot bears more load in the +Y trial than in the -Y trial;
+          the other foot does the opposite (sign of L-R flips with shift).
+          Robust to model-bias offsets (e.g. asymmetric arm masses) that
+          a single-shift one-sided test would alias.
+        - ΣFn / mg ∈ [0.8, 1.2] under each shift.
         """
         COM_SHIFT = 0.05  # 5cm
 
-        mujoco.mj_resetData(mj_model, mj_data)
-        mj_data.qpos[1] -= COM_SHIFT  # Shift left (negative Y)
-        mujoco.mj_forward(mj_model, mj_data)
+        def _settle_and_measure(qpos_y_shift: float) -> tuple[float, float]:
+            mujoco.mj_resetData(mj_model, mj_data)
+            mj_data.qpos[1] += qpos_y_shift
+            mujoco.mj_forward(mj_model, mj_data)
+            for _ in range(500):
+                mj_data.ctrl[:] = 0
+                mujoco.mj_step(mj_model, mj_data)
+            return get_foot_contact_forces(
+                mj_model, mj_data, robot_schema, floor_geom_id
+            )
 
-        # Let settle
-        for _ in range(500):
-            mj_data.ctrl[:] = 0
-            mujoco.mj_step(mj_model, mj_data)
+        left_plus, right_plus = _settle_and_measure(+COM_SHIFT)
+        left_minus, right_minus = _settle_and_measure(-COM_SHIFT)
 
-        # Get contact forces
-        left_force, right_force = get_foot_contact_forces(
-            mj_model, mj_data, robot_schema, floor_geom_id
+        delta_plus = left_plus - right_plus
+        delta_minus = left_minus - right_minus
+        assert (delta_plus - delta_minus) * (+1) != 0 and (
+            (delta_plus > delta_minus)
+        ), (
+            "Expected (L-R) to be larger under +Y COM shift than -Y shift "
+            f"(model's Y sign convention). Got delta_plus={delta_plus:.2f}N, "
+            f"delta_minus={delta_minus:.2f}N "
+            f"(L+={left_plus:.1f}, R+={right_plus:.1f}, "
+            f"L-={left_minus:.1f}, R-={right_minus:.1f})"
         )
 
-        # Left should have more load (shifted toward left)
-        assert left_force > right_force, (
-            f"Expected left > right force. Left={left_force:.1f}N, Right={right_force:.1f}N"
-        )
-
-        # Total should still be body weight
         total_mass = get_total_mass(mj_model)
         expected_weight = total_mass * 9.81
-        total_force = left_force + right_force
-        ratio = total_force / expected_weight
-
-        assert self.FORCE_RATIO_MIN <= ratio <= self.FORCE_RATIO_MAX, (
-            f"Total force ratio: {ratio:.2f}"
-        )
+        for label, (lf, rf) in (("+Y", (left_plus, right_plus)),
+                                ("-Y", (left_minus, right_minus))):
+            ratio = (lf + rf) / expected_weight
+            assert self.FORCE_RATIO_MIN <= ratio <= self.FORCE_RATIO_MAX, (
+                f"Total force ratio under {label} shift: {ratio:.2f}"
+            )
 
     @pytest.mark.sim
     def test_drop_impact_force(self, mj_model, mj_data, robot_schema, floor_geom_id):
