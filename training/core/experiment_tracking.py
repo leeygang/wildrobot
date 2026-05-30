@@ -356,6 +356,15 @@ ENV_METRICS_KEYS = {
         "single-bin mode, otherwise the nearest entry in the "
         "_offline_vx_grid."
     ),
+    "tracking/ref_selected_vy": (
+        "Selected reference-bin vy (m/s) from the per-step "
+        "heading-corrected lookup.  Forward-only commands keep this "
+        "~0; nonzero ⇒ heading rotation landed on a lateral bin."
+    ),
+    "tracking/ref_selected_wz": (
+        "Selected reference-bin yaw-rate wz (rad/s) from the per-step "
+        "lookup.  Zero-yaw commands keep this ~0."
+    ),
     "tracking/ref_cmd_bin_abs_err": (
         "|ref_selected_vx - velocity_cmd| (m/s).  Nearest-bin "
         "quantization error against the sampled command; bounded "
@@ -627,6 +636,8 @@ def get_initial_env_metrics(
         "tracking/ang_vel_z_signed_rad_s": 0.0,
         "tracking/ref_velocity_xy_err": 0.0,
         "tracking/ref_selected_vx": 0.0,
+        "tracking/ref_selected_vy": 0.0,
+        "tracking/ref_selected_wz": 0.0,
         "tracking/ref_cmd_bin_abs_err": 0.0,
         "tracking/world_x_progress_m": 0.0,
         "tracking/world_y_drift_signed_m": 0.0,
@@ -821,6 +832,8 @@ def get_initial_env_metrics_jax(
         "tracking/ang_vel_z_signed_rad_s": jp.zeros(()),
         "tracking/ref_velocity_xy_err": jp.zeros(()),
         "tracking/ref_selected_vx": jp.zeros(()),
+        "tracking/ref_selected_vy": jp.zeros(()),
+        "tracking/ref_selected_wz": jp.zeros(()),
         "tracking/ref_cmd_bin_abs_err": jp.zeros(()),
         "tracking/world_x_progress_m": jp.zeros(()),
         "tracking/world_y_drift_signed_m": jp.zeros(()),

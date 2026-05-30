@@ -2498,6 +2498,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # supplied).  Quantifies the gait-template quantization
             # error against the sampled velocity_cmd.
             ref_selected_vx=win["selected_vx"].astype(jp.float32),
+            # v0.21.0 instrumentation: surface the vy / wz of the bin the
+            # PER-STEP heading-corrected lookup actually selected.  With a
+            # forward-only command (vy=wz=0) these should stay ~0; if the
+            # heading-frame rotation (R_z(yaw_path - yaw_heading) applied in
+            # _lookup_offline_window) lands on a vy!=0 bin under yaw drift,
+            # the policy is being fed a lateral prior — this exposes it.
+            ref_selected_vy=win["selected_vy"].astype(jp.float32),
+            ref_selected_wz=win["selected_yaw_rate"].astype(jp.float32),
             ref_cmd_bin_abs_err=win["cmd_bin_abs_err"].astype(jp.float32),
         )
 
@@ -3601,6 +3609,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/ref_selected_vx"] = win0["selected_vx"].astype(
             jp.float32
         )
+        # reset-frame selected vy / wz — kept key-consistent with the step
+        # metrics so the brax metric structure matches across reset/step.
+        # (At reset heading ~= path so no rotation; expect ~0.)
+        metrics_dict["tracking/ref_selected_vy"] = win0["selected_vy"].astype(
+            jp.float32
+        )
+        metrics_dict["tracking/ref_selected_wz"] = win0["selected_yaw_rate"].astype(
+            jp.float32
+        )
         metrics_dict["tracking/ref_cmd_bin_abs_err"] = win0[
             "cmd_bin_abs_err"
         ].astype(jp.float32)
@@ -4194,6 +4211,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # this step and how far it is from the sampled velocity_cmd.
         terminal_metrics_dict["tracking/ref_selected_vx"] = reward_terms[
             "ref_selected_vx"
+        ]
+        # per-step heading-corrected selected vy / wz (see _compute_reward_terms)
+        terminal_metrics_dict["tracking/ref_selected_vy"] = reward_terms[
+            "ref_selected_vy"
+        ]
+        terminal_metrics_dict["tracking/ref_selected_wz"] = reward_terms[
+            "ref_selected_wz"
         ]
         terminal_metrics_dict["tracking/ref_cmd_bin_abs_err"] = reward_terms[
             "ref_cmd_bin_abs_err"

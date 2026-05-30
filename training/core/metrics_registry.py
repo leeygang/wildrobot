@@ -1882,6 +1882,31 @@ METRIC_SPECS: List[MetricSpec] = [
         ),
     ),
     MetricSpec(
+        name="tracking/ref_selected_vy",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Selected reference-bin vy (m/s) — the vy value of the "
+            "PER-STEP heading-corrected reference bin chosen for this "
+            "step.  Forward-only commands (vy=0) should keep this ~0; "
+            "a nonzero value means the heading-frame rotation in "
+            "_lookup_offline_window landed on a lateral bin (yaw drift "
+            "feeding the policy a lateral prior)."
+        ),
+    ),
+    MetricSpec(
+        name="tracking/ref_selected_wz",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "Selected reference-bin yaw-rate wz (rad/s) — the wz value "
+            "of the reference bin chosen for this step.  Zero-yaw "
+            "commands should keep this ~0 (wz is unaffected by the "
+            "heading rotation, so a nonzero value indicates a "
+            "pure-yaw bin was nearest)."
+        ),
+    ),
+    MetricSpec(
         name="tracking/ref_cmd_bin_abs_err",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
