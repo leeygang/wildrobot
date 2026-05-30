@@ -40,14 +40,32 @@ breaks the in-place basin), with (2) as the fallback if cold still fails.
 
 ---
 
-## [IN PROGRESS 2026-05-30] Instrumentation: ref_selected_vy/wz — DONE (commit 3926660)
+## [RESOLVED 2026-05-30] Instrumentation: ref_selected_vy/wz (commit 3926660) + probe read
 
 Logged `tracking/ref_selected_vy` + `tracking/ref_selected_wz` from the
-per-step **heading-corrected** lookup. **Open question to read off the next run
-(or a smoke4A resume):** does `ref_selected_vy` stay ~0, or does the heading
-rotation `R_z(yaw_path − yaw_heading)` land forward-only `(vx,0,0)` commands on
-a `vy≠0` bin under yaw drift — feeding the policy a lateral prior and
-reinforcing the lateral sway? `ref_selected_vy ≠ 0` ⇒ that mechanism is live
-and must be addressed (e.g. clamp the heading correction, or restrict the
-lateral bins) before/with the smoke5 design change. `~0` ⇒ rule it out; the
-in-place/lateral failure is purely reward-structure (no forward template).
+per-step **heading-corrected** lookup, then probed the latest smoke4A
+checkpoint (`checkpoint_460`) with a JAX rollout (reuses
+`eval_policy._collect_eval_rollout`; probe at `/tmp/probe_ref_selected.py`).
+
+**Finding (cmd `(0.13,0,0)`, 500 steps × 32 envs):**
+- `ref_selected_vx = 0.13` always; **`ref_selected_vy = 0.0` and
+  `ref_selected_wz = 0.0` for 100% of samples** (max|.| = 0; only bin hit = 0).
+- This held despite real `yaw_drift` up to **0.244 rad (14°)** and `lat_vel`
+  up to 0.69 m/s.
+
+**Conclusion: the heading-correction-feeds-a-lateral-prior hypothesis is
+REFUTED at the eval command.** The lookup stays on the `vy=0, wz=0` row. The
+math: at vx=0.13 the bin only flips to vy=0.065 once `0.13·sin(δ) > 0.0325`,
+i.e. δ > 14.5° — drift peaked at 14°, just under. ⇒ the in-place/lateral
+**sway is purely reward-structure** (no forward template; `feet_phase` +
+`alive` + posture satisfied in place; dead forward reward; `penalty_close_feet_xy`
+wide stance), NOT the reference lookup.
+
+**Residual edge (keep the metric on to watch):** the flip threshold scales as
+`δ > asin(0.0325/vx)` → at the 0.26 ceiling it drops to ~7.2°, which yaw drift
+could occasionally cross. Not the driver of the observed failure (which occurs
+at 0.13 where the lookup is clean), but `ref_selected_vy` now surfaces it if it
+ever happens during training.
+
+⇒ **smoke5 direction now points cleanly at the reward-structure fix (restore
+the forward template — option 1 above), not the lookup.**
