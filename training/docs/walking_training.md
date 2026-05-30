@@ -716,7 +716,10 @@ failure modes (lean-back / move-less exploits) that TB doesn't face.
 **absolute meters / radians silently tuned to TB's body**.  Reusing
 TB's absolute `forward_velocity ≥ 0.075 m/s` floor on WR's 1.77×
 larger leg would falsely pass weak policies (0.075 m/s would be only
-~25% of WR's vx=0.30 max command vs ~50% of TB's vx=0.15).  WR's
+~29% of WR's vx=0.26 max command vs ~75% of TB's vx=0.10 max command —
+TB's vx command is `command_range[5]=[-0.1, 0.1] m/s` in `walk.gin:42`,
+used directly as `lin_vel` at `walk_zmp_ref.py:104`; the earlier "TB
+vx=0.15 / WR vx=0.30" figures here were stale).  WR's
 **command-scaled G4 floors** (`0.50 × eval_velocity_cmd`) and
 **cycle-scaled step floor** (`0.50 × vx × cycle / 2`) are the
 correct generalisation: they preserve the *fraction-tracked*
