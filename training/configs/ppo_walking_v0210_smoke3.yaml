@@ -1,9 +1,11 @@
 # =============================================================================
-# WildRobot v0.21.0 PPO Smoke 3 — dead-gradient fix: widen vx sampling to deadzone
+# WildRobot v0.21.0 PPO Smoke 3 — dead-gradient fix: raise walk floor to 0.065
 # =============================================================================
-# Smoke3 changes (vs smoke2, single functional lever):
+# Smoke3 changes (vs smoke2):
 #
-#   * env.min_velocity: 0.18 -> 0.0   (max_velocity stays 0.26)
+#   * env.min_velocity:                  0.18 -> 0.065   (walk floor)
+#   * env.loc_ref_command_grid_interval: 0.04 -> 0.065   (keep 0.26 ref bin)
+#   (max_velocity stays 0.26; cmd_forward_velocity_alpha stays 562.5)
 #
 # Smoke2 (5v4j5j7w, 2026-05-29, 13.5M env-steps) converged to a tap-in-place /
 # slight-backward-drift minimum: forward_velocity = -0.07 m/s, ep_len pinned at
@@ -19,18 +21,22 @@
 # reward 0.027) -- proving the lever is the command RANGE, not alpha, the step
 # budget, or feet_phase.
 #
-# TB parity: ToddlerBot samples vx uniformly across its whole range down through
-# the deadzone every resample (walk.gin command_range[0]=[-1,1] scaled,
-# deadzone 0.05), so a large fraction of its 4096 envs always have small,
-# REACHABLE targets where even its tight sigma=1000 tracker (tighter than WR's
-# 562.5) gives a live gradient; the gait learned there generalizes to fast
-# commands.  smoke2's narrow high band broke that.  min_velocity=0.0 makes the
-# positive-only walk branch sample vx in [cmd_deadzone[0]=0.02, 0.26], spanning
-# reachable -> target.  alpha=562.5 and G5 bounds are UNCHANGED (lowering alpha
-# would reopen the smoke1 standing-leak; this is a sampling fix, not a reward
-# reform).  Simulated walk-branch mean ~0.14 m/s (vs smoke2's 0.22).
+# TB parity: ToddlerBot's velocity command is PHYSICAL m/s (command[5], vx in
+# [-0.1, 0.1], used directly as lin_vel at walk_zmp_ref.py:104), NOT the [-1,1]
+# entries (those are pose/style params at indices 0-4, not observed as velocity).
+# TB floors its forward walk command at deadzone 0.05 m/s on a 0.10 m/s max
+# (walk.gin:52), and tracks with sigma=1000 (mjx_env.py:2346) -> window 0.032.
+# So TB's deadzone/window ratio is 0.05/0.032 = 1.58.  WR's window at alpha=562.5
+# is 1/sqrt(562.5)=0.042, so the size/alpha-normalized WR floor = 1.58*0.042 =
+# 0.066 ~= 0.065.  This is why the floor is 0.065, NOT a raw copy of TB's 0.05
+# (0.05 m/s would be a smaller-than-TB fraction) and NOT 0.02 (standing would
+# pay exp(-562.5*0.02^2)=0.80, nearly satisfying the command -> weak gradient).
+# alpha=562.5 and G5 bounds are UNCHANGED (lowering alpha would reopen the
+# smoke1 standing-leak; this is a sampling/floor fix, not a reward reform).
+# Resulting walk-branch sample: vx ~ U[0.065, 0.26]; standing at the floor pays
+# exp(-562.5*0.065^2)=0.093 (clearly suboptimal -> strong pull to move).
 #
-# Reference: training/CHANGELOG.md v0.21.0-smoke2-result + v0.21.0-smoke3-plan.
+# Reference: training/CHANGELOG.md v0.21.0-smoke2-*-result + v0.21.0-smoke3-plan.
 # -----------------------------------------------------------------------------
 #
 # --- smoke2 history (retained for context) -----------------------------------
@@ -110,7 +116,7 @@
 # REPORT-ONLY -- they surface in post_training_eval_summary.json but
 # do NOT block promotion.
 #
-# Pass criterion for smoke2:
+# Pass criterion for smoke3:
 #   * MUST PASS: G4 forward gates (forward_velocity >= +0.075,
 #     mean_episode_length >= 0.95*post_training_num_steps,
 #     cmd_vs_achieved_forward <= 0.075,
@@ -221,7 +227,7 @@
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
 version: "0.21.0"
-version_name: "v0.21.0 PPO smoke3 (dead-gradient fix: min_velocity 0.18->0.0, walk vx in [0.02,0.26]; alpha=562.5/G5 unchanged from smoke2)"
+version_name: "v0.21.0 PPO smoke3 (dead-gradient fix: walk floor min_velocity 0.18->0.065, interval->0.065 keeps 0.26 ref bin, walk vx in [0.065,0.26]; alpha=562.5/G5 unchanged from smoke2)"
 
 seed: 42
 
@@ -267,17 +273,29 @@ env:
     left_ankle_roll: 5.0
     right_ankle_roll: 5.0
 
-  # Forward command range identical to smoke14.  vx grid derived from
-  # arange(0.18, 0.26+eps, 0.04) ∪ {loc_ref_offline_command_vx=0.20} =
-  # {0.18, 0.20, 0.22, 0.26}; the 3D library factory then force-unions
-  # vx=0.0 for pure-yaw bins (see control/zmp/zmp_walk.py:1685).
-  # smoke3 (dead-gradient fix): 0.18 -> 0.0.  With the positive-only walk
-  # branch (cmd_sampler_walk_vx_positive_only=true) and x_min=max(min_velocity,
-  # cmd_deadzone[0]), this samples vx uniformly in [0.02, 0.26] -> a large
-  # fraction of envs land in the live-gradient window of the alpha=562.5
-  # tracker, restoring the forward pull smoke2 lost at the narrow [0.18,0.26]
-  # band.  max_velocity stays 0.26 so the target speed is still trained.
-  min_velocity: 0.0
+  # smoke3 (dead-gradient fix): walk floor 0.18 -> 0.065 (max stays 0.26).
+  # WHY 0.065 (not 0.0, not 0.05, not 0.18):
+  #   The velocity tracker is exp(-alpha*err^2), alpha=562.5 -> live-gradient
+  #   half-window = 1/sqrt(alpha) = 0.042 m/s.  The lowest commanded walk
+  #   speed must be (a) high enough that standing is clearly suboptimal and
+  #   (b) low enough to be reachable from a standing cold start.  Sweeping
+  #   the floor c against standing-reward exp(-alpha*c^2) and the v=0 gradient:
+  #     c=0.02 -> standing pays 0.80 (standing nearly satisfies it; too low)
+  #     c=0.065-> standing pays 0.08, gradient 30% of peak  (sweet spot)
+  #     c>=0.10-> v=0 gradient < 2% of peak (recreates the smoke2 dead zone)
+  #   0.065 = 1.58 x window, the same deadzone/window ratio ToddlerBot uses
+  #   (TB: deadzone 0.05 / window 0.0316 = 1.58; walk.gin:52, mjx_env.py:2346).
+  #   This is the size/alpha-normalized TB value, NOT a raw copy of TB's 0.05.
+  # Library coupling: min_velocity also anchors the reference vx grid
+  #   (arange(min_velocity, max_velocity+eps, interval) in _init_offline_service,
+  #   wildrobot_env.py:848).  interval=0.065 below makes arange hit BOTH
+  #   0.065 and 0.26 exactly -> vx grid {0.065, 0.13, 0.195, 0.26} u {0.20}
+  #   u forced {0.0} (factory pure-yaw bin).  This keeps the 0.26 top-speed
+  #   reference bin (smoke3's interval=0.04 over [0,0.26] had silently
+  #   dropped it -> 0.26 cmds snapped to a 0.24 prior).
+  # Sampler floor: positive-only walk branch uses x_min=max(min_velocity,
+  #   cmd_deadzone[0])=max(0.065,0.02)=0.065 -> walk vx ~ U[0.065, 0.26].
+  min_velocity: 0.065
   max_velocity: 0.26
   # v0.21.0 P4 — lateral / yaw-rate command ranges for the branched
   # 3D sampler.  WR-scaled (see header comment on TB ratios).
@@ -305,7 +323,7 @@ env:
   # walk (vx,vy,0)).  Mixed walk+turn ``(0.18, 0.04, 0.10)`` is OOD
   # — the sampler never produces simultaneous nonzero vy AND wz, and
   # the 3D reference library has no mixed (vx>0, wz>0) bins either
-  # (TB-split: 25 linear + 5 pure-yaw, no mixed; see
+  # (TB-split: smoke3 = 26 linear + 4 pure-yaw = 30 bins, no mixed; see
   # control/zmp/zmp_walk.py::build_library_for_3d_values).  Evaluating
   # at an OOD command would silently snap to the nearest bin in the
   # library and report misleading tracking errors.
@@ -390,14 +408,15 @@ env:
   critic_obs_history_frames: 15
 
   loc_ref_command_conditioned: true
-  # Spec: interval=0.04 over [0.18, 0.26] → arange gives
-  # {0.18, 0.22, 0.26}; env then unions ``loc_ref_offline_command_vx``
-  # (=0.20 below) so the effective env vx grid is
-  # {0.18, 0.20, 0.22, 0.26} = 4 vx values.  3D library size is then
-  # 4 vx × 5 vy + 5 pure-yaw = 25 trajectories (no dedup — see header
-  # block).  Bumping this interval shrinks the linear half of the
-  # library only.
-  loc_ref_command_grid_interval: 0.04
+  # smoke3: interval 0.04 -> 0.065.  arange(0.065, 0.26+eps, 0.065) =
+  # {0.065, 0.13, 0.195, 0.26}; env then unions loc_ref_offline_command_vx
+  # (=0.20) and the 3D factory force-unions vx=0.0 (pure-yaw bin), so the
+  # effective vx grid is {0.0, 0.065, 0.13, 0.195, 0.20, 0.26} = 6 vx.
+  # 3D library = 5 nonzero-vx x 5 vy + 1 static (0,0,0) + 4 pure-yaw = 30.
+  # interval=0.065 (a divisor of 0.26-0.065=0.195, and 0.065 itself) is
+  # chosen so the arange lands EXACTLY on both the 0.065 walk floor and the
+  # 0.26 top-speed bin (interval=0.04 over [0,0.26] missed 0.26).
+  loc_ref_command_grid_interval: 0.065
 
   # v0.21.0 P5 — opt-in for 3D reference library lookup (heading-frame
   # nearest-key over (vx, vy, wz)).  Required for the new vy / wz

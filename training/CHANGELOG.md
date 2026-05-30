@@ -8,9 +8,13 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.21.0-smoke3-plan] - 2026-05-29: dead-gradient fix — widen vx sampling to the deadzone
+## [v0.21.0-smoke3-plan] - 2026-05-29: dead-gradient fix — raise the walk floor to 0.065
 
-**Single functional lever vs smoke2:** `env.min_velocity: 0.18 → 0.0` (`max_velocity` stays `0.26`). Config: `training/configs/ppo_walking_v0210_smoke3.yaml`. `cmd_forward_velocity_alpha=562.5`, all G5 residual bounds, the home-anchored residual, and the prior-free reward block are **unchanged** — this is a *sampling* fix, not a reward reform.
+**Levers vs smoke2** (config `training/configs/ppo_walking_v0210_smoke3.yaml`):
+- `env.min_velocity: 0.18 → 0.065` (walk floor)
+- `env.loc_ref_command_grid_interval: 0.04 → 0.065` (keeps 0.26 an exact library bin given the new floor)
+
+`cmd_forward_velocity_alpha=562.5`, all G5 residual bounds, the home-anchored residual, and the prior-free reward block are **unchanged** — this is a floor/sampling fix, not a reward reform.
 
 > **Supersedes** the "keep 0.18/0.26" plan in the `yxfkg6wh` entry below: the `5v4j5j7w` re-run executed that plan and produced the dead-gradient standing basin. smoke3 keeps `max_velocity=0.26` (NOT a revert to smoke12b's slow [0.08,0.133] band — the fast target is still trained) and only lowers the floor so the α=562.5 tracker has reachable targets.
 
@@ -18,23 +22,33 @@ This changelog tracks capability changes, configuration updates, and training re
 
 In the positive-only walk branch (`cmd_sampler_walk_vx_positive_only=true`, `wildrobot_env.py:3062-3065`), `x_min = max(min_velocity, cmd_deadzone[0])`, so smoke2 sampled `vx ~ U[0.18, 0.26]`. The velocity tracker is `exp(-α·err²)` (`wildrobot_env.py:1415`) with α=562.5 → a live-gradient window of only `cmd ± 1/√α ≈ ±0.042 m/s`. From a standing cold start (achieved ≈ 0) the error is ~0.22 → `exp(-35) ≈ 0`: **no gradient pulls the policy toward walking at any point in [0.18, 0.26]**, so it settles into the only behavior the other live terms reward (upright + minimal action = stand/tap).
 
-`min_velocity=0.0` makes the walk branch sample `vx ~ U[0.02, 0.26]` (deadzone → target). Validated 200k-sample numpy sim (matches the live smoke2 `env/velocity_cmd=0.197` exactly):
+### Why the floor is 0.065 (not 0.02, not 0.05, not 0.12)
 
-| config | walk-branch range | walk mean | `env/velocity_cmd` (all) | envs reachable from a nascent ~0.09 m/s gait |
-|---|---|---:|---:|---:|
-| smoke2 | [0.18, 0.26] | 0.220 | 0.198 | **0%** |
-| smoke3 | [0.02, 0.26] | 0.140 | 0.126 | **35%** |
+The floor must be high enough that standing is clearly suboptimal, yet low enough to be reachable from a cold start. Sweeping `c_min` against standing-reward `exp(-α·c²)` and the v=0 gradient (% of its peak at `1/√(2α)=0.030`):
 
-### TB parity
+| floor `c_min` | standing reward | gain from moving | grad @ v=0 | verdict |
+|---:|---:|---:|---:|---|
+| 0.02 (smoke3 v1) | 0.80 | 0.20 | 88% | too low — standing nearly satisfies it |
+| **0.065** | **0.093** | **0.91** | **~30%** | **sweet spot** |
+| 0.10 | 0.004 | 1.0 | 2% | too high — recreates the smoke2 dead zone |
 
-ToddlerBot samples vx uniformly across its whole range down through the deadzone every resample (`walk.gin` `command_range[0]=[-1,1]` scaled, `deadzone=0.05`), so many of its 4096 envs always carry small, reachable targets — even with its tighter `lin_vel_tracking_sigma=1000` (`mjx_env.py:2346`, which is *tighter* than WR's 562.5). The gait learned there generalizes to fast commands. smoke2's narrow high band broke that mechanism; smoke3 restores it. Lowering α was rejected (reopens the smoke1 standing-leak: at α=40 standing paid `exp(-40·0.18²)=0.27`).
+0.065 = **1.58 × the α-window** (`1.58 × 0.042`), the size/α-normalized ToddlerBot ratio (see TB parity). Sampler walk vx → `U[0.065, 0.26]`.
+
+### TB parity (corrected)
+
+ToddlerBot's velocity command is **physical m/s**, not the `[-1,1]` entries: those are pose/style params at command indices 0–4 (not observed as velocity); vx is `command[5] = [-0.1, 0.1]` used directly as `lin_vel` (`walk_zmp_ref.py:104`). TB floors its forward walk command at `deadzone[0]=0.05 m/s` on a 0.10 max (`walk.gin:52`) and tracks with `lin_vel_tracking_sigma=1000` → window `1/√1000=0.032` (`mjx_env.py:2346`). So TB's deadzone/window ratio = `0.05/0.032 = 1.58`. WR's window at α=562.5 is `0.042`, giving the normalized floor `1.58 × 0.042 = 0.066 ≈ 0.065`. (TB's tracker is *tighter* than WR's, so the dead-gradient was never an α problem — it was the floor/range.)
+
+### Resulting reference library (env-init verified)
+- vx bins: `{0.0, 0.065, 0.13, 0.195, 0.20, 0.26}` (6) — **0.065 floor and 0.26 top-speed both exact**.
+- 30 bins total (26 linear + 4 pure-yaw). smoke3 v1 (`interval=0.04` over `[0,0.26]`) had silently dropped the 0.26 bin (snapped to a 0.24 prior); `interval=0.065` fixes it.
 
 ### Pre-flight (done)
-- `ppo_walking_v0210_smoke3.yaml` loads under the strict reward-weights validator; `min_velocity=0.0`, α=562.5, `positive_only=True`, `cmd_deadzone=(0.02,0.02,0.05)` confirmed.
-- Sampler distribution simulated (table above).
+- `ppo_walking_v0210_smoke3.yaml` loads under the strict validator; `min_velocity=0.065`, `interval=0.065`, α=562.5, `positive_only=True` confirmed.
+- Env instantiated; `_offline_cmd_keys` pinned in `test_config_load_v0210_smoke3.py` (incl. the 0.26-bin regression guard + the floor bin).
+- Standing reward at floor = `exp(-562.5·0.065²) = 0.093` (clearly suboptimal).
 
 ### Pass criterion
-Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0001) and positive `env/forward_velocity` early (smoke12b showed both from iter 0 at the reachable band). If forward velocity emerges on the low-cmd envs but the high-cmd (0.26) envs lag, add an explicit `max_velocity` curriculum (escalation path). If the basin still does not break, escalate per the smoke2 fail-mode tree (warm-start from smoke12b / RSI).
+Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0001) and positive `env/forward_velocity` early (smoke12b showed both from iter 0 at a reachable band). If forward velocity emerges on the low-cmd envs but the 0.26 ceiling lags, add an explicit `max_velocity` curriculum (escalation). If the basin still does not break, escalate per the smoke2 fail-mode tree (warm-start from smoke12b / RSI).
 
 ---
 
@@ -72,7 +86,7 @@ Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0
 Active recipe is a faithful copy of TB's prior-free walk block (feet_phase 7.5, penalty_feet_ori 5.0, penalty_close_feet_xy 10.0, alive, penalty_pose) **except command sampling**: TB samples vx across its whole range down to the deadzone every resample; smoke2 sampled a narrow high band [0.18, 0.26]. That single divergence is the dead-gradient cause.
 
 ### Next intervention
-**`v0.21.0-smoke3`**: `min_velocity: 0.18 → 0.0` (walk vx → [0.02, 0.26]), α/G5 unchanged. See the smoke3-plan entry above. Do NOT lower α (reopens smoke1 standing-leak) and do NOT add step budget (gradient is identically zero at [0.18, 0.26]).
+**`v0.21.0-smoke3`**: raise the walk floor `min_velocity: 0.18 → 0.065` (+ `interval → 0.065` to keep the 0.26 ref bin), giving walk vx → [0.065, 0.26]; α/G5 unchanged. See the smoke3-plan entry above. Do NOT lower α (reopens smoke1 standing-leak) and do NOT add step budget (gradient is identically zero at [0.18, 0.26]).
 
 ---
 
