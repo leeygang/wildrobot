@@ -8,6 +8,41 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke3-result + smoke4A-plan] - 2026-05-30: smoke3 failed (lateral-walk attractor); smoke4A = forward-first 1D control
+
+### Smoke3 result — FAILED (do not promote)
+- **Run**: `training/wandb/offline-run-20260529_194147-psbmkbds` (full 30.72M steps, iter 1→1500).
+- **Checkpoints**: `training/checkpoints/ppo_walking_v0210_smoke3_v00210_20260529_194202-psbmkbds`.
+- **Deterministic eval**: `selected_checkpoint_path = null` — no checkpoint passed G4 (top-3 all `eval_fv ≈ −0.02`).
+- **Verdict: lateral-walking attractor.** The floor-0.065 fix did NOT break the basin.
+
+| Gate | metric | value | result |
+|---|---|---:|---|
+| G4 | `env/forward_velocity` | −0.087 | FAIL (backward/zero) |
+| G4 | `tracking/cmd_vs_achieved_forward` | 0.24 | FAIL |
+| G4 | `step_length_touchdown_event_m` | −0.0007 | FAIL |
+| G5 | residuals hip_R 0.26 / knee_L 0.29 | >0.20, **growing** | FAIL |
+| sampler | `env/velocity_cmd` 0.146 | matches [0.065,0.26] | ✓ (sampler correct) |
+
+**Visual eval** (`checkpoint_760`, cmd `(0.26, 0, 0)`): robot **walks sideways** — `fv ≈ 0.04` but `lat_vel` grows `−0.15 → +0.55 m/s`, drifts 0.5 m in y, height holds 0.47 with alternating foot forces. So WR *can* walk dynamically (cold-started!), just **laterally**.
+
+**Root cause:** smoke3 used `cmd_velocity_track_dim=2` → reward `exp(-α·((vx−cmd_vx)² + (vy−cmd_vy)²))`. Under lateral drift the `vy` term alone (`exp(-562.5·0.24²) ≈ 0`) **saturated the reward to zero**, killing both the forward pull and any effective lateral penalty; the policy filled the flat-zero region with its easiest gait (lateral, acquired from `vy` command training). The lateral gait is a direct artifact of the **3-axis stack**, not (only) the command range.
+
+**Two corrections to prior analysis (verified):**
+1. **smoke12b never broke the basin cold.** Its metrics start at `progress/iteration=1720` / `35.2M` steps already walking — it was **warm-started** off the smoke9c→11→12 curriculum chain. **No WR run has broken the walking basin from a cold (iter-1) start**; smoke1/2/3 all cold-start and fail. (The "walked from iter 0" claims in older entries were wrong and are annotated.)
+2. **The floor was not the (sole) lever.** smoke3's reachable floor still failed; the 3-axis lateral escape + `dim=2` reward coupling dominate.
+
+### Smoke4A plan — forward-first 1D control (config shipped)
+- **Config**: `training/configs/ppo_walking_v0210_smoke4_forward_first.yaml` (committed `06df5fb`).
+- **Question it answers decisively**: can the v0.21 plumbing recover a forward gait with **every lateral/yaw DOF removed**? Yes → lateral is the destabilizer (→ smoke4B). No → the regression is deeper than lateral-reward interference.
+- **Levers vs smoke3**: `cmd_sampler_3d_branched: false` (legacy scalar `(vx,0,0)`); `cmd_velocity_track_dim: 1` (forward-only reward — the main fix); `cmd_yaw_rate_track: 0`; `min/max_velocity_y: 0`; `max_yaw_rate: 0`; `cmd_turn_chance: 0`; `eval_velocity_cmd: [0.13, 0, 0]` (reachable forward, exact bin, G4 floor 0.065). **Kept**: floor 0.065 / max 0.26 / interval 0.065 (0.26 bin), α 562.5, action_rate −1.0, feet_phase, home anchor, obs_v8, 3D library, critic actor+privileged.
+- **Verified**: loads; library `{0,0.065,0.13,0.195,0.20,0.26}` (30 bins, 0.26 kept); legacy sampler = 4.9% stand + 95% `(vx∈[0.065,0.26],0,0)`, vy=wz=0. Tests: `test_config_load_v0210_smoke4.py` (10) — 23 pass with smoke3 + sampler suites.
+- **Early-stop (3–5M steps)**: continue only if ≥1 of `env/forward_velocity > 0`, `reward/cmd_forward_velocity_track ≥ 0.01`, `step_length_touchdown_event_m > 0`, `world_x_progress_m > 0`. Also watch `lateral_velocity_abs` (should stay ~0 with vy=0).
+- **Launch**: `UV_CACHE_DIR=/tmp/uv-cache uv run python -m training.train --config training/configs/ppo_walking_v0210_smoke4_forward_first.yaml`
+- **smoke4B (follow-up, not yet created)**: re-enable branched sampler with tiny `vy ±0.03`, keep `dim=1`/`yaw=0` — run only after 4A shows forward G4 movement. If 4A *also* fails forward → cold-start basin-break needs a curriculum/warm-start (smoke12b's actual mechanism).
+
+---
+
 ## [v0.21.0-smoke3-plan] - 2026-05-29: dead-gradient fix — raise the walk floor to 0.065
 
 **Levers vs smoke2** (config `training/configs/ppo_walking_v0210_smoke3.yaml`):
@@ -48,7 +83,7 @@ ToddlerBot's velocity command is **physical m/s**, not the `[-1,1]` entries: tho
 - Standing reward at floor = `exp(-562.5·0.065²) = 0.093` (clearly suboptimal).
 
 ### Pass criterion
-Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0001) and positive `env/forward_velocity` early (smoke12b showed both from iter 0 at a reachable band). If forward velocity emerges on the low-cmd envs but the 0.26 ceiling lags, add an explicit `max_velocity` curriculum (escalation). If the basin still does not break, escalate per the smoke2 fail-mode tree (warm-start from smoke12b / RSI).
+Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0001) and positive `env/forward_velocity` early. [SUPERSEDED — see the smoke3-result + smoke4A-plan entry on top: smoke3 ran the full 30M and FAILED (lateral drift), and the "smoke12b walked from iter 0" premise was wrong — smoke12b was warm-started at iter 1720.]
 
 ---
 
@@ -74,7 +109,7 @@ Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0
 ### Root cause (code + trajectory confirmed)
 
 - Active recipe is the **smoke12b prior-free reward** (all `ref_*` imitation weights = 0, residual anchored to `home`), so the only forward-pulling term is `cmd_forward_velocity_track` (`exp(-α·err²)`, α=562.5). At cmd≈0.22 from a standing start, `err≈0.22 → exp(-35) ≈ 0`. `reward/cmd_forward_velocity_track = 0.0001` the entire run; flat for ~300 iters → **gradient-dead, not undertrained.**
-- **Direct proof via smoke12b (`ot8zazo1`):** identical α=562.5 recipe, but vx≈0.11 (range [0.08, 0.133]) → walked from iter 0 (`fwd_v ≈ +0.09`, live `reward/cmd_forward_velocity_track ≈ 0.027`) and stayed walking through its full 15M-step run. At the *same* 13.5M budget where smoke2 stood, smoke12b was already at `fwd_v 0.088, ep_len 500`. The lever is the command **range**, not α / step budget / feet_phase.
+- **smoke12b (`ot8zazo1`) comparison — CORRECTED 2026-05-30:** identical α=562.5 recipe at vx≈0.11 ([0.08, 0.133]), walking at `fwd_v ≈ +0.09` with live `reward/cmd_forward_velocity_track ≈ 0.027`. **BUT smoke12b was WARM-STARTED** — its metrics begin at `progress/iteration=1720` / `time/step=35.2M` already walking (it inherited the gait from the smoke9c→11→12 curriculum chain). It did *not* break the basin from a cold start; it *maintained* a warm-started gait. So this shows the recipe is stable when warm-started at the reachable band — NOT that the range alone breaks the basin cold. (The earlier "walked from iter 0" claim here was wrong; smoke1/2/3 all cold-start from iter 1 and all fail. No WR run has broken the basin cold.)
 - **feet_phase decoupling:** `reward/feet_phase = 0.088` (= smoke12b's *walking* value) coexists with `fwd_v = −0.07` and `step_length ≈ 0` — feet_phase rewards the swing-height profile independent of horizontal progress, so the policy taps in place. Contributing but **secondary**; feet_phase is direction-neutral and does not cause the backward drift (absence of forward pull does).
 
 ### Concerning trends (not gated)
