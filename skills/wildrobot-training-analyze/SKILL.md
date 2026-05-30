@@ -49,6 +49,32 @@ The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls t
 
 ---
 
+## Pre-flight verification — REQUIRED before any recommendation
+
+Two failure modes have repeatedly produced wrong analysis in past sessions. Both are caught by mandatory pre-flight checks. **Do not skip these even when the data "obviously" points to a conclusion.**
+
+### Mandatory checks before proposing ANY change
+
+| # | Check | How |
+|---|---|---|
+| 1 | **Verify any reward term you plan to recommend "adding" doesn't already exist.** | `grep -n "<term_name>" training/envs/wildrobot_env.py` AND `grep -n "<term_name>:" training/configs/<active_yaml>` AND check `metrics.jsonl` for `reward/<term_name>` |
+| 2 | **Verify the cmd distribution the env actually emits matches the YAML's stated range.** | Compare `env/velocity_cmd` late-iter mean to `0.5 * (min_velocity + max_velocity)` from the YAML. If mean is significantly lower (>20%), suspect a sampler projection bug. |
+| 3 | **Read the env's sampler code, not just the YAML field names.** | `grep -n "_sample_walk_command\|_sample_velocity_cmd" training/envs/wildrobot_env.py` and trace what `sin_theta` / `cos_theta` / `* sign_x` factors do to the magnitudes. |
+| 4 | **Pair every flagged reward term against its metric.** | If `reward/<X>` is logged with a nonzero value (even small), the term is **wired and active**, regardless of what any reference table claims. |
+
+### Why these exist
+
+- **smoke2 (yxfkg6wh) miss #1**: I recommended "add `feet_phase` reward" — but WR has had `_feet_phase_reward` since smoke9, smoke2 enabled it at weight 7.5, and `reward/feet_phase = 0.0028` was logged in the run. The premise was wrong because I trusted the TB-comparison table below instead of grepping the env code.
+- **smoke2 miss #2**: I missed that `env/velocity_cmd = 0.083` (vs YAML midpoint 0.22) indicated the TB sin(θ) projection was collapsing the commanded vx distribution toward zero on 50%+ of walk-branch episodes — the real root cause of the posture-exploit verdict. The single metric that would have surfaced this was logged the entire time.
+
+### The TB-comparison table below is a SNAPSHOT, not ground truth
+
+The "WildRobot v0.20.1" column reflects state at some point in the past; rows marked **❌ "not present (Phase 2/3 plan)"** may have already landed. Before citing any row as "missing", run the check #1 above. Source-of-truth is `wildrobot_env.py:_compute_reward_terms` + the active YAML's `reward_weights` block + `metrics.jsonl`. The table is an *audit checklist* of which TB-active terms WR has historically lacked — it is not a live mirror.
+
+If you find a stale row while analyzing, **fix the table in this skill before writing your recommendation** so the next session doesn't repeat the error.
+
+---
+
 ## v0.20.1 walking analysis (active path)
 
 ### Architecture recap (what the policy is being asked to do)
@@ -121,7 +147,7 @@ A run can pass forward_velocity AND fail G5 — that's a false positive (residua
 | imitation | `reward/ref_contact_match` | 1.0 | TB boolean count `sum(stance_mask == ref)` ∈ {0,1,2} (smoke6+; smoke3-5 used WR-specific Gaussian, gated to 0) |
 | imitation | `reward/lin_vel_z` | 1.0 | TB body-local vertical velocity tracks prior bobbing (α=200; smoke6+) |
 | imitation | `reward/ang_vel_xy` | 2.0 | body roll/pitch rate vs zero (α=0.5; smoke6+) |
-| task | `reward/cmd_forward_velocity_track` | 5.0 | actual `vx` matches `cmd_vx` (α=200) |
+| task | `reward/cmd_forward_velocity_track` | 5.0 (doc) / 2.0 (smoke2/3 active) | actual `vx` matches `cmd_vx` via `exp(-α·err²)`; α=562.5 active → live-gradient window `cmd ± 1/√α ≈ ±0.042 m/s` (unreachable from a standing start if the sampled cmd band sits entirely above it — see "dead velocity gradient" signature) |
 | ToddlerBot shaping | `reward/feet_air_time` | 500.0 | swing-leg air time at touchdown (cmd-gated) |
 | ToddlerBot shaping | `reward/feet_clearance` | 1.0 | per-foot peak swing height at touchdown |
 | ToddlerBot shaping | `reward/feet_distance` | 1.0 | lateral foot spacing band [0.07, 0.13] m in torso frame |
@@ -149,6 +175,28 @@ Use these to diagnose dead-gradient terms (large persistent error + zero reward 
 | `ref/feet_pos_err_l2` | `reward/ref_feet_pos_track` | < 0.30 m sum-of-squares L2 (smoke1 grew to 1.02 — dead gradient) |
 | `ref/contact_phase_match` | `reward/ref_contact_match` | > 0.80; if < 0.85, gate the term to weight 0 |
 
+### Key metrics MUST surface before any verdict
+
+The analyzer prints these, but a verdict that doesn't reference each one is incomplete and likely missing a root cause. **Every smoke analysis must explicitly state the value AND interpret it.** Empty / "looks fine" is not interpretation.
+
+| Metric | What it gates | Interpretation rule |
+|---|---|---|
+| `env/velocity_cmd` (late-iter mean) | sampler-vs-YAML alignment | Compare to `0.5 × (min_velocity + max_velocity)`. Δ > 20% ⇒ sampler-cmd-projection regression (see failure signatures). Even at Δ < 20% (sampler healthy), if the sampled band sits entirely ABOVE the α live-window (`cmd ± 1/√cmd_forward_velocity_alpha`, ≈ ±0.042 at α=562.5) with `reward/cmd_forward_velocity_track ≈ 0` ⇒ dead-velocity-gradient signature. Required even when verdict looks reward-related. |
+| `Evaluate/forward_velocity` (or `env/forward_velocity`) | G4 gate | sign + magnitude. Negative = backward drift; near-zero with high cmd = standing minimum or sampler bug. |
+| `Evaluate/mean_episode_length` | G4 gate | Near-horizon AND fv ≈ 0 ⇒ posture exploit, NOT "still training". |
+| `Evaluate/cmd_vs_achieved_forward` | G4 gate | > 0.075 with episode_length near horizon ⇒ "balance achieved, tracking weak" OR sampler bug. |
+| `tracking/step_length_touchdown_event_m` | G4 gate | < 0.030 ⇒ shuffle / no-stride. Also check left/right event metrics for asymmetry. |
+| `tracking/forward_velocity_cmd_ratio` | G5 gate | Out of [0.6, 1.5] ⇒ either lean-and-skate (>1.5) or undershoot (<0.6). Train-rollout ratio looking "fine" with mean cmd ≈ 0 is misleading — cross-check vs the post-training deterministic eval ratio. |
+| `tracking/residual_{hip,knee}_{left,right}_abs` | G5 gate | > 0.20 rad ⇒ propulsion mis-assigned. Per-leg asymmetry indicates one-leg gait. |
+| `tracking/touchdown_rate_{left,right}_count` | gait symmetry | Ratio > 2× ⇒ one-leg stepping; combine with per-foot step_length to confirm. |
+| `ref/feet_pos_err_l2`, `ref/q_track_err_rmse`, `ref/contact_phase_match`, `ref/body_quat_err_deg` | dead-gradient diagnostic | Pair each against `reward/ref_*` — large error + ~0 reward = dead-gradient term (lower α). |
+| `reward/feet_phase`, `reward/penalty_feet_ori`, `reward/penalty_pose`, `reward/penalty_close_feet_xy`, `reward/ref_feet_z_track` | reward family wiring proof | If logged, the term is active — proves the env has it. Use to refute "X is missing" claims before writing them. |
+| `term_height_low_frac`, `term_pitch_frac`, `term_roll_frac` | failure-cause breakdown | Aggregate across iters; identifies whether the policy dies from falling, tipping forward, or tipping sideways. |
+| Post-training eval `selected_checkpoint_path` | promotion gate | If `null`, NO candidate passed G4 — train-side `Evaluate/mean_reward` ranking is NON-AUTHORITATIVE; do not call any checkpoint "best for deploy". |
+| Post-training eval `top_k_candidates[*].lateral_yaw_probes` | Appendix C (v0.21.0+) | `signed_ratio ≥ 0.5` per probe; report-only in current contract but must surface. |
+
+If `env/velocity_cmd` is anomalously low compared to YAML midpoint, **stop the analysis** and run a 200k-sample numpy simulation of `_sample_velocity_cmd` to characterize the distribution before drawing any other conclusion. The sampler bug masquerades as every other failure mode.
+
 ### Per-foot stride / swing-time diagnostics
 
 Added in v0.20.1-smoke2. Use to debug short-stride failures (smoke1 hit step_length 0.022 m vs 0.030 m gate; per-foot data tells us if one foot is doing all the stepping):
@@ -172,6 +220,8 @@ Call these out explicitly:
 - **dead-gradient term** — large persistent `ref/<X>_err_*` paired with near-zero `reward/ref_<X>_track`. Means α is too tight for the observed error magnitude. Action: lower α to give r ≈ 0.2-0.3 at the iter-1 baseline error.
 - **propulsion mis-assigned to PPO (G5 violation)** — forward_velocity meets gate but `|residual_p50|_{hip,knee}` > 0.20 rad. Action: tighten G1 residual bound by 50% and rerun; if still failing, prior is too weak — return to v0.20.0-x prior surgery (per the M1 fail-mode tree in `walking_training.md`).
 - **truncation-based success_rate is meaningless** — `env/success_rate` is permanently 0 for v0.20.x walking. Never gate on it; never sort checkpoints by it.
+- **sampler-cmd-projection regression (v0.21.0-smoke2 pattern)** — `env/velocity_cmd` late-iter mean is significantly below `0.5 × (min_velocity + max_velocity)` from the YAML (e.g. smoke2: mean 0.083 vs YAML midpoint 0.22). Train-rollout `forward_velocity_cmd_ratio` looks healthy (cmd ≈ achieved ≈ 0), but the deterministic post-training eval at the configured `eval_velocity_cmd` shows ~0 forward velocity — because the **sampled** cmd distribution is collapsed toward zero by an `* sin(theta)` / `* cos(theta)` projection in `_sample_walk_command` even when `vx_positive_only` only drops the negative branch. Action: read the env sampler code (NOT just the YAML field names); simulate the cmd distribution with numpy (200k samples); compare distribution mean / median against YAML midpoint; if collapsed, fix the sampler before changing reward family or hyperparameters. **Fix landed in `ee399ee training: enforce smoke2 positive walk vx range`**; the legacy mode (TB symmetric ellipse) is preserved when `cmd_sampler_walk_vx_positive_only=False`.
+- **dead velocity gradient from narrow high-band command (v0.21.0-smoke2/3 pattern)** — distinct from the sampler-projection regression above: here `env/velocity_cmd` MATCHES the YAML midpoint (sampler is healthy — e.g. smoke2 `5v4j5j7w`: 0.197 vs midpoint 0.22, Δ 10%), but `reward/cmd_forward_velocity_track ≈ 0.0001` for the entire run, `forward_velocity` flat/negative, `episode_length` saturated (survives by tap-in-place, not walking). Cause: `exp(-α·err²)` with α=562.5 has a live-gradient window of only `cmd ± 1/√α ≈ ±0.042 m/s`; if the walk branch samples a narrow HIGH band (smoke2 `vx ∈ [0.18, 0.26]`) every env's target is unreachable from a standing cold start (err ≈ 0.22 → `exp(-35) ≈ 0`), so PPO never gets a forward gradient. **Proven against smoke12b (`ot8zazo1`): identical α=562.5 but `vx ∈ [0.08, 0.133]` → walked from iter 0 with live `reward/cmd_forward_velocity_track ≈ 0.027`; at the same 13.5M-step budget smoke2 was standing.** The lever is the command RANGE, not α / step budget / feet_phase. Diagnostic tell: `reward/feet_phase` can equal the smoke12b _walking_ value (~0.09) while `step_length ≈ 0` and `fwd_v < 0` — feet_phase rewards the swing-height profile independent of horizontal progress, so it does not disambiguate walk from tap. Action: widen the command floor toward the deadzone so a fraction of envs are reachable (smoke3: `min_velocity 0.18 → 0.0` → `vx ∈ [0.02, 0.26]`, TB-faithful — TB samples its whole range down through the deadzone every resample, `walk.gin` `command_range[0]=[-1,1]`). Do NOT lower α (reopens smoke1 standing-leak) and do NOT add step budget — **the gradient is identically zero, so more training will not rescue it; it is gradient-dead, not undertrained.** Fix shipped in `02f5313 training: v0.21.0 smoke3 — dead-gradient fix`.
 
 ### Comparing to ToddlerBot
 
@@ -198,7 +248,7 @@ this table summarizes.
 | Network hidden_sizes | (512, 256, 128) | (512, 256, 128) (`ppo_config.py:19-20`) | ✅ (after v0.20.1 alignment sweep) |
 | `survival`/`alive` weight | 1.0 (after sweep), `-done` semantics | 1.0 (`walk.gin:127`), `-done` (`walk_env.py`) | ✅ (after sweep) |
 | `cmd_forward_velocity_track` ↔ `lin_vel_xy` weight | 2.0 (after sweep) | 2.0 (`walk.gin:111`) | ✅ (after sweep) |
-| `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=200 | σ=1000 (`walk.gin:112`) | ⚠️ WR tighter; defer reform until smoke result |
+| `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=562.5 (smoke2/3 active; "after sweep" doc value was 200) | σ=1000 (`walk.gin:112`; reward `exp(-σ·err²)` at `mjx_env.py:2346`) | ⚠️ **CORRECTED 2026-05-29: same form `exp(-param·err²)`, so TB σ=1000 is _tighter_ than WR, not looser (earlier "WR tighter" note was backwards). Live-gradient window = `cmd ± 1/√param`: TB ±0.032 vs WR ±0.042 m/s. ⟹ the smoke2 dead gradient is NOT an α problem — TB runs an even tighter tracker and walks. Do NOT lower α (reopens smoke1 standing-leak). It is a command-RANGE problem; see the "dead velocity gradient" failure signature.** |
 | `ref_body_quat_track` ↔ `torso_quat` | 2.5 (after sweep) | 2.5 (`walk.gin:117`) | ✅ (after sweep) |
 | `ref_q_track` (joint imitation) | 5.0, α=1 | 0 in active (was 5.0 in commented `walk.gin:63`) | ⚠️ WR-specific imitation block (no TB-active analog) |
 | `torso_pos_xy` | 2.0, α=90 smoke | 0 in active (was 1.0 in commented) | ⚠️ WR-specific imitation |
@@ -206,10 +256,11 @@ this table summarizes.
 | `ang_vel_xy` (tracking) ↔ `penalty_ang_vel_xy` (penalty) | 2.0 tracking | 1.0 penalty (`walk.gin:115`) | ⚠️ form mismatch; defer |
 | `feet_air_time` | 500.0 | 0 in active (replaced by `feet_phase` in active) | ⚠️ WR-specific (TB-active does not use this) |
 | `feet_clearance` | 1.0 | 0 in active (replaced by `feet_phase`) | ⚠️ WR-specific |
-| `feet_distance` | 1.0, [0.07, 0.13] | 0 in active; TB uses `penalty_close_feet_xy = 10.0` with `close_feet_threshold = 0.06` (`walk.gin:125-126`) | ⚠️ different formula |
-| **`feet_phase` / `ref_feet_z_track`** (dense per-step swing-height tracker) | not present (Phase 2 plan) | 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | ❌ **highest-impact reward gap** — likely cause of v0.20.1-smoke1 shuffle exploit |
-| **`penalty_pose`** (per-joint default anchor) | not present (Phase 2 plan) | 0.5 with weights `[0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]` (`walk.gin:120-124`) | ❌ missing |
-| **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | not present (Phase 2 plan) | 5.0 (`walk.gin:129`, `walk_env.py:697-735`) | ❌ missing |
+| `feet_distance` | 1.0, [0.07, 0.13] | 0 in active; TB uses `penalty_close_feet_xy` | ⚠️ WR keeps `feet_distance`; **also has** `penalty_close_feet_xy = 10.0` enabled in smoke2 (verify: `wildrobot_env.py:4330`, smoke2 YAML 531) |
+| **`feet_phase`** (dense per-step swing-height tracker) | **PRESENT** (smoke9+, `wildrobot_env.py:1213 _feet_phase_reward`); smoke2 enables at w=7.5, α=914.304, swing_height=0.05 (YAML 532-534) | 7.5, σ=0.0007, swing=0.04 (`walk.gin:128-131`, `walk_env.py:631-695`) | ⚠️ **WR-specific divergence — load-bearing**: WR uses `walking_reward = max(0, raw - flat_foot_baseline)` per smoke12 fix (docstring `wildrobot_env.py:1226-1244`). Reason: smoke11 measured raw TB formula paid `≈ 0.109` to a flat-foot policy, enabling a quiet-standstill exploit. Do NOT propose re-porting raw TB formula without rerunning that experiment. |
+| `ref_feet_z_track` (alternative WR per-step foot-z tracker) | **PRESENT** (logged as `reward/ref_feet_z_track`); smoke2 gates to **w=0.0** (YAML 539) — feet_phase is the active form | n/a — separate from TB `feet_phase` | ⚠️ exists but disabled in smoke2; flip on only as an A/B against `feet_phase` |
+| **`penalty_pose`** (per-joint default anchor) | **PRESENT** (`wildrobot_env.py:687, 2596`); smoke2 enables at w=-0.5 (YAML 530) | 0.5 with weights `[0.01, 1.0, 5.0, 0.01, 5.0, 5.0, ...]` (`walk.gin:120-124`) | ⚠️ check the per-joint weight map (`penalty_pose_weight_default` + per-joint overrides) against TB's vector before tuning |
+| **`penalty_feet_ori`** (anti-tippy-toe via gravity in foot frame) | **PRESENT** (`wildrobot_env.py:2598, 4326`); smoke2 enables at w=5.0 (YAML 535) | 5.0 (`walk.gin:129`, `walk_env.py:697-735`) | ✅ weight matches TB |
 | `feet_slip` / `slip` | 0.05 | 0 in active (was 0.05 in commented) | ⚠️ WR mirrors commented; defer |
 | `torso_pitch_soft` / `torso_roll_soft` | 0.5 / 0.5 | 0 in active; TB uses `penalty_ang_vel_xy = 1.0` for posture damping | ⚠️ different form |
 | `action_rate` ↔ `penalty_action_rate` | -1.0 × pos-MSE | 2.0 × neg-MSE (`walk.gin:119`) | ⚠️ sign convention diff; verify magnitude equivalence |
@@ -240,7 +291,7 @@ When it lands on a ❌ row, that's a known parity gap — link to `walking_train
 - If `Evaluate/forward_velocity` is near zero AND `Evaluate/mean_episode_length` is near horizon → **standing local minimum** — call it out, don't say "still training".
 - If `Evaluate/forward_velocity` meets gate AND `tracking/forward_velocity_cmd_ratio` is in band AND G5 residual mean ≤ 0.20 → **locomotion emerging**. Recommend the iter that maximizes `Evaluate/mean_reward`.
 - If `Evaluate/forward_velocity` meets gate AND G5 fails → **action-authority leak / propulsion mis-assigned**. Per M1 fail-mode tree: tighten G1 residual bound 50%, do NOT relax G5.
-- If `tracking/cmd_vs_achieved_forward` mean is high (> 0.075) AND `Evaluate/mean_episode_length` is near horizon → **balance achieved, tracking weak**. Check whether `cmd_forward_velocity_alpha` is the published 200 (an earlier α=4 made the gradient flat).
+- If `tracking/cmd_vs_achieved_forward` mean is high (> 0.075) AND `Evaluate/mean_episode_length` is near horizon → **balance achieved, tracking weak**. Check BOTH `cmd_forward_velocity_alpha` (562.5 in smoke2/3) AND the sampled cmd band: a tight α paired with a high/narrow cmd band gives a dead gradient (see "dead velocity gradient" signature), which is a command-RANGE problem, not a tracking-weight problem — do NOT raise the cmd-track weight or lower α to "fix" it.
 - If `ref/feet_pos_err_l2` grows over training while `reward/ref_feet_pos_track` stays at 0 → **dead-gradient term**. Lower the alpha (smoke uses 30, not 200).
 - If `term_pitch_frac > 0.5` AND `forward_velocity` meets gate AND G5 passes → **balance issue (M1 branch)**. Increase regularizer weight on `pitch_rate` (M1 hook is pre-wired at weight 0); consider widening residual bound on ankle pitch only.
 
@@ -248,12 +299,19 @@ When it lands on a ❌ row, that's a known parity gap — link to `walking_train
 
 ```text
 v0.20.1 verdict:
-- locomotion emerging / standing local minimum / lean-and-skate exploit / shuffle exploit / dead-gradient on <term> / gait drift / balance issue
+- locomotion emerging / standing local minimum / lean-and-skate exploit / shuffle exploit / dead-gradient on <term> / dead velocity gradient (narrow high-band cmd) / gait drift / balance issue / sampler-cmd-projection regression
 - G4: forward_velocity <pass/fail> | mean_episode_length <pass/fail> | cmd_vs_achieved <pass/fail> | step_length <pass/fail>
 - G5: residual_p50 <pass/fail> | velocity_cmd_ratio <pass/fail>
 - G7 baseline-beat: <pass/fail>
+- Sampler sanity: env/velocity_cmd late-iter mean = <X> vs YAML midpoint <Y> (Δ = ...; significant gap means simulate _sample_velocity_cmd before drawing reward-family conclusions)
 - ToddlerBot alignment: <ok / drift on <row(s)>>
 ```
+
+**Before recommending ANY change, complete the pre-flight verification checklist (top of skill).** Specifically:
+- [ ] Grepped `wildrobot_env.py` for every reward term, env mechanism, and sampler function you plan to cite as "missing" or "needs adding". If it exists, READ the implementation (don't assume it matches TB).
+- [ ] Confirmed via `metrics.jsonl` whether the term is currently logged (= wired). If logged, you cannot recommend "add it" — only "modify it" or "tune the weight".
+- [ ] Computed `env/velocity_cmd` mean vs YAML midpoint; if Δ > 20%, **suspect a sampler projection bug FIRST**, not the reward family.
+- [ ] If you found a stale row in the TB-comparison table, FIX the skill before writing your recommendation.
 
 Then recommend one of (per the M1 fail-mode tree):
 - continue training to the M2 compute cap unchanged
@@ -261,6 +319,7 @@ Then recommend one of (per the M1 fail-mode tree):
 - tighten G1 residual bound 50% and rerun
 - promote the M1 `pitch_rate` regularizer
 - regenerate the offline reference library
+- **fix sampler if `env/velocity_cmd` distribution doesn't match YAML range** (rerun current YAML on the fix before any reward-family change)
 
 ### Walking design guidance (when planning the next config)
 
@@ -271,11 +330,15 @@ Order of operations:
 4. **Don't relax G5** to fix a forward-velocity miss. G5 is the anti-exploit gate; relaxing it brings back v0.19.5.
 5. **PPO hyperparameters last.** Learning rate / entropy / KL backoff are the last knobs to touch.
 
-Forbidden moves (will reintroduce known failure modes):
+Forbidden moves (will reintroduce known failure modes OR repeat past analyst errors):
 - adding a flat positive `alive` bonus (was the v0.19.5b lean-back exploit enabler)
 - raising the leg residual bound past ±0.50 rad
 - removing the `* dt` reward integration
 - ranking checkpoints by `env/success_rate` or `env/episode_length` alone
+- **recommending "add X reward term" without first `grep`-ing `wildrobot_env.py` to prove X doesn't exist AND checking `metrics.jsonl` to confirm `reward/X` isn't already logged** (this is the smoke2-analysis miss — I recommended adding `feet_phase` which had been present since smoke9 and was actively enabled in smoke2 with `reward/feet_phase = 0.0028` logged in the run)
+- **trusting the TB-comparison table without verifying the row against current code** (the table is a snapshot, not a live mirror — see "Pre-flight verification" at top)
+- **porting raw TB reward formulas back over WR-specific divergences without re-running the experiment that motivated the divergence** (e.g. raw TB `feet_phase` would reopen the smoke11 flat-foot reward leak that smoke12's `max(0, raw - flat_foot_baseline)` fix closed — divergence rationale is documented in `wildrobot_env.py:1226-1244`)
+- **drawing reward-family conclusions before checking that the env sampler is emitting the YAML-stated cmd distribution** (smoke2 sampler bug masked the alpha-leak-fix as a failure — fix in `ee399ee`)
 
 ---
 
