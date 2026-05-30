@@ -92,7 +92,7 @@ Active recipe is a faithful copy of TB's prior-free walk block (feet_phase 7.5, 
 
 ## [v0.21.0-smoke2-yxfkg6wh-result] - 2026-05-29: smoke2 (first run, `yxfkg6wh`) failed — command-range sampler bug invalidates the run
 
-> **Smoke3 plan superseded.** This run originally recommended keeping `min_velocity/max_velocity = 0.18/0.26` and re-running fresh with the `ee399ee` sampler fix. The `5v4j5j7w` re-run did exactly that and hit a dead gradient at that band (see the smoke2-`5v4j5j7w`-result entry); the authoritative smoke3 plan is now the top entry (`min_velocity → 0`). Useful operational checks from the original plan (fresh run, first-rows `velocity_cmd_vx_abs` sanity, early-stop at 3-5M, per-foot touchdown symmetry) are folded into it.
+> **Smoke3 plan superseded.** This run originally recommended keeping `min_velocity/max_velocity = 0.18/0.26` and re-running fresh with the `ee399ee` sampler fix. The `5v4j5j7w` re-run did exactly that and hit a dead gradient at that band (see the smoke2-`5v4j5j7w`-result entry); the authoritative smoke3 plan is now the top entry (`min_velocity → 0.065` walk floor + `loc_ref_command_grid_interval → 0.065` to keep the 0.26 reference bin). Useful operational checks from the original plan (fresh run, first-rows `velocity_cmd_vx_abs` sanity, early-stop at 3-5M, per-foot touchdown symmetry) are folded into it.
 
 ### Smoke2 result — failed (standing/posture basin; do not promote)
 

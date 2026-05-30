@@ -134,12 +134,11 @@
 # Plan reference: /tmp/wildrobot_v021_smoke2_plan.md (v3 final)
 #
 # -----------------------------------------------------------------------------
-# Inherited from smoke1 header:
+# Inherited from smoke1 header (the v0.21.0 3-axis stack, on since smoke1):
 # -----------------------------------------------------------------------------
-# This is the FIRST v0.21.0 config that opts into the full 3-axis
-# velocity_cmd stack.  It extends the v0.20.1 smoke14 baseline
-# (smoke13_026 + critic-stack-15 + 1D vel reward) along four
-# simultaneous v0.21 gates:
+# The full 3-axis velocity_cmd stack (first introduced in smoke1) extends
+# the v0.20.1 smoke14 baseline (smoke13_026 + critic-stack-15 + 1D vel
+# reward) along four simultaneous v0.21 gates:
 #
 #   1. ``env.actor_obs_layout_id: wr_obs_v8_cmd3d``     (P7 — 3-axis cmd obs)
 #   2. ``env.cmd_sampler_3d_branched: true``            (P4 — TB-branched sampler)
@@ -621,7 +620,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.21.0, smoke3, dead_gradient_fix, vx_widen_deadzone, lateral_yaw_prior, obs_v8_cmd3d, library_3d, sampler_branched_vxclamp, reward_yaw_rate, home_anchored_residual, alpha_562p5, action_rate_halved, sampler_low_zero_turn, ep_1000]
+  tags: [ppo, v0.21.0, smoke3, dead_gradient_fix, walk_floor_0065, interval_0065_keep_026_bin, lateral_yaw_prior, obs_v8_cmd3d, library_3d, sampler_branched_vxclamp, reward_yaw_rate, home_anchored_residual, alpha_562p5, action_rate_halved, sampler_low_zero_turn, ep_1000]
 
 video:
   enabled: false
