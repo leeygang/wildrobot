@@ -47,25 +47,36 @@ per-step **heading-corrected** lookup, then probed the latest smoke4A
 checkpoint (`checkpoint_460`) with a JAX rollout (reuses
 `eval_policy._collect_eval_rollout`; probe at `/tmp/probe_ref_selected.py`).
 
-**Finding (cmd `(0.13,0,0)`, 500 steps × 32 envs):**
-- `ref_selected_vx = 0.13` always; **`ref_selected_vy = 0.0` and
-  `ref_selected_wz = 0.0` for 100% of samples** (max|.| = 0; only bin hit = 0).
-- This held despite real `yaw_drift` up to **0.244 rad (14°)** and `lat_vel`
-  up to 0.69 m/s.
+**Finding — it depends on command magnitude (both probed, 500 steps × 32 envs):**
 
-**Conclusion: the heading-correction-feeds-a-lateral-prior hypothesis is
-REFUTED at the eval command.** The lookup stays on the `vy=0, wz=0` row. The
-math: at vx=0.13 the bin only flips to vy=0.065 once `0.13·sin(δ) > 0.0325`,
-i.e. δ > 14.5° — drift peaked at 14°, just under. ⇒ the in-place/lateral
-**sway is purely reward-structure** (no forward template; `feet_phase` +
-`alive` + posture satisfied in place; dead forward reward; `penalty_close_feet_xy`
-wide stance), NOT the reference lookup.
+| eval cmd | `ref_selected_vy` | flip threshold δ | yaw_drift max |
+|---|---|---|---|
+| `(0.13,0,0)` | **0.0 for 100%** of samples (clean) | δ > 14.5° (`asin(0.0325/0.13)`) | 0.244 rad (14°) — just under |
+| `(0.26,0,0)` | **±0.065 on 8.4%** of samples; **100% when `|yaw_drift|>0.20 rad`** | δ > 7.2° (`asin(0.0325/0.26)`) | 0.287 rad (16°) — over |
 
-**Residual edge (keep the metric on to watch):** the flip threshold scales as
-`δ > asin(0.0325/vx)` → at the 0.26 ceiling it drops to ~7.2°, which yaw drift
-could occasionally cross. Not the driver of the observed failure (which occurs
-at 0.13 where the lookup is clean), but `ref_selected_vy` now surfaces it if it
-ever happens during training.
+`ref_selected_wz` stays 0 in both (wz is unaffected by the heading rotation, as
+designed).
 
-⇒ **smoke5 direction now points cleanly at the reward-structure fix (restore
-the forward template — option 1 above), not the lookup.**
+**Conclusion (corrected): TWO things are true.**
+1. **Primary cause is reward-structure**, NOT the lookup. The in-place/lateral
+   sway happens at cmd 0.13 where the lookup is provably clean (vy=0 always),
+   so the disease is the missing forward template (`feet_phase` + `alive` +
+   posture satisfied in place; dead forward reward; `penalty_close_feet_xy`
+   wide stance).
+2. **The heading correction IS a real SECONDARY mechanism at high cmd.** At
+   vx=0.26 the flip threshold drops to 7.2°, so under yaw drift the lookup
+   feeds a **lateral prior** (vy=±0.065) — a positive feedback loop (yaw drift
+   → lateral prior → policy steps lateral → more yaw/lateral) that reinforces
+   lateral motion at the fast end of the command range. This likely explains
+   why smoke3's visual at cmd 0.26 showed strong lateral *translation* (0.55
+   m/s consistent) vs smoke4A at 0.13 showed milder in-place *sway*.
+
+**Implications for smoke5:**
+- The forward-template fix (option 1) remains the **primary** lever (addresses
+  the cause that's present even at the clean low cmd).
+- ALSO worth doing: **clamp / disable the heading-frame rotation when
+  `|delta_yaw|` is large** (or restrict the lateral bins) so a yaw-drifting
+  forward command can't snap to a lateral prior at high vx. Cheap, and removes
+  the high-cmd feedback loop. May partly self-resolve once a real forward gait
+  keeps yaw drift small — but don't rely on that.
+- Keep `ref_selected_vy` on every run to confirm it stays ~0 once fixed.
