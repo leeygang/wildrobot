@@ -8,7 +8,77 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.21.0-smoke2-yxfkg6wh-result + smoke3-plan] - 2026-05-29: smoke2 failed; command-range bug invalidates the run
+## [v0.21.0-smoke3-plan] - 2026-05-29: dead-gradient fix — widen vx sampling to the deadzone
+
+**Single functional lever vs smoke2:** `env.min_velocity: 0.18 → 0.0` (`max_velocity` stays `0.26`). Config: `training/configs/ppo_walking_v0210_smoke3.yaml`. `cmd_forward_velocity_alpha=562.5`, all G5 residual bounds, the home-anchored residual, and the prior-free reward block are **unchanged** — this is a *sampling* fix, not a reward reform.
+
+> **Supersedes** the "keep 0.18/0.26" plan in the `yxfkg6wh` entry below: the `5v4j5j7w` re-run executed that plan and produced the dead-gradient standing basin. smoke3 keeps `max_velocity=0.26` (NOT a revert to smoke12b's slow [0.08,0.133] band — the fast target is still trained) and only lowers the floor so the α=562.5 tracker has reachable targets.
+
+### Why (root cause of the smoke2 miss, code + trajectory confirmed)
+
+In the positive-only walk branch (`cmd_sampler_walk_vx_positive_only=true`, `wildrobot_env.py:3062-3065`), `x_min = max(min_velocity, cmd_deadzone[0])`, so smoke2 sampled `vx ~ U[0.18, 0.26]`. The velocity tracker is `exp(-α·err²)` (`wildrobot_env.py:1415`) with α=562.5 → a live-gradient window of only `cmd ± 1/√α ≈ ±0.042 m/s`. From a standing cold start (achieved ≈ 0) the error is ~0.22 → `exp(-35) ≈ 0`: **no gradient pulls the policy toward walking at any point in [0.18, 0.26]**, so it settles into the only behavior the other live terms reward (upright + minimal action = stand/tap).
+
+`min_velocity=0.0` makes the walk branch sample `vx ~ U[0.02, 0.26]` (deadzone → target). Validated 200k-sample numpy sim (matches the live smoke2 `env/velocity_cmd=0.197` exactly):
+
+| config | walk-branch range | walk mean | `env/velocity_cmd` (all) | envs reachable from a nascent ~0.09 m/s gait |
+|---|---|---:|---:|---:|
+| smoke2 | [0.18, 0.26] | 0.220 | 0.198 | **0%** |
+| smoke3 | [0.02, 0.26] | 0.140 | 0.126 | **35%** |
+
+### TB parity
+
+ToddlerBot samples vx uniformly across its whole range down through the deadzone every resample (`walk.gin` `command_range[0]=[-1,1]` scaled, `deadzone=0.05`), so many of its 4096 envs always carry small, reachable targets — even with its tighter `lin_vel_tracking_sigma=1000` (`mjx_env.py:2346`, which is *tighter* than WR's 562.5). The gait learned there generalizes to fast commands. smoke2's narrow high band broke that mechanism; smoke3 restores it. Lowering α was rejected (reopens the smoke1 standing-leak: at α=40 standing paid `exp(-40·0.18²)=0.27`).
+
+### Pre-flight (done)
+- `ppo_walking_v0210_smoke3.yaml` loads under the strict reward-weights validator; `min_velocity=0.0`, α=562.5, `positive_only=True`, `cmd_deadzone=(0.02,0.02,0.05)` confirmed.
+- Sampler distribution simulated (table above).
+
+### Pass criterion
+Same G4/G5 as smoke2. Expect a live `reward/cmd_forward_velocity_track` (≫ 0.0001) and positive `env/forward_velocity` early (smoke12b showed both from iter 0 at the reachable band). If forward velocity emerges on the low-cmd envs but the high-cmd (0.26) envs lag, add an explicit `max_velocity` curriculum (escalation path). If the basin still does not break, escalate per the smoke2 fail-mode tree (warm-start from smoke12b / RSI).
+
+---
+
+## [v0.21.0-smoke2-`5v4j5j7w`-result] - 2026-05-29: sampler-fixed re-run → dead-gradient standing/tap minimum at the fast band
+
+- **Run**: `training/wandb/offline-run-20260529_115206-5v4j5j7w` (config `ppo_walking_v0210_smoke2.yaml` — the **re-run of the smoke2 config after the `ee399ee` sampler fix**; the first smoke2 run `yxfkg6wh` is the entry below). This run executed the `yxfkg6wh` entry's smoke3 plan (sampler fixed, band kept at 0.18/0.26) and is the empirical falsification of it.
+- **Checkpoint dir**: `training/checkpoints/ppo_walking_v0210_smoke2_v00210_20260529_115226-5v4j5j7w`.
+- **Stopped at iter 660 / 13.5M env-steps** (44% of the 1500-iter / ~30.7M target; no crash/NaN in logs — manual stop or host session end). No `Evaluate/*` namespace logged → checkpoint selection is **non-authoritative**; do not deploy.
+- **Sampler sanity (skill pre-flight #2): `env/velocity_cmd = 0.197` vs YAML midpoint 0.22 (Δ ≈ 10%, in tolerance).** The `ee399ee` vx-clamp / positive-only fix **worked** — this is NOT a sampler-projection regression (unlike the prior `yxfkg6wh` run, whose cmd had collapsed to 0.081).
+
+### Verdict: dead-gradient standing / tap-in-place minimum (slight backward drift)
+
+| Gate | Metric | Value | Result |
+|---|---|---:|---|
+| G4 | `env/forward_velocity` | −0.072 | **FAIL** (negative / backward) |
+| G4 | `env/episode_length` | 1000 | pass-but-meaningless (full survival by not walking) |
+| G4 | `tracking/cmd_vs_achieved_forward` | 0.29 | **FAIL** (≫ 0.075) |
+| G4 | `tracking/step_length_*_event_m` | −0.0014 | **FAIL** (≈ 0, slightly backward) |
+| G5 | `residual_{hip,knee}_{l,r}_abs` | all ≤ 0.23 | pass — but vacuous (policy barely moves) |
+| G5 | `forward_velocity_cmd_ratio` | −6.1 | n/a (nonsense at fv < 0) |
+| G7 | beat bare-q_ref baseline (fv) | −0.072 vs −0.09 | **FAIL** (same backward sign) |
+
+### Root cause (code + trajectory confirmed)
+
+- Active recipe is the **smoke12b prior-free reward** (all `ref_*` imitation weights = 0, residual anchored to `home`), so the only forward-pulling term is `cmd_forward_velocity_track` (`exp(-α·err²)`, α=562.5). At cmd≈0.22 from a standing start, `err≈0.22 → exp(-35) ≈ 0`. `reward/cmd_forward_velocity_track = 0.0001` the entire run; flat for ~300 iters → **gradient-dead, not undertrained.**
+- **Direct proof via smoke12b (`ot8zazo1`):** identical α=562.5 recipe, but vx≈0.11 (range [0.08, 0.133]) → walked from iter 0 (`fwd_v ≈ +0.09`, live `reward/cmd_forward_velocity_track ≈ 0.027`) and stayed walking through its full 15M-step run. At the *same* 13.5M budget where smoke2 stood, smoke12b was already at `fwd_v 0.088, ep_len 500`. The lever is the command **range**, not α / step budget / feet_phase.
+- **feet_phase decoupling:** `reward/feet_phase = 0.088` (= smoke12b's *walking* value) coexists with `fwd_v = −0.07` and `step_length ≈ 0` — feet_phase rewards the swing-height profile independent of horizontal progress, so the policy taps in place. Contributing but **secondary**; feet_phase is direction-neutral and does not cause the backward drift (absence of forward pull does).
+
+### Concerning trends (not gated)
+- `ref/feet_pos_err_l2 = 3.4 m`, `ref/torso_pos_xy_err = 3.6 m` — **expected/harmless**: those terms have weight 0 (prior-free recipe); they are unweighted diagnostics of divergence from a prior the reward ignores. (See `walking_training.md` Reward Design active-config drift callout, added in `c56e8e6`.)
+- `ref/contact_phase_match = 0.29` (below 0.80) — `ref_contact_match` disabled, so not gating; report-only.
+- PPO `clip_fraction = 0.50`, `approx_kl = 0.053` — elevated (gradient dominated by feet_phase + penalties with velocity dead); symptom, not cause.
+
+### ToddlerBot alignment
+Active recipe is a faithful copy of TB's prior-free walk block (feet_phase 7.5, penalty_feet_ori 5.0, penalty_close_feet_xy 10.0, alive, penalty_pose) **except command sampling**: TB samples vx across its whole range down to the deadzone every resample; smoke2 sampled a narrow high band [0.18, 0.26]. That single divergence is the dead-gradient cause.
+
+### Next intervention
+**`v0.21.0-smoke3`**: `min_velocity: 0.18 → 0.0` (walk vx → [0.02, 0.26]), α/G5 unchanged. See the smoke3-plan entry above. Do NOT lower α (reopens smoke1 standing-leak) and do NOT add step budget (gradient is identically zero at [0.18, 0.26]).
+
+---
+
+## [v0.21.0-smoke2-yxfkg6wh-result] - 2026-05-29: smoke2 (first run, `yxfkg6wh`) failed — command-range sampler bug invalidates the run
+
+> **Smoke3 plan superseded.** This run originally recommended keeping `min_velocity/max_velocity = 0.18/0.26` and re-running fresh with the `ee399ee` sampler fix. The `5v4j5j7w` re-run did exactly that and hit a dead gradient at that band (see the smoke2-`5v4j5j7w`-result entry); the authoritative smoke3 plan is now the top entry (`min_velocity → 0`). Useful operational checks from the original plan (fresh run, first-rows `velocity_cmd_vx_abs` sanity, early-stop at 3-5M, per-foot touchdown symmetry) are folded into it.
 
 ### Smoke2 result — failed (standing/posture basin; do not promote)
 
@@ -66,26 +136,6 @@ This means smoke2 mostly trained the standing basin at a much lower accidental f
 - `loc_ref_enabled: false` in saved config is misleading/stale for v3: the env still used v3 reference machinery (`tracking/loc_ref_phase_progress`, `tracking/ref_selected_vx`, `tracking/nominal_q_abs_mean` nonzero).  For the next config, either set this field true for readability or remove the stale field in a separate cleanup.
 - Metrics needed for smoke3 are present: per-axis command magnitude, selected reference bin, signed lateral/yaw metrics, post-training lateral/yaw probes, world drift, per-foot touchdown counts, and per-foot step-length event metrics.
 - Low-risk docs gap: `tracking/cmd_velocity_xy_err` registry text still says legacy `vy^2`; runtime code now subtracts `cmd_vy` when `cmd_velocity_track_dim=2`.  This does not affect training, but should be cleaned up before relying on generated metric docs.
-
-### Smoke3 plan
-
-Use a **fresh run**, not a resume from smoke2.  Smoke2's actor, critic, normalization stats, and optimizer state were all shaped by the wrong command distribution and converged to a standing basin.
-
-Keep the smoke2 basin-break design unless the first smoke3 telemetry contradicts it:
-
-- keep `min_velocity/max_velocity = 0.18/0.26` (do not revert to smoke12b range yet);
-- keep `cmd_velocity_track_dim = 2` and `cmd_yaw_rate_track = 1.5`;
-- keep `feet_phase = 7.5` as implemented, not a raw TB re-port;
-- keep `max_episode_steps = post_training_num_steps = 1000` to match TB `PPOConfig.episode_length = 1000`;
-- keep `critic_includes_actor_obs = true`;
-- run from current main with the positive-only `vx` range fix.
-
-Early smoke3 acceptance checks:
-
-- By the first logged rows, `tracking/velocity_cmd_vx_abs` should be near `0.19-0.21`, not `0.08`.
-- By ~3-5M env-steps, `env/forward_velocity` should become clearly positive and `tracking/step_length_touchdown_event_m` should leave the `~0` tapping regime; otherwise stop early and debug reward gradients / reference tracking before spending the full 30M.
-- Per-foot touchdown rates should not collapse to smoke2's tail pattern (`left ~= 0.085`, `right ~= 0.003`).
-- `reward/cmd_forward_velocity_track` should be near zero for standing at `cmd_vx ~= 0.20`, because `alpha=562.5` makes the standing-during-walk leak negligible.
 
 ---
 
