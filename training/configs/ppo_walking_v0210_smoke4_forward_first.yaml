@@ -3,8 +3,11 @@
 # =============================================================================
 # Decisive question this run answers: can the v0.21 plumbing (obs_v8_cmd3d,
 # 3D library, critic actor+privileged, 1000-step horizon) recover a
-# smoke12b-style FORWARD gait at all, with every lateral/yaw degree of
-# freedom removed?  If YES -> lateral is the destabilizer (proceed to
+# smoke12b-style FORWARD gait at all, when the runtime COMMAND carries no
+# lateral/yaw component (sampler emits only (vx,0,0); reward is forward-only)?
+# Note: loc_ref_command_axes_3d stays true, so the 3D library still BUILDS its
+# vy/wz bins (30 total) — but (vx,0,0) commands look up the vy=0,wz=0 row, so
+# those bins are unused at runtime.  If YES -> lateral is the destabilizer (proceed to
 # smoke4B with tiny vy exposure).  If NO -> the regression is deeper in the
 # v0.21 obs/ref/eval plumbing or the floor/range, not lateral-reward
 # interference.
@@ -391,37 +394,17 @@ env:
   #     (smoke3's vy=0.065 / lateral+yaw probes are OOD here).
   eval_velocity_cmd: [0.13, 0.0, 0.00]
 
-  # v0.21.0 follow-up — Appendix C lateral / yaw cmd tracking pass
-  # criteria need pure-axis probes to evaluate.  The primary
-  # ``eval_velocity_cmd`` above mixes axes ``(vx, vy, wz) = (0.18,
-  # 0.04, 0.10)`` and is what the G4 forward gate runs against; it
-  # CANNOT isolate the lateral or yaw signed-ratio criterion (both
-  # axes are active and dilute each other).  Configure two
-  # deterministic extra rollouts:
-  #
-  #   1. ``[0.18, 0.13, 0.00]`` — pure-lateral probe at the upper end
-  #      of the WR-scaled vy range (``max_velocity_y``).  Checks the
-  #      Appendix C lateral pass criterion: signed
-  #      ``lateral_velocity / vy_eval >= 0.5`` averaged over the
-  #      deterministic rollout.
-  #
-  #   2. ``[0.00, 0.00, 0.25]`` — pure-yaw probe at the upper end of
-  #      ``max_yaw_rate``.  Checks the Appendix C yaw pass criterion:
-  #      signed ``ang_vel_z / wz_eval >= 0.5``.
-  #
-  # Each probe runs once per top-k candidate in the post-training
-  # eval and is surfaced in ``post_training_eval_summary.json`` as
-  # ``top_k_candidates[*].lateral_yaw_probes``.  Probes are
-  # REPORT-ONLY — they do not block the primary G4 promotion, but
-  # without them the JSON summary's
-  # ``lateral_yaw_probes_message`` explicitly states the criteria
-  # were NOT evaluated.  See ``walking_training.md`` Appendix C
-  # (v0.21.0+) for the contract.
-  # smoke4A: lateral/yaw probes dropped (OOD — vy=wz=0 in training).  Keep a
-  # single REPORT-ONLY high-forward probe to read forward generalization to
-  # the 0.26 ceiling without blocking the G4 gate.
-  eval_velocity_cmd_probes:
-    - [0.20, 0.00, 0.00]
+  # smoke4A: NO probes.  ``eval_velocity_cmd_probes`` feeds the Appendix C
+  # probe evaluator (``evaluate_lateral_yaw_pass_criterion``), which only
+  # understands PURE-LATERAL or PURE-YAW probes — it would mark a forward
+  # probe like ``[0.20,0,0]`` as ``axis="unknown", passed=false`` and label
+  # it (misleadingly) a "lateral/yaw probe" in the JSON summary.  Since
+  # smoke4A trains vy=wz=0, lateral/yaw probes are OOD and a forward probe is
+  # mis-typed, so the list is empty.  Forward generalization to the 0.26
+  # ceiling is read from training metrics (``env/forward_velocity`` at the
+  # sampled high commands); the primary ``eval_velocity_cmd=[0.13,0,0]``
+  # gates G4.  A correctly-named forward-probe field can be added later.
+  eval_velocity_cmd_probes: []
 
   # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
   # (zero / pure-turn / ellipse-walk).  When false, env emits the

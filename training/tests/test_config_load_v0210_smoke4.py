@@ -86,6 +86,14 @@ def test_smoke4_eval_is_forward_first_exact_bin(cfg) -> None:
     assert tuple(cfg.env.eval_velocity_cmd) == pytest.approx((0.13, 0.0, 0.0))
 
 
+def test_smoke4_no_eval_probes(cfg) -> None:
+    """Probes must be empty: the post-training probe evaluator
+    (evaluate_lateral_yaw_pass_criterion) only understands pure
+    lateral/yaw probes — a forward probe would be mis-typed as
+    axis='unknown', passed=False and mislabeled a lateral/yaw probe."""
+    assert list(getattr(cfg.env, "eval_velocity_cmd_probes", [])) == []
+
+
 # ---------------------------------------------------------------------------
 # smoke3 floor / range / binning preserved
 # ---------------------------------------------------------------------------
