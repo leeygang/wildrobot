@@ -5,6 +5,51 @@ config/run when its blocking question is resolved.
 
 ---
 
+## [QUEUED 2026-05-30] ROOT-CAUSE #1 — reward structure has no forward template (PRIMARY)
+
+**Status:** queued; under discussion. Detail/evidence in the resolved
+`ref_selected_vy/wz` entry below.
+
+The in-place/lateral sway occurs at cmd 0.13 where the reference lookup is
+provably clean (`ref_selected_vy=0`), so the cause is the **reward structure**,
+not the prior: there is no dense, direction-specific term rewarding forward
+*translation* that survives cold start.
+- Only `cmd_forward_velocity_track` rewards forward translation, and it's dead
+  (≈0.004) from a standing start (α=562.5).
+- `feet_phase` (dominant, ~0.086) rewards swing **height** only → fully paid by
+  in-place foot-lifting.
+- `alive`, `ref_body_quat_track` (orientation), `penalty_pose`, `penalty_feet_ori`,
+  `action_rate` are direction-agnostic → satisfied in place.
+- `penalty_close_feet_xy` (10.0) drives a wide stance → enables the lateral rock.
+- All `ref_*` imitation weights = 0 → **no forward gait template** (smoke12b
+  prior-free recipe; smoke12b only walked because it was warm-started).
+
+**Fix candidates (to discuss):** (a) re-enable imitation template `ref_q_track`
++ `torso_pos_xy` and switch `loc_ref_residual_base: home→q_ref`; (b) capped
+forward-progress reward (world-Δx); (c) warm-start/curriculum. Feeds the smoke5
+direction decision below.
+
+## [QUEUED 2026-05-30] ROOT-CAUSE #2 — heading-correction lateral-prior loop at high cmd (SECONDARY)
+
+**Status:** queued; under discussion. Detail/evidence in the resolved
+`ref_selected_vy/wz` entry below.
+
+At high vx the heading-frame rotation in `_lookup_offline_window`
+(`R_z(yaw_path − yaw_heading)`) flips a forward-only `(vx,0,0)` command onto a
+`vy≠0` bin under yaw drift: at vx=0.26 the flip threshold is δ>7.2°, and the
+probe measured `ref_selected_vy=±0.065` on 8.4% of samples (100% when
+`|yaw_drift|>0.20 rad`). This feeds the policy a **lateral prior** → feedback
+loop (yaw drift → lateral prior → step lateral → more yaw) that reinforces
+lateral *translation* at the fast end (likely why smoke3's 0.26 visual showed
+0.55 m/s lateral translation vs smoke4A's 0.13 in-place sway).
+
+**Fix candidates (to discuss):** clamp/disable the heading rotation when
+`|delta_yaw|` is large; or restrict lateral library bins; or accept it
+self-limits once a real forward gait keeps yaw drift small (don't rely on that).
+Secondary to #1. Keep `ref_selected_vy` logged to confirm ~0 after a fix.
+
+---
+
 ## [QUEUED 2026-05-30] smoke5 direction — how to break the forward-walking basin
 
 **Status:** parked pending the `ref_selected_vy/wz` instrumentation read (see below).
