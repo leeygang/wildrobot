@@ -30,10 +30,14 @@ WR resets **static**: `wildrobot_env.py:3310` `qvel=zeros`, control seeded from
 the residual base (`:3327`), all path/history state at frame-0/origin. So WR's
 reward is dead at step 0 and the body is off the velocity manifold.
 
-Feasibility: WR's library already exposes per-frame `body_lin_vel`, `body_ang_vel`,
-`q_ref`, `body_pos`, `body_quat`, `phase_sin/cos`, foot pos/vel
-(`_lookup_offline_window` return, `~1639-1660`). Joint velocity is finite-diffed
-from `q_ref`. **No library regeneration.** The change is in the reset path only.
+Feasibility: WR's library already exposes the per-frame data RSI needs
+(`_lookup_offline_window` return, `~1639-1660`): `q_ref`, `pelvis_pos`/
+`pelvis_vel`, per-body `body_pos`/`body_quat`/`body_ang_vel`, `phase_sin/cos`,
+foot pos/vel. **Important frame note:** the usable root linear velocity is
+**`pelvis_vel`** (world/path frame, ≈ commanded forward) — NOT `body_lin_vel`,
+which is stored **root-relative (≈0)** and would seed a stationary robot. Joint
+velocity is finite-diffed from `q_ref`. **No library regeneration.** The change
+is in the reset path only.
 
 ## 3. The full RSI reset-state surface (review finding 1 — REQUIRED)
 WR's first step depends on more than physics state. RSI must fast-forward the
@@ -41,9 +45,10 @@ WR's first step depends on more than physics state. RSI must fast-forward the
 
 | field | source @ frame f | why it matters |
 |---|---|---|
-| `qpos` root pos/quat | `body_pos`, `body_quat` | physical pose on the gait manifold |
+| `qpos` root height/quat | `body_pos[1]`, `body_quat[1]` (root = free-base body, idx 1; xy kept at origin) | physical pose on the gait manifold |
 | `qpos` actuated joints | `q_ref` (`_actuator_qpos_addrs`) | mid-stride joint config |
-| `qvel` root lin/ang | `body_lin_vel`, `body_ang_vel` | **moving at ≈cmd** (makes reward live) |
+| `qvel` root linear | **`pelvis_vel`** (NOT `body_lin_vel`, which is root-relative ≈0) | **moving at ≈cmd** (makes reward live) |
+| `qvel` root angular | `body_ang_vel[1]` | gait bobbing rate |
 | `qvel` actuated joints | finite-diff `q_ref` (`_actuator_dof_addrs`) | legs swinging |
 | `loc_ref_offline_step_idx` | `f` | reference advances from f |
 | `path_state_path_rot` | frame-f path heading (identity for forward-only) | **feeds step-0 heading correction** (`:3724`) |
@@ -97,9 +102,11 @@ base is verified coherent by the control-vs-body test (§6).
   are **validated by test**, not assumed (§6).
 
 ## 6. Correctness gates (tests, TDD)
-1. **Velocity-mapping test:** RSI-reset at frame f → measured root velocity (via
-   `CAL.get_root_velocity`) ≈ reference `body_lin_vel@f` (validates the qvel frame
-   mapping). If it fails, fix the frame convention before anything else.
+1. **Velocity-mapping test:** RSI-reset at frame f → measured root velocity ≈
+   reference **`pelvis_vel@f`** (the world/path-frame forward velocity ≈ cmd) —
+   NOT `body_lin_vel` (root-relative ≈0). Validates the qvel source + frame.
+   Shipped check (`test_smoke5_train_reset_starts_moving_forward`): root `qvel[0]`
+   = +0.13..+0.20 at random frames (= the bin's vx); eval/smoke4A stay at 0.
 2. **State-surface test:** RSI reset sets `step_idx==f`, `init_root_pos_xy`,
    `prev_root_pos`, `loc_ref_offline_step_idx` to frame-f values (not 0/origin).
 3. **G6 zero-residual-from-RSI invariant:** a zero-residual rollout from an RSI
