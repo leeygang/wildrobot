@@ -134,16 +134,17 @@ def test_smoke4a_reset_is_static_rsi_off() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Required residual-base alignment (env init guard)
+# Residual-base guard (updated for smoke6: RSI now allows {q_ref, home})
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("bad_base", ["home", "ref_init"])
-def test_rsi_with_static_residual_base_raises(cfg, bad_base) -> None:
-    """RSI requires loc_ref_residual_base='q_ref'.  BOTH static bases (home and
-    ref_init) are rejected at env init — WR's 0.91-rad gait exceeds the ±0.25
-    residual bound, so a static base is off-manifold at the RSI frame."""
+def test_rsi_rejects_ref_init_base(cfg) -> None:
+    """RSI accepts 'q_ref' (smoke5) and 'home' (smoke6 TB-contract, with
+    coverage-1.1 scales).  'ref_init' — a static frame-0 base that neither
+    follows the reference nor is coverage-derived — is still rejected.
+    (NOTE: 'home' was previously rejected here too; that guard was deliberately
+    relaxed for the smoke6 home-base contract — see test_config_load_v0210_smoke6.)"""
     import dataclasses
 
-    bad_env = dataclasses.replace(cfg.env, loc_ref_residual_base=bad_base)
+    bad_env = dataclasses.replace(cfg.env, loc_ref_residual_base="ref_init")
     bad_cfg = dataclasses.replace(cfg, env=bad_env)
     with pytest.raises(ValueError, match="loc_ref_rsi_enabled"):
         WildRobotEnv(config=bad_cfg)

@@ -370,15 +370,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._rsi_enabled = bool(
             getattr(self._config.env, "loc_ref_rsi_enabled", False)
         )
-        if self._rsi_enabled and self._residual_base_mode != "q_ref":
+        if self._rsi_enabled and self._residual_base_mode not in ("q_ref", "home"):
             raise ValueError(
-                "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base="
-                "'q_ref'.  The control base must FOLLOW the time-varying "
-                "reference so the zero-residual target tracks the sampled RSI "
-                "frame f.  A STATIC base (home OR ref_init) is off-manifold at "
-                "step 0 whenever the gait amplitude exceeds the residual bound "
-                "— measured max|q_ref(t)-q_ref(0)|=0.91 rad >> 0.25 for WR, so "
-                "ref_init is ~0.5 rad off the RSI frame.  got "
+                "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base in "
+                "{'q_ref', 'home'}.\n"
+                "  - 'q_ref' (smoke5): the base FOLLOWS the time-varying reference, "
+                "so the zero-residual target tracks the sampled RSI frame f exactly "
+                "(on-manifold by construction).\n"
+                "  - 'home' (smoke6, TB-contract): a STATIC base — like ToddlerBot, "
+                "which runs RSI from a static home base.  It is on-manifold at the "
+                "RSI frame ONLY if the per-joint residual scales COVER the prior's "
+                "swing from home (coverage>=1.0; see assets/derive_residual_scales.py "
+                "--coverage 1.1).  With coverage<1 a static base is off the RSI frame "
+                "(e.g. knee swings 0.89 rad from home > a 0.667 scale → step-0 snap).\n"
+                "  'ref_init' is rejected: a static frame-0 base that neither follows "
+                "the reference nor is coverage-derived.  got "
                 f"loc_ref_residual_base={self._residual_base_mode!r}."
             )
         # smoke8b — penalty_pose anchor selector.  See
