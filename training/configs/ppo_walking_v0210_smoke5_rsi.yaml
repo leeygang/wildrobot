@@ -10,7 +10,7 @@
 # qpos+qvel from the reference; eval stays static from rest.
 # Levers vs smoke4A:
 #   * env.loc_ref_rsi_enabled: false -> true   (THE lever)
-#   * env.loc_ref_residual_base: home -> ref_init  (reachability; TB first_frame_ref analog)
+#   * env.loc_ref_residual_base: home -> q_ref   (base must FOLLOW q_ref(t); WR gait amplitude 0.91 rad >> 0.25 residual bound, so a static base is unreachable/off-manifold)
 #   * env.loc_ref_reset_base:    home -> ref_init  (static eval reset on-manifold)
 # Everything else identical to smoke4A.  See training/docs/smoke5_rsi_proposal.md.
 # -----------------------------------------------------------------------------
@@ -288,7 +288,7 @@
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
 version: "0.21.0"
-version_name: "v0.21.0 PPO smoke5 RSI (smoke4A forward-first + Reference State Initialization: train resets onto a random moving gait frame; residual_base home->ref_init for reachability; eval static from rest)"
+version_name: "v0.21.0 PPO smoke5 RSI (smoke4A forward-first + Reference State Initialization: train resets onto a random moving gait frame; residual_base home->q_ref (base must follow the gait; amplitude 0.91>>0.25 residual bound); eval static from rest)"
 
 seed: 42
 
@@ -446,11 +446,19 @@ env:
   # distance to (offline_vx, 0, 0).
   loc_ref_offline_command_vx: 0.20
 
-  # smoke5 RSI: control base must be ON the gait manifold (frame-0 reference)
-  # so the ±0.25 residual can span base→mid-stride RSI frames, matching TB's
-  # static first_frame_ref base (mjx_env.py:1225).  home (generic keyframe) can
-  # sit >0.25 from mid-stride frames → unreachable.  home → ref_init.
-  loc_ref_residual_base: ref_init
+  # smoke5 RSI: control base MUST follow the time-varying reference, q_ref(t),
+  # NOT a static base.  Measured WR gait amplitude is max|q_ref(t)-q_ref(0)| =
+  # 0.91 rad >> the ±0.25 residual bound, so any STATIC base (home or ref_init)
+  # leaves mid-stride RSI frames UNREACHABLE (measured: ref_init base is off by
+  # ~0.5 rad at a random RSI frame).  With q_ref base, the zero-residual control
+  # target at the RSI frame f = q_ref(f) (win is looked up at step_idx=f), so the
+  # robot starts ON the moving manifold (control-vs-body mismatch ~0.07 rad), and
+  # the base advances with q_ref(t) as the episode proceeds.
+  # (TB uses a static first_frame_ref base + RSI only because TB's gait fits its
+  # action scale; WR's large-amplitude ZMP gait does not.)  home → q_ref.
+  loc_ref_residual_base: q_ref
+  # Static eval reset starts the actuator joints at frame-0 q_ref (= q_ref base
+  # at step_idx 0 → coherent from rest).
   loc_ref_reset_base: ref_init
   # smoke5 — Reference State Initialization: each TRAIN episode resets onto a
   # random frame of the moving reference gait (qvel from the reference) so the
@@ -685,7 +693,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.21.0, smoke5, rsi, ref_state_init, forward_first, cmd_track_dim1, sampler_1d_legacy, no_lateral, no_yaw, walk_floor_0065, interval_0065_keep_026_bin, obs_v8_cmd3d, library_3d, ref_init_residual, alpha_562p5, action_rate_halved, ep_1000]
+  tags: [ppo, v0.21.0, smoke5, rsi, ref_state_init, forward_first, cmd_track_dim1, sampler_1d_legacy, no_lateral, no_yaw, walk_floor_0065, interval_0065_keep_026_bin, obs_v8_cmd3d, library_3d, qref_base_residual, alpha_562p5, action_rate_halved, ep_1000]
 
 video:
   enabled: false

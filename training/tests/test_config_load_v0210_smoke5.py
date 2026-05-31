@@ -49,7 +49,9 @@ def _root_qvel(state) -> np.ndarray:
 # ---------------------------------------------------------------------------
 def test_smoke5_rsi_levers(cfg) -> None:
     assert cfg.env.loc_ref_rsi_enabled is True
-    assert cfg.env.loc_ref_residual_base == "ref_init"
+    # base must FOLLOW q_ref(t): WR gait amplitude (0.91 rad) >> the ±0.25
+    # residual bound, so a static base (home/ref_init) is off-manifold/unreachable.
+    assert cfg.env.loc_ref_residual_base == "q_ref"
     assert cfg.env.loc_ref_reset_base == "ref_init"
 
 
@@ -81,6 +83,24 @@ def test_smoke5_train_reset_starts_moving_forward(env) -> None:
         assert 0 <= sidx < n_steps
         seen_idx.add(sidx)
     assert len(seen_idx) > 1  # frame is randomized across resets
+
+
+def test_smoke5_rsi_reset_is_on_manifold(env) -> None:
+    """Coherence (load-bearing): the step-0 control base must MATCH the sampled
+    RSI frame's pose, else the controller pulls the body off the gait manifold
+    at step 0.  With the q_ref base, ctrl@reset = q_ref(f) ≈ body actuated qpos
+    (both at frame f).  A static base would be off by ~0.5 rad (> residual bound).
+    """
+    for s in range(4):
+        st = env.reset(jax.random.PRNGKey(s))
+        data = getattr(st, "pipeline_state", None) or getattr(st, "data", None)
+        ctrl = np.asarray(data.ctrl)
+        body_act = np.asarray(data.qpos)[np.asarray(env._actuator_qpos_addrs)]
+        # zero-residual control target tracks the RSI frame's joint pose
+        assert np.max(np.abs(ctrl - body_act)) < 0.25, (
+            f"seed {s}: control base off the RSI frame by "
+            f"{np.max(np.abs(ctrl - body_act)):.3f} rad (> residual bound)"
+        )
 
 
 def test_smoke5_eval_reset_is_static(env) -> None:

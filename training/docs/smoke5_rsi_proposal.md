@@ -60,26 +60,32 @@ Note: smoke5 is forward-only (vy=wz=0), so the reference path is straight →
 stays ≈0 → no spurious heading-correction lateral flip. (General/turning RSI would
 need the true frame-f path heading.)
 
-## 4. Residual-base alignment (review finding 2 — REQUIRED; refined to `ref_init`)
-smoke4A uses `loc_ref_residual_base: home`. RSI **requires a reference base, not
-`home`** — but the precise reason is **reachability**, not "coherent zero-residual":
+## 4. Residual-base alignment (review finding 2 — REQUIRED; the base must be `q_ref`)
+smoke4A uses `loc_ref_residual_base: home`. RSI **requires a base that FOLLOWS the
+time-varying reference, `q_ref(t)` — NOT a static base** (`home` or `ref_init`).
+Measured on the WR library:
 
-- TB pairs RSI with a **STATIC frame-0 reference base** (`default_action =
-  first_frame_ref["motor_pos"]`, `mjx_env.py:1225`, explicitly "not the random
-  RSI frame"). So a static base under RSI is exactly TB's design — the policy is
-  phase-conditioned and learns the per-frame action; the base does **not** follow
-  the time-varying frame.
-- The control base must be **on the gait manifold** so the bounded `±0.25` rad
-  residual can span base→mid-stride poses. WR's `ref_init` (frame-0 reference
-  q_ref) is on-manifold (gait deviates from it by ~its amplitude) — the analog of
-  TB's `first_frame_ref`. `home` is a generic keyframe that can sit >0.25 from
-  mid-stride frames → some RSI frames would be **unreachable** within the residual
-  bound → the robot can't hold the gait.
+- **WR gait amplitude `max|q_ref(t) − q_ref(0)| = 0.913 rad ≫ ±0.25` residual
+  bound.** So a *static* base (frame-0 `ref_init`, or `home`) leaves mid-stride
+  RSI frames **unreachable** — the policy can only reach `base ± 0.25`, but the
+  gait spans 0.91. Measured: with `ref_init`, the step-0 control target is **0.50
+  rad off** the RSI body pose. (A first draft shipped `ref_init` — this is the
+  bug the reviewer caught.)
+- With `loc_ref_residual_base: q_ref`, the control base at the RSI frame `f` is
+  `q_ref(f)` (the reset `win` is looked up at `step_idx=f`), so the zero-residual
+  target ≈ the RSI body pose (measured mismatch **0.07 rad**, within bound), and
+  the base advances with `q_ref(t)` as the episode proceeds → genuinely **on the
+  moving manifold** at every step.
+- Why not TB's static `first_frame_ref` base? TB can use a static base + RSI only
+  because TB's gait amplitude fits its action scale. WR's large-amplitude ZMP gait
+  (0.91 rad) does not — so WR needs the q_ref base. (This also means smoke5 is the
+  v0.20.1 *prior-guided* paradigm + RSI, not "prior-free + RSI"; q_ref base
+  supplies the forward template, RSI supplies the on-manifold start, the residual
+  stabilizes.)
 
-So smoke5 sets `loc_ref_residual_base: ref_init` (NOT `home`; NOT `q_ref`, which
-would re-introduce time-varying prior-following — a different paradigm). This is a
-**required companion to RSI**, not an independent change. (env init raises if
-`loc_ref_rsi_enabled` is paired with a `home` residual base.)
+So smoke5 sets `loc_ref_residual_base: q_ref` (NOT `home`, NOT static `ref_init`).
+Env init raises if `loc_ref_rsi_enabled` is paired with a `home` base; the q_ref
+base is verified coherent by the control-vs-body test (§6).
 
 ## 5. Implementation plan
 - Add `env.loc_ref_rsi_enabled: bool` (default False → bit-identical to smoke4A).
