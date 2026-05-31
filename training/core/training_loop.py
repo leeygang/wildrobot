@@ -43,7 +43,6 @@ from training.core.metrics_registry import (
     METRICS_VEC_KEY,
     unpack_metrics,
 )
-from training.core.post_training_eval import step_length_touchdown_floor_m
 from training.envs.env_info import WR_INFO_KEY
 from training.policy_spec_utils import build_policy_spec_from_training_config
 
@@ -104,37 +103,6 @@ def _format_hhmmss(seconds: float) -> str:
     hours, rem = divmod(total_seconds, 3600)
     minutes, secs = divmod(rem, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
-def _print_console_legend() -> None:
-    """One-time glossary for the per-iteration training console lines.
-
-    Explains the abbreviations in the ``cmd`` / ``got`` / ``gates`` rows so
-    the operator doesn't have to reverse-engineer ``v``/``err``/``L``/``G4``.
-    Printed once at training start; per-iter lines stay compact.
-    """
-    print("=" * 60)
-    print("Console legend (per-iteration lines)")
-    print("-" * 60)
-    print("  cmd  : commanded velocity magnitude per axis")
-    print("         |vx| forward, |vy| lateral (m/s), |wz| yaw (rad/s);")
-    print("         nonzero = % of envs given a live (non-stand) command")
-    print("  got  : achieved this rollout")
-    print("         vx forward, vy lateral (m/s); yaw = body yaw rate (rad/s)")
-    print("         step = forward stride per touchdown (m); h = torso height")
-    print("         fwd_err = |cmd_vx - achieved_vx| (m/s)")
-    print("  G4   : eval-floor PROMOTION gate (vx,err,step,eplen all ✓ to pass)")
-    print("         vx    fwd velocity   >= 0.50 x cmd_vx")
-    print("         err   fwd track err  <= 0.50 x cmd_vx")
-    print("         step  fwd stride     >= cycle-scaled floor")
-    print("         eplen episode length >= 95% of horizon")
-    print("  G5   : anti-EXPLOIT gate")
-    print("         res_max = largest leg residual <= 0.20 rad")
-    print("         (eval) vx/cmd ratio must land in [0.6, 1.5]")
-    print("  ✓ / ✗: gate pass / fail")
-    print("  Full definitions: training/docs/walking_training.md (G4/G5)")
-    print("=" * 60)
-    print()
 
 
 def _effective_ppo_epochs(
@@ -1657,6 +1625,19 @@ def train(
                 "lateral_velocity_abs": METRIC_INDEX[
                     "tracking/lateral_velocity_abs"
                 ],
+                # v0.21.0 console: signed lateral / yaw achieved + lateral
+                # (xy) and yaw tracking errors, so the Evaluate console line
+                # carries the same critical signals as the train line.
+                "lateral_velocity_signed_m_s": METRIC_INDEX[
+                    "tracking/lateral_velocity_signed_m_s"
+                ],
+                "ang_vel_z_signed_rad_s": METRIC_INDEX[
+                    "tracking/ang_vel_z_signed_rad_s"
+                ],
+                "cmd_velocity_xy_err": METRIC_INDEX[
+                    "tracking/cmd_velocity_xy_err"
+                ],
+                "yaw_rate_err": METRIC_INDEX["tracking/yaw_rate_err"],
                 "touchdown_rate_left_count": METRIC_INDEX[
                     "tracking/touchdown_rate_left_count"
                 ],
@@ -1848,7 +1829,6 @@ def train(
     )
     print(f"  Total steps target: {total_expected_steps:,}")
     print()
-    _print_console_legend()
 
     # Training loop
     start_time = time.time()
@@ -2310,12 +2290,6 @@ def train(
                 except (TypeError, ValueError):
                     return default
 
-            def _mark(ok: bool) -> str:
-                return "\u2713" if ok else "\u2717"
-
-            def _gate_marks(*checks: tuple[str, bool]) -> str:
-                return " ".join(f"{name}{_mark(ok)}" for name, ok in checks)
-
             fwd = _g("forward_velocity")
             # v0.21.0: per-axis command magnitudes (vx fwd, vy lateral, wz
             # yaw) + achieved lateral velocity and yaw rate, so 3-axis
@@ -2343,56 +2317,31 @@ def train(
             res_max = max(res_hpL, res_hpR, res_knL, res_knR, res_arL, res_arR)
             term_h_low = _g("term_height_low_frac")
 
-            # G4 / G5 floors are pulled directly from
-            # walking_training.md v0.20.1 §.  ``ep_len`` G4 floor is 95% of
-            # ``max_episode_steps`` so single-cmd horizon changes don't
-            # break the gate.
-            #
-            # Phase 9D-aware (2026-05-09): forward_velocity and stride
-            # floors are command-scaled from the eval cmd, not hardcoded
-            # to vx=0.15 values.  Without this, a Phase 9D run at
-            # vx=0.20 would PASS the velocity gate at 38% tracking
-            # (0.075/0.20) instead of the doc-intended 50%, and the
-            # stride gate would only require 32% of nominal stride
-            # instead of the intended ~50%.  Thresholds:
-            #   forward_velocity ≥ 0.50 × eval_vx
-            #     — equivalent to ≥0.075 m/s at vx=0.15, ≥0.10 at vx=0.20
-            #   cmd_vs_achieved_forward ≤ 0.50 × eval_vx
-            #     — same scaling as the velocity floor
-            #   step_length ≥ max(0.030, 0.50 × vx × cycle/2)
-            #     — retains the old 0.030 m shuffle floor and scales to
-            #     ≥0.048 m at Phase 9D / smoke2 vx=0.20 cycle=0.96
-            # The 0.030 lower bound is retained as the "absolute
-            # shuffle floor" — any operating point where the scaled
-            # value is below 0.030 m is below the shuffling regime.
-            max_ep = float(getattr(config.env, "max_episode_steps", 500) or 500)
-            # Two separate variables to keep sentinel semantics intact:
-            #   raw_eval_vx : the literal config value (negative ⇒ sentinel
-            #                 / sampling mode, ratio gates undefined)
-            #   g4_floor_vx : the vx used for floor/ceiling calculations.
-            #                 Falls back to historical vx=0.15 calibration
-            #                 in sentinel mode so the train console still
-            #                 has well-defined floors.
-            # Collapsing them (the previous shape) made the G5-eval
-            # ratio's ``n/a`` branch unreachable in sentinel mode.
-            # H3: vx-only sentinel per P3.6.  ``eval_velocity_cmd`` is the
-            # (vx, vy, wz) 3-tuple; the sentinel / ratio gate reads only
-            # the vx axis (the [0]th element).  vy / wz pin to 0.0 by
-            # the H3 broadcast policy, so a scalar check here is correct
-            # and back-compat (a missing attr still yields -1.0 scalar).
+            # Critical tracking signals.  These replaced the G4/G5 pass/fail
+            # gate lines: those were non-authoritative train-side proxies
+            # (only post_training_eval decides promotion), and the binary
+            # ✓/✗ framing obscured the underlying numbers.
+            #   vx/cmd  : "is it walking at the commanded speed" ratio
+            #             (~1.0 good, ~0 standing).  Ratio-of-means
+            #             (fwd / |cmd_vx|) so it stays stable; the per-step
+            #             ``forward_velocity_cmd_ratio`` is noisy near zero
+            #             command and is intentionally not used here.
+            #   xy_err  : lateral / xy velocity tracking error (m/s).
+            #   yaw_err : yaw-rate tracking error (rad/s).
+            #   drift   : per-episode world lateral + yaw drift (veer / spin).
+            xy_err = _g("tracking/cmd_velocity_xy_err")
+            yaw_err = _g("tracking/yaw_rate_err")
+            drift_y = _g("tracking/world_y_drift_signed_m")
+            drift_yaw = _g("tracking/yaw_drift_signed_rad")
+            vx_cmd_ratio = fwd / max(cmd_vx_abs, 1e-3)
+
+            # ``eval_velocity_cmd`` vx axis pins the deterministic eval ratio
+            # printed in the Evaluate block below (vx-only sentinel per
+            # P3.6; negative ⇒ sampling mode, ratio undefined → n/a).
             _ecv_raw = getattr(config.env, "eval_velocity_cmd", -1.0)
             raw_eval_vx = float(
                 _ecv_raw[0] if hasattr(_ecv_raw, "__len__") else _ecv_raw
             )
-            g4_floor_vx = raw_eval_vx if raw_eval_vx > 0 else 0.15
-            g4_vel_floor = 0.50 * g4_floor_vx
-            g4_cmd_err_ceiling = 0.50 * g4_floor_vx
-            g4_step_len_floor = step_length_touchdown_floor_m(g4_floor_vx)
-            g4_vel_ok = fwd >= g4_vel_floor
-            g4_cmd_err_ok = cmd_err <= g4_cmd_err_ceiling
-            g4_step_len_ok = step_len >= g4_step_len_floor
-            g4_ep_len_ok = ep_len >= 0.95 * max_ep
-            g5_residual_ok = res_max <= 0.20
 
             # Main line.  Reward + ep_len + throughput.  ``success`` deleted
             # — it was the truncation-based env/success_rate which is always
@@ -2415,32 +2364,32 @@ def train(
             # Train-rollout walking signals — split into commanded vs
             # achieved so the per-axis command and the lateral/yaw response
             # are both visible.
-            #   cmd : commanded velocity magnitude per axis (m/s, m/s, rad/s)
-            #   got : achieved vx/vy (m/s), yaw rate (rad/s), fwd stride (m),
-            #         torso height (m), and forward tracking error fwd_err
+            #   cmd   : commanded velocity magnitude per axis (m/s,m/s,rad/s)
+            #   got   : achieved vx/vy (m/s), yaw rate (rad/s), fwd stride (m),
+            #           torso height (m)
+            #   track : critical tracking signals (vx/cmd ratio, fwd /
+            #           lateral / yaw errors, world drift)
             print(
-                f"  └─ cmd : |vx|={cmd_vx_abs:.3f} |vy|={cmd_vy_abs:.3f} "
+                f"  └─ cmd  : |vx|={cmd_vx_abs:.3f} |vy|={cmd_vy_abs:.3f} "
                 f"|wz|={cmd_wz_abs:.3f} (m/s,m/s,rad/s) | nonzero={cmd_nonzero:.0%}"
             )
             print(
-                f"  └─ got : vx={fwd:+.3f} vy={lat_vel:+.3f} (m/s) "
+                f"  └─ got  : vx={fwd:+.3f} vy={lat_vel:+.3f} (m/s) "
                 f"yaw={yaw_rate:+.3f} rad/s | step={step_len:+.4f}m "
-                f"h={_g('height'):.2f}m | fwd_err={cmd_err:.3f}"
+                f"h={_g('height'):.2f}m"
             )
-
-            # Train gates: keep the routine line compact.  Residual
-            # magnitudes are the train-side G5 signal; the train-rollout
-            # vx/cmd ratio is diagnostic-only under sampled commands and
-            # intentionally omitted from the human-facing line.
             print(
-                f"  └─ gates: "
-                f"G4-train[{_gate_marks(('vx', g4_vel_ok), ('err', g4_cmd_err_ok), ('step', g4_step_len_ok), ('eplen', g4_ep_len_ok))}] | "
-                f"G5[res_max={res_max:.2f}\u22640.20 {_mark(g5_residual_ok)}]"
+                f"  └─ track: vx/cmd={vx_cmd_ratio:.2f} fwd_err={cmd_err:.3f} | "
+                f"xy_err={xy_err:.3f} yaw_err={yaw_err:.3f} | "
+                f"drift y={drift_y:+.2f}m yaw={drift_yaw:+.3f}rad"
             )
 
-            if not g5_residual_ok:
+            # Residual magnitudes — printed only when a leg residual exceeds
+            # the 0.20 rad bound (the historical exploit signal), as a plain
+            # warning rather than a pass/fail gate.
+            if res_max > 0.20:
                 print(
-                    f"  └─ residual detail: "
+                    f"  └─ residual (>0.20 rad): "
                     f"hipL/R={res_hpL:.2f}/{res_hpR:.2f} "
                     f"kneeL/R={res_knL:.2f}/{res_knR:.2f} "
                     f"ankle_rollL/R={res_arL:.2f}/{res_arR:.2f}"
@@ -2468,19 +2417,11 @@ def train(
                     f"{' | ROLLBACK' if ppo_rollback > 0 else ''}"
                 )
 
-            # Evaluate/* block — ToddlerBot pattern (no success_rate
-            # concept; checkpoint quality reads off mean_reward +
-            # mean_episode_length + per-term tracking).  Only printed when
-            # the eval rollout actually ran this iter.
-            #
-            # Eval-side G4 marks (separate from train G4 above) are the
-            # promotion-horizon gate per walking_training.md G4: the
-            # smoke ships only if BOTH train-side and eval-side G4 pass
-            # at the same horizon.  Train and eval can disagree (eval
-            # is deterministic and pinned to ``eval_velocity_cmd``;
-            # train rollouts sample the cmd range under the curriculum)
-            # so a "G4 ✓" on train alone is not the smoke promotion
-            # signal.
+            # Evaluate/* block — deterministic eval rollout pinned to
+            # eval_velocity_cmd (ToddlerBot pattern: checkpoint quality reads
+            # off mean reward + ep length + tracking).  Only printed when the
+            # eval rollout ran this iter.  This is the authoritative signal
+            # (post_training_eval decides promotion off the same numbers).
             if "Evaluate/mean_reward" in env:
                 eval_r = _g("Evaluate/mean_reward")
                 eval_L = _g("Evaluate/mean_episode_length")
@@ -2489,52 +2430,26 @@ def train(
                 eval_step_len = _g("Evaluate/step_length_touchdown_event_m")
                 eval_lat = _g("Evaluate/lateral_velocity_signed_m_s")
                 eval_yaw = _g("Evaluate/ang_vel_z_signed_rad_s")
-                # Same command-scaled floors as train G4 (single source
-                # of truth: ``eval_velocity_cmd`` + cycle_time_s).
-                # Eval is always pinned to eval_velocity_cmd, so the
-                # floor is well-defined here regardless of sentinel
-                # mode (which only affects train rollouts).
-                eval_g4_vel_ok = eval_v >= g4_vel_floor
-                eval_g4_cmd_err_ok = eval_e <= g4_cmd_err_ceiling
-                eval_g4_step_len_ok = eval_step_len >= g4_step_len_floor
-                eval_g4_ep_len_ok = eval_L >= 0.95 * max_ep
-                # G5 ratio gate (walking_training.md Phase 9D):
-                # ``0.6 ≤ Evaluate/forward_velocity / eval_velocity_cmd
-                # ≤ 1.5`` on the pinned eval rollout.  This is the
-                # promotion gate; the train-rollout
-                # ``tracking/forward_velocity_cmd_ratio`` mean is
-                # numerically unstable when sampled commands are near
-                # zero (zero_chance + deadzone) and is therefore
-                # diagnostic-only — the train console line below labels
-                # it as such.  When ``eval_velocity_cmd <= 0`` (sentinel
-                # / sampling mode) the eval ratio is undefined; report
-                # n/a rather than dividing by zero.
-                # Sentinel-aware: only gate the ratio when the eval cmd
-                # is actually pinned (raw_eval_vx > 0).  In sampling
-                # mode the per-iter ratio is meaningless because the
-                # eval rollout's sampled cmd disagrees with the floor's
-                # fallback vx=0.15.
+                eval_xy_err = _g("Evaluate/cmd_velocity_xy_err")
+                eval_yaw_err = _g("Evaluate/yaw_rate_err")
+                eval_drift_y = _g("Evaluate/world_y_drift_abs_m")
+                eval_drift_yaw = _g("Evaluate/yaw_drift_abs_rad")
+                # vx/cmd ratio against the pinned eval command (clean, unlike
+                # the noisy per-step train ratio).  n/a in sampling mode.
                 if raw_eval_vx > 0:
-                    eval_vx_cmd_ratio = float(eval_v) / float(raw_eval_vx)
-                    eval_g5_ratio_ok = 0.6 <= eval_vx_cmd_ratio <= 1.5
-                    eval_ratio_str = (
-                        f"vx/cmd={eval_vx_cmd_ratio:5.2f}∈[0.6,1.5] "
-                        f"{_mark(eval_g5_ratio_ok)}"
-                    )
+                    eval_ratio_str = f"{float(eval_v) / float(raw_eval_vx):.2f}"
                 else:
-                    eval_ratio_str = "vx/cmd=n/a (eval cmd not pinned)"
+                    eval_ratio_str = "n/a"
                 print(
                     f"  └─ Evaluate: reward={eval_r:>7.2f} | "
                     f"ep_len={eval_L:>5.0f} | "
                     f"vx={eval_v:+.3f} vy={eval_lat:+.3f} (m/s) "
-                    f"yaw={eval_yaw:+.3f} rad/s | "
-                    f"fwd_err={eval_e:.3f} | "
-                    f"step={eval_step_len:+.4f}m"
+                    f"yaw={eval_yaw:+.3f} rad/s | step={eval_step_len:+.4f}m"
                 )
                 print(
-                    f"  └─ eval gates: "
-                    f"G4[{_gate_marks(('vx', eval_g4_vel_ok), ('err', eval_g4_cmd_err_ok), ('step', eval_g4_step_len_ok), ('eplen', eval_g4_ep_len_ok))}] | "
-                    f"G5[{eval_ratio_str}]"
+                    f"  └─ eval track: vx/cmd={eval_ratio_str} fwd_err={eval_e:.3f} | "
+                    f"xy_err={eval_xy_err:.3f} yaw_err={eval_yaw_err:.3f} | "
+                    f"drift y={eval_drift_y:.2f}m yaw={eval_drift_yaw:.3f}rad"
                 )
 
         if (
