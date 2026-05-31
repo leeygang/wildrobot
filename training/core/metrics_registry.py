@@ -1889,9 +1889,9 @@ METRIC_SPECS: List[MetricSpec] = [
             "Selected reference-bin vy (m/s) — the vy value of the "
             "PER-STEP heading-corrected reference bin chosen for this "
             "step.  Forward-only commands (vy=0) should keep this ~0; "
-            "a nonzero value means the heading-frame rotation in "
-            "_lookup_offline_window landed on a lateral bin (yaw drift "
-            "feeding the policy a lateral prior)."
+            "a nonzero value means the heading-corrected lookup selected "
+            "a lateral reference bin.  (Causal interpretation — whether "
+            "that reinforces lateral drift — is left to docs/analysis.)"
         ),
     ),
     MetricSpec(
