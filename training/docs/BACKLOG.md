@@ -50,9 +50,16 @@ Secondary to #1. Keep `ref_selected_vy` logged to confirm ~0 after a fix.
 
 ---
 
-## [QUEUED 2026-05-30] smoke5 direction — how to break the forward-walking basin
+## [IMPLEMENTED 2026-05-30] smoke5 direction — RSI chosen + shipped
 
-**Status:** parked pending the `ref_selected_vy/wz` instrumentation read (see below).
+**Status:** RESOLVED → **RSI** (Reference State Initialization). Implemented in
+commit `e186f80`; config `ppo_walking_v0210_smoke5_rsi.yaml`; spec
+`training/docs/smoke5_rsi_proposal.md` (review-incorporated v2); validated
+(train reset starts moving fwd at a random gait frame; eval/smoke4A static;
+6 + 48 tests pass). **Pending: launch + result.** α-tuning was ruled out
+(Gaussian leak↔dead tension); reward-shape forward-progress term is the fallback
+if RSI underperforms. Heading-correction clamp (#2) deferred. Decision context
+retained below.
 
 **Context.** Cold-start prior-free PPO reliably converges to a **step/sway in
 place** gait (smoke1/2/3/4A), because the only reward term that rewards forward
