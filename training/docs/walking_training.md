@@ -269,7 +269,7 @@ Forms used in the live code:
 smoke7:           q_target = q_ref_from_library(t) + clip(action,±1)·scale   # prior-guided
 smoke8/12b–4A:    q_target = home_q + clip(action,±1)·scale                  # home-anchored, prior-free
 smoke9c:          q_target = ref_init_q + clip(action,±1)·scale
-smoke5 (RSI):     q_target = q_ref(t) + clip(action,±1)·scale  + RSI start   # FAILED — see below
+smoke5 (RSI):     q_target = q_ref(t) + clip(action,±1)·scale  + RSI start   # first authoritative from-rest pass
 smoke6 (TB-contract): q_target = home_q + clip(action,±1)·scale_1.1 + RSI    # active direction
 ```
 
@@ -279,17 +279,20 @@ The current env implementation is in
 This is an explicit architectural decision, not an inherited default.
 
 > **⚠️ Paradigm switch in progress (v0.21.0 smoke6, 2026-05-31).** smoke5's
-> `q_ref` base **works** (deterministic from-rest walk at cmd: fv 0.130,
-> ratio 0.998, no falls); smoke6 adopts the simpler TB recipe (build the
-> gait from a static `home` base) on its merits, with the q_ref base as a
+> `q_ref` base **works** under WR's current bounded-residual contract: it is
+> the first completed run whose authoritative from-rest post-training eval
+> passes the hard forward-walking gates. Its defect is gait style
+> (lateral/path drift), not absence of forward gait. smoke6 adopts the
+> simpler TB recipe (build the gait from a static `home` base) as a
+> **long-term capability pivot**, with the smoke5 `q_ref` base kept as the
 > proven fallback. Reachability fact behind the scale change: with the
 > **±1 clip + 75%-coverage scales**, a static `home` base can't *hold* an
 > RSI reset pose (knee prior swing 0.889 rad > scale 0.667 → step-0 snap),
 > so home+RSI needs wider (coverage-1.1) scales. **ToddlerBot builds the
-> gait from a static home base** because its action is *unbounded*
-> (`distribution_type="normal"`, no ±1 squash; clamp only at physical joint
-> limits, `mjx_env.py:1641`) — it builds the gait from a static home base
-> with a wide action. smoke6 moves WR toward that contract **without going
+> gait from a static home base** because its action is **not clipped in
+> policy space** (`distribution_type="normal"`; `default_action + 0.25 *
+> action`; final clamp only at physical joint limits, `mjx_env.py:1543`,
+> `mjx_env.py:1641`). smoke6 moves WR toward that contract **without going
 > fully unbounded**: keep the ±1 clip but re-derive scales at
 > **coverage 1.1** (`derive_residual_scales.py --coverage 1.1`, symmetric
 > per L/R pair: hip_pitch ~0.56, knee ~0.98) so the prior becomes reachable
@@ -633,25 +636,30 @@ Active state, summarized:
   cold (3-s backward startup, lateral+yaw drift, residual-driven
   propulsion). **smoke5** added RSI (start mid-stride) + a `q_ref`
   action base and is the **best WR forward result so far**: the
-  **deterministic** from-rest eval walks at command (fv 0.130 = cmd,
-  ratio 0.998, step 0.0316, no falls). *Train-rollout* metrics looked
-  like a sway (fv 0.038, step 0.0015) — a **train→eval gap**: the
+  **authoritative post-training eval** from rest promotes
+  `checkpoint_1330_27238400.pkl` with `forward_velocity 0.1518`,
+  `cmd_vs_achieved 0.0342`, `step_length 0.0378`, and `mean_episode_length
+  1000`. *Train-rollout* metrics looked much weaker (`fv ~0.085`,
+  per-foot event step `~1.6 mm`) — a **train→eval gap**: the
   exploration noise (std 0.63) is ~2× the action signal (0.37), so
   stochastic rollouts flail while the deterministic mean walks. Not yet
-  deployable: lateral veer 0.143, action noise too high, only cmd 0.13
-  confirmed.
+  deployable: lateral veer `0.157`, `world_y_drift_abs_m 1.55`, action
+  noise too high, only cmd `(0.13, 0, 0)` confirmed.
 - **Decision (smoke6, 2026-05-31): switch WR off the prior-guided
   bounded-residual contract to ToddlerBot's build-the-gait-from-`home`
-  contract.** Measured this session: TB's reference gait is *larger*
-  than WR's (1.54 vs 0.913 rad) yet TB walks from a static `home` base
-  because its action is **unbounded** (clamp only at physical joint
-  limits); WR's **±1 clip + 0.75-coverage scales** deliberately keep
-  the prior unreachable. smoke6 = `home` base + RSI + residual scales
-  re-derived at **coverage 1.1** (symmetric per L/R pair), keeping a
-  wide ±1 clip. Gate naming dropped the `G4/G5/G7` labels for behavior
-  descriptions (**walking-quality / anti-exploit / baseline-beat**); the
-  anti-exploit residual-magnitude bound is retired (the residual is the
-  gait now) in favor of velocity-ratio + torque-saturation +
+  contract for long-term capability.** Measured this session: TB's
+  reference gait is *larger* than WR's (1.54 vs 0.913 rad) yet TB walks
+  from a static `home` base because its action is **not clipped in
+  policy space** (final clamp only at physical joint limits); WR's
+  **±1 clip + 0.75-coverage scales** deliberately keep the prior
+  unreachable. smoke6 = `home` base + RSI + residual scales re-derived
+  at **coverage 1.1** (symmetric per L/R pair), keeping a wide ±1 clip.
+  This is a strategic pivot, not a claim that smoke5's `q_ref` branch
+  was invalid: smoke5 remains the validated prior-guided fallback. Gate
+  naming dropped the `G4/G5/G7` labels for behavior descriptions
+  (**walking-quality / anti-exploit / baseline-beat**); the
+  anti-exploit residual-magnitude bound is retired for the smoke6
+  `home`-base branch in favor of velocity-ratio + torque-saturation +
   stepping-not-skating. Full result + plan: `training/CHANGELOG.md`
   `[v0.21.0-smoke5-result + smoke6-plan]`.
 
