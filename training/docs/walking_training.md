@@ -266,15 +266,35 @@ The first locomotion action contract should be:
 Forms used in the live code:
 
 ```text
-smoke7:  q_target = q_ref_from_library(t) + delta_q_policy
-smoke8:  q_target = home_q + delta_q_policy
-smoke9c: q_target = ref_init_q + delta_q_policy
+smoke7:           q_target = q_ref_from_library(t) + clip(action,±1)·scale   # prior-guided
+smoke8/12b–4A:    q_target = home_q + clip(action,±1)·scale                  # home-anchored, prior-free
+smoke9c:          q_target = ref_init_q + clip(action,±1)·scale
+smoke5 (RSI):     q_target = q_ref(t) + clip(action,±1)·scale  + RSI start   # FAILED — see below
+smoke6 (TB-contract): q_target = home_q + clip(action,±1)·scale_1.1 + RSI    # active direction
 ```
 
 The current env implementation is in
 `training/envs/wildrobot_env.py::_compose_target_q_from_residual`.
 
 This is an explicit architectural decision, not an inherited default.
+
+> **⚠️ Paradigm switch in progress (v0.21.0 smoke6, 2026-05-31).** smoke5
+> proved WR is boxed in by the **±1 action clip + 75%-coverage scales**: a
+> static `home` base can't *hold* an RSI reset pose (knee prior swing 0.889
+> rad > scale 0.667 → step-0 snap), while the `q_ref` base holds it but
+> anchors the policy to the fall-prone prior → it damps to a sway and never
+> steps. **ToddlerBot escapes both** because its action is *unbounded*
+> (`distribution_type="normal"`, no ±1 squash; clamp only at physical joint
+> limits, `mjx_env.py:1641`) — it builds the gait from a static home base
+> with a wide action. smoke6 moves WR toward that contract **without going
+> fully unbounded**: keep the ±1 clip but re-derive scales at
+> **coverage 1.1** (`derive_residual_scales.py --coverage 1.1`, symmetric
+> per L/R pair: hip_pitch ~0.56, knee ~0.98) so the prior becomes reachable
+> and RSI frames are holdable, on a `home` base. Measured basis: a ≥0.030 m
+> stride is reachable from `home` within ±0.353 hip_pitch (FK → 0.27 m), so
+> the policy has the authority to *build* a gait; it does **not** need to
+> track the prior jointwise (and can't — that's fine, like TB). See
+> `training/CHANGELOG.md` `[v0.21.0-smoke5-result + smoke6-plan]`.
 
 Why this first:
 
@@ -604,6 +624,30 @@ Active state, summarized:
 - **In-flight**: v0.21.0 lateral + yaw prior support is being
   developed on branch `smoke14_lateral`; canonical plan
   `training/docs/v0210_lateral_yaw_prior_plan-final-r2.md`.
+- **v0.21.0 forward-walking lineage** (the active focus, 2026-05-31):
+  smoke1–3 stayed backward/in-place; **smoke4A** (forward-first 1D
+  control) was the first WR run to walk forward, but weak/sloppy and
+  cold (3-s backward startup, lateral+yaw drift, residual-driven
+  propulsion). **smoke5** added RSI (start mid-stride) + a `q_ref`
+  action base: RSI removed the cold-start, but the `q_ref` base
+  **anchored the policy to the fall-prone prior → it damped to a sway
+  and never stepped** (per-foot step 0.0015 m, feet_phase collapsed to
+  0.001). Root cause: `q_ref` base + all imitation weights 0 = nothing
+  makes the policy execute the gait.
+- **Decision (smoke6, 2026-05-31): switch WR off the prior-guided
+  bounded-residual contract to ToddlerBot's build-the-gait-from-`home`
+  contract.** Measured this session: TB's reference gait is *larger*
+  than WR's (1.54 vs 0.913 rad) yet TB walks from a static `home` base
+  because its action is **unbounded** (clamp only at physical joint
+  limits); WR's **±1 clip + 0.75-coverage scales** deliberately keep
+  the prior unreachable. smoke6 = `home` base + RSI + residual scales
+  re-derived at **coverage 1.1** (symmetric per L/R pair), keeping a
+  wide ±1 clip. Gate naming dropped the `G4/G5/G7` labels for behavior
+  descriptions (**walking-quality / anti-exploit / baseline-beat**); the
+  anti-exploit residual-magnitude bound is retired (the residual is the
+  gait now) in favor of velocity-ratio + torque-saturation +
+  stepping-not-skating. Full result + plan: `training/CHANGELOG.md`
+  `[v0.21.0-smoke5-result + smoke6-plan]`.
 
 Per-run detail (verdicts, gates, checkpoint picks):
 `training/CHANGELOG.md` for smoke13+,
