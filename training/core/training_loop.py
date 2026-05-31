@@ -106,6 +106,37 @@ def _format_hhmmss(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def _print_console_legend() -> None:
+    """One-time glossary for the per-iteration training console lines.
+
+    Explains the abbreviations in the ``cmd`` / ``got`` / ``gates`` rows so
+    the operator doesn't have to reverse-engineer ``v``/``err``/``L``/``G4``.
+    Printed once at training start; per-iter lines stay compact.
+    """
+    print("=" * 60)
+    print("Console legend (per-iteration lines)")
+    print("-" * 60)
+    print("  cmd  : commanded velocity magnitude per axis")
+    print("         |vx| forward, |vy| lateral (m/s), |wz| yaw (rad/s);")
+    print("         nonzero = % of envs given a live (non-stand) command")
+    print("  got  : achieved this rollout")
+    print("         vx forward, vy lateral (m/s); yaw = body yaw rate (rad/s)")
+    print("         step = forward stride per touchdown (m); h = torso height")
+    print("         fwd_err = |cmd_vx - achieved_vx| (m/s)")
+    print("  G4   : eval-floor PROMOTION gate (vx,err,step,eplen all ✓ to pass)")
+    print("         vx    fwd velocity   >= 0.50 x cmd_vx")
+    print("         err   fwd track err  <= 0.50 x cmd_vx")
+    print("         step  fwd stride     >= cycle-scaled floor")
+    print("         eplen episode length >= 95% of horizon")
+    print("  G5   : anti-EXPLOIT gate")
+    print("         res_max = largest leg residual <= 0.20 rad")
+    print("         (eval) vx/cmd ratio must land in [0.6, 1.5]")
+    print("  ✓ / ✗: gate pass / fail")
+    print("  Full definitions: training/docs/walking_training.md (G4/G5)")
+    print("=" * 60)
+    print()
+
+
 def _effective_ppo_epochs(
     base_epochs: int,
     previous_approx_kl: float,
@@ -1817,6 +1848,7 @@ def train(
     )
     print(f"  Total steps target: {total_expected_steps:,}")
     print()
+    _print_console_legend()
 
     # Training loop
     start_time = time.time()
@@ -2285,8 +2317,15 @@ def train(
                 return " ".join(f"{name}{_mark(ok)}" for name, ok in checks)
 
             fwd = _g("forward_velocity")
-            cmd_vx = _g("velocity_command")
-            cmd_abs = _g("tracking/velocity_cmd_abs")
+            # v0.21.0: per-axis command magnitudes (vx fwd, vy lateral, wz
+            # yaw) + achieved lateral velocity and yaw rate, so 3-axis
+            # (lateral / yaw) runs are legible.  All zero on forward-only
+            # runs, which is itself informative.
+            cmd_vx_abs = _g("tracking/velocity_cmd_vx_abs")
+            cmd_vy_abs = _g("tracking/velocity_cmd_vy_abs")
+            cmd_wz_abs = _g("tracking/velocity_cmd_wz_abs")
+            lat_vel = _g("tracking/lateral_velocity_signed_m_s")
+            yaw_rate = _g("tracking/ang_vel_z_signed_rad_s")
             cmd_nonzero = _g("tracking/velocity_cmd_nonzero_frac")
             cmd_err = _g("tracking/cmd_vs_achieved_forward")
             step_len = _g("tracking/step_length_touchdown_event_m")
@@ -2373,14 +2412,20 @@ def train(
             except Exception:
                 print(main_line)
 
-            # Train-rollout walking signals.
+            # Train-rollout walking signals — split into commanded vs
+            # achieved so the per-axis command and the lateral/yaw response
+            # are both visible.
+            #   cmd : commanded velocity magnitude per axis (m/s, m/s, rad/s)
+            #   got : achieved vx/vy (m/s), yaw rate (rad/s), fwd stride (m),
+            #         torso height (m), and forward tracking error fwd_err
             print(
-                f"  └─ vel={fwd:+5.3f} | "
-                f"cmd_mean={cmd_vx:+5.3f} | "
-                f"|cmd|={cmd_abs:.3f} | "
-                f"cmd_nonzero={cmd_nonzero:4.0%} | "
-                f"cmd_err={cmd_err:.3f} | step_len={step_len:+.4f} | "
-                f"h={_g('height'):.2f}m"
+                f"  └─ cmd : |vx|={cmd_vx_abs:.3f} |vy|={cmd_vy_abs:.3f} "
+                f"|wz|={cmd_wz_abs:.3f} (m/s,m/s,rad/s) | nonzero={cmd_nonzero:.0%}"
+            )
+            print(
+                f"  └─ got : vx={fwd:+.3f} vy={lat_vel:+.3f} (m/s) "
+                f"yaw={yaw_rate:+.3f} rad/s | step={step_len:+.4f}m "
+                f"h={_g('height'):.2f}m | fwd_err={cmd_err:.3f}"
             )
 
             # Train gates: keep the routine line compact.  Residual
@@ -2389,8 +2434,8 @@ def train(
             # intentionally omitted from the human-facing line.
             print(
                 f"  └─ gates: "
-                f"G4-train[{_gate_marks(('v', g4_vel_ok), ('err', g4_cmd_err_ok), ('step', g4_step_len_ok), ('L', g4_ep_len_ok))}] | "
-                f"res_max={res_max:.2f}\u22640.20 {_mark(g5_residual_ok)}"
+                f"G4-train[{_gate_marks(('vx', g4_vel_ok), ('err', g4_cmd_err_ok), ('step', g4_step_len_ok), ('eplen', g4_ep_len_ok))}] | "
+                f"G5[res_max={res_max:.2f}\u22640.20 {_mark(g5_residual_ok)}]"
             )
 
             if not g5_residual_ok:
@@ -2442,6 +2487,8 @@ def train(
                 eval_v = _g("Evaluate/forward_velocity")
                 eval_e = _g("Evaluate/cmd_vs_achieved_forward")
                 eval_step_len = _g("Evaluate/step_length_touchdown_event_m")
+                eval_lat = _g("Evaluate/lateral_velocity_signed_m_s")
+                eval_yaw = _g("Evaluate/ang_vel_z_signed_rad_s")
                 # Same command-scaled floors as train G4 (single source
                 # of truth: ``eval_velocity_cmd`` + cycle_time_s).
                 # Eval is always pinned to eval_velocity_cmd, so the
@@ -2479,13 +2526,14 @@ def train(
                 print(
                     f"  └─ Evaluate: reward={eval_r:>7.2f} | "
                     f"ep_len={eval_L:>5.0f} | "
-                    f"vel={eval_v:+5.3f} | "
-                    f"cmd_err={eval_e:.3f} | "
-                    f"step_len={eval_step_len:+.4f}"
+                    f"vx={eval_v:+.3f} vy={eval_lat:+.3f} (m/s) "
+                    f"yaw={eval_yaw:+.3f} rad/s | "
+                    f"fwd_err={eval_e:.3f} | "
+                    f"step={eval_step_len:+.4f}m"
                 )
                 print(
                     f"  └─ eval gates: "
-                    f"G4[{_gate_marks(('v', eval_g4_vel_ok), ('err', eval_g4_cmd_err_ok), ('step', eval_g4_step_len_ok), ('L', eval_g4_ep_len_ok))}] | "
+                    f"G4[{_gate_marks(('vx', eval_g4_vel_ok), ('err', eval_g4_cmd_err_ok), ('step', eval_g4_step_len_ok), ('eplen', eval_g4_ep_len_ok))}] | "
                     f"G5[{eval_ratio_str}]"
                 )
 
