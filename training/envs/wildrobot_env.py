@@ -370,12 +370,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._rsi_enabled = bool(
             getattr(self._config.env, "loc_ref_rsi_enabled", False)
         )
-        if self._rsi_enabled and self._residual_base_mode == "home":
+        if self._rsi_enabled and self._residual_base_mode != "q_ref":
             raise ValueError(
-                "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base "
-                "in {'ref_init','q_ref'} (a 'home' control base pulls off the "
-                "RSI gait frame at step 0 — the zero-residual invariant would "
-                f"be incoherent); got loc_ref_residual_base={self._residual_base_mode!r}."
+                "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base="
+                "'q_ref'.  The control base must FOLLOW the time-varying "
+                "reference so the zero-residual target tracks the sampled RSI "
+                "frame f.  A STATIC base (home OR ref_init) is off-manifold at "
+                "step 0 whenever the gait amplitude exceeds the residual bound "
+                "— measured max|q_ref(t)-q_ref(0)|=0.91 rad >> 0.25 for WR, so "
+                "ref_init is ~0.5 rad off the RSI frame.  got "
+                f"loc_ref_residual_base={self._residual_base_mode!r}."
             )
         # smoke8b — penalty_pose anchor selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_penalty_pose_anchor

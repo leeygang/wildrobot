@@ -237,9 +237,12 @@ class EnvConfig(Freezable):
     # from f.  This starts the robot ON the moving manifold so the (dead-
     # from-rest) velocity reward is live at step 0.  Default False keeps
     # the static reset byte-identical to smoke4A.  REQUIRES
-    # loc_ref_residual_base in {"ref_init","q_ref"} (a "home" control base
-    # pulls off the RSI frame at step 0 — the zero-residual invariant
-    # would be incoherent); validated at env init.
+    # loc_ref_residual_base="q_ref": the control base must FOLLOW the
+    # time-varying reference so the zero-residual target tracks the sampled
+    # RSI frame.  A STATIC base (home or ref_init) is off-manifold whenever
+    # the gait amplitude exceeds the residual bound (measured 0.91 rad >>
+    # 0.25 for WR → ref_init is ~0.5 rad off the RSI frame).  Validated at
+    # env init.
     loc_ref_rsi_enabled: bool = False
 
     # v0.20.1 smoke8b — penalty_pose anchor selector.

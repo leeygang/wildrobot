@@ -5,7 +5,9 @@ TRAIN episodes reset onto a random frame of the moving reference gait (qpos +
 reference qvel) so the velocity reward is live at step 0; eval resets stay
 static (from rest).  Levers vs smoke4A:
   * env.loc_ref_rsi_enabled: false -> true
-  * env.loc_ref_residual_base: home -> ref_init  (reachability; TB first_frame_ref analog)
+  * env.loc_ref_residual_base: home -> q_ref  (base must FOLLOW q_ref(t); WR gait
+    amplitude 0.91 rad >> 0.25 residual bound, so a static base — home OR ref_init
+    — is off-manifold at the RSI frame)
   * env.loc_ref_reset_base:    home -> ref_init
 
 Reference: training/docs/smoke5_rsi_proposal.md.
@@ -126,12 +128,14 @@ def test_smoke4a_reset_is_static_rsi_off() -> None:
 # ---------------------------------------------------------------------------
 # Required residual-base alignment (env init guard)
 # ---------------------------------------------------------------------------
-def test_rsi_with_home_residual_base_raises(cfg) -> None:
-    """RSI + home control base is rejected at env init (home can sit >0.25 rad
-    from mid-stride frames → unreachable within the residual bound)."""
+@pytest.mark.parametrize("bad_base", ["home", "ref_init"])
+def test_rsi_with_static_residual_base_raises(cfg, bad_base) -> None:
+    """RSI requires loc_ref_residual_base='q_ref'.  BOTH static bases (home and
+    ref_init) are rejected at env init — WR's 0.91-rad gait exceeds the ±0.25
+    residual bound, so a static base is off-manifold at the RSI frame."""
     import dataclasses
 
-    bad_env = dataclasses.replace(cfg.env, loc_ref_residual_base="home")
+    bad_env = dataclasses.replace(cfg.env, loc_ref_residual_base=bad_base)
     bad_cfg = dataclasses.replace(cfg, env=bad_env)
     with pytest.raises(ValueError, match="loc_ref_rsi_enabled"):
         WildRobotEnv(config=bad_cfg)
