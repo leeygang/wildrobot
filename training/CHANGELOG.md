@@ -8,6 +8,45 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke4A-result + smoke5-plan] - 2026-05-30: forward walking ACHIEVED (weak/sloppy, cold) → smoke5 = RSI
+
+### Smoke4A result — forward walking emerged (first WR run to do so), but weak
+- **Run**: `training/wandb/offline-run-20260530_111421-2cs2d04m` (complete, 1500 iters / 30.7M env-steps).
+- **Best (forward) checkpoint**: `checkpoint_1400_28672000.pkl` (peak train `forward_velocity`; the analyzer's `checkpoint_1060` pick is by saturated `env/episode_length` = non-authoritative — there is no `Evaluate/*` namespace / `selected_checkpoint_path`).
+- **Config**: `ppo_walking_v0210_smoke4_forward_first.yaml` (1D legacy sampler, `cmd_velocity_track_dim=1`, `cmd_yaw_rate=0`, vy=wz=0, floor 0.065/max 0.26/interval 0.065, α=562.5, `home` residual base / prior-free).
+
+**This is the first WR run where forward walking emerged** (smoke1/2/3 all stayed backward/in-place). The `dim=1` forward-first fix broke the in-place basin — but slowly and weakly.
+
+Train trajectory: `forward_velocity` crossed 0 at ~iter 600 (~13M), rose to a **plateau ~0.045 m/s** (tail), peak 0.061 @ iter 1400. `world_x_progress` positive from ~iter 720 (tail +0.5 m). `reward/cmd_forward_velocity_track` 0.0001(smoke2) → **0.0095** (≈10×, live).
+
+| Gate | metric (tail) | result |
+|---|---|---|
+| G4 forward_velocity | 0.042 (≈27% of cmd 0.155) | **FAIL** (< 0.075) — but see visual |
+| G4 cmd_vs_achieved | 0.135 | **FAIL** (> 0.075) |
+| G4 step_length_touchdown | 0.024 (osc. 0.020–0.034) | borderline (at the 0.030 gate) |
+| G4 episode_length | 1000 | survives |
+| G5 residual hip/knee | 0.26–0.27, **growing** | **FAIL** (> 0.20) — propulsion mis-assigned to the residual |
+| G5 forward_velocity_cmd_ratio | mean 1.8 (range 0.9–2.4) | **FAIL** (> 1.5) — lurch / lean-skate |
+| lateral_velocity_abs | 0.29 (persistent) | walks forward **and** sideways |
+
+**Visual eval** (`checkpoint_1400`, cmd `(0.13,0,0)`, from rest, 8 s; `/tmp/smoke4_ckpt1400.mp4`): drifts **backward for ~150 steps (3 s startup)**, then accelerates **forward to ~0.18 m/s** by step 250–400 (net **+0.43 m x**), but with **lateral drift +0.35 m** (`lat_vel→0.39`) and **yaw drift 0.16 rad**; height stable 0.47, feet alternating. So at a reachable cmd it genuinely walks forward — *overshooting* (0.18 vs cmd 0.13) and *veering*. (The train-mean `fv 0.045` understates this; it's dragged down by the high-cmd/dead envs and the 3-s backward startup.)
+
+**Verdict: forward walking achieved, but weak and sloppy** — slow cold-start (~3 s / ~13M to overcome the dead-from-rest startup), persistent lateral+yaw drift, residual-driven propulsion (G5 fail), low/overshooting speed tracking. This is the ceiling of the cold, prior-free (`home`-anchored) dim=1 config: with no forward template the policy invents the whole gait as a large residual → it gets forward, late and messy. Do not deploy.
+
+### Root-cause read (what smoke4A proves)
+1. **Diagnosis confirmed:** the in-place basin was a dead-from-rest reward + no forward template (root-cause #1). `dim=1` made the forward reward non-dead enough at the reachable floor (0.065) for forward to *eventually* emerge.
+2. **Two residual weaknesses, both targeted by RSI:** (a) the **3-s backward startup** = dead reward from a static standstill; (b) the **lateral/yaw drift + G5 residual leak + overshoot** = no forward template (home base → invent gait from scratch).
+
+### Smoke5 plan — RSI (Reference State Initialization) [implemented, pending launch]
+- **Config**: `ppo_walking_v0210_smoke5_rsi.yaml` (committed; spec `training/docs/smoke5_rsi_proposal.md`). = smoke4A + RSI.
+- **Levers**: `loc_ref_rsi_enabled: true` (train resets onto a random *moving* gait frame: qpos=q_ref(f), root vel from `pelvis_vel`≈cmd, joint vel finite-diff — velocity reward **live at step 0**); `loc_ref_residual_base: home→q_ref` (REQUIRED — WR gait amplitude 0.91 rad ≫ ±0.25 residual bound, so a static base is off-manifold; q_ref base = forward template, follows the frame). Eval stays static from rest.
+- **Targets the two smoke4A weaknesses directly**: RSI eliminates the cold-start startup (start moving → forward from iter 0, not 13M); the `q_ref` template supplies propulsion so the residual only corrects → should pull residuals back under the G5 bound and cut the lateral/yaw drift + overshoot.
+- **Validated** (9 tests): RSI reset starts moving fwd at random frames (root_qvel +0.13..+0.20), on-manifold (control-vs-body 0.07 rad), eval/smoke4A static, q_ref-base required (guard). In-training eval disabled (per decision) — rest→walk risk checked **out-of-band** on a saved checkpoint at 3–5M (the decisive G4-from-rest probe; smoke4A showed forward emerges from rest, so the question is speed + cleanliness).
+- **From scratch** (NOT resumed from smoke4A — the residual base changed home→q_ref, so smoke4A's home-trained residuals are incompatible; RSI is itself the bootstrap).
+- **Early-stop (3–5M)**: `forward_velocity>0` early (should be immediate under RSI, vs 13M cold), `reward/cmd_forward_velocity_track≥0.01`, G5 residuals trending under 0.20, `lateral_velocity_abs` lower than smoke4A's 0.29.
+
+---
+
 ## [v0.21.0-smoke3-result + smoke4A-plan] - 2026-05-30: smoke3 failed (lateral-walk attractor); smoke4A = forward-first 1D control
 
 ### Smoke3 result — FAILED (do not promote)
