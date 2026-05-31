@@ -10,10 +10,12 @@ from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.eval.v6_eval_adapter import V6EvalAdapter
 from training.eval.visualize_policy import (
+    _Tee,
     _adapter_layout_enabled,
     _build_sample_velocity_cmd,
     _is_terminated_from_pose,
     _network_activation_name,
+    _resolve_log_path,
     _validate_user_fixed_velocity_cmd,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
@@ -157,6 +159,48 @@ def test_visualize_sampler_uses_branched_3d_when_smoke1_opt_in() -> None:
         "wz was always zero under branched 3D mode; sampler did not route "
         "through the pure-turn branch"
     )
+
+
+# =============================================================================
+# --log: tee console output to a file under /tmp
+# =============================================================================
+
+
+def test_resolve_log_path_disabled_when_none() -> None:
+    assert _resolve_log_path(None) is None
+
+
+def test_resolve_log_path_bare_flag_auto_names_under_tmp() -> None:
+    # Bare --log (argparse const="") -> /tmp/visualize_policy_<timestamp>.log
+    p = _resolve_log_path("")
+    assert p is not None
+    assert p.parent == Path("/tmp")
+    assert p.name.startswith("visualize_policy_")
+    assert p.suffix == ".log"
+
+
+def test_resolve_log_path_bare_filename_goes_under_tmp() -> None:
+    p = _resolve_log_path("run42.log")
+    assert p == Path("/tmp/run42.log")
+
+
+def test_resolve_log_path_with_directory_used_as_is() -> None:
+    p = _resolve_log_path("/var/tmp/custom.log")
+    assert p == Path("/var/tmp/custom.log")
+    rel = _resolve_log_path("subdir/x.log")
+    assert rel == Path("subdir/x.log")
+
+
+def test_tee_mirrors_writes_to_all_streams() -> None:
+    import io
+
+    a, b = io.StringIO(), io.StringIO()
+    tee = _Tee(a, b)
+    n = tee.write("hello")
+    tee.flush()
+    assert n == len("hello")
+    assert a.getvalue() == "hello"
+    assert b.getvalue() == "hello"
 
 
 def test_visualize_sampler_stays_scalar_vx_for_smoke14() -> None:

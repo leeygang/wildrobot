@@ -29,6 +29,7 @@ Controls (viewer mode):
 from __future__ import annotations
 
 import argparse
+import atexit
 import pickle
 import sys
 import time
@@ -80,6 +81,56 @@ class PushSchedule:
     start_step: int
     end_step: int
     force_xy: np.ndarray  # shape (2,)
+
+
+class _Tee:
+    """Mirror text writes to several streams (e.g. console + a log file).
+
+    Installed onto ``sys.stdout`` / ``sys.stderr`` when ``--log`` is set so
+    the run is captured to disk *and* still printed live.
+    """
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            try:
+                stream.write(data)
+            except ValueError:
+                # Stream closed during interpreter teardown — skip it so
+                # late writes (e.g. from JAX/MuJoCo atexit) don't raise.
+                pass
+        return len(data)
+
+    def flush(self):
+        for stream in self._streams:
+            try:
+                stream.flush()
+            except ValueError:
+                pass
+
+    def isatty(self):
+        return any(getattr(s, "isatty", lambda: False)() for s in self._streams)
+
+
+def _resolve_log_path(log_arg: str | None) -> Path | None:
+    """Resolve the ``--log`` value to a concrete file path (or ``None``).
+
+    - ``None``                -> logging disabled.
+    - ``""`` (bare ``--log``) -> auto ``/tmp/visualize_policy_<timestamp>.log``.
+    - a bare filename         -> placed under ``/tmp/`` per the request.
+    - a path with a separator -> used as-is (absolute or relative).
+    """
+    if log_arg is None:
+        return None
+    if log_arg == "":
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        return Path("/tmp") / f"visualize_policy_{stamp}.log"
+    candidate = Path(log_arg)
+    if len(candidate.parts) == 1:  # bare filename, no directory component
+        return Path("/tmp") / candidate
+    return candidate
 
 
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
@@ -399,6 +450,17 @@ def parse_args():
         default=None,
         help="Number of episodes to run (headless mode). Default: 1 for headless, unlimited for viewer",
     )
+    parser.add_argument(
+        "--log",
+        nargs="?",
+        const="",
+        default=None,
+        help=(
+            "Tee all console output to a log file. Bare --log writes "
+            "/tmp/visualize_policy_<timestamp>.log; a bare filename is "
+            "placed under /tmp/; a path with a directory is used as-is."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -480,6 +542,16 @@ def list_available_checkpoints() -> list[Path]:
 def main():
     """Main visualization loop."""
     args = parse_args()
+
+    # Tee console output to a log file if requested (before any print()).
+    log_path = _resolve_log_path(args.log)
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "w", buffering=1)  # line-buffered
+        atexit.register(log_file.close)
+        sys.stdout = _Tee(sys.__stdout__, log_file)
+        sys.stderr = _Tee(sys.__stderr__, log_file)
+        print(f"Logging console output to: {log_path}")
 
     # Determine deterministic mode
     deterministic = not args.stochastic
