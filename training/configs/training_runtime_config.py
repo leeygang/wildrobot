@@ -228,6 +228,20 @@ class EnvConfig(Freezable):
     #                frame-0 q_ref for the configured command bin.
     loc_ref_reset_base: str = "home"
 
+    # v0.21.0 smoke5 — Reference State Initialization (RSI), TB-style
+    # (toddlerbot/locomotion/mjx_env.py:900-909, 1174-1190).  When True
+    # (train-only; eval reset stays static), each episode resets onto a
+    # RANDOM frame of the reference gait: actuator-joint qpos = q_ref(f),
+    # root height/orientation + root linear/angular velocity + joint
+    # velocities from the reference at frame f, and the reference advances
+    # from f.  This starts the robot ON the moving manifold so the (dead-
+    # from-rest) velocity reward is live at step 0.  Default False keeps
+    # the static reset byte-identical to smoke4A.  REQUIRES
+    # loc_ref_residual_base in {"ref_init","q_ref"} (a "home" control base
+    # pulls off the RSI frame at step 0 — the zero-residual invariant
+    # would be incoherent); validated at env init.
+    loc_ref_rsi_enabled: bool = False
+
     # v0.20.1 smoke8b — penalty_pose anchor selector.
     #   "q_ref" - smoke7/8/8a default; q_err = q_actual - q_ref(t).  This
     #             is reference-imitation: penalizes the actual joint angles

@@ -365,6 +365,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f"env.loc_ref_reset_base must be 'home' or 'ref_init'; "
                 f"got {self._reset_base_mode!r}"
             )
+        # smoke5 — Reference State Initialization (RSI), train-only.  See
+        # training_runtime_config.LocomotionEnvConfig.loc_ref_rsi_enabled.
+        self._rsi_enabled = bool(
+            getattr(self._config.env, "loc_ref_rsi_enabled", False)
+        )
+        if self._rsi_enabled and self._residual_base_mode == "home":
+            raise ValueError(
+                "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base "
+                "in {'ref_init','q_ref'} (a 'home' control base pulls off the "
+                "RSI gait frame at step 0 — the zero-residual invariant would "
+                f"be incoherent); got loc_ref_residual_base={self._residual_base_mode!r}."
+            )
         # smoke8b — penalty_pose anchor selector.  See
         # training_runtime_config.LocomotionEnvConfig.loc_ref_penalty_pose_anchor
         # for the contract.
@@ -2756,6 +2768,44 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
         qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
+        # smoke5 — Reference State Initialization (RSI), train-only.  Gated on
+        # ``perturb_pose`` so eval (reset_for_eval, perturb_pose=False) keeps
+        # the static standstill reset.  Override qpos with a RANDOM gait frame
+        # f and seed the reference velocity so the robot starts ON the moving
+        # manifold (velocity reward live at step 0).  prev_*/init_root/foot/
+        # touchdown fields in _make_initial_state derive from this qpos+qvel
+        # automatically; path_state_path_rot stays identity (forward-only gait
+        # is straight, so no heading-frame inconsistency).
+        rsi_qvel = None
+        rsi_step_idx = None
+        if self._rsi_enabled and perturb_pose:
+            rng, key_rsi = jax.random.split(rng)
+            n_steps = int(self._offline_service.n_steps)
+            f = jax.random.randint(key_rsi, (), 0, n_steps).astype(jp.int32)
+            win_f = self._lookup_offline_window(f, velocity_cmd=velocity_cmd)
+            q_ref_f = win_f["q_ref"].astype(jp.float32)
+            qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(q_ref_f)
+            # Root = free-base body (index 1; body[0] is world).  body_pos /
+            # body_quat are per-body (n_bodies, ...); take the root body's
+            # height + orientation (xy stays at the env origin).
+            qpos = qpos.at[2].set(win_f["body_pos"][1, 2].astype(jp.float32))
+            qpos = qpos.at[3:7].set(win_f["body_quat"][1].astype(jp.float32))
+            rsi_qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
+            # Root LINEAR velocity: use pelvis_vel — the world/path-frame torso
+            # velocity (≈ commanded forward).  body_lin_vel is stored
+            # root-relative (≈0), so it is NOT the forward velocity.
+            rsi_qvel = rsi_qvel.at[0:3].set(win_f["pelvis_vel"].astype(jp.float32))
+            rsi_qvel = rsi_qvel.at[3:6].set(win_f["body_ang_vel"][1].astype(jp.float32))
+            # joint velocities via one-frame finite-diff of q_ref (root vel,
+            # the load-bearing RSI signal, is taken directly above).
+            f_next = jp.minimum(f + 1, jp.asarray(n_steps - 1, dtype=jp.int32))
+            q_ref_next = self._lookup_offline_window(
+                f_next, velocity_cmd=velocity_cmd
+            )["q_ref"].astype(jp.float32)
+            joint_vel_f = (q_ref_next - q_ref_f) / jp.float32(self.dt)
+            rsi_qvel = rsi_qvel.at[self._actuator_dof_addrs].set(joint_vel_f)
+            rsi_step_idx = f
+
         # smoke9c follow-up — TB-style reset-time pose perturbation.  Only
         # active when the configured ranges are non-degenerate AND
         # ``perturb_pose`` is True (default).  Default ranges of
@@ -2778,6 +2828,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dr_params=dr_params,
             imu_init_rng=key_imu,
             cmd_rng=key_cmd,
+            rsi_qvel=rsi_qvel,
+            rsi_step_idx=rsi_step_idx,
         )
 
     # ----------------------------------------------------- reset perturbation
@@ -3306,8 +3358,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         dr_params: Dict[str, jax.Array],
         imu_init_rng: jax.Array,
         cmd_rng: jax.Array,
+        rsi_qvel: Optional[jax.Array] = None,
+        rsi_step_idx: Optional[jax.Array] = None,
     ) -> WildRobotEnvState:
-        qvel = jp.zeros(self._mj_model.nv)
+        # smoke5 RSI: when the caller seeds an initial velocity / gait frame,
+        # start ON the moving reference manifold (qvel from the reference,
+        # the reference window + offline step index at frame f).  Otherwise
+        # the historical static reset (qvel=0, frame 0) — byte-identical.
+        qvel = jp.zeros(self._mj_model.nv) if rsi_qvel is None else rsi_qvel
+        rsi_step_idx = (
+            jp.asarray(0, dtype=jp.int32)
+            if rsi_step_idx is None
+            else rsi_step_idx.astype(jp.int32)
+        )
         randomized_model = self._get_randomized_mjx_model(dr_params)
 
         # Seed ctrl with the iter-0 base pose.  Under the residual-only
@@ -3320,7 +3383,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # episode's sampled velocity_cmd (defaults to the configured
         # offline_vx bin under legacy mode).
         win0 = self._lookup_offline_window(
-            jp.asarray(0, dtype=jp.int32),
+            rsi_step_idx,
             velocity_cmd=velocity_cmd,
         )
         q_ref0 = win0["q_ref"].astype(jp.float32)
@@ -3451,7 +3514,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             critic_obs=critic_obs,
             critic_obs_history=critic_obs_history,
             # v3 offline playback state — primary read/write fields.
-            loc_ref_offline_step_idx=jp.zeros((), dtype=jp.int32),
+            loc_ref_offline_step_idx=rsi_step_idx,
             loc_ref_offline_command_id=jp.zeros((), dtype=jp.int32),
             # v4-compat / v5 obs feed (populated from offline window).
             loc_ref_stance_foot=win0["stance_foot_id"].astype(jp.int32),

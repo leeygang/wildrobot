@@ -1,0 +1,705 @@
+# =============================================================================
+# WildRobot v0.21.0 PPO Smoke 5 — RSI (Reference State Initialization)
+# =============================================================================
+# smoke5 = smoke4A (forward-first 1D control) + RSI.  smoke1–smoke4A cold-start
+# from a static standstill where the (Gaussian) velocity reward is dead, and
+# converge to march/sway-in-place.  TB avoids this by resetting onto the MOVING
+# reference manifold (toddlerbot/locomotion/mjx_env.py:900-909,1174-1190): random
+# gait frame + reference qvel → the velocity reward is live (~1.0) at step 0.
+# smoke5 ports that: TRAIN episodes reset onto a random reference frame f with
+# qpos+qvel from the reference; eval stays static from rest.
+# Levers vs smoke4A:
+#   * env.loc_ref_rsi_enabled: false -> true   (THE lever)
+#   * env.loc_ref_residual_base: home -> ref_init  (reachability; TB first_frame_ref analog)
+#   * env.loc_ref_reset_base:    home -> ref_init  (static eval reset on-manifold)
+# Everything else identical to smoke4A.  See training/docs/smoke5_rsi_proposal.md.
+# -----------------------------------------------------------------------------
+# --- smoke4A header (retained for context) -----------------------------------
+# WildRobot v0.21.0 PPO Smoke 4A — FORWARD-FIRST control (true 1D command)
+# =============================================================================
+# Decisive question this run answers: can the v0.21 plumbing (obs_v8_cmd3d,
+# 3D library, critic actor+privileged, 1000-step horizon) recover a
+# smoke12b-style FORWARD gait at all, when the runtime COMMAND carries no
+# lateral/yaw component (sampler emits only (vx,0,0); reward is forward-only)?
+# Note: loc_ref_command_axes_3d stays true, so the 3D library still BUILDS its
+# vy/wz bins (30 total) — but (vx,0,0) commands look up the vy=0,wz=0 row, so
+# those bins are unused at runtime.  If YES -> lateral is the destabilizer (proceed to
+# smoke4B with tiny vy exposure).  If NO -> the regression is deeper in the
+# v0.21 obs/ref/eval plumbing or the floor/range, not lateral-reward
+# interference.
+#
+# Smoke4A changes vs smoke3 (forward-first; 1D command, forward reward only):
+#   * env.cmd_sampler_3d_branched: true -> FALSE   (legacy scalar (vx,0,0))
+#   * env.cmd_turn_chance:         0.05 -> 0.0
+#   * env.min_velocity_y:         -0.13 -> 0.0     (no lateral command)
+#   * env.max_velocity_y:          0.13 -> 0.0
+#   * env.max_yaw_rate:            0.25 -> 0.0
+#   * reward_weights.cmd_velocity_track_dim: 2 -> 1   (THE main fix)
+#   * reward_weights.cmd_yaw_rate_track:   1.5 -> 0.0
+#   * eval_velocity_cmd: [0.20, 0.065, 0] -> [0.13, 0.0, 0.0]
+#         (forward-first, exact library bin; command-scaled G4 floor 0.065)
+#   * eval_velocity_cmd_probes: lateral/yaw dropped (OOD now); 1 report-only
+#         high-forward probe [0.20, 0, 0] keeps a generalization read.
+# UNCHANGED from smoke3: floor 0.065, max 0.26, interval 0.065 (0.26 ref bin
+#   kept), alpha 562.5, action_rate -1.0, feet_phase, home anchor, obs_v8,
+#   loc_ref_command_axes_3d (3D library still built/looked-up), critic stack.
+#
+# WHY dim=1 (root cause of the smoke3 lateral failure):
+#   smoke3 used cmd_velocity_track_dim=2 -> reward
+#     exp(-alpha * ((vx-cmd_vx)^2 + (vy-cmd_vy)^2)).
+#   It drifted laterally (visual: lat_vel -> 0.55 m/s at cmd (0.26,0,0)); the
+#   vy term alone (exp(-562.5*0.24^2) ~ 0) SATURATED the reward at zero, so it
+#   killed BOTH the forward pull AND any effective lateral penalty, leaving a
+#   flat-zero region the policy filled with its easiest gait (lateral).
+#   dim=1 reward exp(-alpha*(vx-cmd_vx)^2) keeps a LIVE, monotonic forward
+#   gradient that lateral-walking does not satisfy.
+#
+# Distribution (legacy scalar sampler, cmd_sampler_3d_branched=false):
+#   * 5%  exact stand (0, 0, 0)            (cmd_zero_chance)
+#   * 95% (vx, 0, 0), vx ~ U(0.065, 0.26)  (positive-only; negative interval
+#          is empty for min_velocity=0.065).  cmd_turn_chance is ignored on
+#          the legacy path; vy/wz are structurally 0.
+#   * Expected tracking/velocity_cmd_vx_abs ~ 0.95 * 0.1625 = 0.154 m/s.
+#
+# FOLLOW-UP (smoke4B, run only AFTER smoke4A shows forward G4 movement):
+#   re-enable cmd_sampler_3d_branched=true with tiny lateral exposure
+#   (min/max_velocity_y = -/+0.03, max_yaw_rate=0, cmd_velocity_track_dim=1,
+#   cmd_yaw_rate_track=0) to test whether tiny vy can coexist with the
+#   recovered forward gait.  NOT created yet by design.
+#
+# -----------------------------------------------------------------------------
+# --- smoke3 history (retained for context) -----------------------------------
+# Smoke2 (5v4j5j7w, 2026-05-29, 13.5M env-steps) converged to a tap-in-place /
+# slight-backward-drift minimum: forward_velocity = -0.07 m/s, ep_len pinned at
+# 1000 for ~300 iters, reward/cmd_forward_velocity_track = 0.0001 the entire run.
+# Root cause (code + trajectory confirmed): with the positive-only walk branch
+# sampling vx in [0.18, 0.26] and cmd_forward_velocity_alpha=562.5, the tracking
+# reward exp(-562.5*err^2) has a live-gradient window of only cmd +/- 0.042 m/s.
+# From a standing cold start (achieved ~0) the error is ~0.22 -> exp(-35) ~ 0:
+# NO gradient pulls the policy toward walking, so it settles into the only
+# behavior the other live terms reward (upright + minimal action = stand/tap).
+# smoke12b (ot8zazo1) used the IDENTICAL alpha=562.5 recipe but at vx ~ 0.11
+# (range [0.08, 0.133]) and walked from iteration 0 (fwd_v ~0.09, live cmd
+# reward 0.027) -- proving the lever is the command RANGE, not alpha, the step
+# budget, or feet_phase.
+#
+# TB parity: ToddlerBot's velocity command is PHYSICAL m/s (command[5], vx in
+# [-0.1, 0.1], used directly as lin_vel at walk_zmp_ref.py:104), NOT the [-1,1]
+# entries (those are pose/style params at indices 0-4, not observed as velocity).
+# TB floors its forward walk command at deadzone 0.05 m/s on a 0.10 m/s max
+# (walk.gin:52), and tracks with sigma=1000 (mjx_env.py:2346) -> window 0.032.
+# So TB's deadzone/window ratio is 0.05/0.032 = 1.58.  WR's window at alpha=562.5
+# is 1/sqrt(562.5)=0.042, so the size/alpha-normalized WR floor = 1.58*0.042 =
+# 0.066 ~= 0.065.  This is why the floor is 0.065, NOT a raw copy of TB's 0.05
+# (0.05 m/s would be a smaller-than-TB fraction) and NOT 0.02 (standing would
+# pay exp(-562.5*0.02^2)=0.80, nearly satisfying the command -> weak gradient).
+# alpha=562.5 and G5 bounds are UNCHANGED (lowering alpha would reopen the
+# smoke1 standing-leak; this is a sampling/floor fix, not a reward reform).
+# Resulting walk-branch sample: vx ~ U[0.065, 0.26]; standing at the floor pays
+# exp(-562.5*0.065^2)=0.093 (clearly suboptimal -> strong pull to move).
+#
+# Reference: training/CHANGELOG.md v0.21.0-smoke2-*-result + v0.21.0-smoke3-plan.
+# -----------------------------------------------------------------------------
+#
+# --- smoke2 history (retained for context) -----------------------------------
+# Smoke1 (lblub15y, 2026-05-24, 30M env-steps) converged to a posture/standing
+# local minimum: forward_velocity = -0.030 m/s, 18x L/R touchdown asymmetry,
+# step_length per touchdown ~ 0 — "tap and rest" exploit with the body locked
+# in the home crouch.  Post-mortem identified V(stand) > V(walk) inversion
+# driven by interacting smoke1 deviations from the smoke12b basin-break recipe.
+#
+# Smoke2 changes (vs smoke1, in order of expected impact):
+#
+# (A) Reward landscape — close Problem A: standing-during-walk-cmd leak
+#   * cmd_forward_velocity_alpha: 40.0 -> 562.5
+#     smoke1's alpha=40 paid +0.011/step partial credit for standing at
+#     cmd_vx=0.18 (err=0.18: exp(-40*0.0324)=0.273); +5.5 unit/episode
+#     standing bonus.  At alpha=562.5 (smoke12b/13/14) the same row
+#     pays ~0 (exp(-18.2)).  Closes the leak.
+#   * action_rate: -2.0 -> -1.0
+#     smoke12b explicitly halved this from TB-faithful -2.0 to enable
+#     stride exploration during basin-break (YAML header note:
+#     "Defer back to -2.0 once smoke shows policy is exploring stride").
+#     smoke12b broke through; smoke13/14/1 reverted and stalled.
+#     Restore the basin-break value.
+#
+# (B) Sampler distribution — shrink Problem B: zero-cmd basin-formation
+#   * cmd_zero_chance: 0.20 -> 0.05
+#   * cmd_turn_chance: 0.20 -> 0.05
+#     smoke1's 40% zero-or-turn episodes reinforce "stand reliably"
+#     learning that transfers to walk-cmd episodes.  TB defaults are
+#     also 0.2/0.2, but TB's sigma=1000 cmd kernel makes
+#     standing-during-walk-cmd pay 0 (no Problem A leak); WR retains
+#     Problem A even after alpha=562.5, so lower zero/turn compounds
+#     protection.
+#
+# (C) Sampler vx-range — close library-vs-sampler contract mismatch
+#   * cmd_sampler_walk_vx_positive_only: true (new env flag; default False)
+#     TB's _sample_walk_command ellipse emits negative vx via the
+#     sin_theta<0 branch and can shrink |vx| near zero via |sin_theta|.
+#     WR's smoke2 reference/library and basin-break contract are
+#     forward-only; this flag makes the walk branch sample vx directly
+#     from [min_velocity, max_velocity] without disabling the rest of the
+#     3D sampler.
+#
+# (D) Episode horizon — longer productive walking after cold-start
+#   * max_episode_steps: 500 -> 1000
+#     Longer horizon -> walking episode that survives cold-start (first
+#     ~100 steps) gets 900 productive steps vs 400.  Compute per iter
+#     unchanged (rollout_steps independent of episode_length).
+#
+# (E) Eval semantics — align eval cmd to library bins; test combined fwd+lateral
+#   * eval_velocity_cmd: [0.18, 0.04, 0.0] -> [0.20, 0.065, 0.0]
+#     smoke1's vy=0.04 was off-grid (library vy bins are
+#     {-0.13, -0.065, 0.0, 0.065, 0.13}) -> phantom cmd-vs-snap
+#     mismatch on every eval step.  vy=0.065 is exact-bin.  vx=0.20
+#     matches loc_ref_offline_command_vx union anchor (exact-bin).
+#     Tests combined fwd + small-lateral capability, which is smoke12b's
+#     known failure mode (forward gait emerged but lateral drift
+#     uncommanded) and which v0.21.0 lateral training is meant to fix.
+#
+# UNCHANGED (Option B per review): min/max_velocity stay 0.18/0.26
+# (smoke14 range, not 12b's slower 0.08/0.1333).  smoke2 tests whether
+# the other fixes can break the basin at this range; revert if not.
+#
+# DEFERRED (per review): warm-start from smoke12b (obs-translation work),
+# RSI (env complexity), reset perturbation ±0.2 (TB defaults are ±0.1
+# too; ±0.2 in walk.gin is commented optional).
+#
+# -----------------------------------------------------------------------------
+# Success criterion: FORWARD basin-break under v0.21 plumbing
+# -----------------------------------------------------------------------------
+# Smoke2 is named "lateral+yaw basin-break retry" because it INHERITS
+# v0.21.0's full 3-axis stack (sampler / library / reward / obs all 3D).
+# But the HARD G4 promotion gates in deterministic_eval_gate only check
+# FORWARD locomotion (forward_velocity, cmd_vs_achieved_forward,
+# mean_episode_length, step_length, forward_velocity_cmd_ratio).  The
+# Appendix C lateral / yaw probes (eval_velocity_cmd_probes) are
+# REPORT-ONLY -- they surface in post_training_eval_summary.json but
+# do NOT block promotion.
+#
+# Pass criterion for smoke3:
+#   * MUST PASS: G4 forward gates (forward_velocity >= +0.075,
+#     mean_episode_length >= 0.95*post_training_num_steps,
+#     cmd_vs_achieved_forward <= 0.075,
+#     step_length >= max(0.030, 0.50*vx*cycle_time/2),
+#     forward_velocity_cmd_ratio in [0.6, 1.5]).
+#   * MUST OBSERVE: lateral_yaw_probes signed_ratio >= 0.5 on at
+#     least one of the lateral or yaw probes (report-only).
+#   * STRETCH: both probes pass.
+#
+# If smoke2 passes G4 (forward basin-break recovered under v0.21
+# plumbing) but lateral/yaw probes fail -> smoke3 makes the probe
+# pass criterion a hard gate.  If smoke2 fails G4 too -> need to
+# escalate (warm-start, RSI, vx range curriculum).
+#
+# Plan reference: /tmp/wildrobot_v021_smoke2_plan.md (v3 final)
+#
+# -----------------------------------------------------------------------------
+# Inherited from smoke1 header (the v0.21.0 3-axis stack, on since smoke1):
+# -----------------------------------------------------------------------------
+# The full 3-axis velocity_cmd stack (first introduced in smoke1) extends
+# the v0.20.1 smoke14 baseline (smoke13_026 + critic-stack-15 + 1D vel
+# reward) along four simultaneous v0.21 gates:
+#
+#   1. ``env.actor_obs_layout_id: wr_obs_v8_cmd3d``     (P7 — 3-axis cmd obs)
+#   2. ``env.cmd_sampler_3d_branched: true``            (P4 — TB-branched sampler)
+#   3. ``env.loc_ref_command_axes_3d: true``            (P5 — 3D library lookup)
+#   4. ``reward_weights.cmd_yaw_rate_track > 0``        (P6 — yaw-rate term on)
+#
+# All four gates default OFF in legacy YAML so pre-v0.21 configs stay
+# byte-equivalent.  Smoke1 is intentionally the first config to flip ALL
+# four simultaneously — running them in isolation would dilute the
+# attribution because they're synergistic (e.g. the 3D library is
+# useless without a 3D cmd in the actor obs).
+#
+# -----------------------------------------------------------------------------
+# WR-scaled lateral + yaw ranges
+# -----------------------------------------------------------------------------
+# * vy ±0.13 m/s — same vy/vx ratio as ToddlerBot (TB has 0.10 m/s
+#   lateral against a 0.20 m/s forward range; WR's forward range is
+#   ±0.26 m/s scaled by the 4/3 leg-length ratio, so WR vy = 0.10 *
+#   1.3 ≈ 0.13).
+# * wz ±0.25 rad/s — TB foot-arc-per-swing kinematic scaling (TB
+#   uses 0.30 rad/s with a 0.0536 m stance half-width and 0.16 s
+#   single-support; WR shares the same stance half-width but a
+#   slower cycle, so wz drops to ~0.25 rad/s before the arc-radius
+#   IK saturates).
+#
+# -----------------------------------------------------------------------------
+# 3D reference library shape
+# -----------------------------------------------------------------------------
+# vx grid (derived from min/max/interval): {0.18, 0.22, 0.26}, plus
+# vx=0.0 force-unioned by ``build_library_for_3d_values`` (the round-2
+# follow-up at control/zmp/zmp_walk.py:1685) so the static (0, 0, 0)
+# bin always exists for the cmd-zero branch of the sampler.
+#
+# vy grid:  {-0.13, -0.065, 0.0, 0.065, 0.13}   (5 bins; symmetric;
+#                                                 plan-locked max)
+# wz grid:  {-0.25, -0.125, 0.0, 0.125, 0.25}   (5 bins; symmetric;
+#                                                 plan-locked max)
+#
+# Library shape under TB-split structure (control/zmp/zmp_walk.py:1598):
+#   * Derived vx grid in env: arange(0.18, 0.26, 0.04) ∪ {0.20} =
+#                       {0.18, 0.20, 0.22, 0.26} → 4 vx (env unions
+#                       loc_ref_offline_command_vx=0.20 into the
+#                       arange-derived grid; see
+#                       training/envs/wildrobot_env.py:851).
+#   * Linear-walk bins: vx × vy with wz=0 → 4 × 5 = 20
+#                       (none has vx=0 because the env vx grid does
+#                       NOT include 0.0 — the meta.command_range_vx
+#                       0.0 force-union is metadata-only).
+#   * Pure-yaw bins:    (0, 0, wz) for each wz → 5
+#   * Dedup:            none — linear bins have no vx=0 entry so
+#                       (0, 0, 0) lives only in the pure-yaw branch.
+#   * Total:            20 + 5 = 25 trajectories.
+# The (0, 0, 0) static bin is the degenerate 1-step trajectory tiled
+# to walking horizon by _init_offline_service per P5 (handles zero-cmd
+# resets cleanly).
+#
+# -----------------------------------------------------------------------------
+# H6 — lateral residual scale bump (hip_roll + ankle_roll only)
+# -----------------------------------------------------------------------------
+# To give PPO authority to add the lateral correction that the prior
+# can't represent (the 3D library's ZMP trajectories are sl_x/sl_y
+# planar with no torso-roll compensation), we bump the lateral DoF
+# residual scales 1.5× over smoke14:
+#
+#   * left_hip_roll, right_hip_roll:    0.25 → 0.375
+#   * left_ankle_roll, right_ankle_roll: 0.25 → 0.375
+#
+# WR has NO hip_yaw joints (verified at assets/v2/wildrobot.xml — the
+# pelvis-to-hip chain is roll → pitch only).  Do NOT add hip_yaw
+# entries here; the actuator layout would reject them.
+#
+# Pitch DoFs (hip_pitch, knee_pitch, ankle_pitch) inherit smoke14
+# values unchanged.
+#
+# -----------------------------------------------------------------------------
+# H3 — explicit 3-tuple eval_velocity_cmd
+# -----------------------------------------------------------------------------
+# A scalar eval_velocity_cmd broadcasts via ``_load_three_axis(...
+# scalar_broadcast_axis="vx_only")`` to ``(s, 0.0, 0.0)`` — that
+# would eval at a forward-only point.  For smoke1 we want eval to
+# probe a mixed (vx, vy, wz) point so the new 3-axis tracking machinery
+# is actually exercised at eval time, not just during PPO rollouts.
+#
+# -----------------------------------------------------------------------------
+# Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
+# =============================================================================
+version: "0.21.0"
+version_name: "v0.21.0 PPO smoke5 RSI (smoke4A forward-first + Reference State Initialization: train resets onto a random moving gait frame; residual_base home->ref_init for reachability; eval static from rest)"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+
+  # smoke2 (D): 500 -> 1000.  Longer horizon = more productive walking
+  # steps after cold-start transition.  Stored prior is 1104 frames so
+  # 1000 fits.  Compute per iter unchanged.
+  max_episode_steps: 1000
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  # smoke3 (dead-gradient fix): walk floor 0.18 -> 0.065 (max stays 0.26).
+  # WHY 0.065 (not 0.0, not 0.05, not 0.18):
+  #   The velocity tracker is exp(-alpha*err^2), alpha=562.5 -> live-gradient
+  #   half-window = 1/sqrt(alpha) = 0.042 m/s.  The lowest commanded walk
+  #   speed must be (a) high enough that standing is clearly suboptimal and
+  #   (b) low enough to be reachable from a standing cold start.  Sweeping
+  #   the floor c against standing-reward exp(-alpha*c^2) and the v=0 gradient:
+  #     c=0.02 -> standing pays 0.80 (standing nearly satisfies it; too low)
+  #     c=0.065-> standing pays 0.08, gradient 30% of peak  (sweet spot)
+  #     c>=0.10-> v=0 gradient < 2% of peak (recreates the smoke2 dead zone)
+  #   0.065 = 1.58 x window, the same deadzone/window ratio ToddlerBot uses
+  #   (TB: deadzone 0.05 / window 0.0316 = 1.58; walk.gin:52, mjx_env.py:2346).
+  #   This is the size/alpha-normalized TB value, NOT a raw copy of TB's 0.05.
+  # Library coupling: min_velocity also anchors the reference vx grid
+  #   (arange(min_velocity, max_velocity+eps, interval) in _init_offline_service,
+  #   wildrobot_env.py:848).  interval=0.065 below makes arange hit BOTH
+  #   0.065 and 0.26 exactly -> vx grid {0.065, 0.13, 0.195, 0.26} u {0.20}
+  #   u forced {0.0} (factory pure-yaw bin).  This keeps the 0.26 top-speed
+  #   reference bin (smoke3's interval=0.04 over [0,0.26] had silently
+  #   dropped it -> 0.26 cmds snapped to a 0.24 prior).
+  # Sampler floor: positive-only walk branch uses x_min=max(min_velocity,
+  #   cmd_deadzone[0])=max(0.065,0.02)=0.065 -> walk vx ~ U[0.065, 0.26].
+  min_velocity: 0.065
+  max_velocity: 0.26
+  # v0.21.0 P4 — lateral / yaw-rate command ranges for the branched
+  # 3D sampler.  WR-scaled (see header comment on TB ratios).
+  # smoke4A: no lateral / no yaw command — forward-first 1D control.
+  min_velocity_y:  0.0
+  max_velocity_y:  0.0
+  max_yaw_rate:    0.0
+
+  cmd_resample_steps: 150
+  # smoke2 (B): drop from TB-default 0.20/0.20 to 0.05/0.05.  Shrinks
+  # Problem B exposure: 40% zero-or-turn episodes -> 10%, reducing the
+  # "stand reliably" reinforcement that transfers into walk-cmd episodes.
+  cmd_zero_chance: 0.05
+  # smoke4A: no turn branch (ignored anyway on the legacy scalar path).
+  cmd_turn_chance: 0.0
+  # Per-axis deadzone replaces the smoke14 scalar (0.0666...).  The
+  # values come from the TB sampler reference: vx / vy at 0.02 m/s
+  # (~7% of the WR vx range) and wz at 0.05 rad/s (~20% of max_yaw_rate),
+  # picked to suppress micro-commands that would dither the prior.
+  cmd_deadzone: [0.02, 0.02, 0.05]
+  # H3 — explicit 3-tuple form.  A scalar here would broadcast to
+  # (0.18, 0.0, 0.0) under the "vx_only" rule (training_config.py:134),
+  # which would eval forward-only and skip the 3-axis tracking signal.
+  #
+  # v0.21.0 smoke2 follow-up: primary eval MUST be in-distribution
+  # for the TB-style split sampler (zero / pure-turn (0,0,wz) /
+  # walk (vx,vy,0)).  Mixed walk+turn ``(0.18, 0.04, 0.10)`` is OOD
+  # — the sampler never produces simultaneous nonzero vy AND wz, and
+  # the 3D reference library has no mixed (vx>0, wz>0) bins either
+  # (TB-split: smoke3 = 26 linear + 4 pure-yaw = 30 bins, no mixed; see
+  # control/zmp/zmp_walk.py::build_library_for_3d_values).  Evaluating
+  # at an OOD command would silently snap to the nearest bin in the
+  # library and report misleading tracking errors.
+  #
+  # Use a walk-branch cmd as the primary eval; isolate pure-axis
+  # lateral / yaw criteria via ``eval_velocity_cmd_probes`` below.
+  #
+  # smoke2 (E): [0.18, 0.04, 0.0] -> [0.20, 0.065, 0.0]
+  #   - vx=0.20 matches loc_ref_offline_command_vx union anchor (exact bin)
+  #   - vy=0.065 is an exact library bin (vy grid: {-0.13,-0.065,0,0.065,0.13})
+  #   - wz=0 exact bin
+  # smoke1's vy=0.04 was off-grid -> snap-induced phantom cmd-vs-ref
+  # mismatch on every eval step.  Combined fwd+lateral cmd exercises the
+  # exact failure mode smoke12b had (forward gait emerged but uncommanded
+  # lateral drift) — primary eval now tests if v0.21.0 lateral training
+  # closes that stabilization gap.
+  # smoke4A: forward-first eval.  [0.20, 0.065, 0] -> [0.13, 0.0, 0.0].
+  #   - vx=0.13 is an EXACT library bin and a reachable forward speed
+  #     (command-scaled G4 forward floor = 0.50*0.13 = 0.065 m/s).
+  #   - vy=0, wz=0 match the 1D forward-first training distribution
+  #     (smoke3's vy=0.065 / lateral+yaw probes are OOD here).
+  eval_velocity_cmd: [0.13, 0.0, 0.00]
+
+  # smoke4A: NO probes.  ``eval_velocity_cmd_probes`` feeds the Appendix C
+  # probe evaluator (``evaluate_lateral_yaw_pass_criterion``), which only
+  # understands PURE-LATERAL or PURE-YAW probes — it would mark a forward
+  # probe like ``[0.20,0,0]`` as ``axis="unknown", passed=false`` and label
+  # it (misleadingly) a "lateral/yaw probe" in the JSON summary.  Since
+  # smoke4A trains vy=wz=0, lateral/yaw probes are OOD and a forward probe is
+  # mis-typed, so the list is empty.  Forward generalization to the 0.26
+  # ceiling is read from training metrics (``env/forward_velocity`` at the
+  # sampled high commands); the primary ``eval_velocity_cmd=[0.13,0,0]``
+  # gates G4.  A correctly-named forward-probe field can be added later.
+  eval_velocity_cmd_probes: []
+
+  # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
+  # (zero / pure-turn / ellipse-walk).  When false, env emits the
+  # legacy (vx, 0, 0) sampler regardless of the lateral/yaw ranges.
+  # smoke4A: FALSE -> legacy scalar sampler emits (vx, 0, 0) only.  This is
+  # the forward-first control; smoke4B flips it back to true for tiny vy.
+  cmd_sampler_3d_branched: false
+  # smoke2 (C): clamp walk-branch vx >= 0.  Closes the contract mismatch
+  # between TB's symmetric ellipse (emits negative vx via sin_theta<0)
+  # and WR's positive-only reference library.  Restores smoke12b's
+  # implicit vx>=0 property without disabling the 3D branched sampler
+  # (vy and wz still go negative through their normal branches).
+  cmd_sampler_walk_vx_positive_only: true
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+
+  action_filter_alpha: 0.0
+
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v8_cmd3d
+  # Eval cmd anchor; primary single-bin trajectory selected by L2
+  # distance to (offline_vx, 0, 0).
+  loc_ref_offline_command_vx: 0.20
+
+  # smoke5 RSI: control base must be ON the gait manifold (frame-0 reference)
+  # so the ±0.25 residual can span base→mid-stride RSI frames, matching TB's
+  # static first_frame_ref base (mjx_env.py:1225).  home (generic keyframe) can
+  # sit >0.25 from mid-stride frames → unreachable.  home → ref_init.
+  loc_ref_residual_base: ref_init
+  loc_ref_reset_base: ref_init
+  # smoke5 — Reference State Initialization: each TRAIN episode resets onto a
+  # random frame of the moving reference gait (qvel from the reference) so the
+  # velocity reward is live at step 0.  Eval reset stays static (perturb_pose
+  # =False).  THE smoke5 lever vs smoke4A.
+  loc_ref_rsi_enabled: true
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: true
+  close_feet_threshold: 0.146
+
+  critic_imitation_refs: true
+
+  # TB c_frame_stack parity; inherited from smoke14.
+  critic_obs_history_frames: 15
+
+  loc_ref_command_conditioned: true
+  # smoke3: interval 0.04 -> 0.065.  arange(0.065, 0.26+eps, 0.065) =
+  # {0.065, 0.13, 0.195, 0.26}; env then unions loc_ref_offline_command_vx
+  # (=0.20) and the 3D factory force-unions vx=0.0 (pure-yaw bin), so the
+  # effective vx grid is {0.0, 0.065, 0.13, 0.195, 0.20, 0.26} = 6 vx.
+  # 3D library = 5 nonzero-vx x 5 vy + 1 static (0,0,0) + 4 pure-yaw = 30.
+  # interval=0.065 (a divisor of 0.26-0.065=0.195, and 0.065 itself) is
+  # chosen so the arange lands EXACTLY on both the 0.065 walk floor and the
+  # 0.26 top-speed bin (interval=0.04 over [0,0.26] missed 0.26).
+  loc_ref_command_grid_interval: 0.065
+
+  # v0.21.0 P5 — opt-in for 3D reference library lookup (heading-frame
+  # nearest-key over (vx, vy, wz)).  Required for the new vy / wz
+  # tracking rewards to read non-degenerate prior trajectories.
+  loc_ref_command_axes_3d: true
+  # Grids LOCKED to v0210_lateral_yaw_prior_plan-final-r2.md (line 259):
+  # vy in +/-0.13 m/s, wz in +/-0.25 rad/s.  Must match the sampler's
+  # min/max_velocity_y / max_yaw_rate above (and the
+  # eval_velocity_cmd_probes below) — otherwise sampler-emitted cmds
+  # in the [grid_max, sampler_max] band silently snap to grid_max in
+  # the reference lookup, training the policy against a dishonest
+  # prior in the upper ~23% of the cmd range.
+  loc_ref_offline_command_vy_grid: [-0.13, -0.065, 0.0, 0.065, 0.13]
+  loc_ref_offline_command_yaw_rate_grid: [-0.25, -0.125, 0.0, 0.125, 0.25]
+  # Note (vs spec): the v0.21 plan mentions a YAML knob
+  # ``loc_ref_offline_command_vx_grid`` for explicitly listing the vx
+  # bins.  That field is NOT wired in ``EnvConfig`` /
+  # ``_init_offline_service`` (it's only referenced in the plan doc).
+  # The static (0, 0, 0) bin is still guaranteed because
+  # ``build_library_for_3d_values`` unconditionally force-unions
+  # vx=0.0 for the pure-yaw branch (control/zmp/zmp_walk.py:1685, and
+  # the round-2 follow-up that derives ``command_range_vx`` from the
+  # ACTUALLY-stored vx set).  If a future revision wires the explicit
+  # grid knob, we can opt in here and drop the derived-grid comment.
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.2
+  # H6 — bump lateral DoF residual scales 1.5× over smoke14 to give
+  # PPO authority for the lateral correction the planar ZMP prior
+  # can't represent.  WR has no *_hip_yaw joints (assets/v2/wildrobot.xml).
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.3534     # unchanged from smoke14
+    left_hip_roll: 0.375       # smoke14 0.25 * 1.5  (H6)
+    left_knee_pitch: 0.667     # unchanged
+    left_ankle_pitch: 0.25     # unchanged
+    left_ankle_roll: 0.375     # smoke14 0.25 * 1.5  (H6)
+    right_hip_pitch: 0.3867    # unchanged
+    right_hip_roll: 0.375      # smoke14 0.25 * 1.5  (H6)
+    right_knee_pitch: 0.6657   # unchanged
+    right_ankle_pitch: 0.25    # unchanged
+    right_ankle_roll: 0.375    # smoke14 0.25 * 1.5  (H6)
+
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  action_delay_steps: 1
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 20
+  # 30M run: 1500 * 1024 * 20 = 30,720,000 env-steps.  Matches smoke14.
+  iterations: 1500
+
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+
+  log_interval: 10
+  critic_privileged_enabled: true
+  # smoke2 (Lever 7): include actor_obs in the value-network input.
+  # WR's privileged_obs is concise (52 dims) and omits cmd / phase /
+  # quat / abs motor_pos -- TB's 151-dim privileged ALREADY includes
+  # actor obs inline.  With this flag, the value network sees
+  # concat([actor_obs_history, privileged_obs_history]) so V(s) can
+  # use full context for cold-start exploration value estimates.
+  # See PPOConfig.critic_includes_actor_obs docstring + commit
+  # ``Lever 7 (option A): critic sees actor obs + privileged'' for
+  # the full rationale.
+  critic_includes_actor_obs: true
+
+  eval:
+    # Training-time eval DISABLED for smoke1 (smoke14 baseline).
+    # The reviewer follow-up that flipped this to true ran a
+    # 64-env x 1000-step rollout every log window — non-trivial wall-clock
+    # overhead and spammed "Evaluate:" lines into the console.
+    # Lateral / yaw tracking machinery is still exercised at the
+    # authoritative post-training eval (post_training_enabled=true,
+    # top_k=3) which sees the full eval_velocity_cmd plus the
+    # eval_velocity_cmd_probes below, so the new metrics ARE checked
+    # — just once at the end, not 75 times in-flight.
+    enabled: false
+    interval: 10
+    num_envs: 64
+    num_steps: 1000
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 3
+    post_training_num_envs: 8
+    # smoke2 fb #1: must match max_episode_steps=1000.  At 500 a healthy
+    # policy never reaches truncation -> total_done=0 -> mean_episode_length=0
+    # in the deterministic eval -> the mean_episode_length gate (now scaled
+    # to 0.95*post_training_num_steps via the horizon-aware gate from
+    # smoke2 fb #2) would FAIL a good policy.  Lifting to 1000 keeps the
+    # gate semantics ("survive >= 95% of the rollout") invariant to the
+    # 500 -> 1000 horizon bump.
+    post_training_num_steps: 1000
+    post_training_checkpoint_label: eval_promoted
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  # smoke2 (A): 40.0 -> 562.5.  REVERT to smoke12b/13/14 value.
+  # smoke1's alpha=40 was a misjudged "broaden for gradient" move that
+  # introduced a +0.011/step partial credit for standing during walk-cmd
+  # (at err=0.18: exp(-40*0.0324)=0.273; +5.5 unit/episode standing
+  # bonus).  Smoke12b shipped at 562.5 and broke through to gait;
+  # smoke13/14/1 all kept 562.5 except smoke1's accidental reduction
+  # which was the Problem A leak source.
+  # At alpha=562.5 with err=0.18: exp(-18.2) ~ 0 -> standing leak closed.
+  # Gradient at err=0.05: exp(-1.41)=0.245 -> still moderate signal.
+  # Gradient at err=0.10: exp(-5.6)=0.004 -> very small; relies on the
+  # smoke12b basin-break recipe (action_rate -1.0, vx-clamp, sampler bias)
+  # to keep the policy in the gradient region.
+  cmd_forward_velocity_alpha: 562.5
+  # v0.21.0 — TB-parity 2D velocity tracking: penalize (vx_actual,
+  # vy_actual) against (cmd_vx, cmd_vy).  Smoke14 used dim=1 because
+  # WR had no vy_cmd; smoke1 introduces a real vy_cmd from the
+  # branched sampler so dim=2 is now meaningful.  The 2D weight IS
+  # ``cmd_forward_velocity_track`` above (the env extends the existing
+  # 1D term to (vx, vy) when ``cmd_velocity_track_dim=2``); there is
+  # NO separate ``cmd_velocity_track`` field — adding one as a YAML
+  # key would now fail at load (strict reward_weights validator).
+  # smoke4A (THE main fix): 2 -> 1.  Forward reward exp(-alpha*(vx-cmd_vx)^2)
+  # only; lateral error no longer saturates the reward to zero.  See header.
+  cmd_velocity_track_dim: 1
+  # v0.21.0 P6 — new yaw-rate tracking term.  Default 0.0 keeps
+  # legacy configs byte-equivalent; smoke1 turns it on at TB-aligned
+  # weight (1.5) and alpha (0.25).
+  # smoke4A: 1.5 -> 0.0.  No yaw pressure until forward G4 is recovered.
+  cmd_yaw_rate_track:  0.0
+  cmd_yaw_rate_alpha:  0.25
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  # smoke2 (A): -2.0 -> -1.0.  REVERT to smoke12b basin-break value.
+  # smoke12b YAML header (lines 60-65): "Halve the action-smoothness
+  # penalty so early exploration can produce stride attempts without
+  # unpenalized action thrash.  Defer back to -2.0 once smoke12 shows
+  # the policy is exploring stride space."  smoke12b broke through to
+  # gait at -1.0; smoke13/14/1 reverted to -2.0 (TB-faithful) and
+  # stalled.  smoke2 restores the basin-break value.
+  action_rate: -1.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.21.0, smoke5, rsi, ref_state_init, forward_first, cmd_track_dim1, sampler_1d_legacy, no_lateral, no_yaw, walk_floor_0065, interval_0065_keep_026_bin, obs_v8_cmd3d, library_3d, ref_init_residual, alpha_562p5, action_rate_halved, ep_1000]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
