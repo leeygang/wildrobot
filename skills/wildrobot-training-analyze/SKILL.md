@@ -1,6 +1,6 @@
 ---
 name: wildrobot-training-analyze
-description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/tracking metrics, pick the best checkpoint for deployment, debug v0.20.x prior-guided bounded-residual walking runs against ToddlerBot, diagnose reward/pathology issues, propose v0.xx+1 config/reward/PPO changes grounded in ToddlerBot alignment and the v0.20.1 walking_training.md G4/G5 contract, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions, debug why a walking run is not moving / is exploiting the residual / is drifting from the prior, or plan the next training iteration.
+description: Analyze WildRobot training runs from an offline W&B run folder (training/wandb/offline-run-*/), summarize stability/tracking metrics, pick the best checkpoint for deployment, debug v0.20.x prior-guided bounded-residual walking runs against ToddlerBot, diagnose reward/pathology issues, propose v0.xx+1 config/reward/PPO changes grounded in ToddlerBot alignment and the walking_training.md walking-quality/anti-exploit acceptance contract, and update training/CHANGELOG.md with results and next-version changes. Use when asked to review training logs, select checkpoints, compare versions, debug why a walking run is not moving / is exploiting the residual / is drifting from the prior, or plan the next training iteration.
 ---
 
 # WildRobot Training Analyze
@@ -45,7 +45,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python skills/wildrobot-training-analyze/scrip
   --run-dir-b training/wandb/offline-run-...-<run_id_b>
 ```
 
-The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls through to legacy `eval_clean/` / `eval/` / `env/` order for older runs. It also emits a regression checklist against the previous comparable run on common contract metrics (`env/forward_velocity`, `env/episode_length`, `tracking/cmd_vs_achieved_forward`, stride, G5 residuals / ratio, and the main prior-tracking diagnostics). Both tools share `_first_present` (handles `0.0` correctly) and the same synthetic-success cap.
+The analyzer prefers the v0.20.1 `Evaluate/*` namespace when present and falls through to legacy `eval_clean/` / `eval/` / `env/` order for older runs. It also emits a regression checklist against the previous comparable run on common contract metrics (`env/forward_velocity`, `env/episode_length`, `tracking/cmd_vs_achieved_forward`, stride, anti-exploit residuals / ratio, and the main prior-tracking diagnostics). Both tools share `_first_present` (handles `0.0` correctly) and the same synthetic-success cap.
 
 ---
 
@@ -95,7 +95,7 @@ ZMP offline library  →  per-step window (q_ref, foot/pelvis targets, contact m
 - **Prior owns** step length, cadence, foothold geometry, contact schedule.
 - **PPO owns** small joint corrections for servo lag, contact noise, sim2real mismatch, balance.
 
-A run that violates this division is the primary failure mode (see G5 below).
+A run that violates this division is the primary failure mode (see the anti-exploit gate below).
 
 ### Checkpoint selection rules
 
@@ -108,11 +108,13 @@ The analyzer encodes these. Walking runs:
 
 Do **not** select walking checkpoints by `env/episode_length` alone — a stationary "survive but don't walk" run will saturate it.
 
-### v0.20.1 G4 / G5 acceptance gates (load-bearing)
+### Acceptance gates — walking-quality + anti-exploit + baseline-beat (load-bearing)
 
-These come from `walking_training.md` v0.20.1 §. Always evaluate the smoke against them explicitly.
+These come from `walking_training.md`. Always evaluate the run against them explicitly. (The old `G4/G5/G7` labels were retired 2026-05-31 for behavior descriptions; some older CHANGELOG entries still use them.)
 
-**G4 promotion-horizon gate** (eval rollout, deterministic):
+**⚠️ Judge by the DETERMINISTIC eval, not the stochastic train rollout.** When action noise is high (e.g. smoke5: `log_std → −0.46`, std 0.63 ≈ 2× the action signal `abs.mean 0.37`), the *stochastic* train rollout flails/sways while the *deterministic mean* walks — a train→eval gap. smoke5 was first mis-verdicted "sway" from train metrics (fv 0.038, step 0.0015); the deterministic from-rest eval showed a clean walk (fv 0.130, ratio 0.998, step 0.0316, 0 falls). **Run `eval_policy.py` (deterministic, from rest) BEFORE issuing a verdict**, and cross-check the action `log_std`/`std` vs `action abs.mean` to detect the gap.
+
+**Walking-quality** (eval rollout, deterministic) — task-level, paradigm-independent:
 
 | Metric | Floor | Source |
 |---|---|---|
@@ -123,19 +125,22 @@ These come from `walking_training.md` v0.20.1 §. Always evaluate the smoke agai
 | `tracking/cmd_vs_achieved_forward` | ≤ 0.075 m/s | train rollout |
 | `tracking/step_length_touchdown_event_m` | ≥ 0.030 m | train rollout |
 
-**G5 anti-exploit gate** (catches "policy invents propulsion the prior should own"):
+**Anti-exploit** (catches "propulsion mis-assigned / skating") — **paradigm-dependent**:
 
-| Metric | Bound | What it catches |
-|---|---|---|
-| `tracking/residual_hip_pitch_left/right_abs` (mean ≈ p50) | ≤ 0.20 rad | residual stays a correction, not a replacement gait |
-| `tracking/residual_knee_left/right_abs` (mean ≈ p50) | ≤ 0.20 rad | same |
-| `tracking/forward_velocity_cmd_ratio` | 0.6 ≤ ratio ≤ 1.5 | both undershoot and v0.19.5 "lean-and-skate" overshoot |
+| Metric | Bound | Applies to | What it catches |
+|---|---|---|---|
+| `tracking/forward_velocity_cmd_ratio` | 0.6 ≤ ratio ≤ 1.5 | **all** | undershoot AND lean-and-skate overshoot |
+| `tracking/max_torque`, `debug/torque_sat_frac` | not saturating | **all** | servo over-demand / sim2real risk (esp. wide action scales) |
+| `tracking/step_length` + `reward/feet_phase` | real stepping, not shuffle | **all** | stepping-not-skating |
+| `tracking/residual_{hip,knee}_{left,right}_abs` (mean ≈ p50) | ≤ 0.20 rad | **prior-guided only** (`loc_ref_residual_base: q_ref`) | residual stays a correction, not a replacement gait |
 
-A run can pass forward_velocity AND fail G5 — that's a false positive (residual-driven exploit gait). Always report G5 separately.
+**The residual-magnitude bound (≤0.20) is RETIRED for the home/TB-contract paradigm** (`loc_ref_residual_base: home`, v0.21.0 smoke6+): there the residual *is* the gait (large by design), so a large residual is expected, not an exploit. Under the home base, judge anti-exploit by velocity-ratio + torque-saturation + stepping-not-skating only. **Check the active config's `loc_ref_residual_base` before applying the residual bound.**
 
-**G7 baseline-beat sanity** (informational):
-- Open-loop bare-q_ref baseline at vx=0.15: `forward_velocity ≈ -0.09`, `episode_length ≈ 77`, `term_pitch_frac ≈ 1.0`.
-- A trained policy must beat all three.
+A run can pass walking-quality AND fail anti-exploit — that's a false positive (e.g. a skating / residual-driven gait). Always report anti-exploit separately.
+
+**Baseline-beat sanity** (informational):
+- Open-loop bare-`q_ref` baseline at vx=0.15: `forward_velocity ≈ -0.09`, `episode_length ≈ 77`, `term_pitch_frac ≈ 1.0`.
+- A trained policy must beat all three. (Under the home base the zero-action baseline is "home stand," not the prior — so this is a prior sanity ref, not the policy's own baseline.)
 
 ### v0.20.1 reward family — what each term measures
 
@@ -182,17 +187,18 @@ The analyzer prints these, but a verdict that doesn't reference each one is inco
 | Metric | What it gates | Interpretation rule |
 |---|---|---|
 | `env/velocity_cmd` (late-iter mean) | sampler-vs-YAML alignment | Compare to `0.5 × (min_velocity + max_velocity)`. Δ > 20% ⇒ sampler-cmd-projection regression (see failure signatures). Even at Δ < 20% (sampler healthy), if the sampled band sits entirely ABOVE the α live-window (`cmd ± 1/√cmd_forward_velocity_alpha`, ≈ ±0.042 at α=562.5) with `reward/cmd_forward_velocity_track ≈ 0` ⇒ dead-velocity-gradient signature. Required even when verdict looks reward-related. |
-| `Evaluate/forward_velocity` (or `env/forward_velocity`) | G4 gate | sign + magnitude. Negative = backward drift; near-zero with high cmd = standing minimum or sampler bug. |
-| `Evaluate/mean_episode_length` | G4 gate | Near-horizon AND fv ≈ 0 ⇒ posture exploit, NOT "still training". |
-| `Evaluate/cmd_vs_achieved_forward` | G4 gate | > 0.075 with episode_length near horizon ⇒ "balance achieved, tracking weak" OR sampler bug. |
-| `tracking/step_length_touchdown_event_m` | G4 gate | < 0.030 ⇒ shuffle / no-stride. Also check left/right event metrics for asymmetry. |
-| `tracking/forward_velocity_cmd_ratio` | G5 gate | Out of [0.6, 1.5] ⇒ either lean-and-skate (>1.5) or undershoot (<0.6). Train-rollout ratio looking "fine" with mean cmd ≈ 0 is misleading — cross-check vs the post-training deterministic eval ratio. |
-| `tracking/residual_{hip,knee}_{left,right}_abs` | G5 gate | > 0.20 rad ⇒ propulsion mis-assigned. Per-leg asymmetry indicates one-leg gait. |
+| `Evaluate/forward_velocity` (or `env/forward_velocity`) | walking-quality | sign + magnitude. Negative = backward drift; near-zero with high cmd = standing minimum or sampler bug. |
+| `Evaluate/mean_episode_length` | walking-quality | Near-horizon AND fv ≈ 0 ⇒ posture exploit, NOT "still training". |
+| `Evaluate/cmd_vs_achieved_forward` | walking-quality | > 0.075 with episode_length near horizon ⇒ "balance achieved, tracking weak" OR sampler bug. |
+| `tracking/step_length_touchdown_event_m` | walking-quality | < 0.030 ⇒ shuffle / no-stride. Also check left/right event metrics for asymmetry. |
+| `tracking/forward_velocity_cmd_ratio` | anti-exploit (all) | Out of [0.6, 1.5] ⇒ either lean-and-skate (>1.5) or undershoot (<0.6). Train-rollout ratio looking "fine" with mean cmd ≈ 0 is misleading — cross-check vs the post-training deterministic eval ratio. |
+| `tracking/max_torque`, `debug/torque_sat_frac` | anti-exploit (all) | Saturating ⇒ servo over-demand / sim2real risk; the primary anti-exploit signal under wide action scales (home/TB-contract). |
+| `tracking/residual_{hip,knee}_{left,right}_abs` | anti-exploit (**prior-guided only**) | > 0.20 rad ⇒ propulsion mis-assigned. RETIRED for `loc_ref_residual_base: home` (residual IS the gait there). Per-leg asymmetry indicates one-leg gait. |
 | `tracking/touchdown_rate_{left,right}_count` | gait symmetry | Ratio > 2× ⇒ one-leg stepping; combine with per-foot step_length to confirm. |
 | `ref/feet_pos_err_l2`, `ref/q_track_err_rmse`, `ref/contact_phase_match`, `ref/body_quat_err_deg` | dead-gradient diagnostic | Pair each against `reward/ref_*` — large error + ~0 reward = dead-gradient term (lower α). |
 | `reward/feet_phase`, `reward/penalty_feet_ori`, `reward/penalty_pose`, `reward/penalty_close_feet_xy`, `reward/ref_feet_z_track` | reward family wiring proof | If logged, the term is active — proves the env has it. Use to refute "X is missing" claims before writing them. |
 | `term_height_low_frac`, `term_pitch_frac`, `term_roll_frac` | failure-cause breakdown | Aggregate across iters; identifies whether the policy dies from falling, tipping forward, or tipping sideways. |
-| Post-training eval `selected_checkpoint_path` | promotion gate | If `null`, NO candidate passed G4 — train-side `Evaluate/mean_reward` ranking is NON-AUTHORITATIVE; do not call any checkpoint "best for deploy". |
+| Post-training eval `selected_checkpoint_path` | promotion gate | If `null`, NO candidate passed the walking-quality gate — train-side `Evaluate/mean_reward` ranking is NON-AUTHORITATIVE; do not call any checkpoint "best for deploy". |
 | Post-training eval `top_k_candidates[*].lateral_yaw_probes` | Appendix C (v0.21.0+) | `signed_ratio ≥ 0.5` per probe; report-only in current contract but must surface. |
 
 If `env/velocity_cmd` is anomalously low compared to YAML midpoint, **stop the analysis** and run a 200k-sample numpy simulation of `_sample_velocity_cmd` to characterize the distribution before drawing any other conclusion. The sampler bug masquerades as every other failure mode.
@@ -214,11 +220,12 @@ Symmetry check: `touchdown_rate_left_count ≈ touchdown_rate_right_count`; gros
 Call these out explicitly:
 
 - **standing local minimum** — `forward_velocity ≈ 0`, `episode_length` near horizon, reward driven by survival + soft posture. Action: prior is too easy to ignore; check `tracking/forward_velocity_cmd_ratio` < 0.5.
-- **lean-and-skate exploit (v0.19.5 pattern)** — `forward_velocity` overshoots cmd by 1.5x+, `tracking/forward_velocity_cmd_ratio > 1.5`, residual saturates G5 bound on hip_pitch. Action: tighten residual bound, do NOT increase cmd_vx reward weight.
+- **lean-and-skate exploit (v0.19.5 pattern)** — `forward_velocity` overshoots cmd by 1.5x+, `tracking/forward_velocity_cmd_ratio > 1.5`, residual saturates the residual bound on hip_pitch (prior-guided) / torque saturates (home base). Action: tighten residual bound (prior-guided) or check torque saturation (home base); do NOT increase cmd_vx reward weight.
+- **train→eval gap (high action noise)** — *train-rollout* metrics look like sway/flail (low fv, tiny step_length, collapsed feet_phase) but the **deterministic** eval walks. Signature: policy `log_std`/`std` (e.g. 0.63) ≳ `action abs.mean` (e.g. 0.37). Action: ALWAYS run `eval_policy.py` (deterministic, from rest) before a verdict; if the gap is real, the fix is to reduce the entropy bonus / action noise, NOT the reward family. (smoke5: train fv 0.038 / step 0.0015 vs deterministic fv 0.130 / step 0.0316 / ratio 0.998.)
 - **shuffle exploit (v0.20.1-smoke1 pattern)** — `forward_velocity` near cmd, `episode_length` saturated, but `tracking/step_length_touchdown_event_m < 0.025` and per-foot step lengths small on both feet. The policy is making cmd_vx via short fast steps instead of tracking the prior's foothold geometry. Action: check `ref/feet_pos_err_l2` is in the alive-gradient range; consider lowering `ref_feet_pos_alpha`.
 - **gait drift** — `ref/contact_phase_match` decreases over training while `forward_velocity` increases. Action: if `ref_contact_match` weight is 0, this is expected (the contact-alignment probe gates the term); if the term is enabled, increase weight on `ref/contact_phase_match` and `ref/q_track`.
 - **dead-gradient term** — large persistent `ref/<X>_err_*` paired with near-zero `reward/ref_<X>_track`. Means α is too tight for the observed error magnitude. Action: lower α to give r ≈ 0.2-0.3 at the iter-1 baseline error.
-- **propulsion mis-assigned to PPO (G5 violation)** — forward_velocity meets gate but `|residual_p50|_{hip,knee}` > 0.20 rad. Action: tighten G1 residual bound by 50% and rerun; if still failing, prior is too weak — return to v0.20.0-x prior surgery (per the M1 fail-mode tree in `walking_training.md`).
+- **propulsion mis-assigned to PPO (anti-exploit violation, prior-guided only)** — forward_velocity meets gate but `|residual_p50|_{hip,knee}` > 0.20 rad. Action: tighten the residual bound by 50% and rerun; if still failing, prior is too weak — return to v0.20.0-x prior surgery (per the M1 fail-mode tree in `walking_training.md`). N/A under the home/TB-contract base (residual is the gait there — judge by torque saturation instead).
 - **truncation-based success_rate is meaningless** — `env/success_rate` is permanently 0 for v0.20.x walking. Never gate on it; never sort checkpoints by it.
 - **sampler-cmd-projection regression (v0.21.0-smoke2 pattern)** — `env/velocity_cmd` late-iter mean is significantly below `0.5 × (min_velocity + max_velocity)` from the YAML (e.g. smoke2: mean 0.083 vs YAML midpoint 0.22). Train-rollout `forward_velocity_cmd_ratio` looks healthy (cmd ≈ achieved ≈ 0), but the deterministic post-training eval at the configured `eval_velocity_cmd` shows ~0 forward velocity — because the **sampled** cmd distribution is collapsed toward zero by an `* sin(theta)` / `* cos(theta)` projection in `_sample_walk_command` even when `vx_positive_only` only drops the negative branch. Action: read the env sampler code (NOT just the YAML field names); simulate the cmd distribution with numpy (200k samples); compare distribution mean / median against YAML midpoint; if collapsed, fix the sampler before changing reward family or hyperparameters. **Fix landed in `ee399ee training: enforce smoke2 positive walk vx range`**; the legacy mode (TB symmetric ellipse) is preserved when `cmd_sampler_walk_vx_positive_only=False`.
 - **dead velocity gradient from narrow high-band command (v0.21.0-smoke2/3 pattern)** — distinct from the sampler-projection regression above: here `env/velocity_cmd` MATCHES the YAML midpoint (sampler is healthy — e.g. smoke2 `5v4j5j7w`: 0.197 vs midpoint 0.22, Δ 10%), but `reward/cmd_forward_velocity_track ≈ 0.0001` for the entire run, `forward_velocity` flat/negative, `episode_length` saturated (survives by tap-in-place, not walking). Cause: `exp(-α·err²)` with α=562.5 has a live-gradient window of only `cmd ± 1/√α ≈ ±0.042 m/s`; if the walk branch samples a narrow HIGH band (smoke2 `vx ∈ [0.18, 0.26]`) every env's target is unreachable from a standing cold start (err ≈ 0.22 → `exp(-35) ≈ 0`), so PPO never gets a forward gradient. **CORRECTION 2026-05-30 — do NOT cite smoke12b as a cold-start proof, and do NOT assume widening the floor fixes this.** smoke12b (`ot8zazo1`) walked at `vx ∈ [0.08,0.133]` with live `reward/cmd_forward_velocity_track ≈ 0.027`, BUT it was **warm-started**: its metrics begin at `progress/iteration=1720` / `time/step=35.2M` already walking (inherited from the smoke9c→11→12 curriculum chain). It did NOT break the basin cold. **No WR run has broken the walking basin from a cold (iter-1) start** — smoke1/2/3 all cold-start and all fail. The floor-widening fix this signature originally recommended (smoke3 `min_velocity→0.065`) ran the full 30M and **FAILED**: the policy entered a **lateral-walking** attractor (visual `lat_vel → 0.55 m/s` at cmd (0.26,0,0), `fv ≈ 0`), aggravated by `cmd_velocity_track_dim=2` saturating the reward to 0 under lateral drift. Diagnostic tell: `reward/feet_phase` can equal the walking value (~0.09) while `step_length ≈ 0` and `fv ≤ 0` — feet_phase rewards swing height independent of horizontal progress, so it does not disambiguate forward-walk from tap/lateral. So when you see this signature: (1) check `cmd_velocity_track_dim` — dim=2 couples forward+lateral and can zero the forward reward (try `dim=1`); (2) check `tracking/lateral_velocity_abs` / `env/lateral_velocity` — the failure may be lateral, not standing; (3) treat "the lever is the command range" as UNPROVEN for cold starts — the real open question is cold-start basin-break, which likely needs a curriculum/warm-start (per smoke12b's lineage). Do NOT lower α (reopens smoke1 standing-leak). See CHANGELOG `v0.21.0-smoke3-result + smoke4A-plan`.
@@ -275,7 +282,7 @@ this table summarizes.
 | **PPO learning_rate** | 3e-4 | 3e-5 (`ppo_config.py:39`) | ⚠️ WR 10× higher (compensating for compute gap) |
 | **PPO entropy_coef** | 0.01 | 5e-4 (`ppo_config.py:40`) | ⚠️ WR 20× higher |
 | `gamma` / `discounting` | 0.99 | 0.97 (`ppo_config.py:34`) | ⚠️ WR longer effective horizon (matches longer episodes) |
-| G4 / G5 / G7 gates | WildRobot-specific | n/a | ⚠️ acceptance criteria are WildRobot-specific |
+| walking-quality / anti-exploit / baseline-beat gates | WildRobot-specific | n/a | ⚠️ acceptance criteria are WildRobot-specific |
 
 Symbol meaning:
 - ✅ aligned to TB-active.
@@ -289,20 +296,20 @@ When it lands on a ❌ row, that's a known parity gap — link to `walking_train
 ### Walking interpretation rules
 
 - If `Evaluate/forward_velocity` is near zero AND `Evaluate/mean_episode_length` is near horizon → **standing local minimum** — call it out, don't say "still training".
-- If `Evaluate/forward_velocity` meets gate AND `tracking/forward_velocity_cmd_ratio` is in band AND G5 residual mean ≤ 0.20 → **locomotion emerging**. Recommend the iter that maximizes `Evaluate/mean_reward`.
-- If `Evaluate/forward_velocity` meets gate AND G5 fails → **action-authority leak / propulsion mis-assigned**. Per M1 fail-mode tree: tighten G1 residual bound 50%, do NOT relax G5.
+- If `Evaluate/forward_velocity` meets gate AND `tracking/forward_velocity_cmd_ratio` is in band AND anti-exploit passes (no torque saturation; residual ≤ 0.20 *for prior-guided runs only*) → **locomotion emerging**. Recommend the iter that maximizes `Evaluate/mean_reward`.
+- If `Evaluate/forward_velocity` meets gate AND anti-exploit fails → **action-authority leak / propulsion mis-assigned**. For *prior-guided* runs (`loc_ref_residual_base: q_ref`): tighten the residual bound 50%, do NOT relax the anti-exploit gate. For *home/TB-contract* runs the residual bound doesn't apply — look at torque saturation + stepping-not-skating instead.
 - If `tracking/cmd_vs_achieved_forward` mean is high (> 0.075) AND `Evaluate/mean_episode_length` is near horizon → **balance achieved, tracking weak**. Check BOTH `cmd_forward_velocity_alpha` (562.5 in smoke2/3) AND the sampled cmd band: a tight α paired with a high/narrow cmd band gives a dead gradient (see "dead velocity gradient" signature), which is a command-RANGE problem, not a tracking-weight problem — do NOT raise the cmd-track weight or lower α to "fix" it.
 - If `ref/feet_pos_err_l2` grows over training while `reward/ref_feet_pos_track` stays at 0 → **dead-gradient term**. Lower the alpha (smoke uses 30, not 200).
-- If `term_pitch_frac > 0.5` AND `forward_velocity` meets gate AND G5 passes → **balance issue (M1 branch)**. Increase regularizer weight on `pitch_rate` (M1 hook is pre-wired at weight 0); consider widening residual bound on ankle pitch only.
+- If `term_pitch_frac > 0.5` AND `forward_velocity` meets gate AND anti-exploit passes → **balance issue (M1 branch)**. Increase regularizer weight on `pitch_rate` (M1 hook is pre-wired at weight 0); consider widening residual bound on ankle pitch only.
 
 ### Walking next-step template
 
 ```text
-v0.20.1 verdict:
-- locomotion emerging / standing local minimum / lean-and-skate exploit / shuffle exploit / dead-gradient on <term> / dead velocity gradient (narrow high-band cmd) / gait drift / balance issue / sampler-cmd-projection regression
-- G4: forward_velocity <pass/fail> | mean_episode_length <pass/fail> | cmd_vs_achieved <pass/fail> | step_length <pass/fail>
-- G5: residual_p50 <pass/fail> | velocity_cmd_ratio <pass/fail>
-- G7 baseline-beat: <pass/fail>
+verdict (judge by the DETERMINISTIC eval; note train→eval gap if action std ≫ signal):
+- locomotion emerging / standing local minimum / lean-and-skate exploit / shuffle exploit / dead-gradient on <term> / dead velocity gradient (narrow high-band cmd) / gait drift / balance issue / sampler-cmd-projection regression / train→eval gap (high action noise)
+- walking-quality: forward_velocity <pass/fail> | mean_episode_length <pass/fail> | cmd_vs_achieved <pass/fail> | step_length <pass/fail>
+- anti-exploit: velocity_cmd_ratio <pass/fail> | torque-saturation <pass/fail> | residual_p50 <pass/fail — prior-guided only, N/A for home base>
+- baseline-beat: <pass/fail>
 - Sampler sanity: env/velocity_cmd late-iter mean = <X> vs YAML midpoint <Y> (Δ = ...; significant gap means simulate _sample_velocity_cmd before drawing reward-family conclusions)
 - ToddlerBot alignment: <ok / drift on <row(s)>>
 ```
@@ -315,8 +322,8 @@ v0.20.1 verdict:
 
 Then recommend one of (per the M1 fail-mode tree):
 - continue training to the M2 compute cap unchanged
-- prior surgery (return to v0.20.0-x; do NOT relax G5)
-- tighten G1 residual bound 50% and rerun
+- prior surgery (return to v0.20.0-x; do NOT relax the anti-exploit gate)
+- tighten the residual bound 50% and rerun (prior-guided runs only)
 - promote the M1 `pitch_rate` regularizer
 - regenerate the offline reference library
 - **fix sampler if `env/velocity_cmd` distribution doesn't match YAML range** (rerun current YAML on the fix before any reward-family change)
@@ -324,10 +331,10 @@ Then recommend one of (per the M1 fail-mode tree):
 ### Walking design guidance (when planning the next config)
 
 Order of operations:
-1. **Confirm the pre-smoke probes pass.** Zero-action q_ref replay (G6 invariant), contact-alignment probe (gates `ref_contact_match` weight), prior-vs-body sanity (`tools/v0200c_per_frame_probe.py`).
+1. **Confirm the pre-smoke probes pass.** Zero-action q_ref replay (zero-residual-replay invariant), contact-alignment probe (gates `ref_contact_match` weight), prior-vs-body sanity (`tools/v0200c_per_frame_probe.py`).
 2. **Match ToddlerBot weights.** Use Appendix A of `walking_training.md` as the alignment audit. Divergences need explicit rationale.
 3. **Don't invent new reward terms** when standard locomotion terms cover the problem. The current reward family is already imitation + cmd + ToddlerBot shaping + survival + small regularizers.
-4. **Don't relax G5** to fix a forward-velocity miss. G5 is the anti-exploit gate; relaxing it brings back v0.19.5.
+4. **Don't relax the anti-exploit gate** to fix a forward-velocity miss; relaxing it brings back v0.19.5 (lean-and-skate).
 5. **PPO hyperparameters last.** Learning rate / entropy / KL backoff are the last knobs to touch.
 
 Forbidden moves (will reintroduce known failure modes OR repeat past analyst errors):
@@ -347,7 +354,7 @@ Forbidden moves (will reintroduce known failure modes OR repeat past analyst err
 1. Add a new entry for the next training version (v0.xx+1): config + code changes.
 2. Under the current version entry, record:
    - run path, checkpoint dir, best checkpoint path
-   - G4 row-by-row pass/fail, G5 residual + velocity_cmd_ratio, G7 baseline-beat, ToddlerBot alignment status
+   - walking-quality row-by-row pass/fail, anti-exploit (velocity_cmd_ratio + torque-saturation + residual for prior-guided), baseline-beat, ToddlerBot alignment status
    - Best `Evaluate/mean_reward`, `Evaluate/mean_episode_length`, `Evaluate/forward_velocity`, `Evaluate/cmd_vs_achieved_forward` at the chosen checkpoint
    - Concerning trends not gated (e.g. `ref/feet_pos_err_l2` growth, `ref/contact_phase_match` drift)
    - Observed failure mode(s) per the v0.19.5 / v0.20.1 signature list and the recommended next intervention per the M1 fail-mode tree
