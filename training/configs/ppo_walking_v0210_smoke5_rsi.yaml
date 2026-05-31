@@ -575,15 +575,15 @@ ppo:
   critic_includes_actor_obs: true
 
   eval:
-    # Training-time eval DISABLED for smoke1 (smoke14 baseline).
-    # The reviewer follow-up that flipped this to true ran a
-    # 64-env x 1000-step rollout every log window — non-trivial wall-clock
-    # overhead and spammed "Evaluate:" lines into the console.
-    # Lateral / yaw tracking machinery is still exercised at the
-    # authoritative post-training eval (post_training_enabled=true,
-    # top_k=3) which sees the full eval_velocity_cmd plus the
-    # eval_velocity_cmd_probes below, so the new metrics ARE checked
-    # — just once at the end, not 75 times in-flight.
+    # Training-time eval DISABLED (decision 2026-05-30): avoid the in-flight
+    # wall-clock overhead.  smoke5's decisive risk IS a from-rest one (train
+    # resets start ON the RSI manifold; eval/deploy start from REST), so the
+    # rest→walk transition must still be checked at the 3–5M early-stop — but
+    # OUT-OF-BAND on a saved checkpoint, not in the training loop:
+    #   uv run python training/eval/eval_policy.py --config <this> \
+    #     --checkpoint <ckpt> --num-steps 1000   # uses reset_for_eval (from rest)
+    # (or visualize_policy.py --velocity-cmd 0.13 0 0).  Authoritative
+    # post-training eval (post_training_enabled=true) still runs at the end.
     enabled: false
     interval: 10
     num_envs: 64

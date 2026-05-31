@@ -57,6 +57,14 @@ def test_smoke5_rsi_levers(cfg) -> None:
     assert cfg.env.loc_ref_reset_base == "ref_init"
 
 
+def test_smoke5_eval_cmd_is_forward_from_rest(cfg) -> None:
+    """In-training eval is disabled by decision (out-of-band checkpoint evals
+    instead); the rest→walk risk is checked via eval_velocity_cmd from rest.
+    Pin the eval command so the from-rest probe stays forward-first."""
+    assert cfg.ppo.eval.enabled is False
+    assert tuple(cfg.env.eval_velocity_cmd) == pytest.approx((0.13, 0.0, 0.0))
+
+
 def test_smoke5_keeps_smoke4a_forward_first(cfg) -> None:
     """Everything that defines smoke4A's forward-first 1D control is intact."""
     e, rw = cfg.env, cfg.reward_weights

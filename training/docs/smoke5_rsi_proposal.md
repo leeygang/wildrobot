@@ -109,13 +109,24 @@ base is verified coherent by the control-vs-body test (§6).
    smoke4A (regression guard).
 5. `ref_selected_vy ≈ 0` under RSI forward-only (heading stays consistent).
 
-## 7. Open risk: eval/deploy starts from rest
+## 7. Decisive risk: eval/deploy starts from rest — monitored OUT-OF-BAND
 RSI bootstraps "continue walking"; G4 eval (and deployment) start from rest at
 `eval_velocity_cmd=[0.13,0,0]`. The RSI policy must learn the **rest→walk**
-transition too. Mitigations: keep eval static (no RSI); include the standing/
-frame-0 in the RSI frame distribution and/or keep `cmd_zero_chance` rest episodes.
-If G4-from-rest fails despite walking under RSI, add an explicit standing→walk
-curriculum (separate follow-up).
+transition too — and train metrics can look good (RSI starts already moving)
+while from-rest G4 still fails. **In-training eval is DISABLED** (decision
+2026-05-30, to avoid in-flight wall-clock overhead). The rest→walk risk is
+instead checked **out-of-band on a saved checkpoint** at the 3–5M early-stop —
+the same workflow used for smoke2/3/4, with **no training cost**:
+```
+uv run python training/eval/eval_policy.py --config <smoke5> --checkpoint <ckpt> --num-steps 1000
+# (reset_for_eval → static, from rest; train.py:431).  Or:
+uv run python training/eval/visualize_policy.py --config <smoke5> --checkpoint <ckpt> --velocity-cmd 0.13 0 0 ...
+```
+**Required early-stop check:** run that from-rest eval at ~3–5M. If the RSI
+train-side forward is healthy but the from-rest `forward_velocity` ≈ 0, that
+isolates the rest→walk gap → add a standing→walk curriculum (separate follow-up).
+The authoritative post-training eval (`post_training_enabled=true`) still runs at
+the end.
 
 ## 8. Experiment design
 smoke5 = **smoke4A + RSI only** (isolated), plus the required residual-base
