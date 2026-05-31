@@ -255,6 +255,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._init_pose_weights()
         self._init_foot_body_ids()
         self._init_offline_service()
+        # Must run AFTER both _load_model (home_q_rad, scales, rsi flags) and
+        # _init_offline_service (the library) are built.
+        self._assert_rsi_reachable_from_home()
 
         print("WildRobotEnv (v0.20.1 v3-only) initialized:")
         print(f"  Actuators:    {self._mj_model.nu}")
@@ -263,6 +266,49 @@ class WildRobotEnv(mjx_env.MjxEnv):
         print(f"  sim_dt:       {self.sim_dt}s")
         print(f"  ref n_steps:  {self._offline_service.n_steps} "
               f"(vx={self._config.env.loc_ref_offline_command_vx})")
+
+    # ------------------------------------------------ RSI reachability guard
+
+    def _assert_rsi_reachable_from_home(self) -> None:
+        """smoke6 (TB-contract) reachability invariant — HARD-FAIL at init.
+
+        When RSI resets onto a random reference frame from a STATIC ``home``
+        base, the residual must be able to REACH that frame: the policy can only
+        command ``home + clip(action, ±1)·scale``, so the prior's per-joint
+        swing from home must fit within ``scale``.  Otherwise the controller
+        cannot hold the RSI pose and yanks the body off-manifold at step 0 — the
+        bug that originally forced the q_ref base.  Checked over EVERY library
+        bin (a conservative superset of the sampler-reachable bins).  NOTE the
+        single-vx ``derive_residual_scales.py`` default undercovers high-vx
+        bins, so scales must be sized to the full command range.  The q_ref base
+        is on-manifold by construction, so this applies only to home + RSI.
+        """
+        if not (self._rsi_enabled and self._residual_base_mode == "home"):
+            return
+        qref_all = np.asarray(self._offline_jax_arrays["q_ref"])
+        home_np = np.asarray(self._home_q_rad)
+        scale_np = np.asarray(self._residual_q_scale_per_joint)
+        amp = np.max(np.abs(qref_all - home_np[None, None, :]), axis=(0, 1))
+        over = amp - scale_np
+        if np.any(over > 1e-3):
+            act_names = list(self._policy_spec.robot.actuator_names)
+            bad = [
+                f"{act_names[i]}: prior swing {amp[i]:.3f} rad > residual "
+                f"scale {scale_np[i]:.3f} (short by {over[i]:.3f})"
+                for i in np.where(over > 1e-3)[0]
+            ]
+            raise ValueError(
+                "env.loc_ref_rsi_enabled=True with loc_ref_residual_base='home' "
+                "requires the per-joint residual scales to COVER the prior's "
+                "swing from home on every library bin — otherwise RSI resets onto "
+                "an UNREACHABLE frame and the controller snaps the body "
+                "off-manifold at step 0.  Undersized scale(s):\n  "
+                + "\n  ".join(bad)
+                + "\n  Fix: widen loc_ref_residual_scale_per_joint (or re-derive "
+                "with assets/derive_residual_scales.py at coverage>=1.0 across the "
+                "FULL command range — the single-vx default undercovers high-vx "
+                "bins)."
+            )
 
     # --------------------------------------------------------------- _load_model
 

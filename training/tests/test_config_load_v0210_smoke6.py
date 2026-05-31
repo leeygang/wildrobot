@@ -69,9 +69,12 @@ def test_smoke6_scales_symmetric_and_coverage11(cfg) -> None:
         assert s[f"left_{joint}"] == pytest.approx(s[f"right_{joint}"]), (
             f"{joint} L/R scales must be symmetric for straight walking"
         )
-    # coverage-1.1 sizing on the load-bearing walking joints
-    assert s["left_knee_pitch"] >= 0.889, "knee scale must cover the prior swing"
-    assert s["left_hip_pitch"] >= 0.514, "hip_pitch scale must cover the prior swing"
+    # sized to cover the prior's MAX swing over the FULL command range (all
+    # library bins), not just the single-vx 0.1333 derivation point:
+    # measured all-bins max — knee 0.889, hip_pitch 0.601, ankle_pitch 0.308.
+    assert s["left_knee_pitch"] >= 0.889, "knee scale must cover the all-bins prior swing"
+    assert s["left_hip_pitch"] >= 0.601, "hip_pitch scale must cover the all-bins prior swing"
+    assert s["left_ankle_pitch"] >= 0.308, "ankle_pitch scale must cover the all-bins prior swing"
 
 
 def test_smoke6_keeps_forward_first(cfg) -> None:
@@ -99,25 +102,40 @@ def test_smoke6_train_reset_starts_moving_forward(env) -> None:
     assert len(seen) > 1  # frame randomized
 
 
-def test_smoke6_rsi_frame_reachable_from_home(env) -> None:
-    """Load-bearing coverage-1.1 invariant: every RSI reset frame's actuated
-    pose is within the per-joint residual scale of `home`, so the home + ±scale
-    controller CAN hold it (no permanent step-0 snap).  This is what coverage
-    1.1 buys vs smoke5's coverage 0.75 (where a static base was unreachable)."""
+def test_smoke6_all_bins_reachable_from_home(env) -> None:
+    """Load-bearing reachability invariant — the GENERAL contract (not just a
+    few sampled resets): EVERY library bin's per-joint prior swing from home must
+    fit within the residual scale, so NO RSI reset can land off-manifold.  This
+    mirrors the env-init guard and is what makes the static home base + RSI safe.
+    (Computed directly from the library, so it covers high-vx bins that random
+    sampling can miss — the gap that made the old 6-sample check insufficient.)"""
+    qref = np.asarray(env._offline_jax_arrays["q_ref"])  # (bins, steps, n_act)
     home = np.asarray(env._home_q_rad)
     scale = np.asarray(env._residual_q_scale_per_joint)
-    addrs = np.asarray(env._actuator_qpos_addrs)
-    worst = 0.0
-    for s in range(6):
-        st = env.reset(jax.random.PRNGKey(s))
-        data = getattr(st, "pipeline_state", None) or getattr(st, "data", None)
-        body_act = np.asarray(data.qpos)[addrs]
-        over = np.abs(body_act - home) - scale  # <=0 means reachable
-        worst = max(worst, float(over.max()))
-        assert over.max() <= 1e-3, (
-            f"seed {s}: RSI frame unreachable from home by {over.max():.3f} rad "
-            f"(joint {int(over.argmax())}) — widen coverage"
-        )
+    amp = np.max(np.abs(qref - home[None, None, :]), axis=(0, 1))  # per joint
+    over = amp - scale
+    j = int(over.argmax())
+    assert over.max() <= 1e-3, (
+        f"library bin unreachable from home: joint {j} prior swing "
+        f"{amp[j]:.3f} > scale {scale[j]:.3f} (short by {over.max():.3f}) — widen scale"
+    )
+
+
+def test_smoke6_rsi_undersized_scales_raise(cfg) -> None:
+    """The env-init reachability guard MUST hard-fail home+RSI with undersized
+    scales (the original off-manifold bug).  Shrink the knee scale below the
+    prior swing (0.889) and confirm init raises."""
+    import dataclasses
+
+    bad_scales = dict(cfg.env.loc_ref_residual_scale_per_joint)
+    bad_scales["left_knee_pitch"] = 0.3
+    bad_scales["right_knee_pitch"] = 0.3
+    bad_env = dataclasses.replace(
+        cfg.env, loc_ref_residual_scale_per_joint=bad_scales
+    )
+    bad_cfg = dataclasses.replace(cfg, env=bad_env)
+    with pytest.raises(ValueError, match="prior swing"):
+        WildRobotEnv(config=bad_cfg)
 
 
 def test_smoke6_eval_reset_is_static(env) -> None:

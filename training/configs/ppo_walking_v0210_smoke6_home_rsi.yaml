@@ -28,6 +28,21 @@
 # action noise, std 0.63, made train rollouts misleading; entropy reduction is a
 # fast-follow, not folded into this run to keep the paradigm switch isolated).
 # Everything else identical to smoke5.
+#
+# EXPERIMENT OBJECTIVE (read before interpreting results):
+#   This run answers ONE question: "can PPO build/own the forward gait from a
+#   STATIC home base + RSI (the TB contract)?"  It isolates the action-contract
+#   switch (q_ref base -> home base, coverage 0.75 -> 1.1).
+# NON-GOALS (do NOT judge smoke6 against these):
+#   - It does NOT fix smoke5's main remaining defect, the lateral/path DRIFT.
+#     The reward stack is deliberately unchanged on that front: cmd_velocity_
+#     track_dim stays 1, cmd_yaw_rate_track stays 0, and all path/reference terms
+#     stay OFF (ref_q_track / ref_contact_match / torso_pos_xy / lin_vel_z = 0).
+#     Lateral-drift correction (re-enable a path/orientation term or vy tracking)
+#     is a SEPARATE follow-up, intentionally not confounded into this run.
+#   - Success = the deterministic eval walks forward from home (fv >= 0.075,
+#     ratio in band, real steps, no falls).  Residual veer is expected and is the
+#     next experiment's target, not this one's pass/fail.
 # -----------------------------------------------------------------------------
 # --- smoke4A header (retained for context) -----------------------------------
 # WildRobot v0.21.0 PPO Smoke 4A — FORWARD-FIRST control (true 1D command)
@@ -303,7 +318,7 @@
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
 version: "0.21.0"
-version_name: "v0.21.0 PPO smoke5 RSI (smoke4A forward-first + Reference State Initialization: train resets onto a random moving gait frame; residual_base home->q_ref (base must follow the gait; amplitude 0.91>>0.25 residual bound); eval static from rest)"
+version_name: "v0.21.0 PPO smoke6 TB-contract (smoke5 RSI + STATIC home base: build the gait from home + RSI, ToddlerBot's recipe; residual_base q_ref->home with coverage-1.1 symmetric scales so the prior is reachable from home; eval static from rest)"
 
 seed: 42
 
@@ -528,24 +543,28 @@ env:
 
   loc_ref_residual_mode: absolute
   loc_ref_residual_scale: 0.2
-  # smoke6 (TB-contract): residual scales re-derived at COVERAGE 1.1
-  # (assets/derive_residual_scales.py --coverage 1.1) and made SYMMETRIC per
-  # L/R pair (max of each pair).  coverage>=1.0 is REQUIRED for the static home
-  # base + RSI: the residual must reach the prior's per-joint swing from home so
-  # every RSI reset frame is holdable (knee swings 0.889 rad from home → 0.978).
-  # The old smoke14 L/R asymmetry (hip_pitch 0.3534/0.3867) was a spurious
-  # derivation artifact from a slightly-asymmetric straight-walk prior — unified.
-  # hip_roll/ankle_roll kept at 0.375 (lateral authority; > derived floor 0.25).
+  # smoke6 (TB-contract): residual scales SYMMETRIC per L/R pair and sized to
+  # COVER the prior's max per-joint swing-from-home OVER THE FULL command range
+  # (every library bin), with ~5-10% margin.  This is REQUIRED for the static
+  # home base + RSI: the residual must reach any RSI reset frame, else the env
+  # init reachability guard hard-fails (wildrobot_env.py, "TB-contract
+  # reachability invariant").
+  # IMPORTANT: derive_residual_scales.py --coverage 1.1 derives at a SINGLE vx
+  # (0.1333) and UNDERCOVERS high-vx bins — measured max-over-all-bins is
+  # hip_pitch 0.601 (vs 0.567 at vx=0.1333), ankle_pitch 0.308 (vs 0.298).  So
+  # these are set from the measured all-bins max + margin, NOT the single-vx
+  # derivation.  (The old smoke14 L/R asymmetry was a spurious artifact —
+  # unified.  hip_roll/ankle_roll kept 0.375: lateral authority, covers max 0.151.)
   loc_ref_residual_scale_per_joint:
-    left_hip_pitch: 0.567      # cov1.1 max(0.518, 0.567), symmetric
-    left_hip_roll: 0.375
-    left_knee_pitch: 0.978     # cov1.1 max(0.978, 0.976), symmetric
-    left_ankle_pitch: 0.298    # cov1.1 max(0.298, 0.297), symmetric
-    left_ankle_roll: 0.375
-    right_hip_pitch: 0.567     # = left (symmetric)
+    left_hip_pitch: 0.64       # covers all-bins max 0.601 (+6%)
+    left_hip_roll: 0.375       # covers all-bins max 0.151
+    left_knee_pitch: 0.978     # covers all-bins max 0.889 (+10%)
+    left_ankle_pitch: 0.33     # covers all-bins max 0.308 (+7%)
+    left_ankle_roll: 0.375     # covers all-bins max 0.002
+    right_hip_pitch: 0.64      # = left (symmetric)
     right_hip_roll: 0.375
     right_knee_pitch: 0.978    # = left (symmetric)
-    right_ankle_pitch: 0.298   # = left (symmetric)
+    right_ankle_pitch: 0.33    # = left (symmetric)
     right_ankle_roll: 0.375
 
   push_enabled: false
@@ -713,7 +732,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.21.0, smoke5, rsi, ref_state_init, forward_first, cmd_track_dim1, sampler_1d_legacy, no_lateral, no_yaw, walk_floor_0065, interval_0065_keep_026_bin, obs_v8_cmd3d, library_3d, qref_base_residual, alpha_562p5, action_rate_halved, ep_1000]
+  tags: [ppo, v0.21.0, smoke6, tb_contract, rsi, ref_state_init, home_base_residual, coverage_1p1, forward_first, cmd_track_dim1, sampler_1d_legacy, no_lateral, no_yaw, walk_floor_0065, interval_0065_keep_026_bin, obs_v8_cmd3d, library_3d, alpha_562p5, action_rate_halved, ep_1000]
 
 video:
   enabled: false

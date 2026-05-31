@@ -293,10 +293,13 @@ This is an explicit architectural decision, not an inherited default.
 > policy space** (`distribution_type="normal"`; `default_action + 0.25 *
 > action`; final clamp only at physical joint limits, `mjx_env.py:1543`,
 > `mjx_env.py:1641`). smoke6 moves WR toward that contract **without going
-> fully unbounded**: keep the ±1 clip but re-derive scales at
-> **coverage 1.1** (`derive_residual_scales.py --coverage 1.1`, symmetric
-> per L/R pair: hip_pitch ~0.56, knee ~0.98) so the prior becomes reachable
-> and RSI frames are holdable, on a `home` base. Measured basis: a ≥0.030 m
+> fully unbounded**: keep the ±1 clip but widen scales to cover the prior's
+> max swing-from-home over the FULL command range (all library bins, symmetric
+> per L/R pair: hip_pitch 0.64, knee 0.978, ankle_pitch 0.33 — the single-vx
+> `derive_residual_scales.py` default undercovers high-vx bins) so the prior is
+> reachable and RSI frames are holdable on a `home` base; an env-init guard
+> (`_assert_rsi_reachable_from_home`) hard-fails undersized scales. Measured
+> basis: a ≥0.030 m
 > stride is reachable from `home` within ±0.353 hip_pitch (FK → 0.27 m), so
 > the policy has the authority to *build* a gait; it does **not** need to
 > track the prior jointwise (and can't — that's fine, like TB). See
