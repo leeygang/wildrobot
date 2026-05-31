@@ -278,12 +278,15 @@ The current env implementation is in
 
 This is an explicit architectural decision, not an inherited default.
 
-> **⚠️ Paradigm switch in progress (v0.21.0 smoke6, 2026-05-31).** smoke5
-> proved WR is boxed in by the **±1 action clip + 75%-coverage scales**: a
-> static `home` base can't *hold* an RSI reset pose (knee prior swing 0.889
-> rad > scale 0.667 → step-0 snap), while the `q_ref` base holds it but
-> anchors the policy to the fall-prone prior → it damps to a sway and never
-> steps. **ToddlerBot escapes both** because its action is *unbounded*
+> **⚠️ Paradigm switch in progress (v0.21.0 smoke6, 2026-05-31).** smoke5's
+> `q_ref` base **works** (deterministic from-rest walk at cmd: fv 0.130,
+> ratio 0.998, no falls); smoke6 adopts the simpler TB recipe (build the
+> gait from a static `home` base) on its merits, with the q_ref base as a
+> proven fallback. Reachability fact behind the scale change: with the
+> **±1 clip + 75%-coverage scales**, a static `home` base can't *hold* an
+> RSI reset pose (knee prior swing 0.889 rad > scale 0.667 → step-0 snap),
+> so home+RSI needs wider (coverage-1.1) scales. **ToddlerBot builds the
+> gait from a static home base** because its action is *unbounded*
 > (`distribution_type="normal"`, no ±1 squash; clamp only at physical joint
 > limits, `mjx_env.py:1641`) — it builds the gait from a static home base
 > with a wide action. smoke6 moves WR toward that contract **without going
@@ -629,11 +632,14 @@ Active state, summarized:
   control) was the first WR run to walk forward, but weak/sloppy and
   cold (3-s backward startup, lateral+yaw drift, residual-driven
   propulsion). **smoke5** added RSI (start mid-stride) + a `q_ref`
-  action base: RSI removed the cold-start, but the `q_ref` base
-  **anchored the policy to the fall-prone prior → it damped to a sway
-  and never stepped** (per-foot step 0.0015 m, feet_phase collapsed to
-  0.001). Root cause: `q_ref` base + all imitation weights 0 = nothing
-  makes the policy execute the gait.
+  action base and is the **best WR forward result so far**: the
+  **deterministic** from-rest eval walks at command (fv 0.130 = cmd,
+  ratio 0.998, step 0.0316, no falls). *Train-rollout* metrics looked
+  like a sway (fv 0.038, step 0.0015) — a **train→eval gap**: the
+  exploration noise (std 0.63) is ~2× the action signal (0.37), so
+  stochastic rollouts flail while the deterministic mean walks. Not yet
+  deployable: lateral veer 0.143, action noise too high, only cmd 0.13
+  confirmed.
 - **Decision (smoke6, 2026-05-31): switch WR off the prior-guided
   bounded-residual contract to ToddlerBot's build-the-gait-from-`home`
   contract.** Measured this session: TB's reference gait is *larger*

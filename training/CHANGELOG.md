@@ -8,49 +8,56 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.21.0-smoke5-result + smoke6-plan] - 2026-05-31: RSI broke the cold-start but the `q_ref` base anchored it to a sway → smoke6 = TB build-from-home contract
+## [v0.21.0-smoke5-result + smoke6-plan] - 2026-05-31: RSI + `q_ref` base = first WR deterministic forward walk at command (hidden by a train→eval gap); smoke6 = TB build-from-home contract
 
+> **Verdict correction (2026-05-31):** an earlier draft of this entry called smoke5 "FAILED (posture/sway)" based on *train-rollout* metrics. The authoritative **deterministic from-rest eval** shows smoke5 **walks at command** — corrected below. (Process lesson: run the deterministic eval BEFORE issuing a verdict; a stochastic train rollout with large exploration noise is not the deployment behavior.)
+>
 > **Gate-naming change (this entry onward):** dropped the `G4/G5/G7` labels (hard to remember) for behavior descriptions —
 > **walking-quality** (forward speed / command tracking / stride length / survival), **anti-exploit** (velocity ratio / torque saturation / stepping-not-skating), **baseline-beat** (beats the bare open-loop prior).
 
-### Smoke5 result — FAILED (posture/sway, no real stepping)
-- **Run**: `training/wandb/offline-run-20260530_223203-x9031j9o` (complete, 1500 iters / ~26M env-steps).
-- **Best checkpoint (non-authoritative)**: `checkpoint_1270_26009600.pkl` — picked by saturated `env/episode_length`; in-training eval was disabled, so there is no `Evaluate/*` / `selected_checkpoint_path`.
+### Smoke5 result — first WR DETERMINISTIC forward walk at command (do not deploy yet)
+- **Run**: `training/wandb/offline-run-20260530_223203-x9031j9o` (complete, 1500 iters / ~30.7M env-steps).
+- **Checkpoint evaluated**: `checkpoint_1270_26009600.pkl`.
 - **Config**: `ppo_walking_v0210_smoke5_rsi.yaml` = smoke4A + RSI + residual base `home→q_ref`.
-- Pre-flight: `env/velocity_cmd` 0.154 vs YAML midpoint 0.1625 → within 5%, no sampler bug.
 
-| behavior check | metric (tail) | result |
+**Deterministic from-rest eval** (`eval_policy.py`, cmd `(0.13,0,0)`, 64 envs × 500 steps):
+
+| walking-quality / anti-exploit | value | result |
 |---|---|---|
-| walking-quality: forward_velocity | 0.038 mean / 0.091 peak (cmd 0.154) | **FAIL** (< 0.075) |
-| walking-quality: cmd_vs_achieved | 0.137 | **FAIL** (> 0.075) |
-| walking-quality: step_length_touchdown | 0.016; **per-foot 0.0015** | **FAIL** — feet barely move |
-| walking-quality: episode survives | ep_len 1000 | survives |
-| anti-exploit: velocity ratio | 0.22–0.46 | undershoot |
-| stability: term_height_low_frac | 25% mean | intermittent collapse |
-| feet_phase reward | 0.0116 (iter 80) → **0.001** | stepping driver **collapsed** |
-| ref/torso_pos_xy_err | 0.03 → 0.88 | drifts off-manifold |
+| forward_velocity | **0.130** (= cmd) | **PASS** (≥0.075) |
+| cmd_vs_achieved | 0.031 | **PASS** (≤0.075) |
+| step_length_touchdown | 0.0316 | **PASS** (≥0.030) — real steps |
+| velocity ratio | 0.998 | **PASS** (0.6–1.5) |
+| contact_phase_match | 0.780 | in-phase stepping |
+| body_quat_err | 8.33° | upright |
+| terminations h_low / pitch / roll | 0% / 0% / 0% | **no falls in 10 s** |
+| residual knee_right | 0.205 | marginal (structural q_ref artifact) |
+| lateral_velocity_abs | 0.143 | **veers sideways (defect)** |
 
-**Trajectory**: thrash iters 1–160 (fv −0.27, height_low 63%), then settles by ~iter 240 into a **stable sway that drifts forward ~0.04–0.09 m/s and never steps** (feet_phase 0.0116→0.001 once it stops flailing). RSI starts each episode moving at ~cmd, but the policy **brakes to a sway within the episode**.
+**This is the best WR forward-walking result to date** — smoke4A walked but overshot (ratio 1.8) and veered worse; smoke5's deterministic policy tracks cmd at ratio 0.998 with real steps and no falls. `ep_len=0 / success=0%` are the truncation-based metrics (permanently 0 for v0.20.x — never gate on them); the 0% termination fractions confirm it does not fall.
 
-**Reconciling the earlier "breakthrough" read**: mid-run signals looked promising — tiny residuals (0.06/0.11), low lateral (0.08 vs smoke4A 0.29), forward drift from rest (+0.9 m/8 s, no backward startup). Two were real wins (RSI removed the 3-s backward cold-start; the `q_ref` template cut lateral leak). But the tiny residuals were **structural, not a win** — with the `q_ref` base supplying the gait, the residual is small *by construction*. And the forward "drift" was **sway, not stepping** (per-foot step 0.0015 m). The early read over-weighted the residual-pass and the forward drift.
+### The train→eval gap (why an earlier draft called it "sway")
+The *train-rollout* metrics looked like a failure — fv mean 0.038, per-foot step 0.0015, feet_phase 0.001. These are **stochastic** rollouts, and the eval explains the gap: `policy log_std −0.460 → std 0.631` while `action abs.mean 0.365` — **the exploration noise (0.63) is ~2× the action signal (0.37)**, so stochastic rollouts flail/sway while the deterministic *mean* walks cleanly. The earlier out-of-band "+0.9 m/8 s forward" read (≈0.11 m/s) was the real deterministic walk, not a mirage — it was my later train-metric "FAILED" verdict that was the error.
 
-### Root cause — `q_ref` base + all imitation off = nothing makes the policy walk
-1. **Central**: every imitation term is at weight 0 (`ref_q_track:0`, `torso_pos_xy:0`, …) AND the base is `q_ref`. The base supplies a gait template, but **nothing penalizes the policy for damping it away** → reward optimum is "stand on the moving base, sway, minimize action." Design contradiction.
-2. **Non-viable-prior anchoring**: under the `q_ref` base, zero residual = exact `q_ref` replay = the bare prior that **falls in 77 steps**. So "do nothing" is a *falling* trajectory; the policy spends its residual *damping* the fall-prone full-speed prior → short steps + undershoot.
-3. The `q_ref` base is itself a **divergence from TB** (added to make RSI's reset pose "on-manifold") and it dragged in #2.
+### Remaining smoke5 issues (why "do not deploy yet")
+1. **Lateral veer** 0.143 m/s (~1.4 m sideways over 10 s).
+2. **Action noise too high** — std grew 0.5→0.63 over training (entropy bonus too high / not converged); this *is* the train→eval gap. A deployable policy needs the stochastic and deterministic behavior to agree.
+3. Only **cmd 0.13** confirmed (1D forward; full-range + lateral/yaw eval pending).
+4. knee_right residual 0.205 (marginal anti-exploit; structural under the `q_ref` base).
 
 ### Investigation — what TB actually does (measured this session)
 - **TB reference gait amplitude = 1.54 rad** (toddlerbot_2xc, leg motors) — *larger* than WR's 0.913. Yet TB walks **from a static home base** because TB's action is **unbounded**: `distribution_type="normal"` (identity postprocessor, no ±1 squash), `motor_target = home + 0.25·action`, clamped only at **physical joint limits** (`mjx_env.py:1641`). The `0.25` scales a raw Gaussian whose mean the policy sets freely (typical ±4–8) → reaches the full joint range.
 - **WR hard-clips** the action to ±1 then ×per-joint scale (`wildrobot_env.py:1209`); scales are auto-derived at **coverage 0.75** of the prior swing (`assets/derive_residual_scales.py`) — **deliberately** keeping the prior partly unreachable so the residual stays a "bounded correction." Coherent under the `q_ref` base; incoherent under `home`.
 - **Reachability (measured)**: a *stride* (≥0.030 m foot travel) IS reachable from `home` within ±0.353 hip_pitch (FK → **0.27 m**, 9× the gate). But the *prior* is NOT reachable from `home` (knee swings 0.889 > scale 0.667; hip_pitch 0.51 > 0.35). These are **different quantities** — stride-displacement vs joint-tracking.
 
-### Smoke6 plan — switch WR to TB's build-from-home contract [decided 2026-05-31]
-smoke5 boxed WR between two bad options: `home` base (can't *hold* the RSI reset pose → step-0 snap) vs `q_ref` base (anchors to the fall-prone prior → sway). **TB escapes both via a wide action range from a static base.** smoke6 adopts that:
+### Smoke6 plan — switch to TB's build-from-home contract (on its merits) [decided 2026-05-31]
+smoke5's `q_ref` base **works** (deterministic walk at cmd) — so smoke6 is **not** failure-recovery; it adopts the simpler, mainstream **TB recipe** (build the gait from a static `home` base — no time-coupled `q_ref`, no prior-anchoring), **keeping smoke5's q_ref base as a proven fallback**. Supporting facts (measured this session): TB walks from a static home base with a *larger* gait (1.54 rad) via an *unbounded* action; WR's ±1 clip + 0.75-coverage scales kept the prior unreachable from home; widening to coverage 1.1 makes home+RSI viable. Decided 2026-05-31:
 - **Action base**: `loc_ref_residual_base: home` (drop `q_ref`); keep `loc_ref_rsi_enabled: true`; **remove the env guard** (`wildrobot_env.py:373`) that forbids home+RSI (built on the now-falsified "RSI needs `q_ref` base" premise).
 - **Residual scales**: re-derive at **coverage 1.1** (`derive_residual_scales.py --coverage 1.1`) so the prior is reachable +10% headroom, **symmetric per L/R pair** (hip_pitch ~0.56, knee ~0.98 — the current 0.3534/0.3867 L/R split is a spurious derivation artifact from a slightly-asymmetric straight-walk prior). Keep the ±1 clip (wide, conservative — not fully unbounded).
 - **Why it works**: `home` base → zero residual = stable stand (not a fall) → policy *builds* its own gait (FK proves it can step within range); coverage 1.1 → `home` base can *hold* every RSI reset frame (no step-0 snap); RSI → breaks the from-rest dead gradient without prior anchoring.
+- **Carry over the smoke5 fixes**: reduce action-noise / entropy bonus (smoke5 std grew to 0.63 → train→eval gap) so stochastic and deterministic behavior agree; watch the lateral veer.
 - **Risk to watch** (wider clip reopens it): the lean-and-skate exploit + servo/sim2real → monitor **torque saturation** (`tracking/max_torque`, `debug/torque_sat_frac`) and **stepping-not-skating** (step_length + feet_phase + velocity ratio).
-- **Open prerequisites** (feed the reward block, still to resolve): (a) confirm WR's `feet_phase` (`max(0, raw − flat_baseline)`) can actually pay TB-level reward when stepping — it collapsed to 0.001 in smoke5; (b) the authoritative from-rest eval.
+- **Prerequisites RESOLVED this session**: (a) `feet_phase` ceiling is adequate — perfect-tracking 0.774 mean → 0.116/step weighted (largest term); the `max(0,raw−flat)` subtraction zeroes the flat-foot exploit, full reward is clean step gradient (NOT a blocker). (b) stride reachable from home (FK 0.27 m, 9× the gate). (c) smoke5 deterministic-eval confirms the q_ref variant already walks — so the home variant has a working fallback.
 
 ### Gate definitions updated (behavior descriptions, TB-contract paradigm)
 - **walking-quality** (unchanged): forward_velocity ≥ 0.075, cmd-tracking err ≤ 0.075, step_length ≥ 0.030, episode survives (~475+/500). Task-level, paradigm-independent.
