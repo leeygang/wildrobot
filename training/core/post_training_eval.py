@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from control.zmp.zmp_walk import ZMPWalkConfig
 
@@ -390,6 +390,29 @@ def lateral_probe_gate_passed(probe_results: Sequence[Mapping[str, Any]]) -> boo
     """
     evaluated = [p for p in probe_results if p.get("skip_reason") is None]
     return bool(evaluated) and all(bool(p.get("passed")) for p in evaluated)
+
+
+def apply_lateral_probe_gate(row: MutableMapping[str, Any]) -> bool:
+    """Fold the smoke7 lateral-probe 2D-tracking gate into a candidate eval row,
+    keeping ``passed`` / ``gates`` / ``fail_reasons`` CONSISTENT.
+
+    Reads ``row["lateral_yaw_probes"]``, records the result as a first-class
+    ``gates["lateral_probe_tracking"]`` entry, and on failure flips
+    ``row["passed"]`` to False AND appends ``"lateral_probe_tracking"`` to
+    ``row["fail_reasons"]`` — so a probe-failed candidate can never read
+    ``passed=False`` with every gate green and no reason (which would mislead
+    the no-passing-candidate message + downstream analyzer).  Idempotent.
+    Returns the probe-gate result.
+    """
+    probes_ok = lateral_probe_gate_passed(row.get("lateral_yaw_probes", ()))
+    row["lateral_probe_gate_passed"] = probes_ok
+    row.setdefault("gates", {})["lateral_probe_tracking"] = probes_ok
+    row.setdefault("fail_reasons", [])
+    if not probes_ok:
+        row["passed"] = False
+        if "lateral_probe_tracking" not in row["fail_reasons"]:
+            row["fail_reasons"].append("lateral_probe_tracking")
+    return probes_ok
 
 
 def deterministic_eval_gate(

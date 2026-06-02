@@ -1277,16 +1277,13 @@ def start_training(
                 # (strict off, or no probes) are unaffected.
                 if post_training_strict_lateral_drift and probe_cmds:
                     from training.core.post_training_eval import (
-                        lateral_probe_gate_passed,
+                        apply_lateral_probe_gate,
                     )
 
                     for row in eval_rows:
-                        probes_ok = lateral_probe_gate_passed(
-                            row.get("lateral_yaw_probes", [])
-                        )
-                        row["lateral_probe_gate_passed"] = probes_ok
-                        if not probes_ok:
-                            row["passed"] = False
+                        # Folds the probe result into passed/gates/fail_reasons
+                        # consistently (see helper docstring).
+                        apply_lateral_probe_gate(row)
 
                 print()
                 print("Deterministic eval results:")

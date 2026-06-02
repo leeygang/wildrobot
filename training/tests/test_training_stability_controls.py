@@ -907,3 +907,40 @@ def test_lateral_probe_gate_passed_helper() -> None:
         {"passed": True, "skip_reason": None},
         {"passed": False, "skip_reason": "cmd_below_min"},
     ]) is True
+
+
+def test_apply_lateral_probe_gate_keeps_row_consistent() -> None:
+    """smoke7: a probe failure must flip passed AND surface in gates +
+    fail_reasons (no 'passed=False with all gates green, no reason' rows)."""
+    from training.core.post_training_eval import apply_lateral_probe_gate
+
+    # Probe FAIL on a row that passed the forward/drift gates: passed flips,
+    # gate recorded False, fail_reasons explains it.
+    fail_row = {
+        "passed": True,
+        "gates": {"forward_velocity": True, "lateral_velocity_abs": True},
+        "fail_reasons": [],
+        "lateral_yaw_probes": [{"passed": False, "skip_reason": None}],
+    }
+    assert apply_lateral_probe_gate(fail_row) is False
+    assert fail_row["passed"] is False
+    assert fail_row["gates"]["lateral_probe_tracking"] is False
+    assert "lateral_probe_tracking" in fail_row["fail_reasons"]
+    # idempotent — no duplicate reason on re-apply
+    apply_lateral_probe_gate(fail_row)
+    assert fail_row["fail_reasons"].count("lateral_probe_tracking") == 1
+
+    # Probe PASS: passed stays True, gate recorded True, no spurious reason.
+    pass_row = {
+        "passed": True,
+        "gates": {"forward_velocity": True},
+        "fail_reasons": [],
+        "lateral_yaw_probes": [
+            {"passed": True, "skip_reason": None},
+            {"passed": True, "skip_reason": None},
+        ],
+    }
+    assert apply_lateral_probe_gate(pass_row) is True
+    assert pass_row["passed"] is True
+    assert pass_row["gates"]["lateral_probe_tracking"] is True
+    assert pass_row["fail_reasons"] == []
