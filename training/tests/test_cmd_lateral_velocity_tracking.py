@@ -334,3 +334,94 @@ def test_dim2_makes_reward_metric_reflect_vy_cmd() -> None:
         f"(r_vy0={r_vy0}, r_vy10={r_vy10}, rel_diff={rel_diff}); "
         f"cmd_velocity_track_dim=2 has degenerated to dim=1."
     )
+
+
+# ---------------------------------------------------------------------------
+# smoke7 — ANISOTROPIC 2D velocity reward (alpha_x / alpha_y).
+#   track_dim==2:  exp(-(alpha * vx_err^2 + alpha_y * vy_err^2))
+#   alpha_y is None -> isotropic (alpha_y = alpha) == legacy form.
+# Goal: keep the lateral axis LIVE at smoke6-scale errors where a single
+# tight alpha collapses the whole reward to ~2e-7.
+# ---------------------------------------------------------------------------
+_S7_ALPHA_X = 562.5   # forward (tight)
+_S7_ALPHA_Y = 30.0    # lateral (loose; 20-40 band)
+
+
+def _s7_reward(*, fv, lv, vx_cmd, vy_cmd, alpha, track_dim, alpha_y=None) -> float:
+    import jax.numpy as jp
+
+    r, *_ = WildRobotEnv._cmd_forward_velocity_track_reward(
+        forward_velocity=jp.float32(fv),
+        lateral_velocity=jp.float32(lv),
+        velocity_cmd=jp.float32(vx_cmd),
+        vy_cmd=jp.float32(vy_cmd),
+        ref_forward_velocity=jp.float32(0.0),
+        ref_lateral_velocity=jp.float32(0.0),
+        alpha=jp.float32(alpha),
+        track_dim=track_dim,
+        alpha_y=(None if alpha_y is None else jp.float32(alpha_y)),
+    )
+    return float(r)
+
+
+def test_s7_dim1_ignores_alpha_y_and_matches_legacy() -> None:
+    """track_dim==1 reward is exp(-alpha*vx_err^2), independent of alpha_y."""
+    fv, vx_cmd = 0.10, 0.13
+    base = _s7_reward(fv=fv, lv=0.15, vx_cmd=vx_cmd, vy_cmd=0.0,
+                      alpha=_S7_ALPHA_X, track_dim=1)
+    with_ay = _s7_reward(fv=fv, lv=0.15, vx_cmd=vx_cmd, vy_cmd=0.0,
+                         alpha=_S7_ALPHA_X, track_dim=1, alpha_y=_S7_ALPHA_Y)
+    expected = math.exp(-_S7_ALPHA_X * (fv - vx_cmd) ** 2)
+    assert abs(base - expected) < 1e-6
+    assert abs(with_ay - expected) < 1e-6  # alpha_y ignored at dim=1
+
+
+def test_s7_dim2_isotropic_matches_legacy() -> None:
+    """track_dim==2 with alpha_y=None == legacy exp(-alpha*(vx^2+vy^2))
+    (backward compatibility: smoke6 / older dim=2 configs unaffected)."""
+    fv, lv, vx_cmd, vy_cmd = 0.16, 0.05, 0.13, 0.02
+    got = _s7_reward(fv=fv, lv=lv, vx_cmd=vx_cmd, vy_cmd=vy_cmd,
+                     alpha=_S7_ALPHA_X, track_dim=2)
+    expected = math.exp(-_S7_ALPHA_X * ((fv - vx_cmd) ** 2 + (lv - vy_cmd) ** 2))
+    assert abs(got - expected) < 1e-6
+
+
+def test_s7_anisotropic_live_where_isotropic_dead() -> None:
+    """At smoke6-scale errors (vx_err≈0.066, |vy|≈0.10-0.15) the shared-alpha
+    reward collapses to ~0; the anisotropic reward stays live."""
+    fv, vx_cmd = 0.196, 0.13  # vx_err ≈ 0.066
+    for vy in (0.10, 0.15):
+        iso = _s7_reward(fv=fv, lv=vy, vx_cmd=vx_cmd, vy_cmd=0.0,
+                         alpha=_S7_ALPHA_X, track_dim=2)
+        aniso = _s7_reward(fv=fv, lv=vy, vx_cmd=vx_cmd, vy_cmd=0.0,
+                           alpha=_S7_ALPHA_X, track_dim=2, alpha_y=_S7_ALPHA_Y)
+        # isotropic is effectively dead (tiny magnitude vs other reward
+        # terms): ~3e-4 at vy=0.10, ~3e-7 at vy=0.15; anisotropic ~200x larger.
+        assert iso < 1e-3, f"isotropic should be ~dead at vy={vy}, got {iso}"
+        assert aniso > 1e-2, f"anisotropic should be live at vy={vy}, got {aniso}"
+        assert aniso > 100 * iso
+
+
+def test_s7_lateral_gradient_is_live_monotone() -> None:
+    """Live lateral gradient: anisotropic reward strictly decreases as |vy|
+    grows (not a flat saturated zero)."""
+    fv = vx_cmd = 0.13  # perfect forward; isolate the lateral axis
+    r_lo = _s7_reward(fv=fv, lv=0.05, vx_cmd=vx_cmd, vy_cmd=0.0,
+                      alpha=_S7_ALPHA_X, track_dim=2, alpha_y=_S7_ALPHA_Y)
+    r_mid = _s7_reward(fv=fv, lv=0.10, vx_cmd=vx_cmd, vy_cmd=0.0,
+                       alpha=_S7_ALPHA_X, track_dim=2, alpha_y=_S7_ALPHA_Y)
+    r_hi = _s7_reward(fv=fv, lv=0.15, vx_cmd=vx_cmd, vy_cmd=0.0,
+                      alpha=_S7_ALPHA_X, track_dim=2, alpha_y=_S7_ALPHA_Y)
+    assert r_lo > r_mid > r_hi
+    assert (r_lo - r_hi) > 0.05  # meaningful slope
+
+
+def test_s7_forward_reward_survives_lateral_error() -> None:
+    """Forward reward must not collapse just because vy is off (the smoke3
+    failure): perfect vx + |vy|=0.15 keeps a healthy anisotropic reward."""
+    aniso = _s7_reward(fv=0.13, lv=0.15, vx_cmd=0.13, vy_cmd=0.0,
+                       alpha=_S7_ALPHA_X, track_dim=2, alpha_y=_S7_ALPHA_Y)
+    iso = _s7_reward(fv=0.13, lv=0.15, vx_cmd=0.13, vy_cmd=0.0,
+                     alpha=_S7_ALPHA_X, track_dim=2)
+    assert aniso > 0.4   # exp(-30*0.0225) ≈ 0.51
+    assert iso < 1e-4    # exp(-562.5*0.0225) ≈ 3e-6

@@ -383,6 +383,7 @@ def deterministic_eval_gate(
     eval_velocity_cmd: float,
     *,
     eval_num_steps: int = 500,
+    strict_lateral_drift: bool = False,
 ) -> DeterministicEvalDecision:
     """Apply deterministic post-training promotion gates.
 
@@ -494,6 +495,26 @@ def deterministic_eval_gate(
             or abs(float(world_y_drift_abs)) <= WORLD_Y_DRIFT_SOFT_CAP_M
         ),
     }
+
+    # smoke7 — config-gated strict mode: promote lateral_velocity_abs and
+    # world_y_drift_abs_m from report-only soft signals to HARD gates, so a
+    # forward+tiny-vy run cannot promote a directionally-drifting checkpoint.
+    # Uses the same documented soft caps; missing metric => FAIL (a hard gate
+    # cannot be cleared by an absent measurement).  Default off => historical
+    # behavior (these remain soft signals) is byte-identical.
+    if strict_lateral_drift:
+        gates = {
+            **gates,
+            "lateral_velocity_abs": (
+                lateral is not None
+                and abs(float(lateral)) <= LATERAL_VELOCITY_SOFT_CAP_MPS
+            ),
+            "world_y_drift_abs_m": (
+                world_y_drift_abs is not None
+                and abs(float(world_y_drift_abs)) <= WORLD_Y_DRIFT_SOFT_CAP_M
+            ),
+        }
+        passed = all(gates.values())
 
     return DeterministicEvalDecision(
         passed=passed,

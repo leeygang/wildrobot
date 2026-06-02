@@ -584,6 +584,9 @@ def start_training(
     post_training_top_k = int(training_cfg.ppo.eval.post_training_top_k or 3)
     post_training_num_envs = int(training_cfg.ppo.eval.post_training_num_envs or 8)
     post_training_num_steps = int(training_cfg.ppo.eval.post_training_num_steps or 500)
+    post_training_strict_lateral_drift = bool(
+        getattr(training_cfg.ppo.eval, "post_training_strict_lateral_drift", False)
+    )
     post_training_checkpoint_label = (
         str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
         or "eval_promoted"
@@ -1117,6 +1120,7 @@ def start_training(
                         eval_metrics=eval_metrics,
                         eval_velocity_cmd=eval_velocity_cmd,
                         eval_num_steps=post_training_num_steps,
+                        strict_lateral_drift=post_training_strict_lateral_drift,
                     )
                     eval_rows.append(
                         {

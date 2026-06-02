@@ -888,6 +888,12 @@ class PPOEvalConfig(Freezable):
     post_training_num_envs: int = 8
     post_training_num_steps: int = 500
     post_training_checkpoint_label: str = "eval_promoted"
+    # smoke7 — when True, promote the lateral_velocity_abs and
+    # world_y_drift_abs_m soft signals to HARD promotion gates (using the
+    # existing documented soft caps) so a forward+tiny-vy run cannot
+    # promote a directionally-drifting checkpoint.  Default False keeps
+    # historical behavior (these stay report-only soft signals).
+    post_training_strict_lateral_drift: bool = False
 
 
 @dataclass
@@ -1114,6 +1120,15 @@ class RewardWeightsConfig(Freezable):
     # reference it; the v3 env path does not read it.
     ref_contact_match_sigma: float = 0.5
     cmd_forward_velocity_alpha: float = 4.0
+    # smoke7 — ANISOTROPIC 2D velocity tracking.  When > 0 AND
+    # ``cmd_velocity_track_dim == 2``, the lateral axis uses this α
+    # instead of ``cmd_forward_velocity_alpha`` so the forward axis can
+    # stay tight (α_x=562.5) while the lateral axis is loose (α_y≈20-40)
+    # and therefore LIVE at smoke6-scale |vy| errors (~0.10-0.15) where a
+    # shared tight α would collapse the whole reward to ~2e-7.  Default
+    # 0.0 = isotropic (legacy: both axes use ``cmd_forward_velocity_alpha``,
+    # byte-identical to pre-smoke7 dim=2 behavior).  Ignored when dim==1.
+    cmd_forward_velocity_alpha_y: float = 0.0
     # cmd_forward_velocity_track reward dimensionality:
     #   1 (default) - legacy scalar tracking on vx only.
     #   2           - TB-style heading-local 2D tracking on (vx, vy),

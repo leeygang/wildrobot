@@ -1416,6 +1416,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         alpha: jax.Array,
         track_dim: int,
         vy_cmd: jax.Array = jp.float32(0.0),
+        alpha_y: jax.Array | None = None,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         """Compute cmd_forward_velocity_track and its 2D diagnostics.
 
@@ -1435,8 +1436,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         ``track_dim == 2`` (TB-style 2D target):
 
-            exp(-alpha * ((vx_actual - velocity_cmd)^2
-                        + (vy_actual - vy_cmd)^2))
+            exp(-(alpha   * (vx_actual - velocity_cmd)^2
+                + alpha_y * (vy_actual - vy_cmd)^2))
+
+        ``alpha_y`` (smoke7) sets a SEPARATE lateral-axis α.  ``alpha_y
+        is None`` (default) -> isotropic, i.e. ``alpha_y = alpha`` ->
+        the legacy ``exp(-alpha * (vx²+vy²))`` form byte-for-byte.  A
+        smaller ``alpha_y`` (20-40 vs the forward α=562.5) keeps the
+        lateral gradient LIVE at smoke6-scale |vy| errors (~0.10-0.15)
+        where a shared tight α collapses the reward to ~2e-7.
 
         ``vy_cmd`` defaults to 0.0 for backward compatibility (C16 /
         NEW-1 mitigation): legacy callers that omit ``vy_cmd``
@@ -1474,13 +1482,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         vy_err_cmd = lateral_velocity - vy_cmd
         vx_err_ref = forward_velocity - ref_forward_velocity
         vy_err_ref = lateral_velocity - ref_lateral_velocity
+        # Exponent built per-axis so the lateral axis can use a SEPARATE
+        # α_y (smoke7 anisotropic).  ``alpha_y is None`` (Python/trace-time
+        # branch) -> isotropic: both axes use ``alpha`` -> byte-identical to
+        # the legacy ``exp(-alpha * (vx²[+vy²]))`` form.
+        vx_term = alpha * (vx_err_cmd * vx_err_cmd)
         if track_dim == 1:
-            err_sq = vx_err_cmd * vx_err_cmd
+            neg_exponent = vx_term
         elif track_dim == 2:
-            err_sq = vx_err_cmd * vx_err_cmd + vy_err_cmd * vy_err_cmd
+            ay = alpha if alpha_y is None else alpha_y
+            neg_exponent = vx_term + ay * (vy_err_cmd * vy_err_cmd)
         else:
             raise ValueError(f"track_dim must be 1 or 2; got {track_dim!r}")
-        reward = jp.exp(-alpha * err_sq).astype(jp.float32)
+        reward = jp.exp(-neg_exponent).astype(jp.float32)
         # ``cmd_velocity_xy_err`` — actual (vx, vy) vs (velocity_cmd,
         # vy_cmd).  Under ``track_dim == 2`` this IS the reward-target
         # error; under ``track_dim == 1`` it is a diagnostic distance
@@ -2209,6 +2223,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ref_lateral_velocity=ref_pelvis_vel_xy[1],
                 alpha=jp.float32(weights.cmd_forward_velocity_alpha),
                 track_dim=self._cmd_velocity_track_dim,
+                # smoke7 anisotropic lateral α (Python/trace-time branch):
+                # > 0 -> separate loose α_y on vy; 0/absent -> isotropic
+                # (None) -> byte-identical to legacy dim=2 behavior.
+                alpha_y=(
+                    jp.float32(weights.cmd_forward_velocity_alpha_y)
+                    if float(getattr(weights, "cmd_forward_velocity_alpha_y", 0.0)) > 0.0
+                    else None
+                ),
             )
         )
 

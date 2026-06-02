@@ -834,3 +834,47 @@ def test_post_training_eval_selection_score_uses_configured_horizon() -> None:
     src = inspect.getsource(train_mod)
     assert "mean_episode_length\"]) / 500.0" not in src
     assert "/ float(max(1, post_training_num_steps))" in src
+
+
+def test_deterministic_eval_gate_smoke7_strict_lateral_drift() -> None:
+    """smoke7: lateral drift becomes a HARD promotion gate when
+    strict_lateral_drift=True, but stays a report-only soft signal by default.
+
+    Candidate has GOOD forward metrics (like smoke6 ckpt_1900) but excessive
+    lateral drift: lateral_velocity_abs 0.152 > 0.10 cap, world_y_drift 0.48 >
+    0.30 cap.
+    """
+    drifty = {
+        "forward_velocity": 0.191,
+        "cmd_vs_achieved_forward": 0.066,
+        "mean_episode_length": 1000.0,
+        "step_length_touchdown_event_m": 0.15,
+        "lateral_velocity_abs": 0.152,
+        "world_y_drift_abs_m": 0.480,
+    }
+    # Default (historical): forward gates pass, lateral is soft -> promotable.
+    default_decision = deterministic_eval_gate(
+        drifty, eval_velocity_cmd=0.13, eval_num_steps=1000
+    )
+    assert default_decision.passed is True
+    assert default_decision.soft_signals["lateral_velocity_abs"] is False
+    assert default_decision.soft_signals["world_y_drift_abs_m"] is False
+
+    # smoke7 strict: lateral drift now blocks promotion.
+    strict_decision = deterministic_eval_gate(
+        drifty, eval_velocity_cmd=0.13, eval_num_steps=1000,
+        strict_lateral_drift=True,
+    )
+    assert strict_decision.passed is False
+    assert strict_decision.gates["lateral_velocity_abs"] is False
+    assert strict_decision.gates["world_y_drift_abs_m"] is False
+    # forward gates themselves still pass — only the drift gates fail
+    assert strict_decision.gates["forward_velocity"] is True
+
+    # A clean (low-drift) candidate passes even under strict mode.
+    clean = dict(drifty, lateral_velocity_abs=0.05, world_y_drift_abs_m=0.10)
+    clean_decision = deterministic_eval_gate(
+        clean, eval_velocity_cmd=0.13, eval_num_steps=1000,
+        strict_lateral_drift=True,
+    )
+    assert clean_decision.passed is True

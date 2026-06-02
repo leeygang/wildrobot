@@ -768,6 +768,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
                 "post_training_checkpoint_label",
                 eval_cfg.get("promotion_checkpoint_label", "eval_promoted"),
             ),
+            post_training_strict_lateral_drift=eval_cfg.get(
+                "post_training_strict_lateral_drift", False
+            ),
         ),
         rollback=PPORollbackConfig(
             enabled=rollback_cfg.get("enabled", False),
@@ -955,6 +958,7 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         lin_vel_z_alpha=rewards.get("lin_vel_z_alpha", 200.0),
         ang_vel_xy_alpha=rewards.get("ang_vel_xy_alpha", 0.5),
         cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
+        cmd_forward_velocity_alpha_y=rewards.get("cmd_forward_velocity_alpha_y", 0.0),
         cmd_velocity_track_dim=int(rewards.get("cmd_velocity_track_dim", 1)),
         # v0.21.0 P6.4 (H5) — yaw-rate tracking term.  Defaults
         # mirror RewardWeightsConfig: weight 0.0 (legacy YAMLs are
