@@ -878,3 +878,32 @@ def test_deterministic_eval_gate_smoke7_strict_lateral_drift() -> None:
         strict_lateral_drift=True,
     )
     assert clean_decision.passed is True
+
+
+def test_lateral_probe_gate_passed_helper() -> None:
+    """smoke7 2D-tracking gate: all non-skipped probes must pass; an evaluated
+    failing probe blocks; configured-but-all-skipped fails closed; empty (no
+    probes) fails closed (caller only invokes it when probes are configured)."""
+    from training.core.post_training_eval import lateral_probe_gate_passed
+
+    # both lateral probes pass -> gate passes
+    assert lateral_probe_gate_passed([
+        {"passed": True, "skip_reason": None},
+        {"passed": True, "skip_reason": None},
+    ]) is True
+    # one evaluated probe fails -> gate fails
+    assert lateral_probe_gate_passed([
+        {"passed": True, "skip_reason": None},
+        {"passed": False, "skip_reason": None},
+    ]) is False
+    # all skipped (e.g. |vy| below criterion floor) -> fail closed
+    assert lateral_probe_gate_passed([
+        {"passed": False, "skip_reason": "cmd_below_min"},
+    ]) is False
+    # no probes -> fail closed
+    assert lateral_probe_gate_passed([]) is False
+    # a passing probe + a skipped probe -> still passes (skipped ignored)
+    assert lateral_probe_gate_passed([
+        {"passed": True, "skip_reason": None},
+        {"passed": False, "skip_reason": "cmd_below_min"},
+    ]) is True

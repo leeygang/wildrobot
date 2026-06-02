@@ -378,6 +378,20 @@ def rank_checkpoint_candidates(
     return ranked_all[:top_k], True
 
 
+def lateral_probe_gate_passed(probe_results: Sequence[Mapping[str, Any]]) -> bool:
+    """smoke7 2D-tracking acceptance gate over a candidate's lateral/yaw probes.
+
+    Every NON-skipped probe must pass its Appendix C signed-ratio criterion
+    (``evaluate_lateral_yaw_pass_criterion``), AND at least one probe must have
+    been evaluated — a configured-but-all-skipped probe set cannot validate 2D
+    tracking, so it fails closed.  Used only when
+    ``ppo.eval.post_training_strict_lateral_drift`` is on AND probes are
+    configured; otherwise probes stay report-only.
+    """
+    evaluated = [p for p in probe_results if p.get("skip_reason") is None]
+    return bool(evaluated) and all(bool(p.get("passed")) for p in evaluated)
+
+
 def deterministic_eval_gate(
     eval_metrics: Mapping[str, Any],
     eval_velocity_cmd: float,

@@ -1267,6 +1267,27 @@ def start_training(
                     for row in eval_rows:
                         row["lateral_yaw_probes"] = []
 
+                # smoke7 — config-gated 2D acceptance: when strict lateral drift
+                # is on AND nonzero-vy probes are configured, the probes BLOCK
+                # promotion (they are report-only otherwise).  This completes the
+                # acceptance contract: not only "low lateral drift when commanded
+                # straight" (the drift hard-gate on the primary cmd) but also
+                # "actually tracks the commanded tiny vy" (Appendix C signed
+                # ratio >= 0.5 on every non-skipped probe).  Other configs
+                # (strict off, or no probes) are unaffected.
+                if post_training_strict_lateral_drift and probe_cmds:
+                    from training.core.post_training_eval import (
+                        lateral_probe_gate_passed,
+                    )
+
+                    for row in eval_rows:
+                        probes_ok = lateral_probe_gate_passed(
+                            row.get("lateral_yaw_probes", [])
+                        )
+                        row["lateral_probe_gate_passed"] = probes_ok
+                        if not probes_ok:
+                            row["passed"] = False
+
                 print()
                 print("Deterministic eval results:")
                 print(

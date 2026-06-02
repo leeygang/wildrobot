@@ -18,8 +18,15 @@
 #   * reward_weights.cmd_forward_velocity_alpha_y: 0.0 -> 30.0  (NEW — see below)
 #   * env.cmd_sampler_3d_branched: false -> true      (TB-branched (vx, vy, 0))
 #   * env.min_velocity_y / max_velocity_y: 0.0 -> -0.03 / +0.03  (tiny vy)
+#   * env.loc_ref_offline_command_vy_grid: add +-0.03 so the tiny-vy command
+#       maps to a MATCHING reference bin (nearest-key L2 would otherwise snap
+#       +-0.03 -> the 0.0 bin -> forward-only reference).  Does NOT widen the
+#       COMMAND (still +-0.03); only adds matching reference bins.
+#   * env.eval_velocity_cmd_probes: [] -> [[0.13,+-0.03,0]]  (2D-tracking eval)
 #   * env.max_yaw_rate: 0.0 (kept) ; reward_weights.cmd_yaw_rate_track: 0.0 (kept)
-#   * ppo.eval.post_training_strict_lateral_drift: false -> true (drift blocks promote)
+#   * ppo.eval.post_training_strict_lateral_drift: false -> true
+#       (forward cmd: lateral drift blocks promote; AND the nonzero-vy probes
+#        must pass -> 2D tracking is part of the acceptance contract)
 #
 # WHY NAIVE SCALAR-α 2D WAS REJECTED (code-grounded):
 #   WR's dim==2 reward (wildrobot_env.py::_cmd_forward_velocity_track_reward)
@@ -456,7 +463,12 @@ env:
   # ceiling is read from training metrics (``env/forward_velocity`` at the
   # sampled high commands); the primary ``eval_velocity_cmd=[0.13,0,0]``
   # gates G4.  A correctly-named forward-probe field can be added later.
-  eval_velocity_cmd_probes: []
+  # smoke7: nonzero-vy probes so the deterministic eval actually MEASURES 2D
+  # tracking (achieved vy vs commanded vy, Appendix C signed ratio >= 0.5).
+  # Under post_training_strict_lateral_drift these probes BLOCK promotion
+  # (train.py), so 'tracks tiny vy' is part of smoke7's acceptance contract
+  # — not just 'low drift when commanded straight'.
+  eval_velocity_cmd_probes: [[0.13, 0.03, 0.0], [0.13, -0.03, 0.0]]
 
   # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
   # (zero / pure-turn / ellipse-walk).  When false, env emits the
@@ -534,7 +546,11 @@ env:
   # in the [grid_max, sampler_max] band silently snap to grid_max in
   # the reference lookup, training the policy against a dishonest
   # prior in the upper ~23% of the cmd range.
-  loc_ref_offline_command_vy_grid: [-0.13, -0.065, 0.0, 0.065, 0.13]
+  # smoke7: ADD +-0.03 so the tiny-vy command (sampled vy in [-0.03, 0.03])
+  # maps to a MATCHING reference bin.  The 3D lookup is nearest-key L2
+  # (wildrobot_env.py ~1668); without a +-0.03 bin, vy=0.03 snaps to 0.0
+  # (|0.03-0|<|0.03-0.065|) -> forward-only reference + lateral-only reward.
+  loc_ref_offline_command_vy_grid: [-0.13, -0.065, -0.03, 0.0, 0.03, 0.065, 0.13]
   loc_ref_offline_command_yaw_rate_grid: [-0.25, -0.125, 0.0, 0.125, 0.25]
   # Note (vs spec): the v0.21 plan mentions a YAML knob
   # ``loc_ref_offline_command_vx_grid`` for explicitly listing the vx

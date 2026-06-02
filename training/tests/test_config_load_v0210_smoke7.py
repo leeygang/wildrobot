@@ -85,3 +85,26 @@ def test_smoke6_isotropic_unchanged() -> None:
     assert c6.reward_weights.cmd_velocity_track_dim == 1
     assert c6.reward_weights.cmd_forward_velocity_alpha_y == pytest.approx(0.0)
     assert c6.ppo.eval.post_training_strict_lateral_drift is False
+
+
+def test_smoke7_reference_grid_includes_tiny_vy(cfg) -> None:
+    """Finding-1 fix: the offline vy grid must include ±0.03 so the tiny-vy
+    command maps to a MATCHING reference bin (nearest-key L2 would otherwise
+    snap ±0.03 -> the 0.0 bin -> forward-only reference)."""
+    grid = [round(float(v), 4) for v in cfg.env.loc_ref_offline_command_vy_grid]
+    assert 0.03 in grid and -0.03 in grid, f"vy grid missing ±0.03: {grid}"
+    # the sampled command edge (±0.03) must snap to itself, not 0.0
+    nearest = min(grid, key=lambda g: abs(g - 0.03))
+    assert nearest == pytest.approx(0.03), f"vy=0.03 snaps to {nearest}, not 0.03"
+
+
+def test_smoke7_has_nonzero_vy_eval_probes(cfg) -> None:
+    """Finding-2 fix: a nonzero-vy probe must exist so the deterministic eval
+    measures 2D tracking (not just forward+drift)."""
+    probes = [list(p) for p in cfg.env.eval_velocity_cmd_probes]
+    assert probes, "smoke7 must configure nonzero-vy eval probes"
+    lateral = [p for p in probes if abs(float(p[1])) >= 0.02]
+    assert lateral, f"no probe with |vy|>=0.02 (Appendix C min): {probes}"
+    # probe |vy| must be at/above the criterion floor and within the cmd range
+    for p in lateral:
+        assert abs(float(p[1])) == pytest.approx(0.03)
