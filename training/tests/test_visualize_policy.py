@@ -14,6 +14,7 @@ from training.eval.visualize_policy import (
     _adapter_layout_enabled,
     _build_sample_velocity_cmd,
     _is_terminated_from_pose,
+    _make_tracking_camera,
     _network_activation_name,
     _resolve_log_path,
     _validate_user_fixed_velocity_cmd,
@@ -189,6 +190,28 @@ def test_resolve_log_path_with_directory_used_as_is() -> None:
     assert p == Path("/var/tmp/custom.log")
     rel = _resolve_log_path("subdir/x.log")
     assert rel == Path("subdir/x.log")
+
+
+def test_make_tracking_camera_tracks_floating_base() -> None:
+    cfg = load_training_config(str(SMOKE12B_CFG))
+    scene_path = Path(cfg.env.scene_xml_path)
+    if not scene_path.is_absolute():
+        scene_path = PROJECT_ROOT / scene_path
+    mj_model = mujoco.MjModel.from_xml_path(str(scene_path))
+
+    cam = _make_tracking_camera(mj_model, distance=2.5, elevation=-15.0, azimuth=135.0)
+    assert cam.type == mujoco.mjtCamera.mjCAMERA_TRACKING
+    # trackbodyid must point at the body that owns the (free) floating base.
+    free_jids = [
+        j
+        for j in range(mj_model.njnt)
+        if mj_model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE
+    ]
+    assert free_jids, "smoke12b model is expected to have a free-joint base"
+    assert cam.trackbodyid == int(mj_model.jnt_bodyid[free_jids[0]])
+    assert cam.distance == pytest.approx(2.5)
+    assert cam.azimuth == pytest.approx(135.0)
+    assert cam.elevation == pytest.approx(-15.0)
 
 
 def test_tee_mirrors_writes_to_all_streams() -> None:

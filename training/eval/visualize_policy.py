@@ -133,6 +133,40 @@ def _resolve_log_path(log_arg: str | None) -> Path | None:
     return candidate
 
 
+def _make_tracking_camera(
+    mj_model,
+    *,
+    distance: float = 2.5,
+    elevation: float = -15.0,
+    azimuth: float = 135.0,
+):
+    """Build a camera that tracks the robot's floating base.
+
+    Used for headless / offscreen recording so the robot stays centered as it
+    walks instead of walking out of frame.  Mirrors the live viewer's
+    behind-right angle (distance / elevation / azimuth).  Uses MuJoCo's
+    ``mjCAMERA_TRACKING`` mode anchored to the body that owns the free joint,
+    so the camera follows the base automatically every ``update_scene``.
+    Falls back to a free camera looking at the world origin if the model has
+    no free joint.
+    """
+    cam = mujoco.MjvCamera()
+    cam.distance = distance
+    cam.elevation = elevation
+    cam.azimuth = azimuth
+    free_joint_ids = [
+        j
+        for j in range(mj_model.njnt)
+        if mj_model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE
+    ]
+    if free_joint_ids:
+        cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        cam.trackbodyid = int(mj_model.jnt_bodyid[free_joint_ids[0]])
+    else:
+        cam.lookat[:] = [0.0, 0.0, 0.4]
+    return cam
+
+
 def _build_policy_spec(training_cfg, robot_cfg, action_filter_alpha: float) -> PolicySpec:
     return build_policy_spec_from_training_config(
         training_cfg=training_cfg,
@@ -1181,6 +1215,9 @@ def main():
 
         print("\nRunning in headless mode (native MuJoCo - fast)...")
 
+        # Tracking camera so the recorded robot stays centered as it walks.
+        track_cam = _make_tracking_camera(mj_model) if renderer is not None else None
+
         max_steps = (
             record_steps if args.record else 10000
         )  # Limit steps if not recording
@@ -1255,7 +1292,7 @@ def main():
 
             # Recording
             if renderer and step_count <= record_steps:
-                renderer.update_scene(mj_data)
+                renderer.update_scene(mj_data, camera=track_cam)
                 frame = renderer.render()
                 frames.append(frame)
 
@@ -1417,7 +1454,9 @@ def main():
                     # Recording (if enabled with viewer)
                     if args.record and step_count <= record_steps:
                         renderer = mujoco.Renderer(mj_model, 640, 480)
-                        renderer.update_scene(mj_data)
+                        renderer.update_scene(
+                            mj_data, camera=_make_tracking_camera(mj_model)
+                        )
                         frame = renderer.render()
                         frames.append(frame)
                         renderer.close()
