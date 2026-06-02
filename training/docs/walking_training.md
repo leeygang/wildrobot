@@ -266,11 +266,12 @@ The first locomotion action contract should be:
 Forms used in the live code:
 
 ```text
-smoke7:           q_target = q_ref_from_library(t) + clip(action,±1)·scale   # prior-guided
+v0.20.1 smoke7:   q_target = q_ref_from_library(t) + clip(action,±1)·scale   # historical prior-guided
 smoke8/12b–4A:    q_target = home_q + clip(action,±1)·scale                  # home-anchored, prior-free
 smoke9c:          q_target = ref_init_q + clip(action,±1)·scale
 smoke5 (RSI):     q_target = q_ref(t) + clip(action,±1)·scale  + RSI start   # first authoritative from-rest pass
-smoke6 (TB-contract): q_target = home_q + clip(action,±1)·scale_1.1 + RSI    # active direction
+smoke6 (TB-contract): q_target = home_q + clip(action,±1)·scale_1.1 + RSI    # validated active direction
+smoke7 (planned): q_target = home_q + clip(action,±1)·scale_1.1 + RSI + 2D tiny-vy training
 ```
 
 The current env implementation is in
@@ -278,7 +279,7 @@ The current env implementation is in
 
 This is an explicit architectural decision, not an inherited default.
 
-> **⚠️ Paradigm switch in progress (v0.21.0 smoke6, 2026-05-31).** smoke5's
+> **⚠️ Paradigm switch in progress (v0.21.0 smoke6/7, 2026-06-01).** smoke5's
 > `q_ref` base **works** under WR's current bounded-residual contract: it is
 > the first completed run whose authoritative from-rest post-training eval
 > passes the hard forward-walking gates. Its defect is gait style
@@ -303,7 +304,11 @@ This is an explicit architectural decision, not an inherited default.
 > stride is reachable from `home` within ±0.353 hip_pitch (FK → 0.27 m), so
 > the policy has the authority to *build* a gait; it does **not** need to
 > track the prior jointwise (and can't — that's fine, like TB). See
-> `training/CHANGELOG.md` `[v0.21.0-smoke5-result + smoke6-plan]`.
+> `training/CHANGELOG.md` `[v0.21.0-smoke6-result + smoke7-plan]`. smoke6 now
+> has authoritative passing checkpoints from rest under the `home` base; the
+> remaining defect is directional control. smoke7 is therefore **not** a
+> contract reset — it is the first true 2D extension of the validated
+> `home + RSI` path.
 
 Why this first:
 
@@ -664,7 +669,31 @@ Active state, summarized:
   anti-exploit residual-magnitude bound is retired for the smoke6
   `home`-base branch in favor of velocity-ratio + torque-saturation +
   stepping-not-skating. Full result + plan: `training/CHANGELOG.md`
-  `[v0.21.0-smoke5-result + smoke6-plan]`.
+  `[v0.21.0-smoke6-result + smoke7-plan]`.
+- **Smoke6 result (2026-06-01): the `home + RSI` contract is now validated.**
+  Both the 30M and resumed 60M smoke6 runs produced **authoritative from-rest
+  forward-walking checkpoints** under the `home` base. The better 60M selected
+  checkpoint (`checkpoint_1900_38912000.pkl`) reached `forward_velocity 0.191`,
+  `cmd_vs_achieved_forward 0.066`, `step_length_touchdown 0.152`, and
+  `mean_episode_length 1000`, with real per-touchdown stride. So the remaining
+  problem is **directional drift**, not gait generation. The selected 60M
+  checkpoint still soft-fails `lateral_velocity_abs 0.152` and
+  `world_y_drift_abs_m 0.480`, which is why smoke7 focuses on 2D command
+  ownership rather than changing the action contract again.
+- **Smoke7 direction (2026-06-01): true 2D tiny-`vy` on the validated smoke6
+  base.** Resume from the smoke6 60M promoted checkpoint, keep `home + RSI +
+  scale_1.1`, and switch from smoke6's forward-only objective to a live 2D
+  objective:
+  - anisotropic XY reward (`alpha_x=562.5`, `alpha_y=30`) instead of the
+    naive scalar-α 2D form, which would be numerically dead at smoke6-scale
+    `|vy|≈0.15`;
+  - branched sampler on with `vy ∈ [-0.03, +0.03]`, `wz=0`;
+  - matching `±0.03` reference bins added to the 3D library lookup so tiny-`vy`
+    commands map to a matching reference row instead of snapping to `vy=0`;
+  - strict promotion requires both low drift on straight-forward eval and
+    successful nonzero-`vy` probes.
+  This keeps the PPO-owned `home` contract and extends only the command/task
+  dimensions. Yaw remains deferred until tiny-`vy` stabilizes.
 
 Per-run detail (verdicts, gates, checkpoint picks):
 `training/CHANGELOG.md` for smoke13+,

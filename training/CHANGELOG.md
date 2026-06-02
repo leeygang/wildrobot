@@ -8,6 +8,110 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke6-result + smoke7-plan] - 2026-06-01: `home` + RSI works (real from-rest stride), but drift remains; smoke7 = true 2D tiny-`vy`
+
+### Smoke6 result — TB-style `home` base + RSI is validated as a WR walking contract
+- **30M run**: `training/wandb/offline-run-20260531_142749-9mw1cyv6`
+- **60M resumed run**: `training/wandb/offline-run-20260601_074034-fayqouf3`
+- **Authoritative promoted checkpoints**:
+  - 30M: `checkpoint_940_19251200.pkl`
+  - 60M: `checkpoint_1900_38912000.pkl`
+- **Config**: `ppo_walking_v0210_smoke6_home_rsi.yaml`
+
+**What smoke6 proved (authoritative deterministic from-rest eval):**
+- `home` base + RSI + widened coverage-1.1 scales can produce **real forward walking from rest** on WR.
+- This is not a sway/tap artifact: the promoted checkpoints have real per-touchdown stride and survive the full 1000-step eval horizon.
+- The remaining defect is **directional control** (lateral/path drift), not gait generation.
+
+### 30M vs 60M authoritative eval
+
+| run / selected ckpt | fwd vel | cmd err | step len | ep len | ratio | lat vel abs | world-y drift | yaw drift | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 30M `checkpoint_940_19251200.pkl` | 0.1912 | 0.0671 | 0.1490 | 1000 | 1.47 | 0.2473 | 1.6512 m | 0.2472 rad | hard-pass, soft-fail |
+| 60M `checkpoint_1900_38912000.pkl` | 0.1913 | 0.0657 | 0.1519 | 1000 | 1.47 | 0.1521 | 0.4801 m | 0.1075 rad | hard-pass, soft-fail |
+
+**Interpretation**
+- **60M improved smoke6 materially** on directional stability: lateral velocity, world-y drift, and yaw drift all dropped.
+- But the best checkpoint came **early** in the resumed run (`1900`), and later train-side checkpoints regressed. So “just train longer” is low-yield on the same config.
+- The hard forward-walking gates pass, but the promoted checkpoints still **soft-fail**:
+  - `lateral_velocity_abs > 0.10`
+  - `world_y_drift_abs_m > 0.30`
+
+### Why this validates the `home` contract (code + data)
+- WR action contract under smoke6:
+  - `target_q = clip(base_q + clip(action) * scale)` in `wildrobot_env.py::_compose_target_q_from_residual`
+  - smoke6 sets `base_q = home`, keeps RSI on, and uses the widened scales guarded by `_assert_rsi_reachable_from_home`
+- TB comparison (local code):
+  - TB builds gait from a static default/home-like motor target: `default_action + 0.25 * action`
+  - policy action is **not clipped in policy space** before scaling
+  - final motor target is clipped at motor limits (`mjx_env.py:1543`, `mjx_env.py:1641`)
+
+**Conclusion:** smoke6 closes the main uncertainty from the smoke5 pivot discussion. WR does **not** need a `q_ref` action base to generate stride once `home + RSI + sufficient authority` are in place. The `q_ref` branch remains a validated fallback; the `home` branch is now a validated active path.
+
+### Remaining gap after smoke6
+Smoke6 is still **forward-only** in the task objective:
+- `cmd_sampler_3d_branched = false` in smoke6, so runtime cmds are `(vx, 0, 0)`
+- `cmd_velocity_track_dim = 1`
+- `cmd_yaw_rate_track = 0`
+- path/reference imitation terms remain off
+
+That is why smoke6 can walk forward but still drift laterally: the policy owns the gait, but it is only explicitly rewarded to own the **forward** component.
+
+### Why naive 2D is wrong (validated against WR code + smoke6 numbers)
+WR's 2D velocity reward in `wildrobot_env.py::_cmd_forward_velocity_track_reward` historically used a **single α**:
+
+`exp(-alpha * ((vx_err)^2 + (vy_err)^2))`
+
+At the selected 60M smoke6 checkpoint:
+- `vx_err ≈ 0.0657`
+- `|vy| ≈ 0.1521`
+
+With smoke6's forward α=562.5:
+- `exp(-562.5 * (0.0657^2 + 0.1521^2)) ≈ 2e-7`
+
+So a one-line `cmd_velocity_track_dim: 1 -> 2` change would make the reward effectively **dead** again. This is the key reason smoke7 must use **anisotropic** 2D reward, not TB's scalar-σ form copied blindly into WR's current error regime.
+
+### Smoke7 direction — true 2D tiny-`vy` with live lateral gradient [implemented, pending run]
+- **Config**: `training/configs/ppo_walking_v0210_smoke7_2d_tiny_vy.yaml`
+- **Resume from**: smoke6 60M promoted checkpoint `checkpoint_1900_38912000.pkl`
+
+**Kept from smoke6**
+- `loc_ref_residual_base: home`
+- `loc_ref_rsi_enabled: true`
+- coverage-1.1 symmetric scales
+- forward α (`alpha_x`) stays **562.5**
+- yaw reward stays off (`cmd_yaw_rate_track = 0.0`)
+
+**New smoke7 levers**
+1. **Anisotropic 2D velocity reward**  
+   `exp(-(alpha_x * vx_err^2 + alpha_y * vy_err^2))` with:
+   - `alpha_x = 562.5`
+   - `alpha_y = 30.0`
+
+   This keeps the forward axis tight while making the lateral axis **live** at smoke6-scale errors. At `|vy_err| ≈ 0.15`, the lateral factor is `exp(-30 * 0.15^2) ≈ 0.51`, not `~0`.
+
+2. **Branched sampler ON with tiny `vy` only**
+   - `cmd_sampler_3d_branched: true`
+   - `min_velocity_y = -0.03`
+   - `max_velocity_y = +0.03`
+   - `max_yaw_rate = 0.0`
+
+3. **Matching tiny-`vy` reference bins**
+   - add `±0.03` to `loc_ref_offline_command_vy_grid`
+   - without these bins, nearest-key L2 lookup would snap `vy=±0.03` to the `vy=0.0` reference row, which is not true 2D command ownership
+
+4. **2D acceptance contract completed**
+   - strict lateral drift remains a hard promotion gate
+   - nonzero-`vy` eval probes `[(0.13, +0.03, 0), (0.13, -0.03, 0)]` are configured
+   - under strict mode, those probes also block promotion: smoke7 must both
+     - walk straight with low drift when commanded straight
+     - and actually track commanded tiny `vy`
+
+### Recommendation after smoke6
+- **Do not run more smoke6** on the same config. The best 60M checkpoint already came mid-run, and the contract question is answered.
+- **Run smoke7 next**. It is the minimal, code-grounded bridge from smoke6's forward-only PPO-owned gait to true 2D command ownership.
+- **Defer yaw (`wz`) until smoke7 stabilizes.** The next widening should be `vy` first, then yaw, not both together.
+
 ## [v0.21.0-smoke5-result + smoke6-plan] - 2026-05-31: RSI + `q_ref` base = first authoritative from-rest forward-walk pass; smoke6 = TB-style PPO-owned gait pivot
 
 > **Verdict correction (2026-05-31):** an earlier draft of this entry called smoke5 "FAILED (posture/sway)" based on *train-rollout* metrics. The authoritative **deterministic from-rest eval** shows smoke5 **walks at command** — corrected below. (Process lesson: run the deterministic eval BEFORE issuing a verdict; a stochastic train rollout with large exploration noise is not the deployment behavior.)
