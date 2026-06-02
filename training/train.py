@@ -1348,17 +1348,36 @@ def start_training(
 
                 no_passing_message: Optional[str] = None
                 if selected_row is None:
-                    # Make the no-passing outcome unambiguous in the
-                    # JSON so downstream analyzer / reporting tools
-                    # cannot silently fall back to a train-side proxy.
+                    # Make the no-passing outcome unambiguous in the JSON so
+                    # downstream analyzer / reporting tools cannot silently fall
+                    # back to a train-side proxy.  List the gate set ACTUALLY
+                    # applied (the forward set plus, when configured, the smoke7
+                    # strict lateral-drift + probe-tracking gates) and surface the
+                    # observed failing gates, so a smoke7 null-promotion isn't
+                    # mis-described as a forward-only ("G4") failure.
+                    applied_gates = [
+                        "forward_velocity",
+                        "cmd_vs_achieved_forward",
+                        "mean_episode_length",
+                        "step_length_touchdown_event_m",
+                        "forward_velocity_cmd_ratio",
+                    ]
+                    if post_training_strict_lateral_drift:
+                        applied_gates += ["lateral_velocity_abs", "world_y_drift_abs_m"]
+                        if probe_cmds:
+                            applied_gates.append("lateral_probe_tracking")
+                    observed_fail_reasons = sorted(
+                        {r for row in eval_rows for r in row.get("fail_reasons", [])}
+                    )
                     no_passing_message = (
-                        "No checkpoint passed the deterministic G4 gates "
-                        "(forward_velocity, cmd_vs_achieved_forward, "
-                        "mean_episode_length, step_length_touchdown_event_m, "
-                        "forward_velocity_cmd_ratio).  selected_checkpoint_path is "
-                        "null; do NOT promote any checkpoint from this run based on "
-                        "training-side proxies like env/episode_length.  See "
-                        "top_k_candidates[*].fail_reasons for per-candidate detail."
+                        "No checkpoint passed the deterministic post-training gates ["
+                        + ", ".join(applied_gates)
+                        + "].  Observed failing gates across candidates: "
+                        + (", ".join(observed_fail_reasons) or "(none recorded)")
+                        + ".  selected_checkpoint_path is null; do NOT promote any "
+                        "checkpoint from this run based on training-side proxies like "
+                        "env/episode_length.  See top_k_candidates[*].fail_reasons "
+                        "for per-candidate detail."
                     )
 
                 summary_payload = {
