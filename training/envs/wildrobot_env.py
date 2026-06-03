@@ -481,6 +481,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 "reward_weights.cmd_velocity_track_dim must be 1 or 2; "
                 f"got {self._cmd_velocity_track_dim!r}"
             )
+        # smoke8 — resolved lateral-axis alpha for the lateral DIAGNOSTIC metrics
+        # (reward/cmd_lateral_velocity_track + tracking/cmd_vy_err).  Mirrors the
+        # reward's anisotropic branch: use cmd_forward_velocity_alpha_y when set
+        # (>0), else fall back to the (isotropic) forward alpha.  Used by both
+        # the reset and step metric paths so they report the same formula.
+        _alpha_x = float(self._config.reward_weights.cmd_forward_velocity_alpha)
+        _alpha_y = float(
+            getattr(self._config.reward_weights, "cmd_forward_velocity_alpha_y", 0.0)
+        )
+        self._cmd_lateral_alpha = _alpha_y if _alpha_y > 0.0 else _alpha_x
         # Default reflects the WR-normalized value
         # (LocomotionEnvConfig.close_feet_threshold = 0.146).  Only fires
         # if the env is constructed outside TrainingConfig.
@@ -2234,6 +2244,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
         )
 
+        # smoke8 lateral DIAGNOSTICS — split the lateral axis out of the combined
+        # 2D reward so analysis can tell forward success from lateral-sign
+        # failure (smoke7's one-sided mode was invisible in the combined term):
+        #   reward/cmd_lateral_velocity_track = exp(-alpha_y * (vy - vy_cmd)^2)
+        #     — the multiplicative lateral FACTOR of the velocity reward
+        #       (diagnostic; 1.0 = perfect lateral tracking, NOT a separate
+        #       term added to the reward sum).
+        #   tracking/cmd_vy_err = |vy - vy_cmd|  — signed-aware lateral error
+        #     magnitude (a persistent +bias under -vy commands shows up here).
+        _vy_err_cmd_diag = (lateral_velocity - velocity_cmd[1]).astype(jp.float32)
+        r_cmd_lateral_velocity_track = jp.exp(
+            -jp.float32(self._cmd_lateral_alpha) * _vy_err_cmd_diag * _vy_err_cmd_diag
+        ).astype(jp.float32)
+        cmd_vy_err = jp.abs(_vy_err_cmd_diag).astype(jp.float32)
+
         # ---- cmd/yaw_rate_track (v0.21.0 P6.4, H5) ---------------------------
         # TB parity: ``_reward_ang_vel_z`` (mjx_env.py:2437-2462)
         # tracks ``info["state_ref"]["ang_vel"][2]`` with
@@ -2567,6 +2592,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             feet_distance_torso_m=feet_dist.astype(jp.float32),
             cmd_velocity_xy_err=cmd_velocity_xy_err,
             lateral_velocity_abs=lateral_velocity_abs,
+            # smoke8 lateral diagnostics (see call site).
+            r_cmd_lateral_velocity_track=r_cmd_lateral_velocity_track,
+            cmd_vy_err=cmd_vy_err,
             # v0.21.0 follow-up — signed sibling for the lateral cmd
             # tracking pass criterion (Appendix C).  Logged from the
             # same heading-local lateral_velocity the abs metric
@@ -3708,6 +3736,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
         ).astype(jp.float32)
+        # smoke8 lateral diagnostics — same formula as the step path so reset
+        # and step report consistently (see _compute_reward_terms call site).
+        _reset_vy_err = (root_vel_h.linear[1] - velocity_cmd[1]).astype(jp.float32)
+        metrics_dict["reward/cmd_lateral_velocity_track"] = jp.exp(
+            -jp.float32(self._cmd_lateral_alpha) * _reset_vy_err * _reset_vy_err
+        ).astype(jp.float32)
+        metrics_dict["tracking/cmd_vy_err"] = jp.abs(_reset_vy_err).astype(jp.float32)
         # v0.21.0 follow-up — signed sibling for the lateral pass
         # criterion (walking_training.md Appendix C).  Zero at reset
         # (heading-local frame is stationary).
@@ -4308,6 +4343,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["tracking/lateral_velocity_abs"] = reward_terms[
             "lateral_velocity_abs"
         ]
+        # smoke8 lateral diagnostics.
+        terminal_metrics_dict["reward/cmd_lateral_velocity_track"] = reward_terms[
+            "r_cmd_lateral_velocity_track"
+        ]
+        terminal_metrics_dict["tracking/cmd_vy_err"] = reward_terms["cmd_vy_err"]
         # v0.21.0 follow-up — signed sibling for the lateral pass
         # criterion (Appendix C).
         terminal_metrics_dict["tracking/lateral_velocity_signed_m_s"] = (

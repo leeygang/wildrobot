@@ -1814,6 +1814,31 @@ METRIC_SPECS: List[MetricSpec] = [
         description="Absolute heading-local lateral velocity |vy| (m/s)",
     ),
     MetricSpec(
+        name="tracking/cmd_vy_err",
+        reducer=Reducer.MEAN,
+        log_prefix="tracking",
+        description=(
+            "smoke8 lateral diagnostic — |vy_actual - vy_cmd| (heading-local, "
+            "m/s).  Separates the lateral cmd-tracking error from the combined "
+            "tracking/cmd_velocity_xy_err.  A policy with a fixed +vy bias that "
+            "ignores the commanded sign (smoke7's failure) stays HIGH here under "
+            "negative-vy commands even when forward tracking is good."
+        ),
+    ),
+    MetricSpec(
+        name="reward/cmd_lateral_velocity_track",
+        reducer=Reducer.MEAN,
+        description=(
+            "smoke8 lateral diagnostic — the lateral multiplicative FACTOR of "
+            "the velocity reward, exp(-alpha_y * (vy - vy_cmd)^2) "
+            "(alpha_y = cmd_forward_velocity_alpha_y when set, else the forward "
+            "alpha).  1.0 = perfect lateral tracking, ->0 = lateral error.  This "
+            "is a diagnostic of the lateral subterm, NOT a separate weighted "
+            "term added to the reward sum (the lateral axis is already inside "
+            "reward/cmd_forward_velocity_track's combined exponent)."
+        ),
+    ),
+    MetricSpec(
         name="tracking/lateral_velocity_signed_m_s",
         reducer=Reducer.MEAN,
         log_prefix="tracking",
