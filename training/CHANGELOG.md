@@ -8,6 +8,91 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke7-result + smoke8-plan] - 2026-06-02: smoke7 2D path is wired correctly but learned one-sided lateral bias; smoke8 = stronger signed-`vy` ownership
+
+### Smoke7 result — no deployable checkpoint
+- **Run**: `training/wandb/offline-run-20260601_222706-ouby0oqx`
+- **Checkpoints**: `training/checkpoints/ppo_walking_v0210_smoke7_2d_tiny_vy_v00210_20260601_222724-ouby0oqx`
+- **Config**: `ppo_walking_v0210_smoke7_2d_tiny_vy.yaml`
+- **Authoritative result**: `selected_checkpoint_path = null`
+
+Smoke7 did **not** produce a promotable checkpoint. The deterministic post-training gate blocked every candidate on some combination of:
+- `lateral_probe_tracking`
+- `lateral_velocity_abs`
+- `world_y_drift_abs_m`
+
+Top candidate (`checkpoint_2060_42188800.pkl`) proves the core failure mode:
+
+| eval cmd | achieved behavior | result |
+|---|---|---|
+| `[0.13, 0.00, 0.0]` | `forward_velocity 0.179`, `cmd_err 0.061`, `step_length 0.132`, `episode_length 1000`, `world_y_drift_abs_m 0.286`, but `lateral_velocity_abs 0.184` | hard forward gates pass; lateral gate fails |
+| `[0.13, +0.03, 0.0]` | achieved signed `vy = +0.0509`, signed ratio `+1.70` | **PASS** |
+| `[0.13, -0.03, 0.0]` | achieved signed `vy = +0.0518`, signed ratio `-1.73` | **FAIL** |
+
+**Conclusion:** smoke7 did not fail because 2D wiring was broken. It failed because the policy learned a **one-sided lateral mode** and ignored the sign of the tiny lateral command.
+
+### What smoke7 validated in code
+- **Anisotropic 2D reward is live and correctly wired** in `wildrobot_env.py::_cmd_forward_velocity_track_reward`:
+  - `alpha_x = 562.5`
+  - `alpha_y = 30.0`
+- **TB-branched `(vx, vy, 0)` sampler is active**.
+- **Matching `±0.03` reference bins are present**, so tiny-`vy` commands do map to nonzero-`vy` reference rows.
+- **Nonzero-`vy` probes are authoritative** under strict mode; the probe gate now surfaces cleanly in `passed`, `gates`, and `fail_reasons`.
+
+So smoke7's null promotion is a **real behavioral result**, not a metrics bug.
+
+### Why smoke7 failed (code + data)
+1. **The lateral command signal is too small in practice.**  
+   Even with `min/max_velocity_y = ±0.03`, the TB-style ellipse sampler projects `y` by `cos(theta)`, so the late-run mean command magnitude is only:
+   - `tracking/velocity_cmd_vy_abs ≈ 0.015`
+
+2. **`alpha_y = 30` is too soft to flip the existing lateral attractor.**  
+   Under WR's anisotropic reward:
+
+   `reward = exp(-(alpha_x * vx_err^2 + alpha_y * vy_err^2))`
+
+   the wrong-sign probe still retains too much lateral reward. For the rank-1 candidate:
+   - `cmd_vy = +0.03`, achieved `+0.0509` -> `vy_err ≈ 0.021` -> lateral factor `≈ 0.99`
+   - `cmd_vy = -0.03`, achieved `+0.0518` -> `vy_err ≈ 0.082` -> lateral factor `≈ 0.82`
+
+   A 17% lateral-factor drop is not enough to overpower the already-learned one-sided gait.
+
+3. **Training longer on the same smoke7 config is low-yield.**  
+   The best deterministic candidates are around iter `1960–2060`; late train metrics regress and the exact per-event stride shrinks again.
+
+### Smoke8 direction — stronger signed-`vy` ownership on the validated smoke6 base
+- **Resume from** the smoke6 promoted checkpoint, **not** the failed smoke7 run:
+  - `training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3/eval_promoted/checkpoint_1900_38912000.pkl`
+- **Keep**:
+  - `loc_ref_residual_base: home`
+  - `loc_ref_rsi_enabled: true`
+  - smoke6 coverage-1.1 symmetric scales
+  - `cmd_velocity_track_dim: 2`
+  - yaw still off (`max_yaw_rate = 0`, `cmd_yaw_rate_track = 0`)
+
+**Smoke8 levers**
+1. **Widen lateral command range to `±0.065`**
+   - use exact existing reference bins instead of the projected tiny-`vy` band
+   - this increases the signed lateral teaching signal from `|vy_cmd|≈0.015` toward a scale that can actually compete with the lateral attractor
+
+2. **Increase `alpha_y` to `120.0`**
+   - keep `alpha_x = 562.5`
+   - `120` is intentionally stronger than smoke7's `30`, but still far below TB's scalar `σ=1000` regime
+   - with `±0.065`, this should create real separation between correct-sign and wrong-sign lateral behavior without killing the forward gradient
+
+3. **Update authoritative probes to the widened lateral command**
+   - `[0.13, +0.065, 0.0]`
+   - `[0.13, -0.065, 0.0]`
+
+4. **Add explicit lateral diagnostics**
+   - log `tracking/cmd_vy_err`
+   - log the lateral factor (or a dedicated `reward/cmd_lateral_velocity_track`) so smoke8 can distinguish `vx` success from `vy` failure
+
+### Recommendation after smoke7
+- **Do not deploy smoke7.**
+- **Do not resume smoke7.** It already learned the wrong lateral sign attractor.
+- **Run smoke8 from smoke6's promoted checkpoint**. This is the cleanest bridge from forward-only PPO-owned gait to real signed 2D command ownership.
+
 ## [v0.21.0-smoke6-result + smoke7-plan] - 2026-06-01: `home` + RSI works (real from-rest stride), but drift remains; smoke7 = true 2D tiny-`vy`
 
 ### Smoke6 result — TB-style `home` base + RSI is validated as a WR walking contract
