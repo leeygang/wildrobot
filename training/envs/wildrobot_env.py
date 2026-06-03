@@ -2247,16 +2247,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # smoke8 lateral DIAGNOSTICS — split the lateral axis out of the combined
         # 2D reward so analysis can tell forward success from lateral-sign
         # failure (smoke7's one-sided mode was invisible in the combined term):
-        #   reward/cmd_lateral_velocity_track = exp(-alpha_y * (vy - vy_cmd)^2)
-        #     — the multiplicative lateral FACTOR of the velocity reward
-        #       (diagnostic; 1.0 = perfect lateral tracking, NOT a separate
-        #       term added to the reward sum).
-        #   tracking/cmd_vy_err = |vy - vy_cmd|  — signed-aware lateral error
-        #     magnitude (a persistent +bias under -vy commands shows up here).
+        #   reward/cmd_lateral_velocity_track — the multiplicative lateral FACTOR
+        #     of the velocity reward (diagnostic; 1.0 = perfect lateral tracking,
+        #     NOT a separate term added to the reward sum).  ONLY meaningful under
+        #     track_dim==2; under track_dim==1 the lateral axis is NOT in the
+        #     reward at all, so the factor is a NEUTRAL 1.0 (no lateral penalty)
+        #     to avoid mis-logging a phantom subterm on forward-only configs.
+        #   tracking/cmd_vy_err = |vy - vy_cmd|  — ALWAYS valid: a pure lateral
+        #     command-error diagnostic (a persistent +bias under -vy commands
+        #     shows up here) regardless of whether the lateral axis is rewarded.
         _vy_err_cmd_diag = (lateral_velocity - velocity_cmd[1]).astype(jp.float32)
-        r_cmd_lateral_velocity_track = jp.exp(
-            -jp.float32(self._cmd_lateral_alpha) * _vy_err_cmd_diag * _vy_err_cmd_diag
-        ).astype(jp.float32)
+        if self._cmd_velocity_track_dim == 2:
+            r_cmd_lateral_velocity_track = jp.exp(
+                -jp.float32(self._cmd_lateral_alpha)
+                * _vy_err_cmd_diag
+                * _vy_err_cmd_diag
+            ).astype(jp.float32)
+        else:
+            r_cmd_lateral_velocity_track = jp.float32(1.0)  # neutral: no lateral term
         cmd_vy_err = jp.abs(_vy_err_cmd_diag).astype(jp.float32)
 
         # ---- cmd/yaw_rate_track (v0.21.0 P6.4, H5) ---------------------------
@@ -3736,12 +3744,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/lateral_velocity_abs"] = jp.abs(
             root_vel_h.linear[1]
         ).astype(jp.float32)
-        # smoke8 lateral diagnostics — same formula as the step path so reset
-        # and step report consistently (see _compute_reward_terms call site).
+        # smoke8 lateral diagnostics — same formula + dim-gating as the step path
+        # so reset and step report consistently (see _compute_reward_terms call
+        # site).  Factor is NEUTRAL 1.0 under track_dim==1 (no lateral term);
+        # cmd_vy_err is always valid.
         _reset_vy_err = (root_vel_h.linear[1] - velocity_cmd[1]).astype(jp.float32)
-        metrics_dict["reward/cmd_lateral_velocity_track"] = jp.exp(
-            -jp.float32(self._cmd_lateral_alpha) * _reset_vy_err * _reset_vy_err
-        ).astype(jp.float32)
+        if self._cmd_velocity_track_dim == 2:
+            metrics_dict["reward/cmd_lateral_velocity_track"] = jp.exp(
+                -jp.float32(self._cmd_lateral_alpha) * _reset_vy_err * _reset_vy_err
+            ).astype(jp.float32)
+        else:
+            metrics_dict["reward/cmd_lateral_velocity_track"] = jp.float32(1.0)
         metrics_dict["tracking/cmd_vy_err"] = jp.abs(_reset_vy_err).astype(jp.float32)
         # v0.21.0 follow-up — signed sibling for the lateral pass
         # criterion (walking_training.md Appendix C).  Zero at reset

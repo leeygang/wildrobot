@@ -161,3 +161,25 @@ def test_rsi_rejects_ref_init_base(cfg) -> None:
     bad_cfg = dataclasses.replace(cfg, env=bad_env)
     with pytest.raises(ValueError, match="loc_ref_rsi_enabled"):
         WildRobotEnv(config=bad_cfg)
+
+
+def test_smoke6_lateral_factor_neutral_under_dim1(env, cfg) -> None:
+    """smoke8 fix: on a track_dim==1 (forward-only) config the lateral axis is
+    NOT in the reward, so reward/cmd_lateral_velocity_track must be a NEUTRAL 1.0
+    (not the misleading exp(-alpha_x*vy^2) it would be if it fell back to the
+    forward alpha).  tracking/cmd_vy_err is still emitted (always-valid)."""
+    import jax.numpy as jp
+    from training.core.metrics_registry import METRICS_VEC_KEY, unpack_metrics
+
+    assert cfg.reward_weights.cmd_velocity_track_dim == 1  # precondition
+
+    st = env.reset(jax.random.PRNGKey(0))
+    m = unpack_metrics(st.metrics[METRICS_VEC_KEY])
+    assert float(m["reward/cmd_lateral_velocity_track"]) == pytest.approx(1.0)
+    assert "tracking/cmd_vy_err" in m  # still present (diagnostic)
+
+    act = jp.zeros(env.action_size)
+    for _ in range(3):
+        st = env.step(st, act)
+    m = unpack_metrics(st.metrics[METRICS_VEC_KEY])
+    assert float(m["reward/cmd_lateral_velocity_track"]) == pytest.approx(1.0)
