@@ -455,6 +455,9 @@ def start_training(
         config_name: Name of the config file (without extension), e.g., "ppo_walking"
     """
     import pickle
+    import shutil
+    import subprocess
+    from pathlib import Path
 
     import jax
     import jax.numpy as jnp
@@ -479,6 +482,73 @@ def start_training(
             return {k: _to_yamlable(v) for k, v in value.items()}
         return value
 
+    def _gpu_backend_diagnostics() -> list[str]:
+        """Best-effort explanation when JAX falls back to CPU."""
+        diagnostics: list[str] = []
+
+        loaded_driver = None
+        try:
+            loaded_driver = Path("/sys/module/nvidia/version").read_text().strip()
+        except OSError:
+            pass
+
+        user_lib_version = None
+        try:
+            resolved = Path("/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1").resolve()
+            suffix = resolved.name.removeprefix("libnvidia-ml.so.")
+            if suffix and suffix != resolved.name:
+                user_lib_version = suffix
+        except OSError:
+            pass
+
+        if loaded_driver and user_lib_version and loaded_driver != user_lib_version:
+            diagnostics.append(
+                f"Detected NVIDIA driver/library mismatch: kernel={loaded_driver}, "
+                f"user-space={user_lib_version}."
+            )
+            diagnostics.append(
+                "Reboot the machine so the running kernel module matches the installed "
+                "driver package, then verify `nvidia-smi` before re-running training."
+            )
+            return diagnostics
+
+        nvidia_smi = shutil.which("nvidia-smi")
+        if not nvidia_smi:
+            diagnostics.append(
+                "`nvidia-smi` is not available. If this machine should use GPU, install "
+                "the NVIDIA driver/runtime first."
+            )
+            return diagnostics
+
+        try:
+            subprocess.run(
+                [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or exc.stdout or "").strip()
+            last_line = stderr.splitlines()[-1] if stderr else "unknown nvidia-smi failure"
+            diagnostics.append(f"`nvidia-smi` failed: {last_line}")
+            if "Driver/library version mismatch" in stderr:
+                diagnostics.append(
+                    "This is a system NVIDIA runtime mismatch, not a missing JAX CUDA "
+                    "wheel. Reboot first; if it persists, repair the NVIDIA driver install."
+                )
+            else:
+                diagnostics.append(
+                    "GPU runtime is unhealthy. Fix the NVIDIA driver/runtime before "
+                    "debugging JAX packaging."
+                )
+            return diagnostics
+
+        diagnostics.append(
+            "NVIDIA runtime looks healthy. If GPU is still unavailable, check that the "
+            "installed jaxlib matches this machine's CUDA stack."
+        )
+        return diagnostics
+
     # Check JAX backend
     print(f"\n{'=' * 60}")
     print("JAX Configuration")
@@ -487,7 +557,8 @@ def start_training(
     print(f"  Devices: {jax.devices()}")
     if jax.default_backend() != "gpu":
         print("  ⚠️  WARNING: JAX is NOT using GPU!")
-        print("  Install JAX with CUDA: pip install jax[cuda12]")
+        for line in _gpu_backend_diagnostics():
+            print(f"  {line}")
     else:
         print("  ✓ GPU detected")
     print(f"{'=' * 60}\n")
