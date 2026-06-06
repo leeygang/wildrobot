@@ -96,6 +96,12 @@ def export_policy_bundle(
 
     _export_runtime_config(output_dir=output_dir)
 
+    runtime_policy_config_path = _export_runtime_policy_config(
+        output_dir=output_dir,
+        config_path=config_path,
+        spec=spec,
+    )
+
     checksums = _build_checksums(
         [
             onnx_path,
@@ -104,6 +110,7 @@ def export_policy_bundle(
             robot_snapshot_path,
             mjcf_snapshot_path,
             output_dir / "wildrobot_config.json",
+            runtime_policy_config_path,
         ]
     )
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
@@ -135,6 +142,30 @@ def _export_runtime_config(
 
     out_path = output_dir / "wildrobot_config.json"
     out_path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _export_runtime_policy_config(
+    *,
+    output_dir: Path,
+    config_path: Path,
+    spec: PolicySpec,
+) -> Path:
+    """Freeze the runtime control contract into ``runtime_policy_config.json``.
+
+    Encodes the home-base residual action contract + gait phase clock that the
+    standalone runtime needs but ``policy_spec.json`` does not carry (see
+    ``training/exports/runtime_metadata.py``).  Building the phase table runs
+    the offline ZMP library, so this is the heaviest export step.
+    """
+    from training.exports.runtime_metadata import build_runtime_policy_config
+
+    config = _load_yaml(config_path)
+    env = _require_dict(config, "env", context="config")
+    metadata = build_runtime_policy_config(env=env, spec=spec)
+
+    out_path = output_dir / "runtime_policy_config.json"
+    out_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    return out_path
 
 
 def _export_mjcf_snapshot(

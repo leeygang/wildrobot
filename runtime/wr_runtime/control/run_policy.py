@@ -1,0 +1,210 @@
+"""``wildrobot-run-policy`` — deterministic control loop for the latest bundle.
+
+Loads a policy bundle (``policy.onnx`` + ``policy_spec.json`` +
+``runtime_policy_config.json``) and runs the v8 home-base-residual control loop
+at ``control_hz``.  Supports a hardware-free ``--dry-run`` mode (mock IO) for
+smoke tests and safe validation on a developer machine.
+
+Examples
+--------
+Dry run (no hardware), 5 steps, straight walk::
+
+    uv run --project runtime wildrobot-run-policy \
+      --bundle /tmp/wr_runtime_smoke9_bundle_check \
+      --dry-run --max-steps 5 --velocity-cmd 0.13,0.0,0.0
+
+Hardware run (on the robot), forward walk for 500 control steps::
+
+    uv run --project runtime wildrobot-run-policy \
+      --bundle /path/to/bundle \
+      --runtime-config ~/.wildrobot/config.json \
+      --max-steps 500 --velocity-cmd 0.13,0.0,0.0
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+from typing import List, Optional
+
+import numpy as np
+
+from policy_contract.spec import PolicyBundle
+
+from wr_runtime.inference.onnx_policy import OnnxPolicy
+from wr_runtime.control.mock_robot_io import MockRobotIO
+from wr_runtime.control.policy_runner import RuntimePolicyRunner
+from wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
+
+
+def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray:
+    if text is None:
+        return np.asarray(default, dtype=np.float32).reshape(3)
+    parts = [p.strip() for p in str(text).split(",") if p.strip() != ""]
+    if len(parts) == 1:
+        return np.array([float(parts[0]), 0.0, 0.0], dtype=np.float32)
+    if len(parts) == 3:
+        return np.array([float(p) for p in parts], dtype=np.float32)
+    raise SystemExit(
+        f"--velocity-cmd must be 'vx' or 'vx,vy,wz'; got {text!r}"
+    )
+
+
+def _build_hardware_robot_io(
+    *, runtime_config_path: Path, actuator_names: List[str], control_dt: float
+):
+    """Construct the real hardware RobotIO.  Imported lazily so non-Linux dev
+    machines (no GPIO / serial backends) can still dry-run."""
+    from configs import WrRuntimeConfig
+    from wr_runtime.hardware.actuators import Actuators
+    from wr_runtime.hardware.foot_switches import FootSwitches
+    from wr_runtime.hardware.imu import Imu
+    from wr_runtime.hardware.robot_io import HardwareRobotIO
+
+    cfg = WrRuntimeConfig.load(runtime_config_path)
+    actuators = Actuators.from_config(cfg.servo_controller)
+    imu = Imu.from_config(cfg.bno085)
+    foot_switches = FootSwitches.from_config(cfg.foot_switches)
+    return HardwareRobotIO(
+        actuator_names=actuator_names,
+        control_dt=control_dt,
+        actuators=actuators,
+        imu=imu,
+        foot_switches=foot_switches,
+    )
+
+
+def run_policy_loop(
+    *,
+    runner: RuntimePolicyRunner,
+    max_steps: int,
+    velocity_cmd: np.ndarray,
+    log_steps: int,
+    ctrl_dt: float,
+    realtime: bool,
+) -> List[dict]:
+    """Run the control loop for ``max_steps`` iterations; return per-log infos."""
+    logs: List[dict] = []
+    for step in range(int(max_steps)):
+        t0 = time.monotonic()
+        info = runner.step(velocity_cmd)
+        if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
+            applied = info["applied_action"]
+            target = info["target_q_rad"]
+            print(
+                f"[step {step:5d}] idx={info['step_idx']:5d} "
+                f"|applied|max={float(np.max(np.abs(applied))):.3f} "
+                f"target[0:3]={np.round(target[:3], 4).tolist()}",
+                flush=True,
+            )
+            logs.append(info)
+        if realtime:
+            elapsed = time.monotonic() - t0
+            remaining = ctrl_dt - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+    return logs
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Run a WildRobot policy bundle (latest v8 home-residual contract)."
+    )
+    parser.add_argument(
+        "--bundle", type=str, required=True,
+        help="Bundle directory (policy.onnx + policy_spec.json + runtime_policy_config.json)",
+    )
+    parser.add_argument(
+        "--runtime-config", type=str, default=None,
+        help="Hardware runtime config JSON (servo IDs/calibration). Required unless --dry-run.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Run with mock IO (no hardware): exercises the full loop for smoke tests.",
+    )
+    parser.add_argument("--max-steps", type=int, default=500, help="Number of control steps.")
+    parser.add_argument("--log-steps", type=int, default=20, help="Log every N steps (0=off).")
+    parser.add_argument(
+        "--velocity-cmd", type=str, default=None,
+        help="Command 'vx' or 'vx,vy,wz' (default: bundle default_velocity_cmd).",
+    )
+    parser.add_argument(
+        "--no-realtime", action="store_true",
+        help="Do not sleep to maintain control_hz (default: realtime ON for hardware, OFF for --dry-run).",
+    )
+    args = parser.parse_args(argv)
+
+    bundle_path = Path(args.bundle)
+    bundle = PolicyBundle.load(bundle_path)
+    runtime_cfg_path = bundle_path / "runtime_policy_config.json"
+    runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
+
+    velocity_cmd = _parse_velocity_cmd(
+        args.velocity_cmd, runtime_config.default_velocity_cmd
+    )
+
+    policy = OnnxPolicy(
+        str(bundle.model_path),
+        input_name=bundle.spec.model.input_name,
+        output_name=bundle.spec.model.output_name,
+    )
+
+    actuator_names = list(bundle.spec.robot.actuator_names)
+    ctrl_dt = float(runtime_config.ctrl_dt)
+
+    if args.dry_run:
+        home = (
+            np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
+            if bundle.spec.robot.home_ctrl_rad is not None
+            else None
+        )
+        robot_io = MockRobotIO(
+            actuator_names=actuator_names, control_dt=ctrl_dt, home_q_rad=home
+        )
+        realtime = False  # dry-run is a smoke test; never sleep
+    else:
+        if args.runtime_config is None:
+            raise SystemExit("--runtime-config is required unless --dry-run is set.")
+        robot_io = _build_hardware_robot_io(
+            runtime_config_path=Path(args.runtime_config),
+            actuator_names=actuator_names,
+            control_dt=ctrl_dt,
+        )
+        realtime = not args.no_realtime
+
+    runner = RuntimePolicyRunner(
+        spec=bundle.spec,
+        runtime_config=runtime_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    print(
+        f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
+        f"| residual_base={runtime_config.loc_ref_residual_base} "
+        f"| control_hz={runtime_config.control_hz:.1f} "
+        f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run}",
+        flush=True,
+    )
+    try:
+        run_policy_loop(
+            runner=runner,
+            max_steps=args.max_steps,
+            velocity_cmd=velocity_cmd,
+            log_steps=args.log_steps,
+            ctrl_dt=ctrl_dt,
+            realtime=realtime,
+        )
+    finally:
+        try:
+            robot_io.close()
+        except Exception as exc:  # pragma: no cover - best-effort cleanup
+            print(f"Warning: robot_io.close() failed: {exc}", flush=True)
+    print("Run complete.", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

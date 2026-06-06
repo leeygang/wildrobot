@@ -7,6 +7,29 @@ Implementation lives in `runtime/wr_runtime/` (this is what the installed CLIs u
 Breaking change: the legacy modules under `runtime/control`, `runtime/inference`, `runtime/utils`, and `runtime/validation`
 were removed. Use the console scripts (`wildrobot-run-policy`, `wildrobot-validate-bundle`, ...) or import from `wr_runtime.*`.
 
+## Latest contract (v0.21.0, `wr_obs_v8_cmd3d`)
+
+The current walking policy is a **home-base residual** policy (smoke9): the
+network outputs a residual that is scaled per-joint and added to the home pose,
+NOT a direct midpoint-range target.  The runtime composes the control target as
+
+```
+filtered = postprocess(raw_action)                    # action_filter_alpha=0 -> identity
+applied   = previous filtered action                  # action_delay_steps=1
+delta     = clip(applied, -1, 1) * residual_scale_per_joint
+target_q  = clip(home_q_rad + delta, joint_min, joint_max)
+```
+
+These quantities (residual base/scale/per-joint, action delay/filter, the 3D
+`(vx, vy, wz)` command, and the gait phase clock) are NOT in `policy_spec.json`.
+They are frozen at export time into **`runtime_policy_config.json`** inside the
+bundle (see `training/exports/runtime_metadata.py`).  The runner refuses to fall
+back to the generic `pos_target_rad_v1` midpoint mapping for a v8 bundle, and
+fails loudly for unsupported obs layouts or residual bases.
+
+`action_scale_rad` in the hardware `wildrobot_config.json` is **ignored** for the
+v8 contract — per-joint residual scales come from `runtime_policy_config.json`.
+
 ## Install (on robot)
 
 From the `wildrobot/` repo root:
@@ -91,16 +114,36 @@ Notes:
 
 ## Run
 
+`wildrobot-run-policy` loads a bundle (`policy.onnx` + `policy_spec.json` +
+`runtime_policy_config.json`) and runs the deterministic control loop at
+`control_hz`.
+
+Flags:
+- `--bundle PATH` (required): bundle directory.
+- `--runtime-config PATH`: hardware servo IDs/calibration (required unless `--dry-run`).
+- `--dry-run`: run with mock IO (no servos/IMU/footswitches) — for smoke tests
+  and safe validation on a dev machine. Never sleeps.
+- `--max-steps N` (default 500), `--log-steps N` (default 20, 0=off).
+- `--velocity-cmd vx` or `--velocity-cmd vx,vy,wz` (default: bundle
+  `default_velocity_cmd`, e.g. `0.13,0,0` for smoke9 straight walk).
+- `--no-realtime`: don't sleep to maintain `control_hz` (hardware only).
+
+Dry run (no hardware) — exercises the full read → obs → predict → compose →
+write loop:
+
 ```bash
 cd runtime
-uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle
+uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle \
+  --dry-run --max-steps 5 --velocity-cmd 0.13,0.0,0.0
 ```
 
-If your robot has calibrated servo IDs/offsets/directions in a local config (recommended), run:
+On the robot, with calibrated servo IDs/offsets/directions in a local config
+(recommended):
 
 ```bash
 cd runtime
-uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --runtime-config ~/.wildrobot/config.json
+uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle \
+  --runtime-config ~/.wildrobot/config.json --velocity-cmd 0.13,0,0
 ```
 
 ## Run a bundle from `training/checkpoints/` (on the WildRobot device)
@@ -109,47 +152,45 @@ Assumptions:
 - You have the `wildrobot/` repo synced on the WildRobot device.
 - The bundle directory exists under `training/checkpoints/` (exported via `training/exports/export_policy_bundle_cli.py`).
 
-Example bundle (already in this repo layout):
-- `training/checkpoints/standing_push_v0.13.4_ckpt20/`
+First, export a bundle from a checkpoint (on a dev machine with the training
+env; this builds the gait phase table into `runtime_policy_config.json`):
+
+```bash
+uv run python training/exports/export_policy_bundle_cli.py \
+  --checkpoint training/checkpoints/<run>/checkpoint_NNNN.pkl \
+  --training-config training/checkpoints/<run>/training_config.yaml \
+  --bundle-path /tmp/wr_bundle
+```
 
 From the repo root on the device:
 ```bash
-cd ~/wildrobot
-
-# Run using the runtime uv environment (no manual venv activation needed)
-cd runtime
+cd ~/wildrobot/runtime
 
 # (Recommended) sanity-check Hiwonder serial comms before starting control loop
 uv run python scripts/test_hiwonder_board.py --port /dev/ttyUSB0 --baudrate 9600 --servo-ids 1,2,3
 
-# Validate the bundle is self-consistent (policy_spec + ONNX dims + actuator order)
-uv run wildrobot-validate-bundle --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
+# Validate the bundle is self-consistent (policy_spec + ONNX dims + actuator order).
+# Works on non-Linux dev machines too (rpi-gpio is gated to Linux).
+uv run wildrobot-validate-bundle --bundle /tmp/wr_bundle
 
-# Run the control loop (Ctrl+C to stop; runtime disables actuators on exit)
-uv run wildrobot-run-policy --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20
+# Dry run first (no hardware) to confirm the loop builds obs + composes targets:
+uv run wildrobot-run-policy --bundle /tmp/wr_bundle --dry-run --max-steps 5
 
-# If the bundle's wildrobot_config.json doesn't match your robot, override hardware settings:
-uv run wildrobot-run-policy --bundle ../training/checkpoints/standing_push_v0.13.4_ckpt20 --runtime-config ~/.wildrobot/config.json
+# Run the control loop on hardware (Ctrl+C to stop; runtime disables actuators on exit)
+uv run wildrobot-run-policy --bundle /tmp/wr_bundle --runtime-config ~/.wildrobot/config.json
 ```
 
 Notes:
 - The bundle contains its own `wildrobot_config.json` (often a template) and `wildrobot.xml` (actuator order snapshot).
 - If this device/robot has different servo IDs, offsets, IMU axis map, or footswitch pins, prefer passing `--runtime-config ~/.wildrobot/config.json` (or your calibrated JSON) rather than editing the bundle.
 
-Stop with Ctrl+C (runtime will unload servos).
-
-If Ctrl+C drops your SSH session (common when running via a one-line `ssh host <command>`), use:
-- Type `q` then Enter to stop the loop cleanly.
+The loop runs for `--max-steps` control steps and then exits, disabling
+actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
 
 If you see `Servo position response missing or incomplete`:
 - Confirm the board is powered and servos have external power.
 - Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match your board (9600 is common).
 - Try smaller `--servo-ids` lists in `scripts/test_hiwonder_board.py` (some links are unreliable with large multi-servo reads).
-
-Optional: capture a replay log for offline policy replay:
-```bash
-uv run wildrobot-run-policy --bundle ../policies/wildrobot_policy_bundle --log-path signals_log.npz --log-steps 2000
-```
 
 ## Bundle utilities
 
@@ -159,12 +200,10 @@ cd runtime
 uv run wildrobot-validate-bundle --bundle ../policies/wildrobot_policy_bundle
 ```
 
-Replay a bundle on logged signals (npz → obs/actions):
-```bash
-uv run wildrobot-replay-policy --bundle ../policies/wildrobot_policy_bundle --input signals_log.npz --output replay_output.npz
-```
-
 Inspect a signals log (quick health summary):
 ```bash
 uv run wildrobot-inspect-log --input signals_log.npz
 ```
+
+> Note: `wildrobot-replay-policy` was removed with the v1/v2 walking-ref stack
+> and has not been reintroduced.

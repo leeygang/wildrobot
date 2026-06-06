@@ -1,0 +1,81 @@
+"""Mock control-loop smoke test: read -> obs -> predict -> compose -> write.
+
+Runs the full runtime loop with a hardware-free MockRobotIO and a stub policy
+for a finite number of steps, with no servos/IMU attached.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
+from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
+from runtime.wr_runtime.control.run_policy import run_policy_loop
+
+
+class _SmallPolicy:
+    """Stub ONNX policy: tiny constant residual so the loop produces motion."""
+
+    def __init__(self, action_dim: int) -> None:
+        self._n = action_dim
+
+    def predict(self, obs):
+        assert obs.shape == (1129,), f"unexpected obs shape {obs.shape}"
+        return np.full(self._n, 0.1, dtype=np.float32)
+
+
+def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
+    action_dim = v8_spec.model.action_dim
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_SmallPolicy(action_dim),
+        robot_io=robot_io,
+    )
+
+    logs = run_policy_loop(
+        runner=runner,
+        max_steps=8,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=2,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+    )
+
+    # One write per step, each in actuator order, finite, within joint limits.
+    assert len(robot_io.written) == 8
+    for ctrl in robot_io.written:
+        assert ctrl.shape == (action_dim,)
+        assert np.all(np.isfinite(ctrl))
+    assert logs, "expected at least one logged step"
+    assert logs[0]["obs"].shape == (1129,)
+
+    # step_idx advanced and clamped within the reference horizon.
+    assert runner.step_idx == min(8, runtime_policy_config.reference.n_steps - 1)
+
+    robot_io.close()
+    assert robot_io.closed is True
+
+
+def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):
+    """With 1-step delay the first applied action is zero -> first ctrl == home."""
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_SmallPolicy(v8_spec.model.action_dim),
+        robot_io=robot_io,
+    )
+    info = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
+    np.testing.assert_allclose(info["target_q_rad"], runner.home_q_rad, atol=1e-6)

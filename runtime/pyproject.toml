@@ -14,17 +14,19 @@ dependencies = [
   "pyserial>=3.5",
   "adafruit-blinka>=8.0.0",
   "adafruit-circuitpython-bno08x",
-  "rpi-gpio>=0.7.1",
+  # rpi-gpio only builds on Linux (needs <sys/epoll.h>); gate it so the
+  # runtime package installs + validates on macOS dev machines.  Mirrors
+  # the root pyproject.toml marker.  The hardware runner imports GPIO lazily,
+  # so non-Linux installs can still export/validate/dry-run bundles.
+  "rpi-gpio>=0.7.1; sys_platform == 'linux'",
   "pyyaml>=6.0",
 ]
 
 [project.scripts]
-# v0.20.1: ``wildrobot-run-policy`` and ``wildrobot-replay-policy`` were
-# removed when their underlying modules (``wr_runtime.control.run_policy``
-# and ``wr_runtime.validation.replay_policy``) were deleted along with
-# the v1/v2 walking_ref runtime stack.  They will be re-added with the
-# v3-aligned hardware policy runner at the v0.20.2 milestone (see
-# ``training/docs/walking_training.md`` v0.20.2 SysID + transfer).
+# v0.21.0: ``wildrobot-run-policy`` re-added with the v3-aligned (home-base
+# residual, wr_obs_v8_cmd3d) hardware policy runner.  ``wildrobot-replay-policy``
+# remains removed (the v1/v2 replay stack was deleted and not reintroduced).
+wildrobot-run-policy = "wr_runtime.control.run_policy:main"
 wildrobot-validate-bundle = "wr_runtime.validation.validate_bundle:main"
 wildrobot-inspect-log = "wr_runtime.validation.inspect_log:main"
 
