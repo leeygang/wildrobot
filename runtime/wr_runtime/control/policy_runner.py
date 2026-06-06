@@ -209,6 +209,14 @@ class RuntimePolicyRunner:
         Returns ``(target_q_rad, applied_action)`` in actuator order.
         """
         raw = np.asarray(raw_action, dtype=np.float32).reshape(-1)
+        # Guard the broadcast site: a wrong-sized raw action (e.g. length-1)
+        # would otherwise NumPy-broadcast through the filter / residual scale
+        # into a full joint target.  Fail loudly instead.
+        if raw.shape[0] != self._action_dim:
+            raise ValueError(
+                f"raw_action has {raw.shape[0]} elements, expected "
+                f"{self._action_dim} (action_dim)"
+            )
         filtered, _ = postprocess_action(
             spec=self._spec,
             state=PolicyState(prev_action=self._state.pending_action),

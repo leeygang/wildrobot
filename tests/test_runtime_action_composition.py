@@ -79,3 +79,24 @@ def test_nonzero_uses_per_joint_residual_scale_not_scalar(
         SMOKE9_RESIDUAL_SCALAR, abs=1e-4
     )
     assert abs((target[waist] - home[waist]) - 0.35) > 0.1
+
+
+def test_wrong_sized_action_raises_not_broadcasts(v8_spec, runtime_policy_config):
+    """Regression: a length-1 action must NOT broadcast into a 21-joint target.
+
+    Reproduces the review finding (length-1 action -> full joint target via NumPy
+    broadcasting on the second delayed step).  The runner guards the broadcast
+    site and fails loudly instead.
+    """
+    runner = _runner(v8_spec, runtime_policy_config)
+    n = v8_spec.model.action_dim
+    # First step: pending is zeros so the broadcast wouldn't be observable yet,
+    # but the guard rejects the wrong-sized raw immediately.
+    with pytest.raises(ValueError, match="expected"):
+        runner.compose_and_apply(np.array([0.5], dtype=np.float32))
+
+    # And after a valid first step, a wrong-sized second action is still rejected
+    # (this is the exact second-delayed-step path the review reproduced).
+    runner.compose_and_apply(np.zeros(n, dtype=np.float32))
+    with pytest.raises(ValueError, match="expected"):
+        runner.compose_and_apply(np.array([0.5], dtype=np.float32))

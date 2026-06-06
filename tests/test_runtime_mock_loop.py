@@ -7,6 +7,7 @@ for a finite number of steps, with no servos/IMU attached.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
@@ -79,3 +80,27 @@ def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):
     )
     info = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
     np.testing.assert_allclose(info["target_q_rad"], runner.home_q_rad, atol=1e-6)
+
+
+class _BadShapePolicy:
+    """Stub policy that returns a length-1 action (the review repro)."""
+
+    def predict(self, obs):
+        return np.array([0.5], dtype=np.float32)
+
+
+def test_loop_rejects_wrong_sized_policy_output(v8_spec, runtime_policy_config):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_BadShapePolicy(),
+        robot_io=robot_io,
+    )
+    with pytest.raises(ValueError, match="expected"):
+        runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))

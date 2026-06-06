@@ -31,7 +31,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from policy_contract.spec import PolicyBundle
+from policy_contract.spec import PolicyBundle, validate_spec
 
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.control.mock_robot_io import MockRobotIO
@@ -55,18 +55,47 @@ def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray
 def _build_hardware_robot_io(
     *, runtime_config_path: Path, actuator_names: List[str], control_dt: float
 ):
-    """Construct the real hardware RobotIO.  Imported lazily so non-Linux dev
-    machines (no GPIO / serial backends) can still dry-run."""
+    """Construct the real hardware RobotIO from the runtime config.
+
+    Imported lazily (GPIO / serial / I2C backends are Linux-only), and wires the
+    concrete hardware classes (HiwonderBoardActuators / BNO085IMU / FootSwitches)
+    directly — there are no ``*.from_config`` factories.
+    """
     from configs import WrRuntimeConfig
-    from wr_runtime.hardware.actuators import Actuators
+    from wr_runtime.hardware.actuators import HiwonderBoardActuators
+    from wr_runtime.hardware.bno085 import BNO085IMU
     from wr_runtime.hardware.foot_switches import FootSwitches
-    from wr_runtime.hardware.imu import Imu
     from wr_runtime.hardware.robot_io import HardwareRobotIO
 
     cfg = WrRuntimeConfig.load(runtime_config_path)
-    actuators = Actuators.from_config(cfg.servo_controller)
-    imu = Imu.from_config(cfg.bno085)
-    foot_switches = FootSwitches.from_config(cfg.foot_switches)
+    sc = cfg.servo_controller
+
+    # HardwareRobotIO.write_ctrl calls set_targets_rad(move_time_ms=None), so a
+    # default move time is required; fall back to one control period.
+    default_move_time_ms = sc.default_move_time_ms
+    if default_move_time_ms is None:
+        default_move_time_ms = max(1, int(round(control_dt * 1000.0)))
+
+    actuators = HiwonderBoardActuators(
+        actuator_names=actuator_names,
+        servo_ids=sc.servo_ids,
+        port=sc.port,
+        baudrate=sc.baudrate,
+        default_move_time_ms=default_move_time_ms,
+        joint_offset_units=sc.joint_offset_units,
+        joint_motor_signs=sc.joint_motor_signs,
+        joint_motor_center_mujoco_deg=sc.joint_motor_center_mujoco_deg,
+    )
+    imu = BNO085IMU(
+        i2c_address=cfg.bno085.i2c_address,
+        upside_down=cfg.bno085.upside_down,
+        sampling_hz=max(1, int(round(1.0 / control_dt))),
+        axis_map=cfg.bno085.axis_map,
+        suppress_debug=cfg.bno085.suppress_debug,
+        i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
+        init_retries=cfg.bno085.init_retries,
+    )
+    foot_switches = FootSwitches(pins=cfg.foot_switches.get_all_pins())
     return HardwareRobotIO(
         actuator_names=actuator_names,
         control_dt=control_dt,
@@ -138,6 +167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     bundle_path = Path(args.bundle)
     bundle = PolicyBundle.load(bundle_path)
+    validate_spec(bundle.spec)
     runtime_cfg_path = bundle_path / "runtime_policy_config.json"
     runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
 
@@ -149,7 +179,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         str(bundle.model_path),
         input_name=bundle.spec.model.input_name,
         output_name=bundle.spec.model.output_name,
+        expected_obs_dim=int(bundle.spec.model.obs_dim),
+        expected_action_dim=int(bundle.spec.model.action_dim),
     )
+    # Fail fast on ONNX/spec dim mismatch BEFORE the first control tick (mirrors
+    # wildrobot-validate-bundle; the run command must not silently broadcast a
+    # wrong-sized action into a full joint target).
+    if policy.info.obs_dim is not None and int(policy.info.obs_dim) != int(
+        bundle.spec.model.obs_dim
+    ):
+        raise SystemExit(
+            f"ONNX obs_dim {policy.info.obs_dim} != spec {bundle.spec.model.obs_dim}"
+        )
+    if policy.info.action_dim is not None and int(policy.info.action_dim) != int(
+        bundle.spec.model.action_dim
+    ):
+        raise SystemExit(
+            f"ONNX action_dim {policy.info.action_dim} != spec "
+            f"{bundle.spec.model.action_dim}"
+        )
 
     actuator_names = list(bundle.spec.robot.actuator_names)
     ctrl_dt = float(runtime_config.ctrl_dt)
