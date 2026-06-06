@@ -272,7 +272,8 @@ smoke9c:          q_target = ref_init_q + clip(action,±1)·scale
 smoke5 (RSI):     q_target = q_ref(t) + clip(action,±1)·scale  + RSI start   # first authoritative from-rest pass
 smoke6 (TB-contract): q_target = home_q + clip(action,±1)·scale_1.1 + RSI    # validated active direction
 smoke7:              q_target = home_q + clip(action,±1)·scale_1.1 + RSI + 2D tiny-vy training
-smoke8 (planned):    q_target = home_q + clip(action,±1)·scale_1.1 + RSI + stronger signed-vy training
+smoke8:              q_target = home_q + clip(action,±1)·scale_1.1 + RSI + stronger signed-vy training
+smoke9 (planned):    q_target = home_q + clip(action,±1)·scale_1.1 + RSI + exact signed-vy curriculum
 ```
 
 The current env implementation is in
@@ -305,12 +306,16 @@ This is an explicit architectural decision, not an inherited default.
 > stride is reachable from `home` within ±0.353 hip_pitch (FK → 0.27 m), so
 > the policy has the authority to *build* a gait; it does **not** need to
 > track the prior jointwise (and can't — that's fine, like TB). See
-> `training/CHANGELOG.md` `[v0.21.0-smoke7-result + smoke8-plan]`. smoke6 now
+> `training/CHANGELOG.md` `[v0.21.0-smoke8-result + smoke9-plan]`. smoke6 now
 > has authoritative passing checkpoints from rest under the `home` base; the
 > remaining defect is directional control. smoke7 proved the 2D path is wired
-> honestly but learned a one-sided lateral mode; smoke8 is therefore **not** a
-> contract reset either — it is a stronger signed-`vy` extension of the
-> validated `home + RSI` path.
+> honestly but learned a one-sided lateral mode. smoke8 increased the lateral
+> command range and `alpha_y`, but the TB-style ellipse still projected most
+> train-side `vy` commands down to about `0.025 m/s`, so the policy kept the
+> same positive-lateral mode under both `+vy` and `-vy` probes. smoke9 is
+> therefore **not** a contract reset either — it is an exact signed-`vy`
+> curriculum on the validated `home + RSI` path, plus an instrumentation fix for
+> `reward/cmd_lateral_velocity_track`.
 
 Why this first:
 
@@ -701,22 +706,45 @@ Active state, summarized:
   - smoke7's anisotropic reward (`alpha_y = 30`) is too soft to overpower the
     already-learned one-sided lateral attractor
 
-- **Smoke8 direction (2026-06-02): stronger signed-`vy` ownership on the
-  validated smoke6 base.** Resume from the smoke6 60M promoted checkpoint, keep
-  `home + RSI + scale_1.1`, and strengthen the lateral command signal instead of
-  resuming the failed smoke7 local minimum:
-  - increase the lateral command range to `vy ∈ [-0.065, +0.065]` so the
-    actual sampled signed lateral command is large enough to compete with the
-    attractor;
-  - keep the anisotropic XY reward form from smoke7, but strengthen it to
-    `alpha_x=562.5`, `alpha_y=120.0` so wrong-sign lateral behavior loses
-    meaningful reward instead of only a weak penalty;
-  - keep `wz=0`;
-  - update authoritative probes to `[0.13, ±0.065, 0]`;
-  - add explicit `vy` diagnostics (`tracking/cmd_vy_err`, lateral reward factor)
-    so the next analysis can separate forward success from lateral-sign failure.
-  This keeps the PPO-owned `home` contract and extends only the command/task
-  dimensions. Yaw remains deferred until tiny-`vy` stabilizes.
+- **Smoke8 result (2026-06-06): stronger `vy` range and `alpha_y` were not
+  enough; no checkpoint promoted.** The authoritative post-training eval
+  promoted **no** checkpoint. The top candidates still selected a positive
+  lateral mode under both lateral probe signs:
+  - rank-1 `checkpoint_2060_42188800.pkl`: straight eval
+    `forward_velocity 0.187`, `cmd_err 0.0826` (fail),
+    `step_length 0.119`, `lateral_velocity_abs 0.193` (fail),
+    `world_y_drift_abs_m 0.646` (fail); probe `+0.065` achieved
+    `+0.0754` (pass), probe `-0.065` achieved `+0.0741` (fail)
+  - rank-2 `checkpoint_2560_52428800.pkl`: straight eval has the cleanest
+    path drift (`world_y_drift_abs_m 0.143`) but still `lateral_velocity_abs
+    0.177` and wrong-sign `-vy` probe (`+0.0396`, fail)
+
+  Root cause: smoke8 widened `min/max_velocity_y` to `±0.065`, but kept the
+  TB-style walk ellipse (`vy = uniform(deadzone_y, bound) * cos(theta)`).
+  Train-side `tracking/velocity_cmd_vy_abs` therefore rose only from smoke7's
+  `≈0.015` to smoke8's `≈0.025`, while the authoritative probes test
+  `|vy|=0.065`. The reward separation from `alpha_y=120` is now adequate; the
+  problem is insufficient exposure to exact signed lateral commands. Also,
+  `reward/cmd_lateral_velocity_track` is emitted by the env but missing from
+  `training/core/experiment_tracking.py::REWARD_TERM_KEYS`, so the lateral
+  reward-factor diagnostic was absent from `metrics.jsonl`.
+
+- **Smoke9 direction (2026-06-06): exact signed-`vy` curriculum before returning
+  to the broader TB ellipse.** Resume again from the smoke6 60M promoted
+  checkpoint, keep `home + RSI + scale_1.1`, `cmd_velocity_track_dim=2`,
+  `alpha_x=562.5`, `alpha_y=120.0`, yaw off, and the same `±0.065` probes.
+  Change only the command curriculum for this stage:
+  - replace ellipse-projected lateral sampling with balanced exact signed bins,
+    e.g. `[0.13,-0.065,0]`, `[0.13,0,0]`, `[0.13,+0.065,0]`
+  - optionally allow a narrow forward band around `vx≈0.13`, but do not let
+    lateral command magnitude collapse through `cos(theta)` during this stage
+  - fix instrumentation before launch by adding
+    `reward/cmd_lateral_velocity_track` to
+    `training/core/experiment_tracking.py::REWARD_TERM_KEYS`
+
+  This intentionally diverges from TB's broad ellipse sampler for one curriculum
+  stage because WR has a confirmed one-sided lateral local minimum. Once both
+  signs pass, return to the broader TB-style command coverage and then add yaw.
 
 Per-run detail (verdicts, gates, checkpoint picks):
 `training/CHANGELOG.md` for smoke13+,
