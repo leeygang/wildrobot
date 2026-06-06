@@ -657,6 +657,11 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         cmd_sampler_walk_vx_positive_only=bool(
             env.get("cmd_sampler_walk_vx_positive_only", False)
         ),
+        # v0.21.0 smoke9: de-project vy into balanced exact signed bins
+        # {min_velocity_y, 0, max_velocity_y} (see EnvConfig docstring).
+        cmd_sampler_walk_vy_exact_signed_bins=bool(
+            env.get("cmd_sampler_walk_vy_exact_signed_bins", False)
+        ),
         # v0.21.0 H3 + NEW-4: per-axis (vx, vy, wz) deadzone / eval cmd.
         # Scalar YAML entries broadcast: cmd_deadzone symmetrically to
         # all axes, eval_velocity_cmd to (s, 0.0, 0.0) (vy / wz pin

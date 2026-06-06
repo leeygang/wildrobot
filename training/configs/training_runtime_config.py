@@ -694,6 +694,21 @@ class EnvConfig(Freezable):
     # vy_cmd has a real reference).  Default False preserves the TB
     # symmetric-ellipse default for legacy / smoke1 reproducibility.
     cmd_sampler_walk_vx_positive_only: bool = False
+    # v0.21.0 smoke9: de-project the lateral (vy) command in the walk
+    # branch.  smoke7/8 kept TB's ellipse projection ``vy = uniform(
+    # deadzone_y, |bound|) * cos(theta)``, which collapses the realized
+    # train-side |vy_cmd| to ~0.026 even at max_velocity_y=0.065 — below
+    # the inherited ~0.05 one-sided lateral bias, so the policy never saw
+    # a signed lateral command large enough (or balanced enough) to
+    # overcome the bias, while the authoritative probes ran at +/-0.065.
+    # When this flag is True the walk branch samples vy from the balanced
+    # exact signed bins ``{min_velocity_y, 0.0, max_velocity_y}`` (each
+    # 1/3 probability) instead of the cos-projected ellipse, so the
+    # train-side lateral command matches the +/-0.065 probes and both
+    # signs are over-sampled equally as a curriculum stage.  vx is
+    # unaffected (still governed by cmd_sampler_walk_vx_positive_only).
+    # Default False preserves smoke7/8 ellipse behavior bit-for-bit.
+    cmd_sampler_walk_vy_exact_signed_bins: bool = False
     # v0.21.0 H3: per-axis deadzone for the (vx, vy, wz) command space.
     # Scalar YAML entries broadcast symmetrically to all three axes
     # (legacy behavior); explicit length-3 lists pin per-axis floors.

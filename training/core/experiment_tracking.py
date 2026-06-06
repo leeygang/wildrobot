@@ -121,6 +121,12 @@ REWARD_TERM_KEYS = [
     "reward/ang_vel_xy",
     "reward/ref_contact_match",
     "reward/cmd_forward_velocity_track",
+    # v0.21.0 smoke9: lateral command-tracking FACTOR
+    # exp(-alpha_y * vy_err^2), emitted by the env since smoke8
+    # (track_dim==2; neutral 1.0 at dim==1) but absent from this
+    # allow-list — silently dropped by the wandb dispatcher, so smoke8
+    # logged it nowhere.  Required to separate vx success from vy failure.
+    "reward/cmd_lateral_velocity_track",
     "reward/cmd_yaw_rate_track",
     # v0.20.1 TB-active alignment Phase 2 (Appendix B).  These were
     # written to terminal_metrics_dict by the env from the smoke8b
@@ -230,6 +236,10 @@ ENV_METRICS_KEYS = {
         "sum(stance_mask == ref_stance_mask) in {0, 1, 2}"
     ),
     "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
+    "reward/cmd_lateral_velocity_track": (
+        "Lateral velocity command-tracking FACTOR exp(-alpha_y*vy_err^2) "
+        "(track_dim==2; neutral 1.0 at dim==1)"
+    ),
     # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
     "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",
     "ref/body_quat_err_deg": "Geodesic orientation error vs reference (deg)",

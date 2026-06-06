@@ -3251,14 +3251,35 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 maxval=x_max_clamped,
             ) * sign_x
 
-        y_max = jp.where(cos_theta > 0.0, y_hi, -y_lo)
-        y_max_clamped = jp.maximum(jp.abs(y_max), deadzone_y)
-        y = jax.random.uniform(
-            rng_4,
-            (),
-            minval=deadzone_y,
-            maxval=y_max_clamped,
-        ) * cos_theta
+        # v0.21.0 smoke9: de-project the lateral command.  TB's ellipse
+        # multiplies the sampled |vy| by cos(theta), which collapsed the
+        # realized train-side |vy_cmd| to ~0.026 even at
+        # max_velocity_y=0.065 — below the inherited ~0.05 one-sided
+        # lateral bias, so smoke7/8 never overcame the bias while the
+        # authoritative probes ran at +/-0.065.  When the flag is set the
+        # walk branch instead draws vy from the balanced exact signed bins
+        # {y_lo, 0, y_hi} (each 1/3) so both signs are over-sampled at the
+        # probe magnitude.  Default path keeps the TB cos-projected ellipse
+        # bit-for-bit (smoke7/8 unaffected).
+        if getattr(
+            self._config.env, "cmd_sampler_walk_vy_exact_signed_bins", False
+        ):
+            vy_bins = jp.stack([y_lo, jp.float32(0.0), y_hi]).astype(jp.float32)
+            # fold_in (not split) so the default-path theta RNG stream is
+            # untouched and decorrelated from any sin_theta vx-sign use.
+            bin_idx = jax.random.randint(
+                jax.random.fold_in(rng_3, 9), (), 0, 3
+            )
+            y = vy_bins[bin_idx]
+        else:
+            y_max = jp.where(cos_theta > 0.0, y_hi, -y_lo)
+            y_max_clamped = jp.maximum(jp.abs(y_max), deadzone_y)
+            y = jax.random.uniform(
+                rng_4,
+                (),
+                minval=deadzone_y,
+                maxval=y_max_clamped,
+            ) * cos_theta
 
         return jp.stack([x, y, jp.float32(0.0)]).astype(jp.float32)
 

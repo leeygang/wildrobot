@@ -111,6 +111,7 @@ def test_reward_term_keys_includes_smoke9_tb_set() -> None:
     required_for_smoke9 = {
         "reward/alive",
         "reward/cmd_forward_velocity_track",
+        "reward/cmd_lateral_velocity_track",  # v0.21.0 smoke9; emitted since smoke8 but dropped
         "reward/cmd_yaw_rate_track",    # v0.21.0 smoke1; yaw-rate command tracking
         "reward/ref_body_quat_track",
         "reward/ang_vel_xy",
