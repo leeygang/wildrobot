@@ -236,6 +236,16 @@ def parse_args():
         default=10,
         help="Save checkpoint every N iterations (default: 10)",
     )
+    parser.add_argument(
+        "--skip-gpu-check",
+        "--skip-gpu",
+        dest="skip_gpu_check",
+        action="store_true",
+        help=(
+            "Allow training to continue when JAX falls back to CPU. "
+            "Default behavior is to fail fast unless GPU is active."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -444,6 +454,7 @@ def start_training(
     checkpoint_dir: Optional[str] = None,
     resume_checkpoint_path: Optional[str] = None,
     config_name: Optional[str] = None,
+    skip_gpu_check: bool = False,
 ):
     """PPO training entry point.
 
@@ -453,6 +464,7 @@ def start_training(
         checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
         resume_checkpoint_path: Path to checkpoint to resume training from
         config_name: Name of the config file (without extension), e.g., "ppo_walking"
+        skip_gpu_check: Continue on CPU only when explicitly requested via CLI
     """
     import pickle
     import shutil
@@ -557,8 +569,15 @@ def start_training(
     print(f"  Devices: {jax.devices()}")
     if jax.default_backend() != "gpu":
         print("  ⚠️  WARNING: JAX is NOT using GPU!")
-        for line in _gpu_backend_diagnostics():
+        diagnostics = _gpu_backend_diagnostics()
+        for line in diagnostics:
             print(f"  {line}")
+        if not skip_gpu_check:
+            raise RuntimeError(
+                "JAX is not using GPU. Re-run with --skip-gpu-check only if "
+                "CPU training is intentional."
+            )
+        print("  Continuing because --skip-gpu-check was provided.")
     else:
         print("  ✓ GPU detected")
     print(f"{'=' * 60}\n")
@@ -1713,6 +1732,7 @@ def main():
             checkpoint_dir=args.checkpoint_dir,
             resume_checkpoint_path=args.resume,
             config_name=config_name,
+            skip_gpu_check=bool(args.skip_gpu_check),
         )
 
         elapsed = time.time() - start_time
