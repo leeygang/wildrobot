@@ -70,6 +70,19 @@ def _build_hardware_robot_io(
     cfg = WrRuntimeConfig.load(runtime_config_path)
     sc = cfg.servo_controller
 
+    # Fail fast with an actionable message if the runtime config does not cover
+    # every actuator in the policy spec (the actuator constructor would
+    # otherwise raise a bare KeyError mid-init).  This catches stale configs
+    # missing newer joints (e.g. left/right_ankle_roll on the v8 21-actuator
+    # spec) before any hardware is touched.
+    missing = [n for n in actuator_names if n not in sc.servo_ids]
+    if missing:
+        raise SystemExit(
+            "Runtime config is missing servo entries for "
+            f"{missing} (required by the policy spec's actuator_names). "
+            f"Add them under servo_controller.servos in {runtime_config_path}."
+        )
+
     # HardwareRobotIO.write_ctrl calls set_targets_rad(move_time_ms=None), so a
     # default move time is required; fall back to one control period.
     default_move_time_ms = sc.default_move_time_ms

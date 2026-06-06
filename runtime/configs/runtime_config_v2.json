@@ -35,6 +35,12 @@
         "motor_sign": -1,
         "motor_center_mujoco_deg": 0
       },
+      "left_ankle_roll": {
+        "id": 9,
+        "offset_unit": 0,
+        "motor_sign": -1,
+        "motor_center_mujoco_deg": 0
+      },
       "right_hip_pitch": {
         "id": 5,
         "offset_unit": 0,
@@ -56,6 +62,12 @@
       "right_ankle_pitch": {
         "id": 8,
         "offset_unit": 23,
+        "motor_sign": -1,
+        "motor_center_mujoco_deg": 0
+      },
+      "right_ankle_roll": {
+        "id": 10,
+        "offset_unit": 0,
         "motor_sign": -1,
         "motor_center_mujoco_deg": 0
       },

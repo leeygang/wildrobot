@@ -9,9 +9,35 @@ classes with the right kwargs (mocked — no servos/IMU/GPIO required).
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from conftest import make_v8_spec
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_TEMPLATE = _REPO_ROOT / "runtime" / "configs" / "runtime_config_template.json"
+_V2_CONFIG = _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
+
+
+@pytest.mark.parametrize("config_path", [_TEMPLATE, _V2_CONFIG])
+def test_runtime_config_covers_all_v8_actuators(config_path: Path) -> None:
+    """Regression: the template (which export copies into every bundle) and the
+    v2 sample must define a servo for every actuator in the v8 21-joint spec.
+
+    Reproduces the review finding: the template omitted left/right_ankle_roll, so
+    hardware startup raised KeyError "Servo ID missing for joint
+    'left_ankle_roll'" before the first control tick.
+    """
+    servos = json.loads(config_path.read_text())["servo_controller"]["servos"]
+    spec_names = set(make_v8_spec().robot.actuator_names)
+    missing = sorted(spec_names - set(servos))
+    assert not missing, f"{config_path.name} missing servo entries for {missing}"
+    # ankle_roll specifically (the regressed joints) must be present.
+    assert "left_ankle_roll" in servos
+    assert "right_ankle_roll" in servos
 
 
 def test_hardware_protocols_have_no_from_config() -> None:
@@ -106,3 +132,21 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
     assert captured["foot"]["pins"]["left_toe"] == "D5"
+
+
+def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> None:
+    """A config missing a spec actuator must raise an actionable error before
+    touching hardware (not a bare KeyError deep in the actuator constructor)."""
+    import configs
+    from wr_runtime.control import run_policy
+
+    cfg = _fake_runtime_config()  # servo_ids only has {'j': 1}
+    monkeypatch.setattr(
+        configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg)
+    )
+    with pytest.raises(SystemExit, match="left_ankle_roll"):
+        run_policy._build_hardware_robot_io(
+            runtime_config_path="ignored",
+            actuator_names=["j", "left_ankle_roll"],
+            control_dt=0.02,
+        )
