@@ -8,6 +8,140 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke9-result + smoke10-plan] - 2026-06-07: exact signed-`vy` exposure worked, but lateral sign still failed; smoke10 = axis-split lateral reward
+
+### Smoke9 result - no deployable checkpoint
+- **Run**: `training/wandb/offline-run-20260606_091345-j6kaw1ij`
+- **Checkpoints**: `training/checkpoints/ppo_walking_v0210_smoke9_exact_signed_vy_v00210_20260606_091415-j6kaw1ij`
+- **Config**: `ppo_walking_v0210_smoke9_exact_signed_vy.yaml`
+- **Authoritative result**: `selected_checkpoint_path = null`
+
+Smoke9 did **not** produce a promotable checkpoint. The deterministic
+post-training gate blocked every top candidate. The common failure is still
+`lateral_probe_tracking`: the policy moves in positive heading-local `vy` under
+both positive and negative lateral commands.
+
+Top candidates:
+
+| checkpoint | straight eval `[0.13,0,0]` | `+vy` probe `[0.13,+0.065,0]` | `-vy` probe `[0.13,-0.065,0]` | verdict |
+|---|---|---|---|---|
+| `checkpoint_2010_41164800.pkl` | `forward_velocity 0.197`, `cmd_err 0.0713`, `ratio 1.52` **fail**, `step_length 0.170`, `lateral_velocity_abs 0.175` **fail**, `world_y_drift_abs_m 0.176` | achieved `+0.0414`, signed ratio `+0.64` **PASS** | achieved `+0.0456`, signed ratio `-0.70` **FAIL** | best candidate, still one-sided +`vy` |
+| `checkpoint_2060_42188800.pkl` | `forward_velocity 0.201`, `cmd_err 0.0830` **fail**, `ratio 1.55` **fail**, `step_length 0.152`, `lateral_velocity_abs 0.154` **fail**, `world_y_drift_abs_m 0.662` **fail** | achieved `+0.0455`, signed ratio `+0.70` **PASS** | achieved `+0.0412`, signed ratio `-0.63` **FAIL** | fast gait, wrong sign |
+| `checkpoint_1960_40140800.pkl` | `forward_velocity 0.182`, `cmd_err 0.0578`, `ratio 1.40`, `step_length 0.153`, `lateral_velocity_abs 0.166` **fail**, `world_y_drift_abs_m 0.810` **fail** | achieved `+0.0320`, signed ratio `+0.49` **FAIL** | achieved `+0.0290`, signed ratio `-0.45` **FAIL** | lower `vy`, but still positive under both signs |
+
+### What smoke9 validated
+- **The exact signed-`vy` sampler is active.** The train-side mean
+  `tracking/velocity_cmd_vy_abs` moved from smoke8's `~0.026` to smoke9's
+  `~0.041`, matching a balanced `{ -0.065, 0, +0.065 }` mixture
+  (`(2/3) * 0.065 = 0.043` before zero/branch effects).
+- **The instrumentation fix worked.** `reward/cmd_lateral_velocity_track`
+  appears in the smoke9 metrics and exposes the lateral factor directly.
+- **The failure is behavioral, not a probe bug.** Positive-`vy` probes pass or
+  nearly pass; negative-`vy` probes still achieve positive `vy`.
+
+### Why smoke9 failed (code + data)
+1. **The sampler hypothesis was necessary but not sufficient.**
+   Smoke8 mostly trained below the probe magnitude because TB's ellipse
+   projected `vy` by `cos(theta)`. Smoke9 fixed that by sampling exact signed
+   bins. The policy still kept the inherited positive-lateral attractor, so
+   insufficient command exposure is no longer the only root cause.
+
+2. **The lateral factor is logged, but not independently rewarded.**
+   `training/envs/wildrobot_env.py::_cmd_forward_velocity_track_reward` still
+   returns one combined 2D exponential:
+
+   `exp(-(alpha_x * vx_err^2 + alpha_y * vy_err^2))`
+
+   `reward/cmd_lateral_velocity_track` is currently a diagnostic factor, not a
+   separate weighted term in `_aggregate_reward`. When the combined velocity
+   reward is already small, the optimizer can get more return by preserving the
+   forward gait and other imitation terms than by flipping lateral sign.
+
+3. **Training longer on smoke9 is low-yield.**
+   The deterministic top candidates are early (`1960-2060`). Late train metrics
+   reduce stride instead of discovering signed lateral control:
+   - smoke9 first-10 train rows: `forward_velocity ~0.082`,
+     `step_length ~0.060`, `cmd_vy_err ~0.109`
+   - smoke9 last-10 train rows: `forward_velocity ~0.060`,
+     `step_length ~0.039`, `cmd_vy_err ~0.111`
+
+### ToddlerBot and public-reference comparison
+- ToddlerBot samples walk commands with the same ellipse projection
+  (`~/projects/toddlerbot/toddlerbot/locomotion/walk_env.py`) and uses a tight
+  2D velocity reward (`walk.gin`: `RewardScales.lin_vel_xy = 2.0`,
+  `RewardsConfig.lin_vel_tracking_sigma = 1000.0`;
+  `mjx_env.py::_reward_lin_vel_xy`).
+- WR's exact signed-`vy` sampler is an intentional curriculum deviation from TB:
+  TB's broad ellipse is appropriate once the policy owns signed 2D velocity,
+  while WR is still stuck in a one-sided lateral local minimum.
+- The next step still follows the command-conditioned locomotion pattern used
+  by PPO locomotion systems (Schulman et al., 2017; Rudin et al., 2021), and
+  keeps the reference-state warm start / imitation structure consistent with
+  DeepMimic-style RSI (Peng et al., 2018). The WR-specific change is to split
+  `vx` and `vy` rewards so the lateral sign gradient cannot be hidden inside a
+  near-zero product term.
+
+### Smoke10 plan - axis-split command velocity reward
+- **Resume from** the smoke6 promoted checkpoint again, not smoke8/smoke9:
+  - `training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3/eval_promoted/checkpoint_1900_38912000.pkl`
+- **Keep**:
+  - `loc_ref_residual_base: home`
+  - `loc_ref_rsi_enabled: true`
+  - smoke6 coverage-1.1 symmetric scales
+  - exact signed-`vy` bins `{ -0.065, 0, +0.065 }`
+  - `min_velocity_y = -0.065`, `max_velocity_y = +0.065`
+  - eval command `[0.13, 0.0, 0.0]`
+  - probes `[0.13, +0.065, 0.0]` and `[0.13, -0.065, 0.0]`
+  - yaw off (`max_yaw_rate = 0`, `cmd_yaw_rate_track = 0`)
+  - strict lateral drift + signed-probe gates
+- **Change the reward structure:**
+  - set `cmd_velocity_track_dim: 1` so `cmd_forward_velocity_track` is a pure
+    forward `vx` reward again
+  - add a new separately weighted lateral command reward, e.g.
+    `reward_weights.cmd_lateral_velocity_track: 1.0`
+  - compute that term from the existing lateral factor:
+
+    `exp(-alpha_y * (vy_actual - cmd_vy)^2)`
+
+  - keep `alpha_x = 562.5` and `alpha_y = 120.0`
+  - preserve a raw lateral-factor diagnostic so smoke10 can still distinguish
+    "lateral factor is high" from "weighted contribution is high"
+
+### Smoke10 implementation notes
+- Add `cmd_lateral_velocity_track: float = 0.0` to
+  `training/configs/training_runtime_config.py::RewardWeightsConfig`.
+- Parse it in `training/configs/training_config.py::_parse_reward_weights_config`
+  so strict YAML loading accepts the new key.
+- In `training/envs/wildrobot_env.py`, compute the lateral factor whenever
+  `cmd_velocity_track_dim == 2` **or** `cmd_lateral_velocity_track > 0`.
+  Existing configs with `cmd_velocity_track_dim == 1` and lateral weight `0`
+  should keep the neutral factor behavior.
+- Add the weighted lateral term to `_aggregate_reward`.
+- Add/update metrics carefully:
+  - keep the existing `reward/cmd_lateral_velocity_track` raw factor diagnostic,
+    or explicitly rename/document if it becomes the weighted contribution
+  - if needed, add a separate weighted metric such as
+    `reward/cmd_lateral_velocity_track_contrib`
+- Add a smoke10 config copied from smoke9 with only the axis-split reward
+  changes above.
+- Add tests that pin:
+  - smoke9 config remains unchanged
+  - smoke10 config loads and has exact signed-`vy`, `cmd_velocity_track_dim=1`,
+    and nonzero `cmd_lateral_velocity_track`
+  - the lateral reward is non-neutral under `cmd_velocity_track_dim=1` when the
+    new weight is nonzero
+  - reward/logging allow-lists cover any new metric key
+
+### Recommendation after smoke9
+- **Do not deploy smoke9.**
+- **Do not resume smoke9.** It reinforced the same positive-lateral mode.
+- **Do not only increase `alpha_y` or train longer.** Smoke9 already put the
+  exact signed commands into training and still failed the negative probe.
+- **Run smoke10 as an axis-split reward experiment from smoke6.** This is the
+  smallest next change that attacks the observed failure: the lateral sign
+  objective needs its own live reward channel while the forward gait remains
+  protected by the validated smoke6 forward reward.
+
 ## [v0.21.0-smoke8-result + smoke9-plan] - 2026-06-06: stronger `vy` range still learned one-sided lateral mode; smoke9 = exact signed-`vy` curriculum + instrumentation fix
 
 ### Smoke8 result — no deployable checkpoint
