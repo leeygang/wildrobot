@@ -1,0 +1,281 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 2,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 1129,
+    "action_dim": 21
+  },
+  "robot": {
+    "robot_name": "WildRobot",
+    "actuator_names": [
+      "waist_yaw",
+      "left_shoulder_pitch",
+      "left_shoulder_roll",
+      "left_elbow_pitch",
+      "left_wrist_yaw",
+      "left_wrist_pitch",
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "left_ankle_roll",
+      "right_shoulder_pitch",
+      "right_shoulder_roll",
+      "right_elbow_pitch",
+      "right_wrist_yaw",
+      "right_wrist_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "right_ankle_roll"
+    ],
+    "joints": {
+      "waist_yaw": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 0.5235987755982988,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 3.141592653589793,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_roll": {
+        "range_min_rad": -3.0543261909900767,
+        "range_max_rad": 0.4363323129985824,
+        "policy_action_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_wrist_yaw": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_wrist_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 0.08726646259971647,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.17453292519943295,
+        "policy_action_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_pitch": {
+        "range_min_rad": -3.141592653589793,
+        "range_max_rad": 0.5235987755982988,
+        "policy_action_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_roll": {
+        "range_min_rad": -0.4363323129985824,
+        "range_max_rad": 3.0543261909900767,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_wrist_yaw": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_wrist_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 0.08726646259971647,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.5235987755982988,
+        "policy_action_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.17453292519943295,
+        "range_max_rad": 1.5707963267948966,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "policy_action_sign": 1.0,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "policy_action_sign": -1.0,
+        "max_velocity_rad_s": 10.0
+      }
+    },
+    "home_ctrl_rad": [
+      0.00329397,
+      -0.000935575,
+      0.00376767,
+      0.0,
+      -2.03364e-05,
+      0.000487266,
+      0.221289,
+      -0.000686951,
+      0.488909,
+      -0.248439,
+      0.000485132,
+      0.00018508,
+      0.0192083,
+      0.0,
+      1.0851e-05,
+      0.000485021,
+      -0.221849,
+      -0.000561528,
+      0.490533,
+      -0.24789,
+      -0.00170573
+    ]
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v8_cmd3d",
+    "layout": [
+      {
+        "name": "gravity_local",
+        "size": 3,
+        "frame": "local",
+        "units": "unit_vector"
+      },
+      {
+        "name": "angvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "rad_s"
+      },
+      {
+        "name": "joint_pos_normalized",
+        "size": 21,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "joint_vel_normalized",
+        "size": 21,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "foot_switches",
+        "size": 4,
+        "frame": null,
+        "units": "bool_as_float"
+      },
+      {
+        "name": "prev_action",
+        "size": 21,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "velocity_cmd",
+        "size": 1,
+        "frame": null,
+        "units": "m_s"
+      },
+      {
+        "name": "loc_ref_phase_sin_cos",
+        "size": 2,
+        "frame": null,
+        "units": "sin_cos_phase"
+      },
+      {
+        "name": "proprio_history",
+        "size": 1050,
+        "frame": null,
+        "units": "stacked_proprio_oldest_to_newest"
+      },
+      {
+        "name": "velocity_cmd_lateral_yaw",
+        "size": 2,
+        "frame": "heading_local",
+        "units": "m_s_and_rad_s"
+      },
+      {
+        "name": "padding",
+        "size": 1,
+        "frame": null,
+        "units": "unused"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "none",
+    "postprocess_params": {},
+    "mapping_id": "pos_target_rad_v1"
+  },
+  "provenance": {
+    "created_at": "2026-06-07T22:59:40.369309+00:00",
+    "training_config": "training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3/training_config.yaml",
+    "source_checkpoint": {
+      "format": "pkl",
+      "path": "training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3/checkpoint_1650_33792000.pkl"
+    },
+    "robot_config": "/Users/ygli/projects/wildrobot/assets/v2/mujoco_robot_config.json"
+  }
+}
