@@ -8,6 +8,20 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-smoke6-deploy-selection] - 2026-06-07: use `checkpoint_1650_33792000.pkl` for the first forward-only hardware trial
+
+### Smoke6 deploy-safety recheck
+- **Source run**: `training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3`
+- **Authoritative promotion remains**: `checkpoint_1900_38912000.pkl` under the original forward-only G4 gates.
+- **Deployment pick after review**: `checkpoint_1650_33792000.pkl` is safer for the first tethered/suspended forward-only hardware trial.
+
+| checkpoint | fwd vel | cmd err | ratio vs `0.13` | ep len | lat vel abs | world-y drift | yaw drift | deploy verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `checkpoint_1900_38912000.pkl` | 0.1913 | 0.0657 | 1.47 | 1000 | 0.1521 | 0.4801 m | 0.1075 rad | original promoted checkpoint; too fast and drifts sideways for first hardware |
+| `checkpoint_1650_33792000.pkl` | 0.1559 | 0.0528 | 1.20 | 1000 | 0.1410 | 0.1261 m | 0.2451 rad | safer first hardware candidate; lower overspeed and much lower path drift |
+
+Both checkpoints pass the original forward-only hard gates. Neither fully clears the stricter deploy drift screen because `lateral_velocity_abs > 0.10`, but `1650` passes the world-y drift cap while `1900` fails it. For first-version WR forward walking, choose `1650` before trying the faster `1900`.
+
 ## [v0.21.0-smoke9-result + smoke10-plan] - 2026-06-07: exact signed-`vy` exposure worked, but lateral sign still failed; smoke10 = axis-split lateral reward
 
 ### Smoke9 result - no deployable checkpoint
