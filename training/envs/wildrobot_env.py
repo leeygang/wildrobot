@@ -491,6 +491,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
             getattr(self._config.reward_weights, "cmd_forward_velocity_alpha_y", 0.0)
         )
         self._cmd_lateral_alpha = _alpha_y if _alpha_y > 0.0 else _alpha_x
+        # smoke10 — axis-split lateral command reward.  The lateral FACTOR
+        # exp(-alpha_y*(vy - cmd_vy)^2) is computed (non-neutral) when EITHER
+        # the combined 2D tracker is on (dim==2, smoke8/9) OR a separate
+        # ``cmd_lateral_velocity_track`` weight is set (>0, smoke10 forward-only
+        # dim==1 + standalone lateral term).  Default weight 0.0 keeps dim==1
+        # legacy configs on the neutral-1.0 factor.  Under dim==2 the lateral
+        # axis is already inside ``cmd_forward_velocity_track`` AND the standalone
+        # weight defaults to 0, so there is no double-counting.
+        self._cmd_lateral_track_active = (self._cmd_velocity_track_dim == 2) or (
+            float(getattr(self._config.reward_weights, "cmd_lateral_velocity_track", 0.0))
+            > 0.0
+        )
         # Default reflects the WR-normalized value
         # (LocomotionEnvConfig.close_feet_threshold = 0.146).  Only fires
         # if the env is constructed outside TrainingConfig.
@@ -2248,16 +2260,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # 2D reward so analysis can tell forward success from lateral-sign
         # failure (smoke7's one-sided mode was invisible in the combined term):
         #   reward/cmd_lateral_velocity_track — the multiplicative lateral FACTOR
-        #     of the velocity reward (diagnostic; 1.0 = perfect lateral tracking,
-        #     NOT a separate term added to the reward sum).  ONLY meaningful under
-        #     track_dim==2; under track_dim==1 the lateral axis is NOT in the
-        #     reward at all, so the factor is a NEUTRAL 1.0 (no lateral penalty)
-        #     to avoid mis-logging a phantom subterm on forward-only configs.
+        #     exp(-alpha_y*(vy - cmd_vy)^2) (RAW factor; 1.0 = perfect lateral
+        #     tracking).  Non-neutral when EITHER track_dim==2 (smoke8/9, lateral
+        #     folded into cmd_forward_velocity_track) OR smoke10's standalone
+        #     ``cmd_lateral_velocity_track`` weight is set (>0); else NEUTRAL 1.0
+        #     on forward-only legacy configs (see _cmd_lateral_track_active).
+        #     The smoke10 weighted dt-scaled contribution is logged separately as
+        #     reward/cmd_lateral_velocity_track_contrib (see _aggregate_reward).
         #   tracking/cmd_vy_err = |vy - vy_cmd|  — ALWAYS valid: a pure lateral
         #     command-error diagnostic (a persistent +bias under -vy commands
         #     shows up here) regardless of whether the lateral axis is rewarded.
         _vy_err_cmd_diag = (lateral_velocity - velocity_cmd[1]).astype(jp.float32)
-        if self._cmd_velocity_track_dim == 2:
+        if self._cmd_lateral_track_active:
             r_cmd_lateral_velocity_track = jp.exp(
                 -jp.float32(self._cmd_lateral_alpha)
                 * _vy_err_cmd_diag
@@ -2704,6 +2718,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * terms["r_contact_match"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
             * terms["r_cmd_forward_velocity_track"],
+            # v0.21.0 smoke10 — axis-split standalone lateral command tracking.
+            # Weighted dt-scaled contribution of the lateral FACTOR
+            # exp(-alpha_y*(vy - cmd_vy)^2).  Default w.cmd_lateral_velocity_track
+            # = 0.0 so dim==2 (smoke8/9) and all legacy configs add nothing here
+            # (no double-count: under dim==2 the lateral axis already lives in
+            # cmd_forward_velocity_track).  smoke10 sets it to 1.0 with dim==1.
+            cmd_lateral_velocity_track=jp.float32(w.cmd_lateral_velocity_track)
+            * terms["r_cmd_lateral_velocity_track"],
             # v0.21.0 P6.4 (H5) — yaw-rate tracking weighted contribution.
             # Default w.cmd_yaw_rate_track = 0.0 so legacy YAMLs are
             # unaffected; v0.21 smokes (P8) opt in.
@@ -3770,12 +3792,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # site).  Factor is NEUTRAL 1.0 under track_dim==1 (no lateral term);
         # cmd_vy_err is always valid.
         _reset_vy_err = (root_vel_h.linear[1] - velocity_cmd[1]).astype(jp.float32)
-        if self._cmd_velocity_track_dim == 2:
-            metrics_dict["reward/cmd_lateral_velocity_track"] = jp.exp(
+        if self._cmd_lateral_track_active:
+            _reset_lat_factor = jp.exp(
                 -jp.float32(self._cmd_lateral_alpha) * _reset_vy_err * _reset_vy_err
             ).astype(jp.float32)
         else:
-            metrics_dict["reward/cmd_lateral_velocity_track"] = jp.float32(1.0)
+            _reset_lat_factor = jp.float32(1.0)
+        metrics_dict["reward/cmd_lateral_velocity_track"] = _reset_lat_factor
+        # smoke10 weighted dt-scaled contribution (0 unless the standalone
+        # lateral weight is set); keeps reset/step metric keys consistent.
+        metrics_dict["reward/cmd_lateral_velocity_track_contrib"] = (
+            jp.float32(
+                getattr(self._config.reward_weights, "cmd_lateral_velocity_track", 0.0)
+            )
+            * _reset_lat_factor
+            * jp.float32(self.dt)
+        )
         metrics_dict["tracking/cmd_vy_err"] = jp.abs(_reset_vy_err).astype(jp.float32)
         # v0.21.0 follow-up — signed sibling for the lateral pass
         # criterion (walking_training.md Appendix C).  Zero at reset
@@ -4544,6 +4576,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/cmd_forward_velocity_track"] = reward_contrib[
             "cmd_forward_velocity_track"
         ]
+        # v0.21.0 smoke10 — axis-split lateral command tracking WEIGHTED
+        # contribution (dt-scaled).  The RAW lateral factor stays at
+        # reward/cmd_lateral_velocity_track (emitted above from reward_terms);
+        # this is the actual reward sum contribution.  Default weight 0.0 so
+        # dim==2 / legacy configs log a constant 0 here.
+        terminal_metrics_dict["reward/cmd_lateral_velocity_track_contrib"] = (
+            reward_contrib["cmd_lateral_velocity_track"]
+        )
         # v0.21.0 P6.4 (H5) — yaw-rate tracking weighted contribution.
         # Default w.cmd_yaw_rate_track = 0.0 so legacy YAMLs log a
         # constant 0 here; v0.21 smokes (P8) opt in and the value

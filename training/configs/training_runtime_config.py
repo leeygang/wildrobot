@@ -1150,6 +1150,17 @@ class RewardWeightsConfig(Freezable):
     #                 with vy_ref fixed to 0 in forward-only command smokes.
     cmd_velocity_track_dim: int = 1
 
+    # v0.21.0 smoke10 — axis-split standalone lateral command tracking.
+    # Weight on a SEPARATE lateral term using the factor
+    # ``exp(-cmd_forward_velocity_alpha_y * (vy_actual - cmd_vy)^2)`` so the
+    # signed lateral objective has its own live reward channel independent of
+    # the (forward-only, dim==1) ``cmd_forward_velocity_track``.  Default 0.0
+    # keeps every legacy/dim==2 YAML (smoke7/8/9, ...) byte-for-byte identical —
+    # under dim==2 the lateral axis is already inside
+    # ``cmd_forward_velocity_track`` so this MUST stay 0 there to avoid
+    # double-counting.  smoke10 sets it to 1.0 with ``cmd_velocity_track_dim=1``.
+    cmd_lateral_velocity_track: float = 0.0
+
     # v0.21.0 P6.4 (H5) — yaw-rate tracking term.
     #
     # ``cmd_yaw_rate_track`` is the weight on the new

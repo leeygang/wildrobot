@@ -126,7 +126,12 @@ REWARD_TERM_KEYS = [
     # (track_dim==2; neutral 1.0 at dim==1) but absent from this
     # allow-list — silently dropped by the wandb dispatcher, so smoke8
     # logged it nowhere.  Required to separate vx success from vy failure.
+    # NOTE: this is the RAW factor, not a weighted reward contribution.
     "reward/cmd_lateral_velocity_track",
+    # v0.21.0 smoke10: axis-split standalone lateral command tracking —
+    # the WEIGHTED dt-scaled contribution actually added to the reward sum
+    # (weight cmd_lateral_velocity_track, default 0.0 so dim==2/legacy log 0).
+    "reward/cmd_lateral_velocity_track_contrib",
     "reward/cmd_yaw_rate_track",
     # v0.20.1 TB-active alignment Phase 2 (Appendix B).  These were
     # written to terminal_metrics_dict by the env from the smoke8b
@@ -237,8 +242,13 @@ ENV_METRICS_KEYS = {
     ),
     "reward/cmd_forward_velocity_track": "Forward velocity command tracking",
     "reward/cmd_lateral_velocity_track": (
-        "Lateral velocity command-tracking FACTOR exp(-alpha_y*vy_err^2) "
-        "(track_dim==2; neutral 1.0 at dim==1)"
+        "Lateral velocity command-tracking RAW FACTOR exp(-alpha_y*vy_err^2) "
+        "(non-neutral when track_dim==2 OR cmd_lateral_velocity_track>0; "
+        "neutral 1.0 otherwise)"
+    ),
+    "reward/cmd_lateral_velocity_track_contrib": (
+        "Weighted dt-scaled reward contribution of the standalone lateral "
+        "command term (smoke10; 0 unless cmd_lateral_velocity_track>0)"
     ),
     # v0.20.1: imitation-error diagnostics (raw, not weighted into reward).
     "ref/q_track_err_rmse": "RMSE between actual and reference joint positions (rad)",

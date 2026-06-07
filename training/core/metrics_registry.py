@@ -1831,17 +1831,31 @@ METRIC_SPECS: List[MetricSpec] = [
         name="reward/cmd_lateral_velocity_track",
         reducer=Reducer.MEAN,
         description=(
-            "smoke8 lateral diagnostic — the lateral multiplicative FACTOR of "
+            "smoke8 lateral diagnostic — the lateral multiplicative RAW FACTOR of "
             "the velocity reward, exp(-alpha_y * (vy - vy_cmd)^2) "
             "(alpha_y = cmd_forward_velocity_alpha_y when set, else the forward "
-            "alpha).  1.0 = perfect lateral tracking, ->0 = lateral error.  A "
-            "diagnostic of the lateral subterm, NOT a separate weighted term in "
-            "the reward sum (the lateral axis is already inside "
-            "reward/cmd_forward_velocity_track's combined exponent).  ONLY "
-            "meaningful under cmd_velocity_track_dim==2; under track_dim==1 the "
-            "lateral axis is NOT in the reward, so this is a NEUTRAL 1.0 (do not "
-            "read it as a reward subterm on forward-only configs like "
-            "smoke6 / smoke4A)."
+            "alpha).  1.0 = perfect lateral tracking, ->0 = lateral error.  This "
+            "is the RAW factor, not a weighted reward contribution.  Non-neutral "
+            "when EITHER cmd_velocity_track_dim==2 (lateral folded into "
+            "reward/cmd_forward_velocity_track's combined exponent) OR smoke10's "
+            "standalone cmd_lateral_velocity_track weight > 0 (separate term — "
+            "see reward/cmd_lateral_velocity_track_contrib).  Under track_dim==1 "
+            "with weight 0 the lateral axis is NOT in the reward, so this is a "
+            "NEUTRAL 1.0 (do not read it as a reward subterm on forward-only "
+            "configs like smoke6 / smoke4A)."
+        ),
+    ),
+    # v0.21.0 smoke10: axis-split standalone lateral command tracking — the
+    # WEIGHTED dt-scaled contribution actually added to the reward sum.  Default
+    # weight cmd_lateral_velocity_track=0.0 keeps dim==2 / legacy YAMLs at 0 here
+    # (no double-count with reward/cmd_forward_velocity_track).
+    MetricSpec(
+        name="reward/cmd_lateral_velocity_track_contrib",
+        reducer=Reducer.MEAN,
+        description=(
+            "smoke10 axis-split lateral command term — weighted dt-scaled reward "
+            "contribution (cmd_lateral_velocity_track * raw_factor * dt).  0 "
+            "unless the standalone lateral weight is set (smoke10: 1.0)."
         ),
     ),
     MetricSpec(

@@ -965,6 +965,11 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         cmd_forward_velocity_alpha=rewards.get("cmd_forward_velocity_alpha", 4.0),
         cmd_forward_velocity_alpha_y=rewards.get("cmd_forward_velocity_alpha_y", 0.0),
         cmd_velocity_track_dim=int(rewards.get("cmd_velocity_track_dim", 1)),
+        # v0.21.0 smoke10 — axis-split standalone lateral command tracking
+        # weight.  Default 0.0 keeps legacy / dim==2 YAMLs unchanged.
+        cmd_lateral_velocity_track=float(
+            rewards.get("cmd_lateral_velocity_track", 0.0)
+        ),
         # v0.21.0 P6.4 (H5) — yaw-rate tracking term.  Defaults
         # mirror RewardWeightsConfig: weight 0.0 (legacy YAMLs are
         # unaffected) and TB-aligned α = 0.25 (walk.gin
