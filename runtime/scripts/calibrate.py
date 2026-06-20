@@ -510,18 +510,49 @@ def _alarm_timeout(seconds: float, *, message: str):
             pass
 
 
-def load_home_from_bundle(bundle_dir: Path, joint_count: int) -> List[float]:
+def load_bundle_spec(bundle_dir: Path) -> tuple[List[str], List[float]]:
     spec_path = bundle_dir / "policy_spec.json"
     if not spec_path.exists():
         raise FileNotFoundError(f"policy_spec.json not found in bundle {bundle_dir}")
     data = json.loads(spec_path.read_text())
     robot = data.get("robot", {})
+    actuator_names = robot.get("actuator_names")
     home = robot.get("home_ctrl_rad")
-    if home is None:
+    if not isinstance(actuator_names, list) or not actuator_names:
+        raise ValueError("bundle policy_spec.json missing robot.actuator_names")
+    if not isinstance(home, list):
         raise ValueError("bundle policy_spec.json missing robot.home_ctrl_rad")
-    if not isinstance(home, list) or len(home) != joint_count:
-        raise ValueError("robot.home_ctrl_rad length mismatch")
-    return [float(x) for x in home]
+    if len(home) != len(actuator_names):
+        raise ValueError("bundle policy_spec.json actuator_names/home_ctrl_rad length mismatch")
+    return [str(name) for name in actuator_names], [float(x) for x in home]
+
+
+def resolve_config_path(args: argparse.Namespace) -> Path:
+    if args.config:
+        return Path(args.config)
+    if args.bundle:
+        bundle_cfg = Path(args.bundle) / "wildrobot_config.json"
+        if bundle_cfg.exists():
+            return bundle_cfg
+    return Path("runtime/configs/runtime_config_v2.json")
+
+
+def resolve_joint_names(
+    *,
+    args: argparse.Namespace,
+    servo_cfgs: Dict[str, ServoConfig],
+) -> List[str]:
+    if not args.bundle:
+        return list(servo_cfgs.keys())
+
+    actuator_names, _ = load_bundle_spec(Path(args.bundle))
+    missing = [name for name in actuator_names if name not in servo_cfgs]
+    if missing:
+        raise ValueError(
+            "Runtime config is missing servo entries required by bundle actuator order: "
+            f"{missing}"
+        )
+    return list(actuator_names)
 
 
 def load_home_from_keyframes_xml(path: Path, joint_count: int) -> List[float]:
@@ -588,7 +619,15 @@ def load_home_from_scene(scene_xml: Path, joint_names: List[str]) -> List[float]
 
 def resolve_home_ctrl(args: argparse.Namespace, joint_names: List[str]) -> List[float]:
     if args.bundle:
-        return load_home_from_bundle(Path(args.bundle), len(joint_names))
+        bundle_names, bundle_home = load_bundle_spec(Path(args.bundle))
+        home_by_name = dict(zip(bundle_names, bundle_home, strict=True))
+        missing = [name for name in joint_names if name not in home_by_name]
+        if missing:
+            raise ValueError(
+                "bundle policy_spec.json missing home_ctrl_rad entries for requested joints: "
+                f"{missing}"
+            )
+        return [float(home_by_name[name]) for name in joint_names]
     if args.scene_xml:
         return load_home_from_scene(Path(args.scene_xml), joint_names)
     if args.keyframes_xml:
@@ -2551,8 +2590,8 @@ Examples (copy/paste):
     parser.add_argument("--?", action="help", help="Show help (alias)")
     parser.add_argument(
         "--config",
-        default="runtime/configs/runtime_config_v2.json",
-        help="Input runtime config path",
+        default=None,
+        help="Input runtime config path (default: bundle's wildrobot_config.json if --bundle is set, else runtime/configs/runtime_config_v2.json)",
     )
     parser.add_argument("--output", help="Optional output path; default is in-place update with backup")
     parser.add_argument(
@@ -2611,14 +2650,14 @@ Examples (copy/paste):
     )
     args = parser.parse_args()
 
-    config_path = Path(args.config)
+    config_path = resolve_config_path(args)
     if not config_path.exists():
         sys.exit(f"Config path not found: {config_path}")
 
     raw_config = json.loads(config_path.read_text())
     config = WrRuntimeConfig.load(config_path)
     servo_cfgs = config.hiwonder_controller.servos
-    joint_names = list(servo_cfgs.keys())
+    joint_names = resolve_joint_names(args=args, servo_cfgs=servo_cfgs)
 
     if not (
         args.calibrate
