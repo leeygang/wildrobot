@@ -534,7 +534,7 @@ def resolve_config_path(args: argparse.Namespace) -> Path:
         bundle_cfg = Path(args.bundle) / "wildrobot_config.json"
         if bundle_cfg.exists():
             return bundle_cfg
-    return Path("runtime/configs/runtime_config_v2.json")
+    return _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
 
 
 def resolve_joint_names(

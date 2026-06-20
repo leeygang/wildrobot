@@ -10,6 +10,7 @@ classes with the right kwargs (mocked — no servos/IMU/GPIO required).
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from conftest import make_v8_spec
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE = _REPO_ROOT / "runtime" / "configs" / "runtime_config_template.json"
 _V2_CONFIG = _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
+_CALIBRATE = _REPO_ROOT / "runtime" / "scripts" / "calibrate.py"
 
 
 @pytest.mark.parametrize("config_path", [_TEMPLATE, _V2_CONFIG])
@@ -38,6 +40,13 @@ def test_runtime_config_covers_all_v8_actuators(config_path: Path) -> None:
     # ankle_roll specifically (the regressed joints) must be present.
     assert "left_ankle_roll" in servos
     assert "right_ankle_roll" in servos
+
+
+def test_calibrate_default_config_path_is_repo_root_relative(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    ns = runpy.run_path(str(_CALIBRATE))
+    config_path = ns["resolve_config_path"](SimpleNamespace(config=None, bundle=None))
+    assert config_path == _V2_CONFIG
 
 
 def test_hardware_protocols_have_no_from_config() -> None:
