@@ -37,7 +37,7 @@
       },
       "left_ankle_roll": {
         "id": 9,
-        "offset_unit": 0,
+        "offset_unit": -2,
         "motor_sign": -1,
         "motor_center_mujoco_deg": 0
       },
@@ -67,7 +67,7 @@
       },
       "right_ankle_roll": {
         "id": 10,
-        "offset_unit": 0,
+        "offset_unit": -28,
         "motor_sign": -1,
         "motor_center_mujoco_deg": 0
       },
