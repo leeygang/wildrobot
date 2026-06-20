@@ -76,7 +76,6 @@ def clamp_home_ctrl(
         joints[str(item["name"])] = JointSpec(
             range_min_rad=float(item["range"][0]),
             range_max_rad=float(item["range"][1]),
-            policy_action_sign=float(item.get("policy_action_sign", 1.0)),
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
 

@@ -52,18 +52,10 @@ DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
-    # For joints with inverted ranges (policy_action_sign=-1), the positive motion
-    # is OPPOSITE to the symmetric motion direction.
-    #
-    # Left leg (policy_action_sign=1.0): positive rad = "natural" motion direction
     "left_hip_pitch": "left leg swings forward",
     "left_hip_roll": "left leg moves inward (toward body midline)",
     "left_knee_pitch": "left knee bends (foot moves backward)",
     "left_ankle_pitch": "left toes go up (dorsiflex)",
-    #
-    # Right leg: check policy_action_sign to determine positive motion direction
-    # - policy_action_sign=-1.0 (hip_pitch, hip_roll): positive rad = OPPOSITE of left
-    # - policy_action_sign=1.0 (knee, ankle): positive rad = SAME as left
     "right_hip_pitch": "right leg swings backward",  # inverted range
     "right_hip_roll": "right leg moves outward (away from body midline)",  # inverted range
     "right_knee_pitch": "right knee bends (foot moves backward)",  # same as left
@@ -925,20 +917,6 @@ def verify_zero(
     )
 
 
-def _action_from_joint_target_rad(servo: ServoConfig, target_rad: float) -> float:
-    if abs(float(servo.ctrl_span)) < 1e-9:
-        raise ValueError("Degenerate joint range: ctrl_span is zero")
-    if abs(float(servo.policy_action_sign)) < 1e-9:
-        raise ValueError("Invalid policy_action_sign: near zero")
-    corrected = (float(target_rad) - float(servo.ctrl_center)) / float(servo.ctrl_span)
-    return corrected / float(servo.policy_action_sign)
-
-
-def _joint_target_rad_from_action(servo: ServoConfig, action: float) -> float:
-    corrected = float(action) * float(servo.policy_action_sign)
-    return corrected * float(servo.ctrl_span) + float(servo.ctrl_center)
-
-
 def _move_ms_for_speed_20deg_per_s(current_deg: float, target_deg: float) -> int:
     delta_deg = abs(float(target_deg) - float(current_deg))
     if delta_deg <= 1e-6:
@@ -1028,7 +1006,6 @@ def print_joint_calibration_state(
 
     print(f"\n-- Joint state: {joint} (servo {int(servo.id)}) --")
     print(f"  ctrl_range_deg: [{min_deg:.3f}, {max_deg:.3f}]")
-    print(f"  policy_action_sign: {float(servo.policy_action_sign):+.3f}")
     print(f"  offset_unit: {int(state.offset):+d}")
     print(f"  motor_sign: {int(state.motor_sign):+d}")
     print(f"  motor_center_mujoco_deg: {float(servo.motor_center_mujoco_deg):+.3f}")
@@ -1043,19 +1020,8 @@ def print_joint_calibration_state(
         motor_sign=int(state.motor_sign),
         offset=int(state.offset),
     )
-    try:
-        policy_action = _action_from_joint_target_rad(servo, joint_target_rad)
-    except ValueError as exc:
-        print(f"  current_servo_elect_unit: {int(pos_units)}")
-        print(f"  current_servo_conceptual_unit: {int(conceptual_units)}")
-        joint_target_deg = float(np.rad2deg(float(joint_target_rad)))
-        print(f"  calculated_joint_target_rad: {joint_target_rad:+.6f} ({joint_target_deg:+.3f} deg)")
-        print(f"  calculated_policy_action: <error: {exc}>")
-        return
-
     print(f"  current_servo_elect_unit: {int(pos_units)}")
     print(f"  current_servo_conceptual_unit: {int(conceptual_units)}")
-    print(f"  calculated_policy_action: {float(policy_action):+.6f}")
     joint_target_deg = float(np.rad2deg(float(joint_target_rad)))
     print(f"  calculated_joint_target_rad: {float(joint_target_rad):+.6f} ({joint_target_deg:+.3f} deg)")
 
@@ -2929,7 +2895,7 @@ Examples (copy/paste):
             print("Flow: center all joints → select joint → choose action → calibrate → repeat")
             print(
                 "Per-joint submenu:\n"
-                "  p=print state, q=target deg evaluator, a=policy action evaluator, r=single-joint range test (20 deg/s),\n"
+                "  p=print state, q=target deg evaluator, r=single-joint range test (20 deg/s),\n"
                 "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
             )
 
@@ -3023,7 +2989,6 @@ Examples (copy/paste):
                     print("\nJoint menu:")
                     print("  p = print state")
                     print("  q = evaluate target joint deg")
-                    print("  a = evaluate policy action")
                     print("  m = set motor electric unit")
                     print("  r = run range test for this joint")
                     print("  o = calibrate offset")
@@ -3032,7 +2997,7 @@ Examples (copy/paste):
                     print("  b = back to joint list")
                     print("  x = panic unload and exit")
 
-                    action = input("Choose action (p/q/a/m/r/o/s/z/b/x): ").strip().lower()
+                    action = input("Choose action (p/q/m/r/o/s/z/b/x): ").strip().lower()
 
                     if action == "x":
                         panic_and_exit(controller, servo_ids)
@@ -3064,65 +3029,12 @@ Examples (copy/paste):
                             offset=int(current_state.offset),
                         )
                         conceptual_units = int(target_units) - int(current_state.offset)
-                        try:
-                            policy_action = _action_from_joint_target_rad(servo, target_rad)
-                        except ValueError as exc:
-                            print(f"Error computing policy action: {exc}")
-                            continue
-
-                        is_legit = -1.0 <= float(policy_action) <= 1.0
                         print(f"  target_joint_deg: {target_deg:+.4f}")
                         print(f"  target_joint_rad: {target_rad:+.6f}")
                         print(f"  motor_elect_unit: {int(target_units)}")
                         print(f"  motor_conceptual_unit: {int(conceptual_units)}")
-                        print(f"  policy_action: {float(policy_action):+.6f}")
-                        print(f"  policy_action_in_range[-1,1]: {is_legit}")
 
-                        if is_legit and yes_no("Move motor to this target?", default=True):
-                            current_units = read_position(controller, int(servo.id))
-                            if current_units is not None:
-                                current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
-                                    int(current_units),
-                                    motor_sign=int(current_state.motor_sign),
-                                    offset=int(current_state.offset),
-                                )
-                                current_deg = float(np.rad2deg(float(current_rad)))
-                                move_ms = _move_ms_for_speed_20deg_per_s(current_deg, target_deg)
-                            else:
-                                move_ms = int(max(args.move_ms, 100))
-                                print("Current position read failed; using fallback move time.")
-                            move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
-                            pos = read_position(controller, int(servo.id))
-                            if pos is not None:
-                                print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
-                        continue
-
-                    if action == "a":
-                        raw_action = input("Enter policy action value: ").strip()
-                        try:
-                            policy_action = float(raw_action)
-                        except ValueError:
-                            print("Invalid number.")
-                            continue
-
-                        target_rad = _joint_target_rad_from_action(servo, policy_action)
-                        target_deg = float(np.rad2deg(float(target_rad)))
-                        target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
-                            target_rad,
-                            motor_sign=int(current_state.motor_sign),
-                            offset=int(current_state.offset),
-                        )
-                        conceptual_units = int(target_units) - int(current_state.offset)
-                        is_legit = -1.0 <= float(policy_action) <= 1.0
-
-                        print(f"  policy_action: {float(policy_action):+.6f}")
-                        print(f"  target_joint_deg: {target_deg:+.4f}")
-                        print(f"  target_joint_rad: {target_rad:+.6f}")
-                        print(f"  motor_elect_unit: {int(target_units)}")
-                        print(f"  motor_conceptual_unit: {int(conceptual_units)}")
-                        print(f"  policy_action_in_range[-1,1]: {is_legit}")
-
-                        if is_legit and yes_no("Move motor to this target?", default=True):
+                        if yes_no("Move motor to this target?", default=True):
                             current_units = read_position(controller, int(servo.id))
                             if current_units is not None:
                                 current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
@@ -3161,20 +3073,10 @@ Examples (copy/paste):
                             offset=int(current_state.offset),
                         )
                         target_deg = float(np.rad2deg(float(target_rad)))
-                        try:
-                            policy_action = _action_from_joint_target_rad(servo, target_rad)
-                            policy_ok = -1.0 <= float(policy_action) <= 1.0
-                            policy_text = f"{float(policy_action):+.6f}"
-                        except ValueError as exc:
-                            policy_ok = False
-                            policy_text = f"<error: {exc}>"
-
                         print(f"  motor_elect_unit: {int(target_units)}")
                         print(f"  motor_conceptual_unit: {int(conceptual_units)}")
                         print(f"  target_joint_deg: {target_deg:+.4f}")
                         print(f"  target_joint_rad: {float(target_rad):+.6f}")
-                        print(f"  policy_action: {policy_text}")
-                        print(f"  policy_action_in_range[-1,1]: {policy_ok}")
 
                         if yes_no("Move motor to this target?", default=True):
                             current_units = read_position(controller, int(servo.id))

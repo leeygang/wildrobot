@@ -534,12 +534,6 @@ class WildRobotEnv(mjx_env.MjxEnv):
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
         }
 
-        # Default-pose action (used for filter init; matches ctrl at reset).
-        self._default_pose_action = JaxCalibOps.ctrl_to_policy_action(
-            spec=self._policy_spec,
-            ctrl_rad=self._default_joint_qpos,
-        ).astype(jp.float32)
-
         # Per-joint range arrays (for residual clipping).
         self._joint_range_mins = jp.asarray(
             [float(item["range"][0]) for item in self._robot_config.actuated_joints],

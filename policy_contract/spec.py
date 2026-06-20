@@ -69,8 +69,10 @@ class ModelSpec:
 class JointSpec:
     range_min_rad: float
     range_max_rad: float
-    policy_action_sign: float
     max_velocity_rad_s: float
+    # Legacy action-mapping compatibility. Current v8 walking runtime/training
+    # composes residuals directly in joint space and does not emit this field.
+    policy_action_sign: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -141,7 +143,6 @@ class PolicySpec:
                     name: {
                         "range_min_rad": joint.range_min_rad,
                         "range_max_rad": joint.range_max_rad,
-                        "policy_action_sign": joint.policy_action_sign,
                         "max_velocity_rad_s": joint.max_velocity_rad_s,
                     }
                     for name, joint in self.robot.joints.items()
@@ -607,10 +608,8 @@ def _parse_robot(data: Dict[str, Any]) -> RobotSpec:
         joints[name] = JointSpec(
             range_min_rad=_require_float(spec, "range_min_rad", context=f"robot.joints['{name}']"),
             range_max_rad=_require_float(spec, "range_max_rad", context=f"robot.joints['{name}']"),
-            policy_action_sign=_require_float(
-                spec, "policy_action_sign", context=f"robot.joints['{name}']"
-            ),
             max_velocity_rad_s=_require_float(spec, "max_velocity_rad_s", context=f"robot.joints['{name}']"),
+            policy_action_sign=float(spec.get("policy_action_sign", 1.0)),
         )
 
     return RobotSpec(

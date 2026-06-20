@@ -54,7 +54,6 @@ def actuated_joint_specs_rad():
             {
                 "name": str(s["name"]),
                 "range": [lo, hi],
-                "policy_action_sign": float(s.get("policy_action_sign", 1.0)),
                 "max_velocity": float(s.get("max_velocity", 10.0)),
             }
         )

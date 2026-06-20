@@ -821,9 +821,6 @@ def generate_actuated_joints_config(
     2. Normalize joint ranges for policy training
 
     Policy Action Sign Convention:
-    - policy_action_sign = +1.0: Joint range maps directly to action range
-    - policy_action_sign = -1.0: Joint range is inverted relative to paired limb motion
-
     Args:
         root: XML root element
         joints_details: List of joint details from generate_robot_config
@@ -833,7 +830,7 @@ def generate_actuated_joints_config(
             mujoco_robot_config.json, keyed by joint name.
 
     Returns:
-        List of actuated joint configs with policy_action_sign, ordered to match
+        List of actuated joint configs ordered to match
         actuator_order_path.
     """
     canonical_order = _read_actuator_order(actuator_order_path)
@@ -859,36 +856,12 @@ def generate_actuated_joints_config(
             f"{actuator_order_path}: {'; '.join(parts)}"
         )
 
-    # Default policy-action sign configuration.
-    # Joints listed here have local +z axes that map to the SAME world axis as
-    # their left counterpart (verified by composing parent body quats), so a
-    # mirror-symmetric motion needs opposite q on the right side.
-    # right_ankle_roll added 2026-05-03 by analogy with right_hip_roll: both
-    # share world axis ≈ (-1, 0, 0) at home pose.
-    explicit_policy_action_signs: Dict[str, float] = {
-        "right_hip_pitch": -1.0,
-        "right_hip_roll": -1.0,
-        "right_ankle_roll": -1.0,
-        "right_shoulder_pitch": -1.0,
-        "right_shoulder_roll": -1.0,
-    }
-
     actuated_joints: List[Dict[str, Any]] = []
     for joint_name in canonical_order:
         joint_info = actuated_joint_map[joint_name]
         range_min, range_max = joint_info.get("range", [-1.57, 1.57])
 
         existing_joint = (existing_joint_overrides or {}).get(joint_name, {})
-        policy_action_sign = float(
-            existing_joint.get(
-                "policy_action_sign",
-                explicit_policy_action_signs.get(joint_name, 1.0),
-            )
-        )
-        if abs(abs(policy_action_sign) - 1.0) > 1e-6:
-            raise ValueError(
-                f"Invalid policy_action_sign for '{joint_name}': {policy_action_sign} (must be +/-1.0)"
-            )
 
         actuated_joints.append({
             "name": joint_name,
@@ -896,7 +869,6 @@ def generate_actuated_joints_config(
                 int(round(math.degrees(range_min))),
                 int(round(math.degrees(range_max))),
             ],
-            "policy_action_sign": policy_action_sign,
             "max_velocity": float(existing_joint.get("max_velocity", 10.0)),
         })
 
@@ -1042,7 +1014,6 @@ def generate_robot_config(
                 if not name:
                     continue
                 existing_joint_overrides[str(name)] = {
-                    "policy_action_sign": float(entry.get("policy_action_sign", 1.0)),
                     "max_velocity": float(entry.get("max_velocity", 10.0)),
                 }
         except Exception as exc:

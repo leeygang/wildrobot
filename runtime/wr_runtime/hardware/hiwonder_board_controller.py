@@ -10,16 +10,22 @@ Usage:
     config = WrRuntimeConfig.load("runtime/configs/runtime_config_v2.json")
     controller = HiwonderBoardController(config.hiwonder_controller)
 
-    # Convert policy actions to servo commands and move
-    actions = [0.0] * 8  # Policy outputs
-    servo_cmds = config.hiwonder_controller.policy_action_to_servo_cmd(actions)
+    # Convert joint targets in radians to servo commands and move
+    servo_cmds = []
+    for joint, servo in config.hiwonder_controller.servos.items():
+        target_rad = 0.0
+        servo_cmds.append((servo.id, servo.joint_target_rad_to_elect_unit(target_rad)))
     time_ms = int(config.control.dt * 1000)  # e.g., 20ms at 50Hz
     controller.move_servos(servo_cmds, time_ms)
 
-    # Read servo positions and convert back to policy actions
+    # Read servo positions and convert back to joint radians
     servo_ids = [s.id for s in config.hiwonder_controller.servos.values()]
     positions = controller.read_servo_positions(servo_ids)
-    actions = config.hiwonder_controller.servo_pos_to_policy_action(positions)
+    pos_by_id = dict(positions)
+    joint_pos = {
+        joint: servo.servo_elect_units_to_joint_target_rad(pos_by_id[servo.id])
+        for joint, servo in config.hiwonder_controller.servos.items()
+    }
 """
 
 from __future__ import annotations

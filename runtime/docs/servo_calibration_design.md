@@ -93,9 +93,6 @@ For each joint:
 - `motor_sign` from JSON in `{+1, -1}`
 - `offset_unit` from JSON (int)
 
-Note:
-- `policy_action_sign` is **not** part of the servo calibration mapping. It is only used when mapping policy actions → control targets (see `docs/joints_angle.md` for the full action↔rad mapping and worked examples).
-
 Command (radians → *electrical* units):
 ```
 servo_electrical_unit_cmd = clamp_0_1000(
@@ -137,14 +134,6 @@ The script should guide the user joint-by-joint:
 4) write config (with backups)
 
 Important: calibrate `motor_sign` *before* `offset_unit`, because the “motor_sign test” is easier to reason about when the joint is near center.
-
-## How `policy_action_sign` Impacts Calibration (and What It Does *Not* Change)
-
-`policy_action_sign` is a **policy/model convention** used only in the `action ∈ [-1, 1]` ↔ `target_rad` mapping (see `docs/joints_angle.md`).
-
-Calibration guidance:
-- `policy_action_sign` does **not** change the runtime servo calibration mapping (`motor_sign`, `offset_unit`, `motor_center_mujoco_deg`).
-- When calibrating `motor_sign`, reason in terms of **positive `target_rad`** (MuJoCo/control radians increasing), not “positive policy action”.
 
 ## Calibration Procedure (per joint)
 

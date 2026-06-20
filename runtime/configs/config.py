@@ -88,7 +88,6 @@ class ServoConfig:
             (servo_unit == 500) when offset==0.
         rad_range: Joint range in radians (min, max) from mujoco_robot_config.json
         max_velocity: Maximum joint velocity in rad/s from mujoco_robot_config.json
-        policy_action_sign: +1.0 or -1.0 for action direction correction from mujoco_robot_config.json
     """
 
     id: int
@@ -97,7 +96,6 @@ class ServoConfig:
     motor_center_mujoco_deg: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
-    policy_action_sign: float = 1.0
 
     # Servo conversion constants
     # Hiwonder HTD-45H: 240° range = 4.1887902 rad, units [0, 1000], center at 500
@@ -123,8 +121,7 @@ class ServoConfig:
         - offset: corrects for neutral position alignment (in servo units)
 
         Args:
-            target_rad: Joint target in MuJoCo radians (policy_action_sign already applied
-                        by policy_contract if coming from policy output)
+            target_rad: Joint target in MuJoCo radians
 
         Returns:
             Servo position in units [0, 1000]
@@ -228,7 +225,6 @@ class ServoSpec:
             motor_center_mujoco_deg=float(self.motor_center_mujoco_deg),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
-            policy_action_sign=joint_spec.get("policy_action_sign", 1.0),
         )
 
 
@@ -314,88 +310,6 @@ class ServoControllerConfig:
     def joint_names(self) -> List[str]:
         """Get list of joint names in order."""
         return list(self.servos.keys())
-
-    def _policy_action_to_servo_pos(self, action: float, servo: ServoConfig) -> int:
-        """Convert single policy action [-1, 1] to servo position [0, 1000].
-
-        Conversion chain:
-            policy_action [-1, 1]
-            → corrected = action * policy_action_sign
-            → ctrl_rad = corrected * ctrl_span + ctrl_center
-            → servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)  (applies motor_center_mujoco_deg, motor_sign, offset)
-        """
-        action_clipped = max(-1.0, min(1.0, action))
-        corrected = action_clipped * servo.policy_action_sign
-        ctrl_rad = corrected * servo.ctrl_span + servo.ctrl_center
-        servo_pos = servo.joint_target_rad_to_elect_unit(ctrl_rad)
-        return max(self.SERVO_MIN, min(self.SERVO_MAX, int(round(servo_pos))))
-
-    def _servo_pos_to_policy_action(
-        self, servo_pos: int, servo: ServoConfig, *, joint_name: str
-    ) -> float:
-        """Convert servo position [0, 1000] to policy action [-1, 1].
-
-        Inverse of _policy_action_to_servo_pos.
-        """
-        ctrl_rad = servo.servo_elect_units_to_joint_target_rad(servo_pos)
-        if abs(float(servo.ctrl_span)) < 1e-9:
-            raise ValueError(
-                "Cannot invert servo_pos->policy_action with degenerate joint range "
-                f"(ctrl_span={float(servo.ctrl_span)}). Joint '{joint_name}' likely missing range in mujoco_robot_config.json."
-            )
-        corrected = (ctrl_rad - servo.ctrl_center) / servo.ctrl_span
-        action = corrected / servo.policy_action_sign
-        return max(-1.0, min(1.0, action))
-
-    def policy_action_to_servo_cmd(
-        self, actions: List[float]
-    ) -> List[Tuple[int, int]]:
-        """Convert policy actions to servo commands.
-
-        Args:
-            actions: List of policy actions in joint order (from mujoco_robot_config.json)
-
-        Returns:
-            List of (servo_id, servo_position) tuples
-        """
-        joint_names = self.joint_names
-        if len(actions) != len(joint_names):
-            raise ValueError(
-                f"Expected {len(joint_names)} actions, got {len(actions)}"
-            )
-
-        commands = []
-        for i, joint_name in enumerate(joint_names):
-            servo = self.servos[joint_name]
-            servo_pos = self._policy_action_to_servo_pos(actions[i], servo)
-            commands.append((servo.id, servo_pos))
-        return commands
-
-    def servo_pos_to_policy_action(
-        self, positions: List[Tuple[int, int]]
-    ) -> List[float]:
-        """Convert servo positions to policy actions.
-
-        Args:
-            positions: List of (servo_id, servo_position) tuples from read_positions()
-
-        Returns:
-            List of policy actions in joint order
-        """
-        # Build servo_id -> position mapping
-        pos_by_id = {servo_id: pos for servo_id, pos in positions}
-
-        # Convert in joint order
-        actions = []
-        for joint_name in self.joint_names:
-            servo = self.servos[joint_name]
-            if servo.id not in pos_by_id:
-                raise ValueError(f"No position for servo ID {servo.id} ({joint_name})")
-            servo_pos = pos_by_id[servo.id]
-            action = self._servo_pos_to_policy_action(servo_pos, servo, joint_name=joint_name)
-            actions.append(action)
-        return actions
-
 
 @dataclass(frozen=True)
 class BNO085Config:
@@ -617,7 +531,6 @@ class WrRuntimeConfig:
                     joint_specs[name] = {
                         "rad_range": (range_min, range_max),
                         "max_velocity": float(joint.get("max_velocity", 10.0)),
-                        "policy_action_sign": float(joint.get("policy_action_sign", 1.0)),
                     }
 
         # Parse nested configs
@@ -703,7 +616,6 @@ class WrRuntimeConfig:
                     motor_center_mujoco_deg=motor_center_mujoco_deg,
                     rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
-                    policy_action_sign=joint_spec.get("policy_action_sign", 1.0),
                 )
 
             return ServoControllerConfig(
