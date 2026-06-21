@@ -812,15 +812,14 @@ def generate_actuated_joints_config(
     joints_details: List[Dict[str, Any]],
     *,
     actuator_order_path: Path,
-    existing_joint_overrides: Optional[Dict[str, Dict[str, float]]] = None,
+    existing_joint_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Generate actuated_joints configuration for CAL (Control Abstraction Layer).
 
     This function produces the configuration needed by CAL to:
-    1. Map between policy actions and physical joint commands
+    1. Preserve actuator order and per-joint limits
     2. Normalize joint ranges for policy training
 
-    Policy Action Sign Convention:
     Args:
         root: XML root element
         joints_details: List of joint details from generate_robot_config
@@ -863,16 +862,70 @@ def generate_actuated_joints_config(
 
         existing_joint = (existing_joint_overrides or {}).get(joint_name, {})
 
-        actuated_joints.append({
+        joint_config: Dict[str, Any] = {
             "name": joint_name,
             "range": [
                 int(round(math.degrees(range_min))),
                 int(round(math.degrees(range_max))),
             ],
             "max_velocity": float(existing_joint.get("max_velocity", 10.0)),
-        })
+        }
+        if "init_world_axis" in existing_joint:
+            joint_config["init_world_axis"] = [
+                _round_axis_component(float(v))
+                for v in existing_joint["init_world_axis"]
+            ]
+
+        actuated_joints.append(joint_config)
 
     return actuated_joints
+
+
+def _round_axis_component(value: float) -> float:
+    rounded = round(float(value), 2)
+    return 0.0 if abs(rounded) < 0.005 else rounded
+
+
+def _compute_init_world_axes(
+    model_xml: Path,
+    joint_names: Sequence[str],
+) -> Dict[str, List[float]]:
+    import mujoco  # noqa: WPS433
+
+    model = mujoco.MjModel.from_xml_path(str(model_xml))
+    data = mujoco.MjData(model)
+    mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
+
+    axes: Dict[str, List[float]] = {}
+    for joint_name in joint_names:
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if jid < 0:
+            raise ValueError(f"Actuated joint not found in compiled model: {joint_name}")
+        axis = np.asarray(data.xaxis[jid], dtype=float)
+        norm = float(np.linalg.norm(axis))
+        if norm <= 1e-12:
+            raise ValueError(f"Joint world axis has zero norm: {joint_name}")
+        axis = axis / norm
+        axes[joint_name] = [_round_axis_component(float(v)) for v in axis]
+    return axes
+
+
+def _seed_missing_init_world_axes(
+    *,
+    xml_file: str,
+    actuated_joints: List[Dict[str, Any]],
+) -> None:
+    missing = [j["name"] for j in actuated_joints if "init_world_axis" not in j]
+    if not missing:
+        return
+
+    xml_path = Path(xml_file)
+    axes = _compute_init_world_axes(xml_path, missing)
+    for joint in actuated_joints:
+        axis = axes.get(joint["name"])
+        if axis is not None:
+            joint["init_world_axis"] = axis
 
 
 def _write_robot_config_file(config: Dict[str, Any], output_file: str) -> None:
@@ -1002,7 +1055,7 @@ def generate_robot_config(
     # Generate Actuated Joints Config for CAL (v0.11.0)
     # Single source of truth for actuator names, joints, ranges, etc.
     # =========================================================================
-    existing_joint_overrides: Dict[str, Dict[str, float]] = {}
+    existing_joint_overrides: Dict[str, Dict[str, Any]] = {}
     out_path = Path(output_file)
     if out_path.exists() and out_path.suffix.lower() == ".json":
         try:
@@ -1013,9 +1066,12 @@ def generate_robot_config(
                 name = entry.get("name")
                 if not name:
                     continue
-                existing_joint_overrides[str(name)] = {
+                joint_overrides: Dict[str, Any] = {
                     "max_velocity": float(entry.get("max_velocity", 10.0)),
                 }
+                if "init_world_axis" in entry:
+                    joint_overrides["init_world_axis"] = entry["init_world_axis"]
+                existing_joint_overrides[str(name)] = joint_overrides
         except Exception as exc:
             print(f"Warning: failed to read existing {output_file} overrides: {exc}")
 
@@ -1030,6 +1086,13 @@ def generate_robot_config(
         actuator_order_path=actuator_order_path,
         existing_joint_overrides=existing_joint_overrides,
     )
+    try:
+        _seed_missing_init_world_axes(
+            xml_file=xml_file,
+            actuated_joints=actuated_joints,
+        )
+    except Exception as exc:
+        print(f"Warning: failed to seed missing init_world_axis values: {exc}")
     config["actuated_joint_specs"] = actuated_joints
 
     num_actuators = len(actuated_joints)
@@ -1340,11 +1403,13 @@ def main() -> None:
     out_json = str(xml_path.with_name("mujoco_robot_config.json"))
     generate_robot_config(xml_file, out_json)
 
-    # Optional deeper validation (requires MuJoCo + repo imports). This runs best under:
+    # Deeper validation requires MuJoCo + repo imports. This runs best under:
     #   uv run python assets/post_process.py assets/v1/wildrobot.xml
     try:
         import mujoco  # noqa: F401
-
+    except Exception as exc:
+        print(f"Warning: skipping validate_model.py ({exc})")
+    else:
         # Import validator from assets/ (keeps model tooling near assets).
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from validate_model import Thresholds, validate_model
@@ -1358,6 +1423,7 @@ def main() -> None:
                 quat_tol=1e-4,
                 friction_tol=1e-4,
                 size_tol=1e-4,
+                init_world_axis_tol=0.015,
                 mass_rel_tol=0.05,
                 inertia_rel_tol=0.10,
                 mesh_pos_abs_max=0.10,
@@ -1375,8 +1441,6 @@ def main() -> None:
             scene_xml=xml_path.with_name("scene_flat_terrain.xml"),
             keyframes_xml=xml_path.with_name("keyframes.xml"),
         )
-    except Exception as exc:
-        print(f"Warning: skipping validate_model.py ({exc})")
 
     print("Post process completed")
 

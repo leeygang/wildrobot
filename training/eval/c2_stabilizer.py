@@ -76,11 +76,9 @@ class C2StabilizerConfig:
     apply_pitch_sign: float = -1.0   # empirically determined
 
     # Torso roll PD (post-merge: targets ankle_roll, not hip_roll).
-    # The L/R sign mirror is automatically picked up from each
-    # ankle_roll's ``policy_action_sign`` in the robot config — no
-    # hard-coded mirror needed at this level.  ``apply_roll_sign``
-    # is the unified scalar to flip the entire channel if the
-    # closeout shows saturation in the wrong direction.
+    # The per-joint offset signs live in C2Stabilizer because this is
+    # validation-only corrective logic, not the deployed policy action
+    # mapping.
     roll_kp: float = 0.20
     roll_kd: float = 0.025
     roll_clip: float = 0.05      # HARD clip per contract
@@ -147,7 +145,7 @@ class C2StabilizerConfig:
     # value rather than a stale literal.
     cycle_time_s: float = field(default_factory=lambda: C2StabilizerConfig._default_cycle_time_s())
 
-    # Robot config providing actuator order + per-joint policy_action_sign.
+    # Robot config providing actuator order.
     # Defaults to the same path used by ZMPWalkGenerator so the C2 harness
     # always resolves slots against the same source of truth as the
     # planner that produced the q_ref it consumes.
@@ -177,16 +175,24 @@ class C2Stabilizer:
         "left_hip_pitch",   "right_hip_pitch",     # CP nudge target
     )
 
+    _JOINT_OFFSET_SIGN = {
+        "left_ankle_pitch": +1.0,
+        "right_ankle_pitch": +1.0,
+        "left_ankle_roll": +1.0,
+        "right_ankle_roll": -1.0,
+        "left_hip_pitch": +1.0,
+        "right_hip_pitch": -1.0,
+    }
+
     def __init__(self, model, cfg: C2StabilizerConfig | None = None) -> None:
         import mujoco  # local import to avoid a hard dep at module load
 
         self.cfg = cfg or C2StabilizerConfig()
         self.model = model
 
-        # Resolve actuator slots + per-joint policy_action_sign from
-        # the robot config.  Failing here means the harness was paired
-        # with a model that doesn't expose the required leg joints —
-        # that's a contract break, not a tuning error.
+        # Resolve actuator slots from the robot config. Failing here means
+        # the harness was paired with a model that doesn't expose the required
+        # leg joints — that's a contract break, not a tuning error.
         config_path = Path(self.cfg.robot_config_path)
         with open(config_path) as f:
             spec = json.load(f)
@@ -202,12 +208,11 @@ class C2Stabilizer:
         self._slot: Dict[str, int] = {
             n: actuator_names.index(n) for n in self._CHANNEL_JOINT_NAMES
         }
-        # policy_action_sign is +1 / -1 per joint and encodes the L/R
-        # axis mirror in the MJCF.  Multiplying the unified per-channel
-        # offset by this sign produces a physically consistent
-        # correction across L/R without per-side hard-coded sign flips.
+        # These signs preserve the validation harness' direct joint-space
+        # correction convention after the legacy action-sign field was
+        # removed from the current runtime path.
         self._sign: Dict[str, float] = {
-            n: float(actuator_specs[self._slot[n]]["policy_action_sign"])
+            n: self._JOINT_OFFSET_SIGN[n]
             for n in self._CHANNEL_JOINT_NAMES
         }
 
@@ -317,9 +322,8 @@ class C2Stabilizer:
         # Post-merge target (was hip_roll pre-merge): the v20 merge added
         # a dedicated ankle_roll DOF.  Per the Q1 design call, route the
         # roll PD through the local foot-flat actuator now that one
-        # exists.  L/R sign mirror is read from policy_action_sign in
-        # the robot config (left_ankle_roll = +1, right_ankle_roll = -1
-        # for the v2 model — opposite of hip_roll's convention).
+        # exists.  L/R sign mirror is encoded in _JOINT_OFFSET_SIGN
+        # (left_ankle_roll = +1, right_ankle_roll = -1 for the v2 model).
         roll_raw = cfg.apply_roll_sign * \
             -(cfg.roll_kp * roll + cfg.roll_kd * roll_rate)
         roll_off = float(np.clip(roll_raw, -cfg.roll_clip, +cfg.roll_clip))
@@ -359,9 +363,8 @@ class C2Stabilizer:
 
             # Apply the held offset while in swing, converted from
             # swing-x meters to hip-pitch radians via leg length.
-            # L/R sign mirror is read from policy_action_sign so the
-            # forward/backward foot-x convention is consistent without
-            # a hard-coded per-side flip.
+            # L/R sign mirror is encoded in _JOINT_OFFSET_SIGN so the
+            # forward/backward foot-x convention stays consistent.
             if self._swing_active[side]:
                 d_hip = self._held_swing_offset[side] / cfg.leg_length_m
                 slot = self._slot[hip_name]

@@ -163,8 +163,12 @@ print(f"\nJoint summary (assets/{variant}):")
 for joint in ordered:
     name = str(joint.get("name", "unknown"))
     rng = joint.get("range", ["?", "?"])
-    sign = float(joint.get("policy_action_sign", 1.0))
-    print(f"  {name}: range[{rng[0]}, {rng[1]}], policy_action_sign: {sign:+.1f}")
+    axis = joint.get("init_world_axis")
+    if isinstance(axis, list) and len(axis) == 3:
+        axis_str = "[" + ", ".join(f"{float(v):+.2f}" for v in axis) + "]"
+    else:
+        axis_str = "missing"
+    print(f"  {name}: range[{rng[0]}, {rng[1]}], init_world_axis: {axis_str}")
 PY
 }
 

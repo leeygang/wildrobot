@@ -138,6 +138,78 @@ class TestKinematicSanity:
                     f"depth = {-dist:.4f}m"
                 )
 
+    @pytest.mark.sim
+    def test_init_world_axes_match_robot_config(self, mj_model, robot_config):
+        """
+        Purpose: Prevent silent MJCF joint-axis regressions after export.
+
+        Assertions:
+        - Every actuated joint has a saved init_world_axis baseline
+        - The compiled model's init-qpos world axis still matches that baseline
+        """
+        data = mujoco.MjData(mj_model)
+        mujoco.mj_resetData(mj_model, data)
+        mujoco.mj_forward(mj_model, data)
+
+        for spec in robot_config.actuated_joints:
+            joint_name = spec["name"]
+            expected = spec.get("init_world_axis")
+            assert expected is not None, f"{joint_name} missing init_world_axis"
+            assert len(expected) == 3, f"{joint_name} init_world_axis must be length 3"
+
+            jid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            assert jid >= 0, f"Actuated joint not found: {joint_name}"
+
+            actual_axis = np.asarray(data.xaxis[jid], dtype=float)
+            expected_axis = np.asarray(expected, dtype=float)
+            actual_axis = actual_axis / np.linalg.norm(actual_axis)
+            expected_axis = expected_axis / np.linalg.norm(expected_axis)
+
+            assert np.allclose(actual_axis, expected_axis, atol=0.015, rtol=0.0), (
+                f"{joint_name} init_world_axis changed: "
+                f"model={actual_axis}, config={expected_axis}"
+            )
+
+    @pytest.mark.sim
+    def test_pitch_roll_init_axis_conventions(self, robot_config):
+        """Pitch/roll joints must keep their expected signed world-axis labels."""
+        expected_labels = {
+            "left_shoulder_pitch": "-Y",
+            "right_shoulder_pitch": "+Y",
+            "left_elbow_pitch": "-Y",
+            "right_elbow_pitch": "-Y",
+            "left_wrist_pitch": "+Y",
+            "right_wrist_pitch": "+Y",
+            "left_hip_pitch": "-Y",
+            "right_hip_pitch": "+Y",
+            "left_knee_pitch": "+Y",
+            "right_knee_pitch": "+Y",
+            "left_ankle_pitch": "+Y",
+            "right_ankle_pitch": "+Y",
+            "left_shoulder_roll": "-X",
+            "right_shoulder_roll": "-X",
+            "left_hip_roll": "-X",
+            "right_hip_roll": "-X",
+            "left_ankle_roll": "-X",
+            "right_ankle_roll": "-X",
+        }
+
+        for spec in robot_config.actuated_joints:
+            joint_name = spec["name"]
+            expected_label = expected_labels.get(joint_name)
+            if expected_label is None:
+                continue
+
+            axis = np.asarray(spec["init_world_axis"], dtype=float)
+            dominant_idx = int(np.argmax(np.abs(axis)))
+            assert abs(axis[dominant_idx]) >= 0.8, (
+                f"{joint_name} init_world_axis not cardinal enough: {axis}"
+            )
+            label = ("+" if axis[dominant_idx] >= 0.0 else "-") + "XYZ"[dominant_idx]
+            assert label == expected_label, (
+                f"{joint_name} expected {expected_label}, got {label}: {axis}"
+            )
+
 
 # =============================================================================
 # Test 2.3: Actuator Isolation Test

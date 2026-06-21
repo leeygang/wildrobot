@@ -33,6 +33,18 @@ from training.cal.specs import (
 from training.cal.types import ActuatorType, CoordinateFrame
 
 
+# Legacy CAL still exposes normalized action <-> joint-range helpers used by
+# old tests/tools. Keep its historical mirror defaults without writing the
+# field back into mujoco_robot_config.json or the current runtime path.
+_LEGACY_POLICY_ACTION_SIGN_DEFAULTS = {
+    "left_shoulder_roll": -1.0,
+    "left_hip_roll": -1.0,
+    "right_shoulder_pitch": -1.0,
+    "right_hip_pitch": -1.0,
+    "right_ankle_roll": -1.0,
+}
+
+
 class ControlAbstractionLayer:
     """Central abstraction for all MuJoCo control interactions.
 
@@ -137,7 +149,10 @@ class ControlAbstractionLayer:
                 range_min=joint_range[0],
                 range_max=joint_range[1],
                 default_pos=0.0,  # Will be updated from keyframe
-                policy_action_sign=entry.get("policy_action_sign", 1.0),
+                policy_action_sign=entry.get(
+                    "policy_action_sign",
+                    _LEGACY_POLICY_ACTION_SIGN_DEFAULTS.get(name, 1.0),
+                ),
             )
 
             # Get ctrl and force ranges from MuJoCo model

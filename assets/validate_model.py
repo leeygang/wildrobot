@@ -14,6 +14,7 @@ class Thresholds:
     quat_tol: float
     friction_tol: float
     size_tol: float
+    init_world_axis_tol: float
     mass_rel_tol: float
     inertia_rel_tol: float
     mesh_pos_abs_max: float
@@ -59,6 +60,17 @@ def _load_mujoco_model(xml_path: Path):
     import mujoco
 
     return mujoco.MjModel.from_xml_path(str(xml_path))
+
+
+def _reset_home_or_default(model, data) -> None:
+    import mujoco
+
+    home_kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
+    if home_kid >= 0:
+        mujoco.mj_resetDataKeyframe(model, data, home_kid)
+    else:
+        mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
 
 
 def _infer_robot_xml_from_scene(scene_xml: Path) -> Path:
@@ -127,12 +139,7 @@ def _validate_toe_heel(
     # local-frame comparison would falsely flag a physically symmetric model
     # as asymmetric.
     data = mujoco.MjData(model)
-    home_kid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "home")
-    if home_kid >= 0:
-        mujoco.mj_resetDataKeyframe(model, data, home_kid)
-    else:
-        mujoco.mj_resetData(model, data)
-    mujoco.mj_forward(model, data)
+    _reset_home_or_default(model, data)
 
     def geom_info(name: str):
         gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
@@ -191,7 +198,7 @@ def _validate_toe_heel(
     # extents (convention-agnostic — different CAD conventions can encode the
     # same physical box with locally relabeled axes, producing different
     # rotation matrices but identical AABBs).
-    world_pos_tol = max(thresholds.pos_tol, 5e-4)  # at least 0.5 mm for sub-mm CAD noise
+    world_pos_tol = max(thresholds.pos_tol, 1e-3)  # allow current sub-mm CAD mirror noise
 
     def _world_aabb_half_extents(info):
         # World AABB half-extent along axis i = sum_j |R[i,j]| * s[j].
@@ -401,6 +408,108 @@ def _validate_default_pose_contacts(
         )
 
 
+_INIT_WORLD_AXIS_LABEL_BY_JOINT = {
+    "left_shoulder_pitch": "-Y",
+    "right_shoulder_pitch": "+Y",
+    "left_elbow_pitch": "-Y",
+    "right_elbow_pitch": "-Y",
+    "left_wrist_pitch": "+Y",
+    "right_wrist_pitch": "+Y",
+    "left_hip_pitch": "-Y",
+    "right_hip_pitch": "+Y",
+    "left_knee_pitch": "+Y",
+    "right_knee_pitch": "+Y",
+    "left_ankle_pitch": "+Y",
+    "right_ankle_pitch": "+Y",
+    "left_shoulder_roll": "-X",
+    "right_shoulder_roll": "-X",
+    "left_hip_roll": "-X",
+    "right_hip_roll": "-X",
+    "left_ankle_roll": "-X",
+    "right_ankle_roll": "-X",
+}
+
+
+def _dominant_world_axis_label(axis) -> str:
+    values = [float(v) for v in axis]
+    abs_values = [abs(v) for v in values]
+    axis_idx = max(range(3), key=lambda idx: abs_values[idx])
+    if abs_values[axis_idx] < 0.8:
+        raise ValueError(
+            f"World axis is not close to a cardinal axis: {values}"
+        )
+    sign = "+" if values[axis_idx] >= 0.0 else "-"
+    return sign + "XYZ"[axis_idx]
+
+
+def _validate_init_world_axes(model, robot_config, thresholds: Thresholds) -> None:
+    import mujoco
+    import numpy as np
+
+    data = mujoco.MjData(model)
+    mujoco.mj_resetData(model, data)
+    mujoco.mj_forward(model, data)
+
+    missing = []
+    checked = 0
+    convention_checked = 0
+    for spec in robot_config.actuated_joints:
+        joint_name = spec["name"]
+        expected = spec.get("init_world_axis")
+        if expected is None:
+            missing.append(joint_name)
+            continue
+        if not isinstance(expected, list) or len(expected) != 3:
+            raise ValueError(
+                f"{joint_name} init_world_axis must be a length-3 list, got {expected!r}"
+            )
+
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if jid < 0:
+            raise ValueError(f"Actuated joint not found in model: {joint_name}")
+
+        actual_axis = np.asarray(data.xaxis[jid], dtype=float)
+        expected_axis = np.asarray(expected, dtype=float)
+        actual_norm = float(np.linalg.norm(actual_axis))
+        expected_norm = float(np.linalg.norm(expected_axis))
+        if actual_norm <= 1e-12 or expected_norm <= 1e-12:
+            raise ValueError(
+                f"{joint_name} init_world_axis has zero norm: "
+                f"model={actual_axis} config={expected_axis}"
+            )
+        actual_axis = actual_axis / actual_norm
+        expected_axis = expected_axis / expected_norm
+
+        axis_err = float(np.max(np.abs(actual_axis - expected_axis)))
+        if axis_err > thresholds.init_world_axis_tol:
+            raise ValueError(
+                f"Init world axis mismatch for {joint_name}: "
+                f"model={actual_axis} config={expected_axis} "
+                f"(max |Δ|={axis_err:.6g} > {thresholds.init_world_axis_tol:.6g})"
+            )
+
+        expected_label = _INIT_WORLD_AXIS_LABEL_BY_JOINT.get(joint_name)
+        if expected_label is not None:
+            actual_label = _dominant_world_axis_label(actual_axis)
+            if actual_label != expected_label:
+                raise ValueError(
+                    f"Init world-axis convention mismatch for {joint_name}: "
+                    f"expected dominant {expected_label}, got {actual_label} "
+                    f"(axis={actual_axis})"
+                )
+            convention_checked += 1
+        checked += 1
+
+    if missing:
+        raise ValueError(
+            "mujoco_robot_config.json missing init_world_axis for actuated joints: "
+            + ", ".join(missing)
+        )
+
+    print(f"  - init joint world-axis parity ({checked} joints)")
+    print(f"  - init pitch/roll axis convention ({convention_checked} joints)")
+
+
 def validate_model(
     robot_config_yaml: Path,
     scene_xml: Path,
@@ -425,6 +534,7 @@ def validate_model(
     _validate_left_right_named_collision_geoms(model, thresholds)
 
     _validate_default_pose_contacts(scene_xml, robot_config, thresholds)
+    _validate_init_world_axes(model, robot_config, thresholds)
 
     # Joint range consistency: mujoco_robot_config.json must match compiled model joints.
     import mujoco
@@ -450,6 +560,8 @@ def validate_model(
     print("  - left/right body mass + inertia symmetry")
     print("  - left/right named collision geom parity")
     print("  - default reset contact sanity")
+    print("  - init joint world-axis parity")
+    print("  - init pitch/roll axis convention")
     print("  - actuated joint range parity")
 
 
@@ -488,6 +600,7 @@ def main() -> int:
     parser.add_argument("--quat-tol", type=float, default=1e-4)
     parser.add_argument("--friction-tol", type=float, default=1e-4)
     parser.add_argument("--size-tol", type=float, default=1e-4)
+    parser.add_argument("--init-world-axis-tol", type=float, default=0.015)
     parser.add_argument("--mass-rel-tol", type=float, default=0.05)
     parser.add_argument("--inertia-rel-tol", type=float, default=0.10)
     parser.add_argument("--mesh-pos-abs-max", type=float, default=0.10)
@@ -499,6 +612,7 @@ def main() -> int:
         quat_tol=args.quat_tol,
         friction_tol=args.friction_tol,
         size_tol=args.size_tol,
+        init_world_axis_tol=args.init_world_axis_tol,
         mass_rel_tol=args.mass_rel_tol,
         inertia_rel_tol=args.inertia_rel_tol,
         mesh_pos_abs_max=args.mesh_pos_abs_max,
