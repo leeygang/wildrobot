@@ -26,28 +26,28 @@ servo config maps a MuJoCo/control joint angle in radians to Hiwonder electrical
 units:
 
 ```python
-center_rad = deg2rad(motor_center_mujoco_deg)
+center_rad = deg2rad(joint_angle_at_zero_unit_deg)
 u_elec = clamp_0_1000(
-    500 + offset_unit + motor_sign * (target_rad - center_rad) * units_per_rad
+    500 + servo_offset_unit + motor_unit_direction * (target_rad - center_rad) * units_per_rad
 )
 ```
 
 Inverse readback:
 
 ```python
-target_rad = center_rad + motor_sign * ((u_elec - 500 - offset_unit) / units_per_rad)
+target_rad = center_rad + motor_unit_direction * ((u_elec - 500 - servo_offset_unit) / units_per_rad)
 ```
 
 Where:
 
 - `target_rad` is the MuJoCo/control joint coordinate in radians.
 - `u_elec` is the raw Hiwonder servo unit in `[0, 1000]`.
-- `offset_unit` shifts the physical neutral around servo center `500`.
-- `motor_sign` is hardware direction: `+1` means increasing joint radians
+- `servo_offset_unit` shifts the physical neutral around servo center `500`.
+- `motor_unit_direction` is hardware direction: `+1` means increasing joint radians
   increases servo units, `-1` means increasing joint radians decreases servo
   units.
-- `motor_center_mujoco_deg` is the joint angle that corresponds to conceptual
-  servo center `500` before `offset_unit`.
+- `joint_angle_at_zero_unit_deg` is the joint angle that corresponds to conceptual
+  servo center `500` before `servo_offset_unit`.
 
 ## Calibration Rule
 
@@ -59,8 +59,8 @@ For a joint:
 - Command raw units near center, for example `500 -> 530`.
 - Observe whether the physical joint moves in the positive MuJoCo/control
   direction printed by the calibrator.
-- If increasing units increases joint radians, use `motor_sign = +1`.
-- If increasing units decreases joint radians, use `motor_sign = -1`.
+- If increasing units increases joint radians, use `motor_unit_direction = +1`.
+- If increasing units decreases joint radians, use `motor_unit_direction = -1`.
 
-After direction is correct, calibrate `offset_unit` so the chosen physical
+After direction is correct, calibrate `servo_offset_unit` so the chosen physical
 neutral pose reads as the intended joint angle, usually `0 rad`.

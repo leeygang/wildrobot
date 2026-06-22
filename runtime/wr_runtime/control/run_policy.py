@@ -95,9 +95,9 @@ def _build_hardware_robot_io(
         port=sc.port,
         baudrate=sc.baudrate,
         default_move_time_ms=default_move_time_ms,
-        joint_offset_units=sc.joint_offset_units,
-        joint_motor_signs=sc.joint_motor_signs,
-        joint_motor_center_mujoco_deg=sc.joint_motor_center_mujoco_deg,
+        joint_servo_offset_units=sc.joint_servo_offset_units,
+        joint_motor_unit_directions=sc.joint_motor_unit_directions,
+        joint_angle_at_zero_unit_deg=sc.joint_angle_at_zero_unit_deg,
     )
     imu = BNO085IMU(
         i2c_address=cfg.bno085.i2c_address,

@@ -695,14 +695,14 @@ If you want to keep `Signals` minimal, keep validity/failure counters *out of th
 
 The `Actuators` implementation is responsible for:
 - **Unit conversion**: radians ↔ device units (e.g., servo units [0-1000])
-- **Calibration**: applying per-joint `motor_sign` (+1/-1) and `offset_unit` (in device units)
+- **Calibration**: applying per-joint `motor_unit_direction` (+1/-1) and `servo_offset_unit` (in device units)
 - **Joint ordering**: mapping `actuator_names` to hardware IDs
 - **Velocity estimation**: finite-difference from position readings (if hardware lacks velocity feedback)
 
 **Design decision**: Conversion logic lives in `ServoConfig` (Option 1 - co-located with calibration data).
 
 Rationale:
-- `ServoConfig` already holds `offset_unit` and `motor_sign` needed for conversion
+- `ServoConfig` already holds `servo_offset_unit` and `motor_unit_direction` needed for conversion
 - Calibration tools (`calibrate.py`) can use the same methods directly
 - Simple and avoids extra abstraction layers
 - If multi-hardware support is needed later, can migrate to a utility class
@@ -712,9 +712,9 @@ Rationale:
 @dataclass
 class ServoConfig:
     id: int
-    offset_unit: int             # in servo units
-    motor_sign: int              # +1 or -1
-    motor_center_mujoco_deg: float  # MuJoCo angle (deg) that maps to servo center (500)
+    servo_offset_unit: int             # in servo units
+    motor_unit_direction: int              # +1 or -1
+    joint_angle_at_zero_unit_deg: float  # MuJoCo angle (deg) that maps to servo center (500)
 
     # Servo model parameters (should be config-driven if hardware varies)
     # Defaults match Hiwonder HTD-45H: units in [0..1000], center at 500, ~240° total travel.
@@ -725,14 +725,14 @@ class ServoConfig:
 
     def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units with calibration."""
-      center_rad = math.radians(self.motor_center_mujoco_deg)
-      units = self.UNITS_CENTER + self.offset_unit + self.motor_sign * ((target_rad - center_rad) * self.UNITS_PER_RAD)
+      center_rad = math.radians(self.joint_angle_at_zero_unit_deg)
+      units = self.UNITS_CENTER + self.servo_offset_unit + self.motor_unit_direction * ((target_rad - center_rad) * self.UNITS_PER_RAD)
         return clamp(units, self.UNITS_MIN, self.UNITS_MAX)
 
     def servo_elect_units_to_joint_target_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians with calibration."""
-      center_rad = math.radians(self.motor_center_mujoco_deg)
-      return center_rad + self.motor_sign * (units - self.UNITS_CENTER - self.offset_unit) / self.UNITS_PER_RAD
+      center_rad = math.radians(self.joint_angle_at_zero_unit_deg)
+      return center_rad + self.motor_unit_direction * (units - self.UNITS_CENTER - self.servo_offset_unit) / self.UNITS_PER_RAD
 
 # HiwonderActuators delegates to ServoConfig (no conversion logic here)
 class HiwonderActuators(Actuators):
@@ -941,7 +941,7 @@ wildrobot/
 │  ├─ README.md
 │  ├─ configs/                             # runtime JSON configs
 │  │  ├─ config.py                         # WrRuntimeConfig + ServoConfig (with rad_to_units)
-│  │  └─ runtime_config_template.json      # calibration template (servo IDs, offsets, motor_sign)
+│  │  └─ runtime_config_template.json      # calibration template (servo IDs, offsets, motor_unit_direction)
 │  ├─ scripts/
 │  │  └─ calibrate.py                      # interactive servo calibration tool
 │  └─ wr_runtime/                          # ONLY importable runtime package (deploys to robot)

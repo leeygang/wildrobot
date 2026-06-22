@@ -82,18 +82,18 @@ class ServoConfig:
 
     Attributes:
         id: Servo ID (1-254)
-        offset: Calibration offset in servo units (default: 0)
-        motor_sign: Hardware motor sign correction (+1 or -1, default: +1)
-        motor_center_mujoco_deg: MuJoCo angle (deg) that maps to the servo-unit center
+        servo_offset_unit: Calibration offset in servo units (default: 0)
+        motor_unit_direction: Hardware motor direction correction (+1 or -1, default: +1)
+        joint_angle_at_zero_unit_deg: MuJoCo angle (deg) that maps to the servo-unit center
             (servo_unit == 500) when offset==0.
         rad_range: Joint range in radians (min, max) from mujoco_robot_config.json
         max_velocity: Maximum joint velocity in rad/s from mujoco_robot_config.json
     """
 
     id: int
-    offset: int = 0
-    motor_sign: float = 1.0
-    motor_center_mujoco_deg: float = 0.0
+    servo_offset_unit: int = 0
+    motor_unit_direction: float = 1.0
+    joint_angle_at_zero_unit_deg: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
 
@@ -107,17 +107,33 @@ class ServoConfig:
 
     @property
     def offset_unit(self) -> int:
-        return int(self.offset)
+        return int(self.servo_offset_unit)
+
+    @property
+    def offset(self) -> int:
+        return int(self.servo_offset_unit)
+
+    @property
+    def servo_offset(self) -> int:
+        return int(self.servo_offset_unit)
+
+    @property
+    def motor_sign(self) -> float:
+        return float(self.motor_unit_direction)
+
+    @property
+    def motor_center_mujoco_deg(self) -> float:
+        return float(self.joint_angle_at_zero_unit_deg)
 
     @property
     def center_rad(self) -> float:
-        return math.radians(float(self.motor_center_mujoco_deg))
+        return math.radians(float(self.joint_angle_at_zero_unit_deg))
 
     def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
 
         Applies hardware calibration:
-        - motor_sign: corrects for servo installation orientation (+1 or -1)
+        - motor_unit_direction: corrects for servo installation orientation (+1 or -1)
         - offset: corrects for neutral position alignment (in servo units)
 
         Args:
@@ -127,7 +143,7 @@ class ServoConfig:
             Servo position in units [0, 1000]
         """
         delta = float(target_rad) - self.center_rad
-        units = self.UNITS_CENTER + self.offset + self.motor_sign * (delta * self.UNITS_PER_RAD)
+        units = self.UNITS_CENTER + self.servo_offset_unit + self.motor_unit_direction * (delta * self.UNITS_PER_RAD)
         return int(max(self.UNITS_MIN, min(self.UNITS_MAX, round(units))))
 
     def joint_target_rad_to_elect_unit_for_calibrate(
@@ -157,7 +173,7 @@ class ServoConfig:
         """Convert servo units to MuJoCo radians.
 
         Inverse of joint_target_rad_to_elect_unit. Applies hardware calibration:
-        - motor_sign: corrects for servo installation orientation
+        - motor_unit_direction: corrects for servo installation orientation
         - offset: corrects for neutral position alignment
 
         Args:
@@ -166,8 +182,8 @@ class ServoConfig:
         Returns:
             Joint position in MuJoCo radians
         """
-        delta_units = float(units) - self.UNITS_CENTER - self.offset
-        return self.center_rad + self.motor_sign * (delta_units / self.UNITS_PER_RAD)
+        delta_units = float(units) - self.UNITS_CENTER - self.servo_offset_unit
+        return self.center_rad + self.motor_unit_direction * (delta_units / self.UNITS_PER_RAD)
 
     def servo_elect_units_to_joint_target_rad_for_calibrate(
         self,
@@ -193,8 +209,8 @@ class ServoConfig:
 
     @property
     def effective_sign(self) -> float:
-        """Sign applied to ctrl_rad<->servo conversion (hardware motor_sign only)."""
-        return float(self.motor_sign)
+        """Sign applied to ctrl_rad<->servo conversion (hardware direction only)."""
+        return float(self.motor_unit_direction)
 
     @property
     def ctrl_center(self) -> float:
@@ -212,17 +228,29 @@ class ServoSpec:
     """Minimal servo specification used by canonical configs and legacy tests."""
 
     id: int
-    offset_unit: int = 0
-    motor_sign: float = 1.0
-    motor_center_mujoco_deg: float = 0.0
+    servo_offset_unit: int = 0
+    motor_unit_direction: float = 1.0
+    joint_angle_at_zero_unit_deg: float = 0.0
+
+    @property
+    def offset_unit(self) -> int:
+        return int(self.servo_offset_unit)
+
+    @property
+    def motor_sign(self) -> float:
+        return float(self.motor_unit_direction)
+
+    @property
+    def motor_center_mujoco_deg(self) -> float:
+        return float(self.joint_angle_at_zero_unit_deg)
 
     def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
         joint_spec = joint_spec or {}
         return ServoConfig(
             id=int(self.id),
-            offset=int(self.offset_unit),
-            motor_sign=float(self.motor_sign),
-            motor_center_mujoco_deg=float(self.motor_center_mujoco_deg),
+            servo_offset_unit=int(self.servo_offset_unit),
+            motor_unit_direction=float(self.motor_unit_direction),
+            joint_angle_at_zero_unit_deg=float(self.joint_angle_at_zero_unit_deg),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
         )
@@ -280,12 +308,24 @@ class ServoControllerConfig:
         return {k: int(v.offset_unit) for k, v in self.servos.items()}
 
     @property
+    def joint_servo_offset_units(self) -> Dict[str, int]:
+        return {k: int(v.servo_offset_unit) for k, v in self.servos.items()}
+
+    @property
     def joint_motor_signs(self) -> Dict[str, float]:
-        return {k: float(v.motor_sign) for k, v in self.servos.items()}
+        return {k: float(v.motor_unit_direction) for k, v in self.servos.items()}
+
+    @property
+    def joint_motor_unit_directions(self) -> Dict[str, float]:
+        return {k: float(v.motor_unit_direction) for k, v in self.servos.items()}
 
     @property
     def joint_motor_center_mujoco_deg(self) -> Dict[str, float]:
-        return {k: float(v.motor_center_mujoco_deg) for k, v in self.servos.items()}
+        return {k: float(v.joint_angle_at_zero_unit_deg) for k, v in self.servos.items()}
+
+    @property
+    def joint_angle_at_zero_unit_deg(self) -> Dict[str, float]:
+        return {k: float(v.joint_angle_at_zero_unit_deg) for k, v in self.servos.items()}
 
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
@@ -304,7 +344,7 @@ class ServoControllerConfig:
         """Get calibration offset for a joint (default: 0)."""
         if joint_name not in self.servos:
             return 0
-        return self.servos[joint_name].offset
+        return self.servos[joint_name].servo_offset_unit
 
     @property
     def joint_names(self) -> List[str]:
@@ -574,22 +614,45 @@ class WrRuntimeConfig:
             servos: Dict[str, ServoConfig] = {}
             for joint_name, servo_data in block.get("servos", {}).items():
                 joint_spec = joint_specs.get(joint_name, {})
-                motor_sign_val = float(servo_data.get("motor_sign", 1.0))
-                WrRuntimeConfig._validate_motor_signs({joint_name: motor_sign_val})
+                direction_raw = servo_data.get(
+                    "motor_unit_direction",
+                    servo_data.get("motor_sign", 1.0),
+                )
+                motor_unit_direction = float(direction_raw)
+                WrRuntimeConfig._validate_motor_signs({joint_name: motor_unit_direction})
 
-                motor_center_mujoco_deg = float(servo_data.get("motor_center_mujoco_deg", 0.0))
+                center_deg_raw = servo_data.get(
+                    "joint_angle_at_zero_unit_deg",
+                    servo_data.get("motor_center_mujoco_deg", 0.0),
+                )
+                joint_angle_at_zero_unit_deg = float(center_deg_raw)
                 rad_range = joint_spec.get("rad_range", (0.0, 0.0))
                 WrRuntimeConfig._validate_motor_center_mujoco_deg(
-                    motor_center_mujoco_deg=motor_center_mujoco_deg,
+                    motor_center_mujoco_deg=joint_angle_at_zero_unit_deg,
                     rad_range=rad_range,
                     joint_name=joint_name,
                     key_path=key_path,
                 )
 
+                servo_offset_unit = servo_data.get("servo_offset_unit")
                 offset_unit = servo_data.get("offset_unit")
                 legacy_offset = servo_data.get("offset")
                 legacy_offset_rad = servo_data.get("offset_rad")
-                if offset_unit is not None:
+                if servo_offset_unit is not None:
+                    chosen_offset = int(servo_offset_unit)
+                    if offset_unit is not None and int(offset_unit) != chosen_offset:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.servo_offset_unit={chosen_offset} conflicts with offset_unit={offset_unit}"
+                        )
+                    if legacy_offset is not None and int(legacy_offset) != chosen_offset:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.servo_offset_unit={chosen_offset} conflicts with offset={legacy_offset}"
+                        )
+                    if legacy_offset_rad is not None and int(legacy_offset_rad) != chosen_offset:
+                        raise ValueError(
+                            f"{key_path}.{joint_name}.servo_offset_unit={chosen_offset} conflicts with offset_rad={legacy_offset_rad}"
+                        )
+                elif offset_unit is not None:
                     chosen_offset = int(offset_unit)
                     if legacy_offset is not None and int(legacy_offset) != chosen_offset:
                         raise ValueError(
@@ -604,16 +667,16 @@ class WrRuntimeConfig:
                 elif legacy_offset_rad is not None:
                     chosen_offset = int(legacy_offset_rad)
                     print(
-                        f"WARNING: {key_path}.{joint_name}.offset_rad found; treating value as servo units (naming bug). Please rename to offset_unit."
+                        f"WARNING: {key_path}.{joint_name}.offset_rad found; treating value as servo units (naming bug). Please rename to servo_offset_unit."
                     )
                 else:
                     chosen_offset = 0
 
                 servos[str(joint_name)] = ServoConfig(
                     id=int(servo_data["id"]),
-                    offset=int(chosen_offset),
-                    motor_sign=motor_sign_val,
-                    motor_center_mujoco_deg=motor_center_mujoco_deg,
+                    servo_offset_unit=int(chosen_offset),
+                    motor_unit_direction=motor_unit_direction,
+                    joint_angle_at_zero_unit_deg=joint_angle_at_zero_unit_deg,
                     rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
                 )
@@ -654,7 +717,7 @@ class WrRuntimeConfig:
         invalid = {k: v for k, v in motor_signs.items() if abs(abs(v) - 1.0) > 1e-3}
         if invalid:
             raise ValueError(
-                "servo_controller.servos.motor_sign must be +/-1.0 (tolerance 1e-3); invalid entries: "
+                "servo_controller.servos.motor_unit_direction must be +/-1.0 (tolerance 1e-3); invalid entries: "
                 + ", ".join(f"{k}={v}" for k, v in invalid.items())
             )
 
@@ -675,7 +738,7 @@ class WrRuntimeConfig:
         if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
             print(
                 "WARNING: "
-                f"{key_path}.{joint_name}.motor_center_mujoco_deg={motor_center_mujoco_deg} maps to {center_rad:.6f} rad, "
+                f"{key_path}.{joint_name}.joint_angle_at_zero_unit_deg={motor_center_mujoco_deg} maps to {center_rad:.6f} rad, "
                 f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad",
                 flush=True,
             )
@@ -737,9 +800,9 @@ class WrRuntimeConfig:
         servos_dict = {
             joint_name: {
                 "id": servo.id,
-                "offset_unit": servo.offset_unit,
-                "motor_sign": servo.motor_sign,
-                "motor_center_mujoco_deg": servo.motor_center_mujoco_deg,
+                "servo_offset_unit": servo.servo_offset_unit,
+                "motor_unit_direction": servo.motor_unit_direction,
+                "joint_angle_at_zero_unit_deg": servo.joint_angle_at_zero_unit_deg,
             }
             for joint_name, servo in self.servo_controller.servos.items()
         }

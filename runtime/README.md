@@ -76,14 +76,14 @@ Minimal example:
     "port": "/dev/ttyUSB0",
     "baudrate": 9600,
     "servos": {
-      "left_hip_pitch":  { "id": 1, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "left_hip_roll":   { "id": 2, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "left_knee_pitch": { "id": 3, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "left_ankle_pitch": { "id": 4, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "right_hip_pitch": { "id": 5, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "right_hip_roll":  { "id": 6, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "right_knee_pitch":{ "id": 7, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 },
-      "right_ankle_pitch": { "id": 8, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 }
+      "left_hip_pitch":  { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "left_hip_roll":   { "id": 2, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "left_knee_pitch": { "id": 3, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "left_ankle_pitch": { "id": 4, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "right_hip_pitch": { "id": 5, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "right_hip_roll":  { "id": 6, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "right_knee_pitch":{ "id": 7, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "right_ankle_pitch": { "id": 8, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
     }
   },
 
@@ -106,9 +106,9 @@ Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
 - `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
-- `servo_controller.servos.<joint>.offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
-- `servo_controller.servos.<joint>.motor_sign` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
-- `servo_controller.servos.<joint>.motor_center_mujoco_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
+- `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
+- `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
+- `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 - `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.
 

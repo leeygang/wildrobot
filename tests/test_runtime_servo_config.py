@@ -34,8 +34,8 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
             "baudrate": 9600,
             "default_move_time_ms": 900,
             "servos": {
-                "left_hip_pitch": {"id": 1, "offset_unit": 10, "motor_sign": 1, "motor_center_mujoco_deg": 0},
-                "right_hip_pitch": {"id": 2, "offset_unit": -20, "motor_sign": -1, "motor_center_mujoco_deg": 90},
+                "left_hip_pitch": {"id": 1, "servo_offset_unit": 10, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0},
+                "right_hip_pitch": {"id": 2, "servo_offset_unit": -20, "motor_unit_direction": -1, "joint_angle_at_zero_unit_deg": 90},
             },
         }
     }
@@ -46,10 +46,32 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     assert cfg.servo_controller.baudrate == 9600
     assert cfg.servo_controller.default_move_time_ms == 900
     assert cfg.servo_controller.servo_ids == {"left_hip_pitch": 1, "right_hip_pitch": 2}
-    assert cfg.servo_controller.joint_offset_units["left_hip_pitch"] == 10
-    assert cfg.servo_controller.joint_motor_signs["right_hip_pitch"] == -1.0
-    assert cfg.servo_controller.joint_motor_center_mujoco_deg["right_hip_pitch"] == 90.0
+    assert cfg.servo_controller.joint_servo_offset_units["left_hip_pitch"] == 10
+    assert cfg.servo_controller.joint_motor_unit_directions["right_hip_pitch"] == -1.0
+    assert cfg.servo_controller.joint_angle_at_zero_unit_deg["right_hip_pitch"] == 90.0
     assert cfg.realism_profile_path == "assets/v2/realism_profile_v0.19.1.json"
+
+
+def test_legacy_servo_keys_still_load_and_serialize_to_new_names(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left": {"id": 1, "offset_unit": 7, "motor_sign": -1, "motor_center_mujoco_deg": 12},
+            }
+        }
+    }
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+    servo = cfg.servo_controller.get_servo("left")
+    assert servo.servo_offset_unit == 7
+    assert servo.motor_unit_direction == -1.0
+    assert servo.joint_angle_at_zero_unit_deg == 12.0
+    out = cfg.to_dict()
+    assert out["servo_controller"]["servos"]["left"] == {
+        "id": 1,
+        "servo_offset_unit": 7,
+        "motor_unit_direction": -1.0,
+        "joint_angle_at_zero_unit_deg": 12.0,
+    }
 
 
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
@@ -58,8 +80,8 @@ def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
         port="/dev/ttyUSB0",
         baudrate=9600,
         servos={
-            "left": ServoSpec(id=1, offset_unit=0, motor_sign=1),
-            "right": ServoSpec(id=2, offset_unit=5, motor_sign=-1),
+            "left": ServoSpec(id=1, servo_offset_unit=0, motor_unit_direction=1),
+            "right": ServoSpec(id=2, servo_offset_unit=5, motor_unit_direction=-1),
         },
     )
 
@@ -173,6 +195,6 @@ def test_offset_rad_migrates_to_unit_and_serializes(tmp_path: Path) -> None:
         }
     }
     cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
-    assert cfg.servo_controller.joint_offset_units["left"] == 7
+    assert cfg.servo_controller.joint_servo_offset_units["left"] == 7
     out = cfg.to_dict()
-    assert out["servo_controller"]["servos"]["left"]["offset_unit"] == 7
+    assert out["servo_controller"]["servos"]["left"]["servo_offset_unit"] == 7

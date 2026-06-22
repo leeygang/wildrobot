@@ -13,12 +13,12 @@ def test_rad_to_units_center_uses_center_rad_not_joint_range_mid() -> None:
     rad_range = (-1.0, 2.0)
     assert (rad_range[0] + rad_range[1]) / 2.0 == 0.5
 
-    # Keep motor_center_mujoco_deg at 0 so center_rad == 0.
+    # Keep joint_angle_at_zero_unit_deg at 0 so center_rad == 0.
     servo = ServoConfig(
         id=1,
-        offset=17,
-        motor_sign=1.0,
-        motor_center_mujoco_deg=0.0,
+        servo_offset_unit=17,
+        motor_unit_direction=1.0,
+        joint_angle_at_zero_unit_deg=0.0,
         rad_range=rad_range,
     )
 
@@ -27,12 +27,12 @@ def test_rad_to_units_center_uses_center_rad_not_joint_range_mid() -> None:
     assert servo.ctrl_center == 0.5
 
     units_at_center_rad = servo.joint_target_rad_to_elect_unit(servo.center_rad)
-    assert units_at_center_rad == ServoConfig.UNITS_CENTER + servo.offset
+    assert units_at_center_rad == ServoConfig.UNITS_CENTER + servo.servo_offset_unit
 
     # But the joint-range midpoint (ctrl_center) is a different angle, so it should
     # generally NOT map to 500 (unless by coincidence).
     units_at_ctrl_center = servo.joint_target_rad_to_elect_unit(servo.ctrl_center)
-    assert units_at_ctrl_center != ServoConfig.UNITS_CENTER + servo.offset
+    assert units_at_ctrl_center != ServoConfig.UNITS_CENTER + servo.servo_offset_unit
 
 
 def test_vectorized_mapping_center_is_units_center_plus_offset() -> None:

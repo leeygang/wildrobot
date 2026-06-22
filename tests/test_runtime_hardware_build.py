@@ -65,9 +65,9 @@ def _fake_runtime_config() -> SimpleNamespace:
         port="/dev/ttyUSB0",
         baudrate=9600,
         default_move_time_ms=None,
-        joint_offset_units={"j": 3},
-        joint_motor_signs={"j": -1.0},
-        joint_motor_center_mujoco_deg={"j": 0.0},
+        joint_servo_offset_units={"j": 3},
+        joint_motor_unit_directions={"j": -1.0},
+        joint_angle_at_zero_unit_deg={"j": 0.0},
     )
     bno085 = SimpleNamespace(
         i2c_address=0x4B,
@@ -136,7 +136,7 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert a["baudrate"] == 9600
     # default_move_time_ms None -> one control period (20 ms at 50 Hz).
     assert a["default_move_time_ms"] == 20
-    assert a["joint_offset_units"] == {"j": 3}
+    assert a["joint_servo_offset_units"] == {"j": 3}
 
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)

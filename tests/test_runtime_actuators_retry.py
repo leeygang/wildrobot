@@ -50,7 +50,7 @@ def _make_actuators(controller: FakeController, max_retries: int = 3):
         port="/dev/null",
         baudrate=9600,
         default_move_time_ms=20,
-        joint_offset_units={"j1": 0, "j2": 0},
+        joint_servo_offset_units={"j1": 0, "j2": 0},
         servo_model=ServoModel(units_min=0, units_max=1000, units_center=500, units_per_rad=100.0),
         max_retries=max_retries,
         retry_backoff_s=0.0,

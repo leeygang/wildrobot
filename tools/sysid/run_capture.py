@@ -222,7 +222,7 @@ def _load_servo_config(
 ) -> tuple[WildRobotRuntimeConfig, float]:
     cfg = WildRobotRuntimeConfig.load(runtime_config)
     servo = cfg.servo_controller.get_servo(joint_name)
-    center = float(np.deg2rad(servo.motor_center_mujoco_deg))
+    center = float(np.deg2rad(servo.joint_angle_at_zero_unit_deg))
     return cfg, center
 
 

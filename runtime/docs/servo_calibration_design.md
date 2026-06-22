@@ -14,9 +14,9 @@ Calibration is performed with the interactive script:
 Calibration data is stored in the runtime JSON config (copy the sample `runtime/configs/runtime_config_template.json` (or `runtime/configs/runtime_config_v2.json`) to your robot, typically `~/.wildrobot/config.json`).
 
 This doc describes the servo calibration model and the operator workflow for per-joint:
-1) motor_sign correction
+1) motor_unit_direction correction
 2) center offset in servo units
-3) optional joint center angle (`motor_center_mujoco_deg`) used in the rad↔units mapping
+3) optional joint center angle (`joint_angle_at_zero_unit_deg`) used in the rad↔units mapping
 
 For a consolidated reference on coordinate definitions and the end-to-end conversion chain
 (`policy_action ∈ [-1, 1]` ↔ `target_rad` ↔ servo units), see `docs/joints_angle.md`.
@@ -42,20 +42,20 @@ worked examples live in `docs/joints_angle.md`.
 
 - `target_rad`: MuJoCo joint target in radians (runtime commands/readbacks use radians).
 - `servo_electrical_unit` (`u_elec`): raw servo position units in `[0..1000]` read/written over the bus.
-- `offset_unit`: per-joint integer offset between conceptual units and electrical units:
-  - `u = u_elec - offset_unit`
+- `servo_offset_unit`: per-joint integer offset between conceptual units and electrical units:
+  - `u = u_elec - servo_offset_unit`
   - conceptual center is `u = 500`
-- `motor_center_mujoco_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
-- `motor_sign ∈ {+1, -1}`: hardware sign correction for the rad↔units mapping.
+- `joint_angle_at_zero_unit_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
+- `motor_unit_direction ∈ {+1, -1}`: hardware sign correction for the rad↔units mapping.
 
 ## Runtime Mapping Model
 
 The runtime uses the mapping implemented in `runtime/wr_runtime/hardware/actuators.py`.
 
 Per joint, calibration values are:
-- `motor_sign ∈ {+1, -1}`
-- `offset_unit ∈ ℤ`
-- `motor_center_mujoco_deg` (optional; default `0`)
+- `motor_unit_direction ∈ {+1, -1}`
+- `servo_offset_unit ∈ ℤ`
+- `joint_angle_at_zero_unit_deg` (optional; default `0`)
 
 ## Config Shape
 
@@ -71,44 +71,44 @@ Under `servo_controller.servos.<joint>`:
 {
   "servo_controller": {
     "servos": {
-      "left_hip_pitch": { "id": 1, "offset_unit": 0, "motor_sign": 1, "motor_center_mujoco_deg": 0 }
+      "left_hip_pitch": { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
     }
   }
 }
 ```
 
 Where:
-- `offset_unit` is an integer in servo units (default: `0`)
-- `motor_sign` is `+1` or `-1` (default: `+1`)
-- `motor_center_mujoco_deg` is the MuJoCo angle (deg) that maps to `servo_unit == 500` (default: `0`)
+- `servo_offset_unit` is an integer in servo units (default: `0`)
+- `motor_unit_direction` is `+1` or `-1` (default: `+1`)
+- `joint_angle_at_zero_unit_deg` is the MuJoCo angle (deg) that maps to `servo_unit == 500` (default: `0`)
 
 Defaults:
-- If `motor_sign` is missing, runtime assumes `+1`.
-- If `offset_unit` is missing, runtime assumes `0`.
-- If `motor_center_mujoco_deg` is missing, runtime assumes `0`.
+- If `motor_unit_direction` is missing, runtime assumes `+1`.
+- If `servo_offset_unit` is missing, runtime assumes `0`.
+- If `joint_angle_at_zero_unit_deg` is missing, runtime assumes `0`.
 
 ## Mapping With Offset + Motor Sign + Center
 
 For each joint:
-- `motor_sign` from JSON in `{+1, -1}`
-- `offset_unit` from JSON (int)
+- `motor_unit_direction` from JSON in `{+1, -1}`
+- `servo_offset_unit` from JSON (int)
 
 Command (radians → *electrical* units):
 ```
 servo_electrical_unit_cmd = clamp_0_1000(
   units_center
-  + offset_unit
-  + motor_sign * (target_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
+  + servo_offset_unit
+  + motor_unit_direction * (target_rad - deg2rad(joint_angle_at_zero_unit_deg)) * (1000 / range_rad)
 )
 ```
 
 Readback (electrical units → radians):
 ```
-pos_rad = deg2rad(motor_center_mujoco_deg)
-          + motor_sign * ((servo_electrical_unit_read - units_center - offset_unit) * (range_rad / 1000))
+pos_rad = deg2rad(joint_angle_at_zero_unit_deg)
+          + motor_unit_direction * ((servo_electrical_unit_read - units_center - servo_offset_unit) * (range_rad / 1000))
 ```
 
-### Computing `offset_unit` in the presence of `motor_center_mujoco_deg`
+### Computing `servo_offset_unit` in the presence of `joint_angle_at_zero_unit_deg`
 
 If you want a particular reference joint angle `target_ref_rad` to match a measured readback `servo_electrical_unit_read`, rearrange the command equation:
 
@@ -117,8 +117,8 @@ offset\_unit = servo\_electrical\_unit\_read - units\_center - motor\_sign\cdot 
 $$
 
 Two common special cases:
-- If `motor_center_mujoco_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
-- If you choose `motor_center_mujoco_deg` such that `target_ref_rad == deg2rad(motor_center_mujoco_deg)` for your neutral pose, this reduces to `offset_unit = servo_electrical_unit_read - 500`.
+- If `joint_angle_at_zero_unit_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
+- If you choose `joint_angle_at_zero_unit_deg` such that `target_ref_rad == deg2rad(joint_angle_at_zero_unit_deg)` for your neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
 
 ## Calibration UX Overview
 
@@ -133,7 +133,7 @@ The script should guide the user joint-by-joint:
 3) determine offset at neutral pose
 4) write config (with backups)
 
-Important: calibrate `motor_sign` *before* `offset_unit`, because the “motor_sign test” is easier to reason about when the joint is near center.
+Important: calibrate `motor_unit_direction` *before* `servo_offset_unit`, because the “motor_unit_direction test” is easier to reason about when the joint is near center.
 
 ## Calibration Procedure (per joint)
 
@@ -177,7 +177,7 @@ For Stage 1 (8 actuators), the calibrator can:
 If `N != 8`, do not guess; either require MuJoCo (`--scene-xml`) for name-based extraction or require an explicit mapping.
 
 Execution detail:
-- Convert `home_ctrl_rad` (absolute joint targets in radians) to servo commands using the mapping above (using `motor_sign` and `offset_unit`).
+- Convert `home_ctrl_rad` (absolute joint targets in radians) to servo commands using the mapping above (using `motor_unit_direction` and `servo_offset_unit`).
 - Use a conservative move time (e.g., 500–1000 ms) and allow user confirmation before moving.
 
 ### Step A: Select joint
@@ -189,13 +189,13 @@ Inputs:
 For each joint, print:
 - joint name
 - servo ID
-- current `sign` and `offset_unit` (legacy `offset_rad` is accepted but interpreted as the same servo-unit value)
+- current `sign` and `servo_offset_unit` (legacy `offset_rad` is accepted but interpreted as the same servo-unit value)
 
 ### Step B: Determine motor sign
 
 The script should:
-1) move the joint near center (safe) using `servo_electrical_unit ≈ 500 + offset_unit` (or defaults)
-2) prompt the user to run a motor_sign test:
+1) move the joint near center (safe) using `servo_electrical_unit ≈ 500 + servo_offset_unit` (or defaults)
+2) prompt the user to run a motor_unit_direction test:
    - apply a small positive delta (e.g., `+0.1 rad` or `+20 units`)
    - apply a small negative delta
 3) ask the user an *explicit physical-direction question*, not “MuJoCo-positive”.
@@ -210,8 +210,8 @@ For each joint, define a short `positive_motion_hint` string (see the table belo
 
 > I will command `+delta`. Did the joint move **toward**: `<positive_motion_hint>`?
 >
-> - `y` = yes (set `motor_sign = +1`)
-> - `n` = no  (set `motor_sign = -1`)
+> - `y` = yes (set `motor_unit_direction = +1`)
+> - `n` = no  (set `motor_unit_direction = -1`)
 > - `r` = repeat with a different delta
 
 #### Default positive-motion hints (must be verified against the MJCF)
@@ -254,7 +254,7 @@ The script should:
 3) compute offset:
 
 ```
-offset_unit = servo_electrical_unit_read - units_center - motor_sign * (target_ref_rad - deg2rad(motor_center_mujoco_deg)) * (1000 / range_rad)
+servo_offset_unit = servo_electrical_unit_read - units_center - motor_unit_direction * (target_ref_rad - deg2rad(joint_angle_at_zero_unit_deg)) * (1000 / range_rad)
 ```
 
 Rationale: we want the chosen reference pose (at `target_ref_rad`) to be consistent with the mapping, so that commanding `target_ref_rad` returns to the same physical alignment.
@@ -264,14 +264,14 @@ If you specifically want the neutral pose to correspond to `target_ref_rad == 0`
 ### Step D: Persist and verify
 
 Persist:
-- update `servo_controller.servos.<joint>.motor_sign` and `servo_controller.servos.<joint>.offset_unit` in the JSON config
+- update `servo_controller.servos.<joint>.motor_unit_direction` and `servo_controller.servos.<joint>.servo_offset_unit` in the JSON config
 - write to disk with:
   - an explicit output path option (recommended), OR
   - in-place update with an automatic timestamped backup
 
 Verify (quick checks):
 - command `target_rad = 0.0`, read back `pos_rad` and confirm it is “near 0” (within a small tolerance, e.g., `0.02–0.05 rad`)
-- optionally command `±0.2 rad` and confirm motor_sign + magnitude look correct
+- optionally command `±0.2 rad` and confirm motor_unit_direction + magnitude look correct
 
 ## File Location and Entrypoints
 
@@ -295,7 +295,7 @@ Minimal flags:
 - `--output <path>`: write updated config here (default: in-place with backup)
 - `--joints left_hip_pitch,right_knee_pitch` or `--all`
 - `--step-units 5`
-- `--delta-rad 0.1` (motor_sign test)
+- `--delta-rad 0.1` (motor_unit_direction test)
 - `--move-ms 300` (jog speed)
 
 Non-interactive mode (optional later):
@@ -304,7 +304,7 @@ Non-interactive mode (optional later):
 ## Data Ownership and Integration Points
 
 - Calibration is runtime-specific: it lives in the runtime config and is applied in the hardware adapter layer (`HiwonderBoardActuators`).
-- Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring motor_sign.
+- Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring motor_unit_direction.
 
 ## Validation Checklist (post-calibration)
 
