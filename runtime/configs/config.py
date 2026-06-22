@@ -122,6 +122,10 @@ class ServoConfig:
         return float(self.motor_unit_direction)
 
     @property
+    def servo_unit_direction(self) -> float:
+        return float(self.motor_unit_direction)
+
+    @property
     def motor_center_mujoco_deg(self) -> float:
         return float(self.joint_angle_at_zero_unit_deg)
 
@@ -241,6 +245,10 @@ class ServoSpec:
         return float(self.motor_unit_direction)
 
     @property
+    def servo_unit_direction(self) -> float:
+        return float(self.motor_unit_direction)
+
+    @property
     def motor_center_mujoco_deg(self) -> float:
         return float(self.joint_angle_at_zero_unit_deg)
 
@@ -317,6 +325,10 @@ class ServoControllerConfig:
 
     @property
     def joint_motor_unit_directions(self) -> Dict[str, float]:
+        return {k: float(v.motor_unit_direction) for k, v in self.servos.items()}
+
+    @property
+    def joint_servo_unit_directions(self) -> Dict[str, float]:
         return {k: float(v.motor_unit_direction) for k, v in self.servos.items()}
 
     @property
@@ -614,10 +626,21 @@ class WrRuntimeConfig:
             servos: Dict[str, ServoConfig] = {}
             for joint_name, servo_data in block.get("servos", {}).items():
                 joint_spec = joint_specs.get(joint_name, {})
-                direction_raw = servo_data.get(
-                    "motor_unit_direction",
-                    servo_data.get("motor_sign", 1.0),
-                )
+                direction_values = {
+                    key: float(servo_data[key])
+                    for key in ("motor_unit_direction", "servo_unit_direction", "motor_sign")
+                    if key in servo_data
+                }
+                if direction_values:
+                    chosen_direction = next(iter(direction_values.values()))
+                    for key, value in direction_values.items():
+                        if abs(float(value) - float(chosen_direction)) > 1e-9:
+                            raise ValueError(
+                                f"{key_path}.{joint_name}.{key}={value} conflicts with servo direction value {chosen_direction}"
+                            )
+                    direction_raw = chosen_direction
+                else:
+                    direction_raw = 1.0
                 motor_unit_direction = float(direction_raw)
                 WrRuntimeConfig._validate_motor_signs({joint_name: motor_unit_direction})
 

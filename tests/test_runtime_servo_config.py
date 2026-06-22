@@ -74,6 +74,44 @@ def test_legacy_servo_keys_still_load_and_serialize_to_new_names(tmp_path: Path)
     }
 
 
+def test_servo_unit_direction_alias_loads_and_serializes_to_canonical(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left": {
+                    "id": 1,
+                    "servo_offset_unit": 0,
+                    "servo_unit_direction": -1,
+                },
+            }
+        }
+    }
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+    servo = cfg.servo_controller.get_servo("left")
+    assert servo.servo_unit_direction == -1.0
+    assert cfg.servo_controller.joint_servo_unit_directions["left"] == -1.0
+
+    out = cfg.to_dict()
+    assert "servo_unit_direction" not in out["servo_controller"]["servos"]["left"]
+    assert out["servo_controller"]["servos"]["left"]["motor_unit_direction"] == -1.0
+
+
+def test_conflicting_servo_unit_direction_alias_raises(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left": {
+                    "id": 1,
+                    "motor_unit_direction": 1,
+                    "servo_unit_direction": -1,
+                },
+            }
+        }
+    }
+    with pytest.raises(ValueError):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
     canonical = ServoControllerConfig(
         type="hiwonder",

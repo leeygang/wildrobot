@@ -83,6 +83,33 @@ class JointState:
     motor_sign: int
 
 
+@dataclass(frozen=True)
+class JointAxisMetadata:
+    local_axis: Optional[Tuple[float, float, float]]
+    init_world_axis: Optional[Tuple[float, float, float]]
+
+
+@dataclass(frozen=True)
+class PolicyActionSetup:
+    base_rad_by_joint: Dict[str, float]
+    residual_scale_by_joint: Dict[str, float]
+    residual_base: str
+    residual_mode: str
+    action_delay_steps: int
+    action_filter_alpha: float
+    source: str
+
+
+@dataclass(frozen=True)
+class PolicyActionEvaluation:
+    action_raw: float
+    action_applied: float
+    residual_rad: float
+    target_rad_unclipped: float
+    target_rad: float
+    clipped_by_joint_range: bool
+
+
 def normalize_joint_state(offset: float | int, motor_sign: float | int) -> JointState:
     offset_int = int(round(float(offset)))
     motor_sign_f = float(motor_sign)
@@ -90,6 +117,36 @@ def normalize_joint_state(offset: float | int, motor_sign: float | int) -> Joint
     if motor_sign_int not in (-1, 1):
         motor_sign_int = 1 if motor_sign_f >= 0 else -1
     return JointState(offset=offset_int, motor_sign=motor_sign_int)
+
+
+def _parse_axis(value: object) -> Optional[Tuple[float, float, float]]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        return (float(value[0]), float(value[1]), float(value[2]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _axis_label(axis: Optional[Tuple[float, float, float]]) -> str:
+    if axis is None:
+        return "n/a"
+    values = [float(v) for v in axis]
+    idx = int(np.argmax(np.abs(values)))
+    if abs(values[idx]) < 1e-9:
+        return "n/a"
+    sign = "+" if values[idx] >= 0.0 else "-"
+    return f"{sign}{'XYZ'[idx]}"
+
+
+def _format_axis(axis: Optional[Tuple[float, float, float]]) -> str:
+    if axis is None:
+        return "n/a"
+    return "[" + ", ".join(f"{float(v):+.2f}" for v in axis) + "]"
+
+
+def _axis_summary(axis: Optional[Tuple[float, float, float]]) -> str:
+    return f"{_format_axis(axis)} ({_axis_label(axis)})"
 
 
 def prompt_select_joints(joint_names: List[str]) -> List[str]:
@@ -519,6 +576,205 @@ def load_bundle_spec(bundle_dir: Path) -> tuple[List[str], List[float]]:
     return [str(name) for name in actuator_names], [float(x) for x in home]
 
 
+def resolve_robot_config_path(
+    raw_config: dict,
+    config_path: Path,
+    *,
+    bundle_dir: Optional[Path] = None,
+) -> Path:
+    config_dir = Path(config_path).parent.resolve()
+    candidates: List[Path] = []
+
+    json_robot_cfg = raw_config.get("robot_config_path")
+    if isinstance(json_robot_cfg, str) and json_robot_cfg.strip():
+        p = Path(json_robot_cfg).expanduser()
+        candidates.append(p if p.is_absolute() else (config_dir / p).resolve())
+
+    candidates.extend(
+        [
+            _REPO_ROOT / "assets" / "v2" / "mujoco_robot_config.json",
+            Path("assets/v2/mujoco_robot_config.json"),
+        ]
+    )
+    if bundle_dir is not None:
+        candidates.append(Path(bundle_dir) / "mujoco_robot_config.json")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def resolve_robot_xml_path(
+    *,
+    robot_config_path: Path,
+    config: WrRuntimeConfig,
+    bundle_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    candidates: List[Path] = []
+
+    if robot_config_path.exists():
+        try:
+            robot_cfg = json.loads(robot_config_path.read_text())
+            generated_from = robot_cfg.get("generated_from")
+            if isinstance(generated_from, str) and generated_from.strip():
+                candidates.append(Path(generated_from).expanduser())
+        except Exception:
+            pass
+
+    try:
+        candidates.append(config.mjcf_resolved_path)
+    except Exception:
+        pass
+
+    if bundle_dir is not None:
+        candidates.append(Path(bundle_dir) / "wildrobot.xml")
+    candidates.append(_REPO_ROOT / "assets" / "v2" / "wildrobot.xml")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def load_joint_axis_metadata(
+    *,
+    robot_config_path: Path,
+    robot_xml_path: Optional[Path],
+) -> Dict[str, JointAxisMetadata]:
+    init_world_axes: Dict[str, Tuple[float, float, float]] = {}
+    if robot_config_path.exists():
+        data = json.loads(robot_config_path.read_text())
+        for spec in data.get("actuated_joint_specs", []):
+            if not isinstance(spec, dict):
+                continue
+            name = spec.get("name")
+            axis = _parse_axis(spec.get("init_world_axis"))
+            if isinstance(name, str) and axis is not None:
+                init_world_axes[name] = axis
+
+    local_axes: Dict[str, Tuple[float, float, float]] = {}
+    if robot_xml_path is not None and robot_xml_path.exists():
+        root = ET.parse(robot_xml_path).getroot()
+        for elem in root.findall(".//joint"):
+            name = elem.attrib.get("name")
+            if not name:
+                continue
+            axis_raw = elem.attrib.get("axis", "0 0 1")
+            try:
+                axis_values = [float(x) for x in axis_raw.strip().split()]
+            except ValueError:
+                continue
+            axis = _parse_axis(axis_values)
+            if axis is not None:
+                local_axes[str(name)] = axis
+
+    names = set(init_world_axes) | set(local_axes)
+    return {
+        name: JointAxisMetadata(
+            local_axis=local_axes.get(name),
+            init_world_axis=init_world_axes.get(name),
+        )
+        for name in names
+    }
+
+
+def load_policy_action_setup(
+    *,
+    args: argparse.Namespace,
+    config: WrRuntimeConfig,
+    joint_names: List[str],
+) -> PolicyActionSetup:
+    base_rad_by_joint = {joint: 0.0 for joint in joint_names}
+    residual_scale_by_joint = {
+        joint: float(config.control.action_scale_rad) for joint in joint_names
+    }
+    residual_base = "zero"
+    residual_mode = "absolute"
+    action_delay_steps = 0
+    action_filter_alpha = 0.0
+    source = "runtime config action_scale_rad fallback"
+
+    bundle_arg = getattr(args, "bundle", None)
+    bundle_dir = Path(bundle_arg) if bundle_arg else None
+    if bundle_dir is None:
+        try:
+            candidate = config.policy_resolved_path.parent
+            if (candidate / "policy_spec.json").exists():
+                bundle_dir = candidate
+        except Exception:
+            bundle_dir = None
+
+    if bundle_dir is not None:
+        bundle_names, bundle_home = load_bundle_spec(bundle_dir)
+        home_by_joint = dict(zip(bundle_names, bundle_home, strict=True))
+        base_rad_by_joint = {
+            joint: float(home_by_joint.get(joint, 0.0)) for joint in joint_names
+        }
+        residual_base = "home"
+        source = "policy_spec home_ctrl_rad + runtime config action_scale_rad fallback"
+
+        runtime_cfg_path = bundle_dir / "runtime_policy_config.json"
+        if runtime_cfg_path.exists():
+            runtime_cfg = json.loads(runtime_cfg_path.read_text())
+            residual_base = str(runtime_cfg.get("loc_ref_residual_base", residual_base))
+            residual_mode = str(runtime_cfg.get("loc_ref_residual_mode", residual_mode))
+            action_delay_steps = int(runtime_cfg.get("action_delay_steps", action_delay_steps))
+            action_filter_alpha = float(runtime_cfg.get("action_filter_alpha", action_filter_alpha))
+
+            scalar = float(runtime_cfg.get("loc_ref_residual_scale", config.control.action_scale_rad))
+            per_joint = runtime_cfg.get("loc_ref_residual_scale_per_joint", {}) or {}
+            residual_scale_by_joint = {
+                joint: float(per_joint.get(joint, scalar)) for joint in joint_names
+            }
+
+            per_actuator = runtime_cfg.get("residual_scale_per_actuator", []) or []
+            if isinstance(per_actuator, list) and len(per_actuator) == len(bundle_names):
+                scale_by_bundle_joint = {
+                    name: float(scale)
+                    for name, scale in zip(bundle_names, per_actuator, strict=True)
+                }
+                residual_scale_by_joint = {
+                    joint: float(scale_by_bundle_joint.get(joint, scalar))
+                    for joint in joint_names
+                }
+            source = str(runtime_cfg_path)
+
+    return PolicyActionSetup(
+        base_rad_by_joint=base_rad_by_joint,
+        residual_scale_by_joint=residual_scale_by_joint,
+        residual_base=residual_base,
+        residual_mode=residual_mode,
+        action_delay_steps=action_delay_steps,
+        action_filter_alpha=action_filter_alpha,
+        source=source,
+    )
+
+
+def compose_policy_action_target_rad(
+    *,
+    base_rad: float,
+    action: float,
+    residual_scale_rad: float,
+    rad_range: Tuple[float, float],
+) -> PolicyActionEvaluation:
+    action_raw = float(action)
+    action_applied = float(np.clip(action_raw, -1.0, 1.0))
+    residual_rad = action_applied * float(residual_scale_rad)
+    target_unclipped = float(base_rad) + residual_rad
+    min_rad = float(rad_range[0])
+    max_rad = float(rad_range[1])
+    target_rad = float(np.clip(target_unclipped, min_rad, max_rad))
+    return PolicyActionEvaluation(
+        action_raw=action_raw,
+        action_applied=action_applied,
+        residual_rad=residual_rad,
+        target_rad_unclipped=target_unclipped,
+        target_rad=target_rad,
+        clipped_by_joint_range=abs(target_rad - target_unclipped) > 1e-9,
+    )
+
+
 def resolve_config_path(args: argparse.Namespace) -> Path:
     if args.config:
         return Path(args.config)
@@ -653,8 +909,8 @@ def wait_until_unload(controller, servo_ids: Iterable[int], *, prompt: str) -> N
 def motor_sign_prompt(joint: str, hint: str, delta_rad: float) -> str:
     return (
         f"I will command +{delta_rad:.3f} rad on {joint}. Did the joint move toward: {hint}?\n"
-        "  y = yes (motor_unit_direction = +1)\n"
-        "  n = no  (motor_unit_direction = -1)\n"
+        "  y = yes (servo_unit_direction / motor_unit_direction = +1)\n"
+        "  n = no  (servo_unit_direction / motor_unit_direction = -1)\n"
         "  r = repeat with a different delta\n"
         f"  {PANIC_KEY} = panic unload"
     )
@@ -671,7 +927,7 @@ def calibrate_motor_sign(
     move_ms: int,
     pause_s: float,
 ) -> int:
-    print(f"\n-- Motor sign calibration for {joint} (servo {servo.id}) --")
+    print(f"\n-- Servo unit direction calibration for {joint} (servo {servo.id}) --")
     delta_rad_used = DEFAULT_DELTA_RAD
 
     while True:
@@ -688,7 +944,7 @@ def calibrate_motor_sign(
             fallback_ms=max(int(move_ms), 1000),
             min_ms=1000,
         )
-        # motor_unit_direction calibration should be done in raw servo unit space:
+        # Direction calibration should be done in raw servo unit space:
         # start from mechanical center (500) and move +units. This avoids coupling
         # direction detection to any current joint_angle_at_zero_unit_deg or offset.
         delta_units = int(round(float(delta_rad_used) * float(servo.UNITS_PER_RAD)))
@@ -696,7 +952,7 @@ def calibrate_motor_sign(
             delta_units = 1
         plus_units = max(ServoConfig.UNITS_MIN, min(ServoConfig.UNITS_MAX, center_units + delta_units))
         announce_and_pause(
-            f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing motor_unit_direction)",
+            f"Step: command +delta ({delta_rad_used:.3f} rad) -> units {plus_units} (ignoring existing servo_unit_direction)",
             pause_s,
         )
         _move_servo_units_20deg_per_s(
@@ -710,7 +966,7 @@ def calibrate_motor_sign(
         if resp == PANIC_KEY:
             panic_and_exit(controller, all_servo_ids)
         if resp.startswith("y"):
-            print("motor_unit_direction set to +1")
+            print("servo_unit_direction / motor_unit_direction set to +1")
             announce_and_pause(
                 f"Step: return {joint} to center units ({center_units})",
                 pause_s,
@@ -724,7 +980,7 @@ def calibrate_motor_sign(
             )
             return 1
         if resp.startswith("n"):
-            print("motor_unit_direction set to -1")
+            print("servo_unit_direction / motor_unit_direction set to -1")
             announce_and_pause(
                 f"Step: return {joint} to center units ({center_units})",
                 pause_s,
@@ -999,16 +1255,41 @@ def print_joint_calibration_state(
     joint: str,
     servo: ServoConfig,
     state: JointState,
+    axis_metadata: Dict[str, JointAxisMetadata],
+    policy_setup: PolicyActionSetup,
+    hint: str,
 ) -> None:
     min_deg = float(np.rad2deg(float(servo.rad_range[0])))
     max_deg = float(np.rad2deg(float(servo.rad_range[1])))
     pos_units = read_position(controller, int(servo.id))
+    axis = axis_metadata.get(joint)
+    base_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
+    scale_rad = float(policy_setup.residual_scale_by_joint.get(joint, 0.0))
 
     print(f"\n-- Joint state: {joint} (servo {int(servo.id)}) --")
     print(f"  ctrl_range_deg: [{min_deg:.3f}, {max_deg:.3f}]")
     print(f"  servo_offset_unit: {int(state.offset):+d}")
-    print(f"  motor_unit_direction: {int(state.motor_sign):+d}")
+    print(f"  servo_unit_direction / motor_unit_direction: {int(state.motor_sign):+d}")
     print(f"  joint_angle_at_zero_unit_deg: {float(servo.joint_angle_at_zero_unit_deg):+.3f}")
+    if axis is not None:
+        print(f"  local_axis: {_axis_summary(axis.local_axis)}")
+        print(f"  init_world_axis: {_axis_summary(axis.init_world_axis)}")
+    else:
+        print("  local_axis: n/a")
+        print("  init_world_axis: n/a")
+    print(f"  positive_mujoco_rad_hint: {hint}")
+    print(
+        "  policy_action_setup: "
+        f"target=clip(base + clip(action,-1,1)*scale, joint_range), "
+        f"base={base_rad:+.6f} rad ({float(np.rad2deg(base_rad)):+.3f} deg), "
+        f"scale={scale_rad:.6f} rad"
+    )
+    print(
+        "  policy_action_source: "
+        f"{policy_setup.source} "
+        f"(residual_base={policy_setup.residual_base}, mode={policy_setup.residual_mode}, "
+        f"delay_steps={policy_setup.action_delay_steps}, filter_alpha={policy_setup.action_filter_alpha:.3f})"
+    )
 
     if pos_units is None:
         print("  current_servo_elect_unit: <read failed>")
@@ -1026,41 +1307,153 @@ def print_joint_calibration_state(
     print(f"  calculated_joint_target_rad: {float(joint_target_rad):+.6f} ({joint_target_deg:+.3f} deg)")
 
 
+def evaluate_policy_action(
+    controller,
+    *,
+    joint: str,
+    servo: ServoConfig,
+    state: JointState,
+    policy_setup: PolicyActionSetup,
+    move_ms_fallback: int,
+) -> None:
+    scale_rad = float(policy_setup.residual_scale_by_joint.get(joint, 0.0))
+    base_default_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
+    print(f"\n-- Policy action evaluator for {joint} (servo {servo.id}) --")
+    print("  Current setup: target=clip(base + clip(action,-1,1)*residual_scale, joint_range)")
+    print("  Enter the APPLIED action value. The runtime may delay/filter raw policy output before it becomes applied.")
+    print(
+        f"  Bundle/setup: base={base_default_rad:+.6f} rad ({float(np.rad2deg(base_default_rad)):+.3f} deg), "
+        f"scale={scale_rad:.6f} rad, source={policy_setup.source}"
+    )
+
+    raw_action = input("Enter applied policy action [-1..1]: ").strip()
+    try:
+        action = float(raw_action)
+    except ValueError:
+        print("Invalid number.")
+        return
+
+    base_raw = input(
+        f"Base joint deg [Enter = setup base {float(np.rad2deg(base_default_rad)):+.3f} deg]: "
+    ).strip()
+    if base_raw:
+        try:
+            base_rad = float(np.deg2rad(float(base_raw)))
+        except ValueError:
+            print("Invalid base joint deg.")
+            return
+    else:
+        base_rad = base_default_rad
+
+    scale_raw = input(f"Residual scale rad [Enter = {scale_rad:.6f}]: ").strip()
+    if scale_raw:
+        try:
+            scale_rad = float(scale_raw)
+        except ValueError:
+            print("Invalid residual scale.")
+            return
+
+    eval_result = compose_policy_action_target_rad(
+        base_rad=base_rad,
+        action=action,
+        residual_scale_rad=scale_rad,
+        rad_range=servo.rad_range,
+    )
+    target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        eval_result.target_rad,
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
+    )
+    conceptual_units = int(target_units) - int(state.offset)
+    target_deg_unclipped = float(np.rad2deg(eval_result.target_rad_unclipped))
+    target_deg = float(np.rad2deg(eval_result.target_rad))
+
+    print(f"  action_raw: {eval_result.action_raw:+.6f}")
+    print(f"  action_applied_clipped: {eval_result.action_applied:+.6f}")
+    print(f"  residual_rad: {eval_result.residual_rad:+.6f} ({float(np.rad2deg(eval_result.residual_rad)):+.3f} deg)")
+    print(f"  target_joint_rad_unclipped: {eval_result.target_rad_unclipped:+.6f} ({target_deg_unclipped:+.3f} deg)")
+    print(f"  target_joint_rad: {eval_result.target_rad:+.6f} ({target_deg:+.3f} deg)")
+    print(f"  motor_elect_unit: {int(target_units)}")
+    print(f"  motor_conceptual_unit: {int(conceptual_units)}")
+    if eval_result.clipped_by_joint_range:
+        min_deg = float(np.rad2deg(float(servo.rad_range[0])))
+        max_deg = float(np.rad2deg(float(servo.rad_range[1])))
+        print(f"  WARNING: target clipped to joint range [{min_deg:+.3f}, {max_deg:+.3f}] deg")
+
+    if yes_no("Move motor to this policy-action target?", default=True):
+        current_units = read_position(controller, int(servo.id))
+        if current_units is not None:
+            current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+                int(current_units),
+                motor_sign=int(state.motor_sign),
+                offset=int(state.offset),
+            )
+            current_deg = float(np.rad2deg(float(current_rad)))
+            move_ms = _move_ms_for_speed_20deg_per_s(current_deg, target_deg)
+        else:
+            move_ms = int(max(move_ms_fallback, 100))
+            print("Current position read failed; using fallback move time.")
+        move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+        pos = read_position(controller, int(servo.id))
+        if pos is not None:
+            print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(state.offset)}")
+
+
 def range_test_joint(
     controller,
     servo: ServoConfig,
     joint: str,
     *,
+    state: Optional[JointState] = None,
     speed_deg_per_s: Optional[float] = None,
 ) -> None:
     """Run a joint through its full range: center -> min -> max -> min -> center."""
     print(f"\n-- Range test for {joint} (servo {servo.id}) --")
+    effective_state = state or normalize_joint_state(
+        offset=servo.offset,
+        motor_sign=servo.motor_sign,
+    )
 
     # Calculate positions using current calibration and joint limits.
     # Note: servo.joint_target_rad_to_elect_unit() clamps to [0, 1000]. If your MuJoCo joint range requires
     # more than the servo can physically cover (240deg total), targets will clip.
-    center_units = servo.joint_target_rad_to_elect_unit(0.0)
     min_rad, max_rad = servo.rad_range
+
+    def _target_rad_to_units(target_rad: float) -> int:
+        return servo.joint_target_rad_to_elect_unit_for_calibrate(
+            float(target_rad),
+            motor_sign=int(effective_state.motor_sign),
+            offset=int(effective_state.offset),
+        )
+
+    def _units_to_target_rad(units: int) -> float:
+        return servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+            int(units),
+            motor_sign=int(effective_state.motor_sign),
+            offset=int(effective_state.offset),
+        )
+
+    center_units = _target_rad_to_units(0.0)
 
     def _raw_units(target_rad: float) -> float:
         delta = float(target_rad) - float(servo.center_rad)
         return (
             float(servo.UNITS_CENTER)
-            + float(servo.offset)
-            + float(servo.motor_sign) * (delta * float(servo.UNITS_PER_RAD))
+            + float(effective_state.offset)
+            + float(effective_state.motor_sign) * (delta * float(servo.UNITS_PER_RAD))
         )
 
     min_units_raw = _raw_units(float(min_rad))
     max_units_raw = _raw_units(float(max_rad))
-    min_units = servo.joint_target_rad_to_elect_unit(min_rad)
-    max_units = servo.joint_target_rad_to_elect_unit(max_rad)
+    min_units = _target_rad_to_units(float(min_rad))
+    max_units = _target_rad_to_units(float(max_rad))
 
     min_deg = float(np.rad2deg(float(min_rad)))
     max_deg = float(np.rad2deg(float(max_rad)))
 
     # Show effective mapping and reachable ctrl range given servo unit limits.
-    reachable_min_rad = float(servo.servo_elect_units_to_joint_target_rad(int(servo.UNITS_MIN)))
-    reachable_max_rad = float(servo.servo_elect_units_to_joint_target_rad(int(servo.UNITS_MAX)))
+    reachable_min_rad = float(_units_to_target_rad(int(servo.UNITS_MIN)))
+    reachable_max_rad = float(_units_to_target_rad(int(servo.UNITS_MAX)))
     reachable_min_deg = float(np.rad2deg(reachable_min_rad))
     reachable_max_deg = float(np.rad2deg(reachable_max_rad))
 
@@ -1069,7 +1462,8 @@ def range_test_joint(
     print(
         "  Calibration: "
         f"joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.1f} "
-        f"motor_unit_direction={float(servo.motor_unit_direction):+.0f} servo_offset_unit={int(servo.servo_offset_unit)}"
+        f"servo_unit_direction/motor_unit_direction={int(effective_state.motor_sign):+d} "
+        f"servo_offset_unit={int(effective_state.offset)}"
     )
     print(
         "  Reachable (by servo limits): "
@@ -1099,11 +1493,11 @@ def range_test_joint(
         start_deg: Optional[float] = None
         current_pos = read_position(controller, int(servo.id))
         if current_pos is not None:
-            start_deg = float(np.rad2deg(float(servo.servo_elect_units_to_joint_target_rad(int(current_pos)))))
+            start_deg = float(np.rad2deg(float(_units_to_target_rad(int(current_pos)))))
 
         def _move_and_report(label: str, target_units: int) -> None:
             nonlocal start_deg
-            target_deg_cmd = float(np.rad2deg(float(servo.servo_elect_units_to_joint_target_rad(int(target_units)))))
+            target_deg_cmd = float(np.rad2deg(float(_units_to_target_rad(int(target_units)))))
             if speed_deg_per_s is None or float(speed_deg_per_s) <= 0.0 or start_deg is None:
                 move_ms = int(RANGE_TEST_MS)
             else:
@@ -1115,7 +1509,7 @@ def range_test_joint(
             if pos is None:
                 print("  Readback: failed")
                 return
-            pos_rad = servo.servo_elect_units_to_joint_target_rad(int(pos))
+            pos_rad = _units_to_target_rad(int(pos))
             pos_deg = float(np.rad2deg(float(pos_rad)))
             print(f"  Readback: {int(pos)} units => {pos_rad:+.3f} rad ({pos_deg:+.1f} deg)")
             start_deg = pos_deg
@@ -2534,7 +2928,7 @@ Examples (copy/paste):
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --record-pos
 
-        # Interactive calibration mode (per-joint submenu: p/q/a/m/r/o/s/z/b/x)
+        # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
 
   # Test range of motion for joints interactively
@@ -2548,7 +2942,7 @@ Examples (copy/paste):
 """.strip()
 
     parser = argparse.ArgumentParser(
-        description="Interactive servo calibration (servo_offset_unit + motor_unit_direction)",
+        description="Interactive servo calibration (servo_offset_unit + servo_unit_direction/motor_unit_direction)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=examples,
     )
@@ -2565,7 +2959,7 @@ Examples (copy/paste):
         action="store_true",
         help=(
             "Interactive calibration mode: select a joint, then use submenu "
-            "p(print state)/q(target deg)/a(policy action)/m(motor units)/r(range test)/o(offset)/s(save)."
+            "p(print state)/q(target deg)/a(policy action)/d(direction)/m(motor units)/r(range test)/o(offset)/s(save)."
         ),
     )
     parser.add_argument(
@@ -2724,6 +3118,22 @@ Examples (copy/paste):
         for j in joint_names
     }
     servo_ids = [servo_cfgs[j].id for j in joint_names]
+    bundle_dir = Path(args.bundle) if args.bundle else None
+    robot_config_path = resolve_robot_config_path(
+        raw_config,
+        config_path,
+        bundle_dir=bundle_dir,
+    )
+    robot_xml_path = resolve_robot_xml_path(
+        robot_config_path=robot_config_path,
+        config=config,
+        bundle_dir=bundle_dir,
+    )
+    axis_metadata = load_joint_axis_metadata(
+        robot_config_path=robot_config_path,
+        robot_xml_path=robot_xml_path,
+    )
+    policy_setup = load_policy_action_setup(args=args, config=config, joint_names=joint_names)
 
     if args.dry_run:
         print("DRY RUN: not connecting to hardware.")
@@ -2741,26 +3151,49 @@ Examples (copy/paste):
                 print(f"  {joint}: rad={rad:+.4f} -> servo_id={servo.id} units={units}")
         if args.calibrate:
             print("Calibration mode (dry run):")
+            print(f"  Axis metadata: robot_config={robot_config_path}, robot_xml={robot_xml_path}")
+            print(f"  Policy action setup: {policy_setup.source}")
             print("  Available joints:")
             for joint in joint_names:
                 servo = servo_cfgs[joint]
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
+                axis = axis_metadata.get(joint)
+                local_axis = _axis_summary(axis.local_axis) if axis is not None else "n/a"
+                init_world_axis = _axis_summary(axis.init_world_axis) if axis is not None else "n/a"
+                base_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
+                scale_rad = float(policy_setup.residual_scale_by_joint.get(joint, 0.0))
                 print(
-                    f"    #{servo.id}: {joint} (servo_id={servo.id}, servo_offset_unit={state.offset}, motor_unit_direction={state.motor_sign}, "
-                    f"joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g}, hint='{hint}')"
+                    f"    #{servo.id}: {joint} (servo_id={servo.id}, servo_offset_unit={state.offset}, "
+                    f"servo_unit_direction/motor_unit_direction={state.motor_sign}, "
+                    f"joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g}, "
+                    f"local_axis={local_axis}, init_world_axis={init_world_axis}, "
+                    f"policy_base_rad={base_rad:+.4f}, policy_scale_rad={scale_rad:.4f}, hint='{hint}')"
                 )
         if args.range:
             print("Range test mode (dry run):")
             print("  Available joints:")
             for joint in joint_names:
                 servo = servo_cfgs[joint]
+                state = states[joint]
                 min_rad, max_rad = servo.rad_range
                 min_deg = float(np.rad2deg(float(min_rad)))
                 max_deg = float(np.rad2deg(float(max_rad)))
-                center_units = servo.joint_target_rad_to_elect_unit(0.0)
-                min_units = servo.joint_target_rad_to_elect_unit(min_rad)
-                max_units = servo.joint_target_rad_to_elect_unit(max_rad)
+                center_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+                    0.0,
+                    motor_sign=state.motor_sign,
+                    offset=state.offset,
+                )
+                min_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+                    min_rad,
+                    motor_sign=state.motor_sign,
+                    offset=state.offset,
+                )
+                max_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+                    max_rad,
+                    motor_sign=state.motor_sign,
+                    offset=state.offset,
+                )
                 print(
                     f"    #{int(servo.id)}: {joint}: deg range: {min_deg:.1f}, {max_deg:.1f} "
                     f"(center={center_units}, min={min_units} [{min_rad:.3f} rad], max={max_units} [{max_rad:.3f} rad])"
@@ -2840,7 +3273,7 @@ Examples (copy/paste):
                         print(f"Joint {joint} not found; skipping.")
                         continue
                     servo = servo_cfgs[joint]
-                    range_test_joint(controller, servo, joint)
+                    range_test_joint(controller, servo, joint, state=states[joint])
 
             # Note: unreachable due to infinite loop above; user exits via Ctrl+C or 'q'
 
@@ -2895,7 +3328,8 @@ Examples (copy/paste):
             print("Flow: center all joints → select joint → choose action → calibrate → repeat")
             print(
                 "Per-joint submenu:\n"
-                "  p=print state, q=target deg evaluator, r=single-joint range test (20 deg/s),\n"
+                "  p=print state, q=target deg evaluator, a=policy action evaluator,\n"
+                "  d=calibrate servo_unit_direction, r=single-joint range test (20 deg/s),\n"
                 "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
             )
 
@@ -2938,7 +3372,7 @@ Examples (copy/paste):
                     saved_state = updates_to_save[saved_joint]
                     print(
                         f"  {saved_joint}: offset={int(saved_state.offset):+d}, "
-                        f"motor_unit_direction={int(saved_state.motor_sign):+d}"
+                        f"servo_unit_direction/motor_unit_direction={int(saved_state.motor_sign):+d}"
                     )
 
             while True:
@@ -2951,7 +3385,7 @@ Examples (copy/paste):
                     servo = servo_cfgs[joint]
                     servo_id_to_joint[servo.id] = joint
                     print(
-                        f"  #{servo.id}: {joint} (id={servo.id}, motor_unit_direction={state.motor_sign:+d}, "
+                        f"  #{servo.id}: {joint} (id={servo.id}, servo_unit_direction/motor_unit_direction={state.motor_sign:+d}, "
                         f"servo_offset_unit={state.offset:+d}, joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g})"
                     )
                 print("\n  q = quit (discard changes)")
@@ -2988,7 +3422,9 @@ Examples (copy/paste):
                     current_state = states[joint]
                     print("\nJoint menu:")
                     print("  p = print state")
-                    print("  q = evaluate target joint deg")
+                    print("  q = evaluate direct target joint deg")
+                    print("  a = evaluate policy action residual")
+                    print("  d = calibrate servo_unit_direction")
                     print("  m = set motor electric unit")
                     print("  r = run range test for this joint")
                     print("  o = calibrate offset")
@@ -2997,7 +3433,7 @@ Examples (copy/paste):
                     print("  b = back to joint list")
                     print("  x = panic unload and exit")
 
-                    action = input("Choose action (p/q/m/r/o/s/z/b/x): ").strip().lower()
+                    action = input("Choose action (p/q/a/d/m/r/o/s/z/b/x): ").strip().lower()
 
                     if action == "x":
                         panic_and_exit(controller, servo_ids)
@@ -3011,6 +3447,9 @@ Examples (copy/paste):
                             joint=joint,
                             servo=servo,
                             state=current_state,
+                            axis_metadata=axis_metadata,
+                            policy_setup=policy_setup,
+                            hint=hint,
                         )
                         continue
 
@@ -3051,6 +3490,36 @@ Examples (copy/paste):
                             pos = read_position(controller, int(servo.id))
                             if pos is not None:
                                 print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
+                        continue
+
+                    if action == "a":
+                        evaluate_policy_action(
+                            controller,
+                            joint=joint,
+                            servo=servo,
+                            state=current_state,
+                            policy_setup=policy_setup,
+                            move_ms_fallback=int(args.move_ms),
+                        )
+                        continue
+
+                    if action == "d":
+                        new_direction = calibrate_motor_sign(
+                            controller,
+                            servo,
+                            joint,
+                            states[joint],
+                            hint,
+                            all_servo_ids=servo_ids,
+                            move_ms=args.move_ms,
+                            pause_s=float(args.pause_s),
+                        )
+                        states[joint].motor_sign = int(new_direction)
+                        calibrated[joint] = states[joint]
+                        print(
+                            f"Updated in-memory servo_unit_direction / motor_unit_direction for {joint}: "
+                            f"{int(new_direction):+d}. Use 's' to write it to config."
+                        )
                         continue
 
                     if action == "m":
@@ -3104,6 +3573,7 @@ Examples (copy/paste):
                             controller,
                             servo,
                             joint,
+                            state=current_state,
                             speed_deg_per_s=20.0,
                         )
                         continue
@@ -3196,7 +3666,7 @@ Examples (copy/paste):
                     if action == "o":
                         continue
 
-                    print("Unknown action. Use p/q/a/m/r/o/s/z/b/x.")
+                    print("Unknown action. Use p/q/a/d/m/r/o/s/z/b/x.")
 
                 # Loop back to step 1
 
