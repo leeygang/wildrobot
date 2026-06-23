@@ -907,9 +907,22 @@ def wait_until_unload(controller, servo_ids: Iterable[int], *, prompt: str) -> N
         print(f"Unknown input '{resp}'. Press '{PANIC_KEY}' then Enter to unload.")
 
 
-def motor_sign_prompt(joint: str, hint: str, delta_rad: float) -> str:
+def motor_sign_prompt(
+    joint: str,
+    hint: str,
+    delta_rad: float,
+    axis: Optional[JointAxisMetadata],
+) -> str:
+    local_axis = _axis_label(axis.local_axis) if axis is not None else "n/a"
+    world_axis = _axis_label(axis.init_world_axis) if axis is not None else "n/a"
     return (
-        f"I will command +{delta_rad:.3f} rad on {joint}. Did the joint move toward: {hint}?\n"
+        f"I commanded raw servo units upward by about +{delta_rad:.3f} rad worth of units on {joint}.\n"
+        "MuJoCo positive direction for this joint:\n"
+        f"  local_axis: {local_axis}\n"
+        f"  init_world_axis: {world_axis}\n"
+        f"  right-hand rule: point your right thumb along init_world_axis ({world_axis}); curled fingers are positive MuJoCo rotation.\n"
+        f"  expected positive motion: {hint}\n"
+        "Did the raw +servo-unit move match that positive MuJoCo direction?\n"
         "  y = yes (servo_unit_direction / motor_unit_direction = +1)\n"
         "  n = no  (servo_unit_direction / motor_unit_direction = -1)\n"
         "  r = repeat with a different delta\n"
@@ -923,6 +936,7 @@ def calibrate_motor_sign(
     joint: str,
     state: JointState,
     hint: str,
+    axis: Optional[JointAxisMetadata],
     *,
     all_servo_ids: Iterable[int],
     move_ms: int,
@@ -963,7 +977,7 @@ def calibrate_motor_sign(
             fallback_ms=max(int(move_ms), 1000),
             min_ms=1000,
         )
-        resp = input(motor_sign_prompt(joint, hint, delta_rad_used) + "\n> ").strip().lower()
+        resp = input(motor_sign_prompt(joint, hint, delta_rad_used, axis) + "\n> ").strip().lower()
         if resp == PANIC_KEY:
             panic_and_exit(controller, all_servo_ids)
         if resp.startswith("y"):
@@ -3514,6 +3528,7 @@ Examples (copy/paste):
                             joint,
                             states[joint],
                             hint,
+                            axis_metadata.get(joint),
                             all_servo_ids=servo_ids,
                             move_ms=args.move_ms,
                             pause_s=float(args.pause_s),

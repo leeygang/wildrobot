@@ -8,10 +8,12 @@ from runtime.scripts.calibrate import (
     _axis_label,
     compose_policy_action_target_rad,
     evaluate_policy_action,
+    JointAxisMetadata,
     JointState,
     load_joint_axis_metadata,
     load_bundle_spec,
     load_policy_action_setup,
+    motor_sign_prompt,
     PolicyActionSetup,
     resolve_config_path,
     resolve_home_ctrl,
@@ -77,6 +79,23 @@ def test_axis_metadata_reads_local_and_init_world_axes() -> None:
     assert _axis_label(axes["left_hip_pitch"].local_axis) == "+Z"
     assert _axis_label(axes["left_hip_pitch"].init_world_axis) == "-Y"
     assert _axis_label(axes["right_hip_pitch"].init_world_axis) == "+Y"
+
+
+def test_direction_prompt_includes_axis_labels_and_right_hand_rule() -> None:
+    prompt = motor_sign_prompt(
+        "left_hip_pitch",
+        "left leg swings forward",
+        0.5,
+        JointAxisMetadata(
+            local_axis=(0.0, 0.0, 1.0),
+            init_world_axis=(0.0, -1.0, 0.0),
+        ),
+    )
+
+    assert "local_axis: +Z" in prompt
+    assert "init_world_axis: -Y" in prompt
+    assert "right-hand rule" in prompt
+    assert "expected positive motion: left leg swings forward" in prompt
 
 
 def test_policy_action_setup_uses_runtime_bundle_residual_scale() -> None:
