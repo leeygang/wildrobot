@@ -7,16 +7,19 @@ from pathlib import Path
 from runtime.scripts.calibrate import (
     _axis_label,
     compose_policy_action_target_rad,
+    evaluate_policy_action,
+    JointState,
     load_joint_axis_metadata,
     load_bundle_spec,
     load_policy_action_setup,
+    PolicyActionSetup,
     resolve_config_path,
     resolve_home_ctrl,
     resolve_joint_names,
     resolve_robot_config_path,
     resolve_robot_xml_path,
 )
-from runtime.configs.config import WrRuntimeConfig
+from runtime.configs.config import ServoConfig, WrRuntimeConfig
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -116,3 +119,65 @@ def test_compose_policy_action_target_uses_home_residual_and_joint_clip() -> Non
     assert abs(eval_result.target_rad_unclipped - 0.84) < 1e-12
     assert eval_result.target_rad == 0.7
     assert eval_result.clipped_by_joint_range is True
+
+
+def test_policy_action_evaluator_moves_home_then_action(monkeypatch) -> None:
+    class FakeController:
+        def __init__(self) -> None:
+            self.pos = 500
+            self.moves: list[tuple[list[tuple[int, int]], int]] = []
+
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_ids[0]), int(self.pos))]
+
+        def move_servos(self, commands, move_ms):
+            self.moves.append((commands, int(move_ms)))
+            self.pos = int(commands[0][1])
+
+    servo = ServoConfig(
+        id=1,
+        servo_offset_unit=0,
+        motor_unit_direction=1,
+        joint_angle_at_zero_unit_deg=0,
+        rad_range=(-1.0, 1.0),
+    )
+    state = JointState(offset=10, motor_sign=1)
+    setup = PolicyActionSetup(
+        base_rad_by_joint={"left_hip_pitch": 0.2},
+        residual_scale_by_joint={"left_hip_pitch": 0.4},
+        residual_base="home",
+        residual_mode="absolute",
+        action_delay_steps=1,
+        action_filter_alpha=0.0,
+        source="test",
+    )
+    controller = FakeController()
+    inputs = iter(["0.5", "y"])
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    monkeypatch.setattr("runtime.scripts.calibrate.time.sleep", lambda seconds: None)
+
+    evaluate_policy_action(
+        controller,
+        joint="left_hip_pitch",
+        servo=servo,
+        state=state,
+        policy_setup=setup,
+        move_ms_fallback=300,
+    )
+
+    home_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        0.2,
+        motor_sign=1,
+        offset=10,
+    )
+    target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        0.4,
+        motor_sign=1,
+        offset=10,
+    )
+
+    assert [move[0][0] for move in controller.moves] == [
+        (1, home_units),
+        (1, target_units),
+    ]

@@ -35,6 +35,7 @@ DEFAULT_DELTA_RAD = 0.5
 VERIFY_TOL_RAD = 0.05
 PANIC_KEY = "q"
 DEFAULT_PAUSE_S = 3.0
+POLICY_ACTION_HOME_PAUSE_S = 3.0
 RANGE_TEST_MS = 3000
 DEFAULT_IMU_SAMPLES = 100
 DEFAULT_IMU_BASELINE_S = 3.0
@@ -1317,12 +1318,12 @@ def evaluate_policy_action(
     move_ms_fallback: int,
 ) -> None:
     scale_rad = float(policy_setup.residual_scale_by_joint.get(joint, 0.0))
-    base_default_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
+    home_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
     print(f"\n-- Policy action evaluator for {joint} (servo {servo.id}) --")
     print("  Current setup: target=clip(base + clip(action,-1,1)*residual_scale, joint_range)")
     print("  Enter the APPLIED action value. The runtime may delay/filter raw policy output before it becomes applied.")
     print(
-        f"  Bundle/setup: base={base_default_rad:+.6f} rad ({float(np.rad2deg(base_default_rad)):+.3f} deg), "
+        f"  Bundle/setup: home/base={home_rad:+.6f} rad ({float(np.rad2deg(home_rad)):+.3f} deg), "
         f"scale={scale_rad:.6f} rad, source={policy_setup.source}"
     )
 
@@ -1333,44 +1334,34 @@ def evaluate_policy_action(
         print("Invalid number.")
         return
 
-    base_raw = input(
-        f"Base joint deg [Enter = setup base {float(np.rad2deg(base_default_rad)):+.3f} deg]: "
-    ).strip()
-    if base_raw:
-        try:
-            base_rad = float(np.deg2rad(float(base_raw)))
-        except ValueError:
-            print("Invalid base joint deg.")
-            return
-    else:
-        base_rad = base_default_rad
-
-    scale_raw = input(f"Residual scale rad [Enter = {scale_rad:.6f}]: ").strip()
-    if scale_raw:
-        try:
-            scale_rad = float(scale_raw)
-        except ValueError:
-            print("Invalid residual scale.")
-            return
-
     eval_result = compose_policy_action_target_rad(
-        base_rad=base_rad,
+        base_rad=home_rad,
         action=action,
         residual_scale_rad=scale_rad,
         rad_range=servo.rad_range,
+    )
+    home_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        home_rad,
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
     )
     target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
         eval_result.target_rad,
         motor_sign=int(state.motor_sign),
         offset=int(state.offset),
     )
+    home_conceptual_units = int(home_units) - int(state.offset)
     conceptual_units = int(target_units) - int(state.offset)
+    home_deg = float(np.rad2deg(home_rad))
     target_deg_unclipped = float(np.rad2deg(eval_result.target_rad_unclipped))
     target_deg = float(np.rad2deg(eval_result.target_rad))
 
     print(f"  action_raw: {eval_result.action_raw:+.6f}")
     print(f"  action_applied_clipped: {eval_result.action_applied:+.6f}")
     print(f"  residual_rad: {eval_result.residual_rad:+.6f} ({float(np.rad2deg(eval_result.residual_rad)):+.3f} deg)")
+    print(f"  home_joint_rad: {home_rad:+.6f} ({home_deg:+.3f} deg)")
+    print(f"  home_motor_elect_unit: {int(home_units)}")
+    print(f"  home_motor_conceptual_unit: {int(home_conceptual_units)}")
     print(f"  target_joint_rad_unclipped: {eval_result.target_rad_unclipped:+.6f} ({target_deg_unclipped:+.3f} deg)")
     print(f"  target_joint_rad: {eval_result.target_rad:+.6f} ({target_deg:+.3f} deg)")
     print(f"  motor_elect_unit: {int(target_units)}")
@@ -1380,7 +1371,10 @@ def evaluate_policy_action(
         max_deg = float(np.rad2deg(float(servo.rad_range[1])))
         print(f"  WARNING: target clipped to joint range [{min_deg:+.3f}, {max_deg:+.3f}] deg")
 
-    if yes_no("Move motor to this policy-action target?", default=True):
+    if yes_no(
+        f"Move to home first, wait {POLICY_ACTION_HOME_PAUSE_S:.1f}s, then move to this policy-action target?",
+        default=True,
+    ):
         current_units = read_position(controller, int(servo.id))
         if current_units is not None:
             current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
@@ -1389,11 +1383,21 @@ def evaluate_policy_action(
                 offset=int(state.offset),
             )
             current_deg = float(np.rad2deg(float(current_rad)))
-            move_ms = _move_ms_for_speed_20deg_per_s(current_deg, target_deg)
+            home_move_ms = _move_ms_for_speed_20deg_per_s(current_deg, home_deg)
         else:
-            move_ms = int(max(move_ms_fallback, 100))
+            home_move_ms = int(max(move_ms_fallback, 100))
             print("Current position read failed; using fallback move time.")
-        move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+        print(f"Moving {joint} to policy home/base ({int(home_units)} units)...")
+        move_and_wait(controller, int(servo.id), int(home_units), int(home_move_ms))
+        home_pos = read_position(controller, int(servo.id))
+        if home_pos is not None:
+            print(f"Home readback elect unit={int(home_pos)} conceptual={int(home_pos) - int(state.offset)}")
+        print(f"Waiting {POLICY_ACTION_HOME_PAUSE_S:.1f}s before action target...")
+        time.sleep(POLICY_ACTION_HOME_PAUSE_S)
+
+        action_move_ms = _move_ms_for_speed_20deg_per_s(home_deg, target_deg)
+        print(f"Moving {joint} to policy-action target ({int(target_units)} units)...")
+        move_and_wait(controller, int(servo.id), int(target_units), int(action_move_ms))
         pos = read_position(controller, int(servo.id))
         if pos is not None:
             print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(state.offset)}")
