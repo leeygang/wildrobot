@@ -6,6 +6,7 @@ from pathlib import Path
 
 from runtime.scripts.calibrate import (
     _axis_label,
+    _format_footswitch_status_line,
     compose_policy_action_target_rad,
     evaluate_policy_action,
     JointAxisMetadata,
@@ -15,6 +16,7 @@ from runtime.scripts.calibrate import (
     load_policy_action_setup,
     motor_sign_prompt,
     PolicyActionSetup,
+    prompt_select_footswitch_targets,
     resolve_config_path,
     resolve_home_ctrl,
     resolve_joint_names,
@@ -55,6 +57,40 @@ def test_resolve_home_ctrl_reorders_bundle_home_to_requested_joint_names() -> No
 
     assert home_in_cfg_order == expected
     assert home_in_cfg_order != bundle_home
+
+
+def test_prompt_select_footswitch_targets_raw_all(monkeypatch) -> None:
+    inputs = iter(["all footswitches", "#7"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    assert prompt_select_footswitch_targets() == [
+        "left_toe",
+        "left_heel",
+        "right_toe",
+        "right_heel",
+    ]
+    assert prompt_select_footswitch_targets() == [
+        "left_toe",
+        "left_heel",
+        "right_toe",
+        "right_heel",
+    ]
+
+
+def test_format_footswitch_status_line_raw_switches() -> None:
+    status = {
+        "left_toe": True,
+        "left_heel": False,
+        "right_toe": True,
+        "right_heel": False,
+    }
+    assert (
+        _format_footswitch_status_line(
+            status,
+            ["left_toe", "left_heel", "right_toe", "right_heel"],
+        )
+        == "left_toe=1, left_heel=0, right_toe=1, right_heel=0"
+    )
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:

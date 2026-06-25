@@ -226,23 +226,50 @@ def prompt_select_joints_by_servo_id(
     return selected
 
 
-_FOOTSWITCH_TARGETS_ORDER = (
+_FOOTSWITCH_RAW_TARGETS_ORDER = (
     "left_toe",
     "left_heel",
     "right_toe",
     "right_heel",
+)
+_FOOTSWITCH_TARGETS_ORDER = (
+    *_FOOTSWITCH_RAW_TARGETS_ORDER,
     "left_foot",
     "right_foot",
 )
+_FOOTSWITCH_ALL_RAW_TARGET = "all_footswitches"
+_FOOTSWITCH_ALL_RAW_ALIASES = {
+    "all_footswitch",
+    "all_footswitches",
+    "all_foot_switch",
+    "all_foot_switches",
+    "all_switches",
+    "all4",
+    "all_4",
+}
+
+
+def _is_all_raw_footswitch_selector(raw: str) -> bool:
+    normalized = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    return normalized in _FOOTSWITCH_ALL_RAW_ALIASES
+
+
+def _append_footswitch_target(selected: List[str], seen: set[str], name: str) -> None:
+    if name not in seen:
+        seen.add(name)
+        selected.append(name)
 
 
 def prompt_select_footswitch_targets() -> List[str]:
     print("Available footswitch targets:")
     for idx, name in enumerate(_FOOTSWITCH_TARGETS_ORDER, start=1):
         print(f"  #{idx}: {name}")
+    all_raw_idx = len(_FOOTSWITCH_TARGETS_ORDER) + 1
+    print(f"  #{all_raw_idx}: {_FOOTSWITCH_ALL_RAW_TARGET} ({', '.join(_FOOTSWITCH_RAW_TARGETS_ORDER)})")
     raw = (
         input(
-            "Select targets by number or name (e.g. 1 3 or left_toe,right_foot), 'all', or 'q' to quit: "
+            "Select targets by number or name (e.g. 1 3 or left_toe,right_foot), "
+            "'all_footswitches' for the 4 raw switches, 'all', or 'q' to quit: "
         )
         .strip()
         .lower()
@@ -253,6 +280,8 @@ def prompt_select_footswitch_targets() -> List[str]:
         return []
     if raw == "all":
         return list(_FOOTSWITCH_TARGETS_ORDER)
+    if _is_all_raw_footswitch_selector(raw):
+        return list(_FOOTSWITCH_RAW_TARGETS_ORDER)
 
     tokens = [t for t in raw.replace(",", " ").split() if t]
     indices: List[int] = []
@@ -272,26 +301,36 @@ def prompt_select_footswitch_targets() -> List[str]:
     seen: set[str] = set()
 
     for idx in indices:
-        if idx < 1 or idx > len(_FOOTSWITCH_TARGETS_ORDER):
+        if idx == all_raw_idx:
+            for name in _FOOTSWITCH_RAW_TARGETS_ORDER:
+                _append_footswitch_target(selected, seen, name)
+            continue
+        if idx < 1 or idx > all_raw_idx:
             raise ValueError(
-                f"Target index out of range: {idx} (valid: 1..{len(_FOOTSWITCH_TARGETS_ORDER)})"
+                f"Target index out of range: {idx} (valid: 1..{all_raw_idx})"
             )
         name = _FOOTSWITCH_TARGETS_ORDER[idx - 1]
-        if name not in seen:
-            seen.add(name)
-            selected.append(name)
+        _append_footswitch_target(selected, seen, name)
 
     allowed = {n for n in _FOOTSWITCH_TARGETS_ORDER}
     for name in names:
+        name = name.replace("-", "_")
+        if _is_all_raw_footswitch_selector(name):
+            for raw_name in _FOOTSWITCH_RAW_TARGETS_ORDER:
+                _append_footswitch_target(selected, seen, raw_name)
+            continue
         if name not in allowed:
-            raise ValueError(f"Unknown footswitch target: {name!r} (allowed: {sorted(allowed)})")
-        if name not in seen:
-            seen.add(name)
-            selected.append(name)
+            allowed_names = sorted(allowed | {_FOOTSWITCH_ALL_RAW_TARGET})
+            raise ValueError(f"Unknown footswitch target: {name!r} (allowed: {allowed_names})")
+        _append_footswitch_target(selected, seen, name)
 
     if not selected:
         raise ValueError("No footswitch targets selected")
     return selected
+
+
+def _format_footswitch_status_line(status: Dict[str, bool], selected: List[str]) -> str:
+    return ", ".join(f"{k}={1 if status[k] else 0}" for k in selected)
 
 
 def _footswitch_status_from_sample(switches: List[bool]) -> Dict[str, bool]:
@@ -405,7 +444,7 @@ def calibrate_footswitches(*, config: WrRuntimeConfig) -> None:
 
                 heartbeat = (now - last_print_s) >= 1.0
                 if changed or heartbeat:
-                    line = " ".join(f"{k}={1 if status[k] else 0}" for k in selected)
+                    line = _format_footswitch_status_line(status, selected)
                     print(line, flush=True)
                     last = {k: bool(status[k]) for k in selected}
                     last_print_s = now
