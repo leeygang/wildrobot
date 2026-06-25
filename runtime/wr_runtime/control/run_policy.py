@@ -144,7 +144,13 @@ def _actuator_indices(
 def _format_leg_targets_deg(
     target_q_rad: np.ndarray, actuator_names: Optional[List[str]]
 ) -> str:
-    target = np.asarray(target_q_rad, dtype=np.float32).reshape(-1)
+    return _format_leg_values_deg(target_q_rad, actuator_names)
+
+
+def _format_leg_values_deg(
+    values_rad: np.ndarray, actuator_names: Optional[List[str]]
+) -> str:
+    values = np.asarray(values_rad, dtype=np.float32).reshape(-1)
     if not actuator_names:
         return ""
 
@@ -152,8 +158,8 @@ def _format_leg_targets_deg(
     parts = []
     for label, name in _LEG_LOG_JOINTS:
         idx = by_name.get(name)
-        if idx is not None and idx < target.size:
-            parts.append(f"{label}={float(np.rad2deg(target[idx])):+.1f}")
+        if idx is not None and idx < values.size:
+            parts.append(f"{label}={float(np.rad2deg(values[idx])):+.1f}")
     return " ".join(parts)
 
 
@@ -193,12 +199,25 @@ def run_policy_loop(
                 float(np.max(np.abs(applied[leg_indices]))) if leg_indices else None
             )
             leg_summary = _format_leg_targets_deg(target, actuator_names)
+            observed = np.asarray(info["signals"].joint_pos_rad, dtype=np.float32)
+            observed_leg_summary = _format_leg_values_deg(observed, actuator_names)
+            leg_err_max = (
+                float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
+                if leg_indices and observed.size >= target.size
+                else None
+            )
             foot_summary = _format_foot_switches(info)
             extra_parts = []
             if leg_applied_max is not None:
                 extra_parts.append(f"leg|applied|max={leg_applied_max:.3f}")
             if leg_summary:
                 extra_parts.append(f"leg_deg={leg_summary}")
+            if observed_leg_summary:
+                extra_parts.append(f"obs_leg_deg={observed_leg_summary}")
+            if leg_err_max is not None:
+                extra_parts.append(
+                    f"leg_err|max_deg={float(np.rad2deg(leg_err_max)):.1f}"
+                )
             if foot_summary:
                 extra_parts.append(foot_summary)
             extra = " " + " ".join(extra_parts) if extra_parts else ""
