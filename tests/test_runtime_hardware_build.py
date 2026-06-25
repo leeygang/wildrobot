@@ -14,9 +14,12 @@ import runpy
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from conftest import make_v8_spec
+from wr_runtime.hardware.imu import ImuSample
+from wr_runtime.hardware.robot_io import HardwareRobotIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TEMPLATE = _REPO_ROOT / "runtime" / "configs" / "runtime_config_template.json"
@@ -159,3 +162,38 @@ def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> Non
             actuator_names=["j", "left_ankle_roll"],
             control_dt=0.02,
         )
+
+
+def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
+    valid_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+    invalid_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=0.0,
+        valid=False,
+    )
+
+    class _FakeImu:
+        def __init__(self) -> None:
+            self.samples = [invalid_sample, invalid_sample, valid_sample]
+
+        def read(self):
+            return self.samples.pop(0)
+
+    robot_io = HardwareRobotIO(
+        actuator_names=["j"],
+        control_dt=0.02,
+        actuators=SimpleNamespace(),
+        imu=_FakeImu(),
+        foot_switches=SimpleNamespace(),
+    )
+
+    robot_io.wait_for_valid_imu_sample(timeout_s=1.0, poll_s=0.0)
+
+    assert robot_io._last_valid_imu_sample is valid_sample
+    assert robot_io._imu_invalid_consecutive == 0

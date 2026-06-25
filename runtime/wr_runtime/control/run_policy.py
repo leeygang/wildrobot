@@ -176,6 +176,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--no-realtime", action="store_true",
         help="Do not sleep to maintain control_hz (default: realtime ON for hardware, OFF for --dry-run).",
     )
+    parser.add_argument(
+        "--imu-startup-timeout-s",
+        type=float,
+        default=3.0,
+        help="Hardware only: wait this long for the first valid IMU sample before starting control.",
+    )
     args = parser.parse_args(argv)
 
     bundle_path = Path(args.bundle)
@@ -233,6 +239,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             actuator_names=actuator_names,
             control_dt=ctrl_dt,
         )
+        if hasattr(robot_io, "wait_for_valid_imu_sample"):
+            print(
+                f"Waiting for first valid IMU sample (timeout {float(args.imu_startup_timeout_s):.1f}s)...",
+                flush=True,
+            )
+            robot_io.wait_for_valid_imu_sample(timeout_s=float(args.imu_startup_timeout_s))
         realtime = not args.no_realtime
 
     runner = RuntimePolicyRunner(

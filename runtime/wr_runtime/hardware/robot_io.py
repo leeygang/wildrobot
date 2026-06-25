@@ -28,6 +28,38 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_valid_imu_sample: Optional[object] = None
     _last_imu_warn_time_s: float = 0.0
 
+    def wait_for_valid_imu_sample(self, *, timeout_s: float = 3.0, poll_s: float = 0.02) -> None:
+        """Wait until the IMU has produced at least one valid sample.
+
+        BNO08X reports can be unavailable for a short period after enabling
+        features. Entering the control loop before a valid quaternion/gyro sample
+        exists is unsafe, so hardware startup waits here and fails with IMU
+        diagnostics if the sensor never becomes valid.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() <= deadline:
+            imu_sample = self.imu.read()
+            if bool(getattr(imu_sample, "valid", True)):
+                self._imu_invalid_consecutive = 0
+                self._last_valid_imu_sample = imu_sample
+                return
+            time.sleep(max(0.0, float(poll_s)))
+
+        extra = ""
+        if hasattr(self.imu, "error_count") or hasattr(self.imu, "last_error") or hasattr(self.imu, "diag"):
+            parts = []
+            for attr in ("error_count", "last_error", "diag"):
+                if hasattr(self.imu, attr):
+                    try:
+                        parts.append(f"{attr}={getattr(self.imu, attr)}")
+                    except Exception:
+                        pass
+            if parts:
+                extra = " (" + ", ".join(parts) + ")"
+        raise RuntimeError(
+            f"IMU did not produce a valid sample within {float(timeout_s):.2f}s; aborting for safety{extra}"
+        )
+
     def read(self) -> Signals:
         imu_sample = self.imu.read()
         if not getattr(imu_sample, "valid", True):
