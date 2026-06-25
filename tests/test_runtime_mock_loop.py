@@ -11,7 +11,10 @@ import pytest
 
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
-from runtime.wr_runtime.control.run_policy import run_policy_loop
+from runtime.wr_runtime.control.run_policy import (
+    _format_leg_targets_deg,
+    run_policy_loop,
+)
 
 
 class _SmallPolicy:
@@ -47,6 +50,7 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
         log_steps=2,
         ctrl_dt=runtime_policy_config.ctrl_dt,
         realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
     )
 
     # One write per step, each in actuator order, finite, within joint limits.
@@ -104,3 +108,16 @@ def test_loop_rejects_wrong_sized_policy_output(v8_spec, runtime_policy_config):
     )
     with pytest.raises(ValueError, match="expected"):
         runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
+
+
+def test_leg_target_summary_uses_actuator_names():
+    actuator_names = [
+        "right_knee_pitch",
+        "left_hip_pitch",
+        "left_knee_pitch",
+    ]
+    target_q_rad = np.deg2rad(np.array([30.0, 12.5, 28.0], dtype=np.float32))
+
+    assert _format_leg_targets_deg(target_q_rad, actuator_names) == (
+        "LHP=+12.5 LK=+28.0 RK=+30.0"
+    )

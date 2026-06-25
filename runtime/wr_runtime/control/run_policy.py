@@ -39,6 +39,20 @@ from wr_runtime.control.policy_runner import RuntimePolicyRunner
 from wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
 
 
+_LEG_LOG_JOINTS = (
+    ("LHP", "left_hip_pitch"),
+    ("LHR", "left_hip_roll"),
+    ("LK", "left_knee_pitch"),
+    ("LAP", "left_ankle_pitch"),
+    ("LAR", "left_ankle_roll"),
+    ("RHP", "right_hip_pitch"),
+    ("RHR", "right_hip_roll"),
+    ("RK", "right_knee_pitch"),
+    ("RAP", "right_ankle_pitch"),
+    ("RAR", "right_ankle_roll"),
+)
+
+
 def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray:
     if text is None:
         return np.asarray(default, dtype=np.float32).reshape(3)
@@ -118,6 +132,42 @@ def _build_hardware_robot_io(
     )
 
 
+def _actuator_indices(
+    actuator_names: Optional[List[str]], joint_names: tuple[str, ...]
+) -> List[int]:
+    if not actuator_names:
+        return []
+    by_name = {name: idx for idx, name in enumerate(actuator_names)}
+    return [by_name[name] for name in joint_names if name in by_name]
+
+
+def _format_leg_targets_deg(
+    target_q_rad: np.ndarray, actuator_names: Optional[List[str]]
+) -> str:
+    target = np.asarray(target_q_rad, dtype=np.float32).reshape(-1)
+    if not actuator_names:
+        return ""
+
+    by_name = {name: idx for idx, name in enumerate(actuator_names)}
+    parts = []
+    for label, name in _LEG_LOG_JOINTS:
+        idx = by_name.get(name)
+        if idx is not None and idx < target.size:
+            parts.append(f"{label}={float(np.rad2deg(target[idx])):+.1f}")
+    return " ".join(parts)
+
+
+def _format_foot_switches(info: dict) -> str:
+    signals = info.get("signals")
+    if signals is None:
+        return ""
+    switches = np.asarray(signals.foot_switches, dtype=np.float32).reshape(-1)
+    if switches.size != 4:
+        return ""
+    values = [int(round(float(v))) for v in switches]
+    return f"fs=[LT={values[0]},LH={values[1]},RT={values[2]},RH={values[3]}]"
+
+
 def run_policy_loop(
     *,
     runner: RuntimePolicyRunner,
@@ -126,19 +176,37 @@ def run_policy_loop(
     log_steps: int,
     ctrl_dt: float,
     realtime: bool,
+    actuator_names: Optional[List[str]] = None,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
+    leg_indices = _actuator_indices(
+        actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
+    )
     for step in range(int(max_steps)):
         t0 = time.monotonic()
         info = runner.step(velocity_cmd)
         if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
             applied = info["applied_action"]
             target = info["target_q_rad"]
+            leg_applied_max = (
+                float(np.max(np.abs(applied[leg_indices]))) if leg_indices else None
+            )
+            leg_summary = _format_leg_targets_deg(target, actuator_names)
+            foot_summary = _format_foot_switches(info)
+            extra_parts = []
+            if leg_applied_max is not None:
+                extra_parts.append(f"leg|applied|max={leg_applied_max:.3f}")
+            if leg_summary:
+                extra_parts.append(f"leg_deg={leg_summary}")
+            if foot_summary:
+                extra_parts.append(foot_summary)
+            extra = " " + " ".join(extra_parts) if extra_parts else ""
             print(
                 f"[step {step:5d}] idx={info['step_idx']:5d} "
                 f"|applied|max={float(np.max(np.abs(applied))):.3f} "
-                f"target[0:3]={np.round(target[:3], 4).tolist()}",
+                f"target[0:3]={np.round(target[:3], 4).tolist()}"
+                f"{extra}",
                 flush=True,
             )
             logs.append(info)
@@ -269,6 +337,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             log_steps=args.log_steps,
             ctrl_dt=ctrl_dt,
             realtime=realtime,
+            actuator_names=actuator_names,
         )
     finally:
         try:
