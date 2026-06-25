@@ -109,6 +109,7 @@ Notes:
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
+- Hiwonder servo controller UART wiring through FT232 is documented in [`docs/hiwonder_servo_controller_uart.md`](docs/hiwonder_servo_controller_uart.md).
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 - `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.
 
