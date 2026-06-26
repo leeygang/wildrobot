@@ -2188,6 +2188,24 @@ class AxisMeasurement:
     axis_sensor: np.ndarray  # (3,) float32 unit vector
 
 
+def _load_axis_map_measurements(raw_config: dict) -> dict[str, np.ndarray]:
+    bno_cfg = raw_config.get("bno085", {}) if isinstance(raw_config, dict) else {}
+    measurements = bno_cfg.get("axis_map_measurements", {})
+    if not isinstance(measurements, dict):
+        return {}
+
+    axes: dict[str, np.ndarray] = {}
+    for key in ("body_x", "body_y", "body_z"):
+        value = measurements.get(key)
+        if not isinstance(value, list) or len(value) != 3:
+            continue
+        axis = np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=np.float32)
+        norm = float(np.linalg.norm(axis))
+        if np.isfinite(norm) and norm > 1e-6:
+            axes[key] = (axis / norm).astype(np.float32)
+    return axes
+
+
 def _measure_axis_once(
     *,
     imu,
@@ -2652,41 +2670,46 @@ def calibrate_imu_axis_map_full(
     This flow is intentionally non-interactive (no input prompts) until the very end,
     to avoid PTY/prompt rendering issues on some SSH setups.
     """
-    try:
-        from runtime.wr_runtime.hardware.bno085 import BNO085IMU
-    except Exception as exc:
-        raise RuntimeError(
-            "IMU axis calibration requires runtime IMU deps on the target (Adafruit Blinka + BNO08X)."
-        ) from exc
+    saved_axes_by_body = _load_axis_map_measurements(raw_config)
+    imu = None
 
-    def _init_imu():
+    if len(saved_axes_by_body) < 3:
         try:
-            return BNO085IMU(
-                i2c_address=config.bno085.i2c_address,
-                upside_down=upside_down,
-                sampling_hz=50,
-                polling_mode=False,
-            )
-        except TypeError:
-            return BNO085IMU(
-                i2c_address=config.bno085.i2c_address,
-                upside_down=upside_down,
-                sampling_hz=50,
-            )
+            from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+        except Exception as exc:
+            raise RuntimeError(
+                "IMU axis calibration requires runtime IMU deps on the target (Adafruit Blinka + BNO08X)."
+            ) from exc
+
+        def _init_imu():
+            try:
+                return BNO085IMU(
+                    i2c_address=config.bno085.i2c_address,
+                    upside_down=upside_down,
+                    sampling_hz=50,
+                    polling_mode=False,
+                )
+            except TypeError:
+                return BNO085IMU(
+                    i2c_address=config.bno085.i2c_address,
+                    upside_down=upside_down,
+                    sampling_hz=50,
+                )
+
+        try:
+            with _alarm_timeout(
+                10,
+                message=(
+                    "Timed out initializing BNO085 IMU for axis calibration. Check I2C wiring/address and ensure no other process is holding the I2C lock."
+                ),
+            ):
+                imu = _init_imu()
+        except TimeoutError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     try:
-        with _alarm_timeout(
-            10,
-            message=(
-                "Timed out initializing BNO085 IMU for axis calibration. Check I2C wiring/address and ensure no other process is holding the I2C lock."
-            ),
-        ):
-            imu = _init_imu()
-    except TimeoutError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-    try:
-        time.sleep(0.2)
+        if imu is not None:
+            time.sleep(0.2)
         instruction_by_axis = {
             "body_z": (
                 "Action: yaw LEFT (turn counter-clockwise when viewed from above), then return to still.\n"
@@ -2702,13 +2725,33 @@ def calibrate_imu_axis_map_full(
             ),
         }
 
-        measurements: dict[str, list[float]] = {}
-        axes_by_body: dict[str, np.ndarray] = {}
+        bno_cfg = raw_config.setdefault("bno085", {}) if isinstance(raw_config, dict) else {}
+        raw_measurements = bno_cfg.get("axis_map_measurements", {})
+        measurements: dict[str, list[float]] = (
+            dict(raw_measurements) if isinstance(raw_measurements, dict) else {}
+        )
+        axes_by_body = dict(saved_axes_by_body)
         angles_by_body: dict[str, float] = {}
         align_by_body: dict[str, float] = {}
         axis_map: list[str] = ["+X", "+Y", "+Z"]
+        for step, axis in axes_by_body.items():
+            axis_letter, expected_axis = _expected_sensor_axis_for_body(step)
+            dot = float(np.dot(axis.astype(np.float32), expected_axis))
+            align_by_body[step] = abs(dot)
+            idx = {"body_x": 0, "body_y": 1, "body_z": 2}[step]
+            sign = "+" if dot >= 0.0 else "-"
+            axis_map[idx] = f"{sign}{axis_letter}"
+            _log_line(
+                f"{step}: reusing saved measurement axis_sensor={axis.tolist()} "
+                f"alignment(|dot|)={align_by_body[step]:.3f}"
+            )
 
         for step in ("body_z", "body_y", "body_x"):
+            if step in axes_by_body:
+                continue
+            if imu is None:
+                print(f"Missing saved measurement for {step}; rerun with IMU connected.", flush=True)
+                return
             accepted: Optional[AxisMeasurement] = None
             for attempt in range(1, DEFAULT_IMU_MAX_ATTEMPTS + 1):
                 _log_line(f"{step}: attempt {attempt}/{DEFAULT_IMU_MAX_ATTEMPTS}")
@@ -2773,16 +2816,27 @@ def calibrate_imu_axis_map_full(
                 float(accepted.axis_sensor[1]),
                 float(accepted.axis_sensor[2]),
             ]
+            bno_cfg["axis_map_measurements"] = measurements
+            write_bno_config(raw_config, output_path, axis_map_measurements=measurements)
             _log_line(f"{step}: accepted angle_rad={angles_by_body[step]:.3f} axis_sensor={axes_by_body[step].tolist()}")
+            _log_line(
+                f"{step}: saved measurement to {output_path}; rerun option 2 to resume if interrupted."
+            )
             if step != "body_x":
                 _pause(label=f"{step}: reposition for next axis", seconds=3.0)
         avg_align = float(np.mean([align_by_body[k] for k in ("body_x", "body_y", "body_z")]))
 
+        def angle_text(step: str) -> str:
+            angle = angles_by_body.get(step)
+            if angle is None:
+                return "saved"
+            return f"{angle:.3f}"
+
         summary = (
             "IMU axis_map calibration summary:\n"
-            f"  body_z: angle_rad={angles_by_body['body_z']:.3f} axis_sensor={axes_by_body['body_z'].tolist()}\n"
-            f"  body_y: angle_rad={angles_by_body['body_y']:.3f} axis_sensor={axes_by_body['body_y'].tolist()}\n"
-            f"  body_x: angle_rad={angles_by_body['body_x']:.3f} axis_sensor={axes_by_body['body_x'].tolist()}\n"
+            f"  body_z: angle_rad={angle_text('body_z')} axis_sensor={axes_by_body['body_z'].tolist()}\n"
+            f"  body_y: angle_rad={angle_text('body_y')} axis_sensor={axes_by_body['body_y'].tolist()}\n"
+            f"  body_x: angle_rad={angle_text('body_x')} axis_sensor={axes_by_body['body_x'].tolist()}\n"
             f"  assumption: no permutation (only sign flips)\n"
             f"  solved_axis_map: {axis_map}\n"
             f"  avg_alignment(|dot|): {avg_align:.3f}\n"
@@ -2817,10 +2871,11 @@ def calibrate_imu_axis_map_full(
         write_bno_config(raw_config, output_path, axis_map=axis_map, axis_map_measurements=measurements)
         print(f"Wrote bno085.axis_map to {output_path}: {axis_map}", flush=True)
     finally:
-        try:
-            imu.close()
-        except Exception:
-            pass
+        if imu is not None:
+            try:
+                imu.close()
+            except Exception:
+                pass
 
 
 def calibrate_imu_axis_sign_only(
@@ -3140,10 +3195,11 @@ Examples (copy/paste):
         print(
             "\nOptions:\n"
             "  1) Calibrate upside_down (mount inversion)\n"
-            "  2) Calibrate axis_map signs (body_z -> body_y -> body_x, then write)\n"
+            "  2) Calibrate axis_map signs (resumable: body_z -> body_y -> body_x, then write)\n"
             "  3) Calibrate body_z sign only (yaw-left)\n"
             "  4) Calibrate body_y sign only (pitch-up)\n"
             "  5) Calibrate body_x sign only (roll-right)\n"
+            "  6) Clear saved axis_map measurements\n"
             "  q) Quit\n",
             flush=True,
         )
@@ -3165,6 +3221,13 @@ Examples (copy/paste):
         raw_config = json.loads(output_path.read_text())
         config = WrRuntimeConfig.load(output_path)
         upside_down = bool(getattr(config.bno085, "upside_down", False))
+
+        if choice == "6":
+            bno_cfg = raw_config.setdefault("bno085", {}) if isinstance(raw_config, dict) else {}
+            bno_cfg.pop("axis_map_measurements", None)
+            _write_json_with_retries(output_path, raw_config)
+            print(f"Cleared saved bno085.axis_map_measurements in {output_path}", flush=True)
+            return
 
         if choice == "2":
             calibrate_imu_axis_map_full(

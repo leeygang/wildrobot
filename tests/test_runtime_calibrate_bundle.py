@@ -7,11 +7,13 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from runtime.scripts.calibrate import (
     _axis_label,
     _format_footswitch_status_line,
+    _load_axis_map_measurements,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
     calibrate_imu_axis_sign_only,
@@ -151,6 +153,33 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     assert "polling_mode=False" in sign_src
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
+
+
+def test_load_axis_map_measurements_normalizes_valid_axes() -> None:
+    raw_config = {
+        "bno085": {
+            "axis_map_measurements": {
+                "body_z": [0.0, 0.0, -2.0],
+                "body_y": [0.0, -3.0, 0.0],
+                "bad": [1.0, 0.0, 0.0],
+                "body_x": [0.0, 0.0],
+            }
+        }
+    }
+
+    axes = _load_axis_map_measurements(raw_config)
+
+    assert sorted(axes) == ["body_y", "body_z"]
+    np.testing.assert_allclose(axes["body_z"], [0.0, 0.0, -1.0])
+    np.testing.assert_allclose(axes["body_y"], [0.0, -1.0, 0.0])
+
+
+def test_full_axis_calibration_is_resumable() -> None:
+    src = inspect.getsource(calibrate_imu_axis_map_full)
+
+    assert "saved_axes_by_body = _load_axis_map_measurements" in src
+    assert "saved measurement to" in src
+    assert "reusing saved measurement" in src
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:
