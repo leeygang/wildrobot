@@ -12,8 +12,10 @@ import pytest
 
 from runtime.scripts.calibrate import (
     CALIBRATION_IMU_SAMPLING_HZ,
+    DEFAULT_IMU_AXIS_ALIGN_COS,
     DEFAULT_IMU_BASELINE_S,
     DEFAULT_IMU_GUIDANCE_PAUSE_S,
+    DEFAULT_IMU_MIN_ANGLE_RAD,
     DEFAULT_IMU_MOTION_S,
     _axis_label,
     _capture_imu_series,
@@ -22,6 +24,7 @@ from runtime.scripts.calibrate import (
     _init_calibration_bno085,
     _load_axis_map_measurements,
     _measure_axis_once,
+    _select_axis_inference_result,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
     calibrate_imu_axis_sign_only,
@@ -218,6 +221,14 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     assert "polling_mode=True" not in sign_src
 
 
+def test_single_axis_calibration_reopens_imu_for_each_retry() -> None:
+    sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
+
+    assert sign_src.index("for attempt in range") < sign_src.index("imu = _init_imu()")
+    assert "except (RuntimeError, TimeoutError)" in sign_src
+    assert "imu.close()" in sign_src
+
+
 def test_imu_axis_calibration_uses_short_motion_windows() -> None:
     measure_src = inspect.getsource(_measure_axis_once)
 
@@ -244,6 +255,38 @@ def test_infer_rotation_axis_from_gyro_detects_yaw_axis() -> None:
     angle_rad, axis = result
     assert angle_rad == pytest.approx(0.6, abs=0.05)
     np.testing.assert_allclose(axis, [0.0, 0.0, -1.0], atol=1e-5)
+
+
+def test_select_axis_inference_uses_quaternion_when_gyro_angle_is_too_small() -> None:
+    gyro_axis = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    quat_axis = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    source, angle_rad, axis = _select_axis_inference_result(
+        gyro_result=(DEFAULT_IMU_MIN_ANGLE_RAD * 0.25, gyro_axis),
+        quat_result=(DEFAULT_IMU_MIN_ANGLE_RAD * 1.1, quat_axis),
+    )
+
+    assert source == "quaternion"
+    assert angle_rad == pytest.approx(DEFAULT_IMU_MIN_ANGLE_RAD * 1.1)
+    np.testing.assert_allclose(axis, quat_axis)
+
+
+def test_select_axis_inference_keeps_gyro_when_angle_is_usable() -> None:
+    gyro_axis = np.array([-1.0, 0.0, 0.0], dtype=np.float32)
+    quat_axis = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+    source, angle_rad, axis = _select_axis_inference_result(
+        gyro_result=(DEFAULT_IMU_MIN_ANGLE_RAD * 1.2, gyro_axis),
+        quat_result=(DEFAULT_IMU_MIN_ANGLE_RAD * 1.3, quat_axis),
+    )
+
+    assert source == "gyro"
+    assert angle_rad == pytest.approx(DEFAULT_IMU_MIN_ANGLE_RAD * 1.2)
+    np.testing.assert_allclose(axis, gyro_axis)
+
+
+def test_axis_alignment_threshold_allows_hand_calibration_noise() -> None:
+    assert DEFAULT_IMU_AXIS_ALIGN_COS == pytest.approx(0.85)
 
 
 def test_load_axis_map_measurements_normalizes_valid_axes() -> None:

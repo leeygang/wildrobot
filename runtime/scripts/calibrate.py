@@ -48,7 +48,7 @@ DEFAULT_IMU_MIN_ANGLE_RAD = 0.5
 # Keep status prints sparse; some SSH/PTY stacks will drop/reorder lines under high churn.
 DEFAULT_IMU_STATUS_HZ = 2.0
 DEFAULT_IMU_MAX_ATTEMPTS = 3
-DEFAULT_IMU_AXIS_ALIGN_COS = 0.9  # require inferred axis to align with expected sensor axis
+DEFAULT_IMU_AXIS_ALIGN_COS = 0.85  # require inferred axis to align with expected sensor axis
 DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
 CALIBRATION_IMU_SAMPLING_HZ = 20
 
@@ -2396,6 +2396,28 @@ def _load_axis_map_measurements(raw_config: dict) -> dict[str, np.ndarray]:
     return axes
 
 
+def _select_axis_inference_result(
+    *,
+    gyro_result: Optional[tuple[float, np.ndarray]],
+    quat_result: Optional[tuple[float, np.ndarray]],
+) -> Optional[tuple[str, float, np.ndarray]]:
+    if quat_result is not None:
+        quat_angle_rad, quat_axis = quat_result
+        if gyro_result is None:
+            return "quaternion", quat_angle_rad, quat_axis
+        gyro_angle_rad, _ = gyro_result
+        if gyro_angle_rad < DEFAULT_IMU_MIN_ANGLE_RAD <= quat_angle_rad:
+            return "quaternion", quat_angle_rad, quat_axis
+
+    if gyro_result is not None:
+        gyro_angle_rad, gyro_axis = gyro_result
+        return "gyro", gyro_angle_rad, gyro_axis
+    if quat_result is not None:
+        quat_angle_rad, quat_axis = quat_result
+        return "quaternion", quat_angle_rad, quat_axis
+    return None
+
+
 def _measure_axis_once(
     *,
     imu,
@@ -2557,13 +2579,11 @@ def _measure_axis_once(
                 _log_line(f"{body_axis_name}: quat_max_relative_angle_rad={quat_angle_rad:.3f}")
                 _log_line(f"{body_axis_name}: quat_axis_sensor={quat_axis.tolist()}")
 
-            if gyro_result is not None:
-                angle_rad, axis = gyro_result
-                source = "gyro"
-            elif quat_result is not None:
-                angle_rad, axis = quat_result
-                source = "quaternion"
-            else:
+            selected = _select_axis_inference_result(
+                gyro_result=gyro_result,
+                quat_result=quat_result,
+            )
+            if selected is None:
                 _log_line(
                     _red(
                         f"{body_axis_name}: could not infer a dominant axis from gyro or quaternion. "
@@ -2571,6 +2591,7 @@ def _measure_axis_once(
                     )
                 )
                 return None
+            source, angle_rad, axis = selected
     except TimeoutError as exc:
         _log_line(_red(str(exc)))
         return None
@@ -3140,39 +3161,51 @@ def calibrate_imu_axis_sign_only(
             upside_down=upside_down,
         )
 
-    with _alarm_timeout(
-        10,
-        message=(
-            "Timed out initializing BNO085 IMU for axis calibration. Check I2C wiring/address and ensure no other process is holding the I2C lock."
-        ),
-    ):
-        imu = _init_imu()
-
+    imu = None
     try:
-        time.sleep(0.2)
-        _log_line(
-            "IMU init: "
-            f"polling_mode={getattr(imu, 'polling_mode', None)} "
-            f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
-            f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
-            f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
-        )
-
         accepted: Optional[AxisMeasurement] = None
         align: float = 0.0
         sign: str = "+"
         for attempt in range(1, DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS + 1):
             _log_line(f"{body_axis}: attempt {attempt}/{DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS}")
-            m = _measure_axis_once(
-                imu=imu,
-                body_axis_name=body_axis,
-                instruction=instruction_by_axis[body_axis],
-                baseline_s=DEFAULT_IMU_BASELINE_S,
-                motion_s=DEFAULT_IMU_MOTION_S,
-            )
+            try:
+                with _alarm_timeout(
+                    10,
+                    message=(
+                        "Timed out initializing BNO085 IMU for axis calibration. "
+                        "Check I2C wiring/address and ensure no other process is holding the I2C lock."
+                    ),
+                ):
+                    imu = _init_imu()
+                time.sleep(0.2)
+                _log_line(
+                    "IMU init: "
+                    f"polling_mode={getattr(imu, 'polling_mode', None)} "
+                    f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
+                    f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
+                    f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
+                )
+                m = _measure_axis_once(
+                    imu=imu,
+                    body_axis_name=body_axis,
+                    instruction=instruction_by_axis[body_axis],
+                    baseline_s=DEFAULT_IMU_BASELINE_S,
+                    motion_s=DEFAULT_IMU_MOTION_S,
+                )
+            except (RuntimeError, TimeoutError) as exc:
+                _log_line(_red(f"{body_axis}: measurement failed: {exc}"))
+                m = None
+            finally:
+                if imu is not None:
+                    try:
+                        imu.close()
+                    except Exception:
+                        pass
+                    imu = None
+
             if m is None:
-                _log_line(_red(f"{body_axis}: measurement failed; aborting."))
-                return
+                _pause(label=f"{body_axis}: reset robot pose now; retry starts in", seconds=2.0)
+                continue
 
             if m.angle_rad < DEFAULT_IMU_MIN_ANGLE_RAD:
                 _log_line(
@@ -3265,10 +3298,11 @@ def calibrate_imu_axis_sign_only(
         write_bno_config(raw_config, output_path, axis_map=axis_map, axis_map_measurements=measurements)
         _log_line(f"Wrote bno085.axis_map to {output_path}: {axis_map}")
     finally:
-        try:
-            imu.close()
-        except Exception:
-            pass
+        if imu is not None:
+            try:
+                imu.close()
+            except Exception:
+                pass
 
 
 def main() -> None:
