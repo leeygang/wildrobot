@@ -13,6 +13,7 @@ import pytest
 from runtime.scripts.calibrate import (
     _axis_label,
     _format_footswitch_status_line,
+    _infer_rotation_axis_from_gyro,
     _load_axis_map_measurements,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
@@ -153,6 +154,23 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     assert "polling_mode=False" in sign_src
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
+
+
+def test_infer_rotation_axis_from_gyro_detects_yaw_axis() -> None:
+    baseline = np.zeros((20, 3), dtype=np.float32)
+    motion = np.zeros((100, 3), dtype=np.float32)
+    motion[20:80, 2] = -1.0
+
+    result = _infer_rotation_axis_from_gyro(
+        baseline_gyro=baseline,
+        motion_gyro=motion,
+        duration_s=1.0,
+    )
+
+    assert result is not None
+    angle_rad, axis = result
+    assert angle_rad == pytest.approx(0.6, abs=0.05)
+    np.testing.assert_allclose(axis, [0.0, 0.0, -1.0], atol=1e-5)
 
 
 def test_load_axis_map_measurements_normalizes_valid_axes() -> None:

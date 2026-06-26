@@ -2188,6 +2188,58 @@ class AxisMeasurement:
     axis_sensor: np.ndarray  # (3,) float32 unit vector
 
 
+def _infer_rotation_axis_from_gyro(
+    *,
+    baseline_gyro: np.ndarray,
+    motion_gyro: np.ndarray,
+    duration_s: float,
+) -> Optional[tuple[float, np.ndarray]]:
+    motion = np.asarray(motion_gyro, dtype=np.float32).reshape(-1, 3)
+    if motion.shape[0] == 0:
+        return None
+
+    baseline = np.asarray(baseline_gyro, dtype=np.float32).reshape(-1, 3)
+    bias = (
+        np.mean(baseline, axis=0).astype(np.float32)
+        if baseline.shape[0] > 0
+        else np.zeros(3, dtype=np.float32)
+    )
+    corrected = motion - bias.reshape(1, 3)
+    speed = np.linalg.norm(corrected, axis=1).astype(np.float32)
+    finite = np.isfinite(speed)
+    if not np.any(finite):
+        return None
+
+    speed_finite = speed[finite]
+    threshold = max(0.05, 0.25 * float(np.percentile(speed_finite, 90.0)))
+    active = finite & (speed >= threshold)
+    if int(np.count_nonzero(active)) < 3:
+        active = finite
+
+    dt = float(duration_s) / max(1, int(np.count_nonzero(finite)))
+    corrected_active = corrected[active]
+    positive_impulse = np.sum(np.clip(corrected_active, 0.0, None), axis=0).astype(np.float32) * dt
+    negative_impulse = np.sum(np.clip(corrected_active, None, 0.0), axis=0).astype(np.float32) * dt
+    signed_impulses = np.concatenate([positive_impulse, -negative_impulse]).astype(np.float32)
+    impulse_idx = int(np.argmax(signed_impulses))
+    signed_angle_rad = float(signed_impulses[impulse_idx])
+    if not np.isfinite(signed_angle_rad) or signed_angle_rad < 1e-6:
+        return None
+
+    axis_idx = impulse_idx % 3
+    axis_sign = 1.0 if impulse_idx < 3 else -1.0
+    same_direction = active & ((corrected[:, axis_idx] * axis_sign) > 0.0)
+    if int(np.count_nonzero(same_direction)) < 3:
+        same_direction = active
+
+    rot_vec = np.sum(corrected[same_direction], axis=0).astype(np.float32) * dt
+    angle_rad = float(np.linalg.norm(rot_vec))
+    if not np.isfinite(angle_rad) or angle_rad < 1e-6:
+        return None
+
+    return angle_rad, (rot_vec / angle_rad).astype(np.float32)
+
+
 def _load_axis_map_measurements(raw_config: dict) -> dict[str, np.ndarray]:
     bno_cfg = raw_config.get("bno085", {}) if isinstance(raw_config, dict) else {}
     measurements = bno_cfg.get("axis_map_measurements", {})
@@ -2230,7 +2282,7 @@ def _measure_axis_once(
 
     _log_line(f"{body_axis_name}: baseline capture (hold still) {baseline_s:.1f}s")
     last_ts = _wait_for_imu_stream(imu, timeout_s=2.0)
-    _, baseline_quat, last_ts = _capture_imu_series(
+    baseline_gyro, baseline_quat, last_ts = _capture_imu_series(
         imu,
         duration_s=float(baseline_s),
         last_ts=last_ts,
@@ -2265,7 +2317,7 @@ def _measure_axis_once(
     else:
         _log_line(_yellow(f"{body_axis_name}: ROTATE NOW (motion capture {motion_s:.1f}s)"))
     _log_line(_yellow(f"{body_axis_name}: motion capture started"))
-    _, motion_quat, last_ts = _capture_imu_series(
+    motion_gyro, motion_quat, last_ts = _capture_imu_series(
         imu,
         duration_s=float(motion_s),
         last_ts=last_ts,
@@ -2277,7 +2329,7 @@ def _measure_axis_once(
     _log_line(_yellow(f"{body_axis_name}: motion capture finished"))
     _log_line(f"{body_axis_name}: motion complete (samples={int(motion_quat.shape[0])})")
     _log_line(f"{body_axis_name}: computing dominant rotation axis")
-    if motion_quat.shape[0] == 0:
+    if motion_gyro.shape[0] == 0:
         _log_line(f"{body_axis_name}: ERROR no IMU samples captured")
         return None
     compute_t0 = time.monotonic()
@@ -2290,6 +2342,23 @@ def _measure_axis_once(
                 "This should be instant; if it hangs, something is wrong with the runtime environment."
             ),
         ):
+            _log_line(f"{body_axis_name}: axis inference step: gyro dominant axis")
+            gyro_result = _infer_rotation_axis_from_gyro(
+                baseline_gyro=baseline_gyro,
+                motion_gyro=motion_gyro,
+                duration_s=float(motion_s),
+            )
+            if gyro_result is not None:
+                gyro_angle_rad, gyro_axis = gyro_result
+                _log_line(f"{body_axis_name}: gyro_dominant_angle_rad={gyro_angle_rad:.3f}")
+                _log_line(f"{body_axis_name}: gyro_axis_sensor={gyro_axis.tolist()}")
+            else:
+                _log_line(
+                    _yellow(
+                        f"{body_axis_name}: gyro could not infer a dominant axis; trying quaternion fallback."
+                    )
+                )
+
             def quat_normalize_vec(q: np.ndarray) -> np.ndarray:
                 q = q.astype(np.float32)
                 n = float(np.linalg.norm(q))
@@ -2338,17 +2407,35 @@ def _measure_axis_once(
             q_rel = rel[i_max].astype(np.float32)
             v = q_rel[:3].astype(np.float32)
             v_norm = float(np.linalg.norm(v))
+            quat_result: Optional[tuple[float, np.ndarray]] = None
             if not np.isfinite(v_norm) or v_norm < 1e-6:
                 _log_line(
+                    _yellow(
+                        f"{body_axis_name}: quaternion relative rotation vector is near zero; "
+                        "using gyro inference if available."
+                    )
+                )
+            else:
+                quat_axis = (v / v_norm).astype(np.float32)
+                quat_angle_rad = float(ang[i_max])
+                quat_result = (quat_angle_rad, quat_axis)
+                _log_line(f"{body_axis_name}: quat_max_relative_angle_rad={quat_angle_rad:.3f}")
+                _log_line(f"{body_axis_name}: quat_axis_sensor={quat_axis.tolist()}")
+
+            if gyro_result is not None:
+                angle_rad, axis = gyro_result
+                source = "gyro"
+            elif quat_result is not None:
+                angle_rad, axis = quat_result
+                source = "quaternion"
+            else:
+                _log_line(
                     _red(
-                        f"{body_axis_name}: could not infer a dominant axis (rotation vector near zero). "
+                        f"{body_axis_name}: could not infer a dominant axis from gyro or quaternion. "
                         "Try a larger single-direction rotation."
                     )
                 )
                 return None
-
-            axis = (v / v_norm).astype(np.float32)
-            angle_rad = float(ang[i_max])
     except TimeoutError as exc:
         _log_line(_red(str(exc)))
         return None
@@ -2359,8 +2446,9 @@ def _measure_axis_once(
 
     compute_dt = time.monotonic() - compute_t0
     _log_line(f"{body_axis_name}: axis inference time {compute_dt:.3f}s")
-    _log_line(f"{body_axis_name}: max_relative_rotation_angle_rad={angle_rad:.3f}")
-    _log_line(f"{body_axis_name}: relative_rotation_axis_sensor={axis.tolist()}")
+    _log_line(f"{body_axis_name}: selected_axis_source={source}")
+    _log_line(f"{body_axis_name}: selected_rotation_angle_rad={angle_rad:.3f}")
+    _log_line(f"{body_axis_name}: selected_rotation_axis_sensor={axis.tolist()}")
     return AxisMeasurement(body_axis=body_axis_name, angle_rad=angle_rad, axis_sensor=axis)
 
 
