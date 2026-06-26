@@ -294,6 +294,12 @@ class BNO085IMU(Imu):
             r_ws = _quat_xyzw_to_rotmat(quat_xyzw)
             r_wb = r_ws @ self._r_bs.T
             quat_xyzw = _rotmat_to_quat_xyzw(r_wb)
+            mapped_norm = float(np.linalg.norm(quat_xyzw))
+            if np.isfinite(mapped_norm) and mapped_norm > 1e-6:
+                quat_xyzw = (quat_xyzw / mapped_norm).astype(np.float32)
+            else:
+                valid = False
+                diag["quat_status"] = "bad_axis_map_norm"
 
         quat_out = quat_xyzw if valid else self._latest.quat_xyzw
 
@@ -373,8 +379,11 @@ def _axis_map_to_r_bs(axis_map: Optional[list[str]]) -> np.ndarray:
 
     r_bs = np.stack(rows, axis=0).astype(np.float32)
     det = float(np.linalg.det(r_bs))
-    if abs(abs(det) - 1.0) > 1e-3:
-        raise ValueError(f"axis_map must form an orthonormal basis; det={det:.3f} axis_map={axis_map}")
+    if abs(det - 1.0) > 1e-3:
+        raise ValueError(
+            "axis_map must be a right-handed rotation with determinant +1; "
+            f"det={det:.3f} axis_map={axis_map}. Flip two axes, not one."
+        )
     return r_bs
 
 

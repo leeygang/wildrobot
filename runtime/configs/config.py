@@ -780,7 +780,7 @@ class WrRuntimeConfig:
         axis_map = None
         if axis_map_raw is not None:
             if not isinstance(axis_map_raw, list) or len(axis_map_raw) != 3:
-                raise ValueError("bno085.axis_map must be a list of 3 strings like ['+X','-Y','+Z']")
+                raise ValueError("bno085.axis_map must be a list of 3 strings like ['+X','-Y','-Z']")
             normalized: list[str] = []
             allowed = {"X", "Y", "Z"}
             seen: set[str] = set()
@@ -794,6 +794,12 @@ class WrRuntimeConfig:
                     raise ValueError(f"Duplicate axis in bno085.axis_map: {axis_map_raw}")
                 seen.add(s[1])
                 normalized.append(s)
+            det = WrRuntimeConfig._axis_map_det(normalized)
+            if det < 0:
+                raise ValueError(
+                    "bno085.axis_map must be right-handed with determinant +1 "
+                    f"(got det=-1 for {axis_map_raw}); flip two axes, not one"
+                )
             axis_map = normalized
 
         return BNO085Config(
@@ -804,6 +810,21 @@ class WrRuntimeConfig:
             i2c_frequency_hz=int(bno.get("i2c_frequency_hz", 100_000)),
             init_retries=int(bno.get("init_retries", 3)),
         )
+
+    @staticmethod
+    def _axis_map_det(axis_map: list[str]) -> int:
+        axis_index = {"X": 0, "Y": 1, "Z": 2}
+        perm = [axis_index[entry[1]] for entry in axis_map]
+        inversions = 0
+        for i in range(3):
+            for j in range(i + 1, 3):
+                if perm[i] > perm[j]:
+                    inversions += 1
+        sign = -1 if inversions % 2 else 1
+        for entry in axis_map:
+            if entry[0] == "-":
+                sign *= -1
+        return sign
 
     @staticmethod
     def _parse_foot_switch_config(data: dict) -> FootSwitchConfig:

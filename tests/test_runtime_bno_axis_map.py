@@ -32,11 +32,17 @@ def test_axis_map_applies_rotation() -> None:
     np.testing.assert_allclose(vec_body, np.array([2.0, 3.0, 1.0], dtype=np.float32))
 
 
-def test_axis_map_sign_flip() -> None:
+def test_axis_map_sign_flip_right_handed() -> None:
     from runtime.wr_runtime.hardware.bno085 import _axis_map_to_r_bs
 
-    r = _axis_map_to_r_bs(["-X", "+Y", "+Z"])  # body_x=-imu_x
+    r = _axis_map_to_r_bs(["-X", "-Y", "+Z"])
     vec_sensor = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     vec_body = r @ vec_sensor
     np.testing.assert_allclose(vec_body, np.array([-1.0, 0.0, 0.0], dtype=np.float32))
 
+
+def test_axis_map_rejects_left_handed_reflection() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _axis_map_to_r_bs
+
+    with pytest.raises(ValueError, match="right-handed"):
+        _axis_map_to_r_bs(["+X", "-Y", "+Z"])

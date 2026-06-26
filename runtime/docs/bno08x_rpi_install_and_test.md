@@ -155,7 +155,7 @@ Practical checks:
 If axes are swapped/negated due to mounting, update the remap in:
 - `runtime/wr_runtime/hardware/bno085.py`:
   - `upside_down` handles a simple inverted mount.
-  - `axis_map` handles permutation + sign (e.g., `["+X", "-Y", "+Z"]`) and can be calibrated interactively via
+  - `axis_map` handles right-handed permutation + sign (e.g., `["+X", "-Y", "-Z"]`) and can be calibrated interactively via
     `runtime/scripts/calibrate.py --calibrate-imu`.
 
 ## 7) Troubleshooting

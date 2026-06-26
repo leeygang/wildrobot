@@ -1628,7 +1628,13 @@ def write_bno_config(
     if upside_down is not None:
         bno["upside_down"] = bool(upside_down)
     if axis_map is not None:
-        bno["axis_map"] = [str(x) for x in axis_map]
+        normalized_axis_map = [str(x).strip().upper() for x in axis_map]
+        if WrRuntimeConfig._axis_map_det(normalized_axis_map) < 0:
+            raise ValueError(
+                "bno085.axis_map must be right-handed with determinant +1 "
+                f"(got det=-1 for {axis_map}); flip two axes, not one"
+            )
+        bno["axis_map"] = normalized_axis_map
     if axis_map_measurements is not None:
         bno["axis_map_measurements"] = axis_map_measurements
     _write_json_with_retries(output_path, base_data)

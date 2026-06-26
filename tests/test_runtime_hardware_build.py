@@ -75,7 +75,7 @@ def _fake_runtime_config() -> SimpleNamespace:
     bno085 = SimpleNamespace(
         i2c_address=0x4B,
         upside_down=False,
-        axis_map=["+X", "-Y", "+Z"],
+        axis_map=["+X", "-Y", "-Z"],
         suppress_debug=True,
         i2c_frequency_hz=100_000,
         init_retries=3,

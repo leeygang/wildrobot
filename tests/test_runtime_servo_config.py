@@ -112,6 +112,22 @@ def test_conflicting_servo_unit_direction_alias_raises(tmp_path: Path) -> None:
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
+def test_left_handed_bno_axis_map_raises(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+            },
+        },
+        "bno085": {
+            "axis_map": ["+X", "-Y", "+Z"],
+        }
+    }
+
+    with pytest.raises(ValueError, match="right-handed"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
     canonical = ServoControllerConfig(
         type="hiwonder",
