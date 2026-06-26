@@ -12,12 +12,16 @@ import pytest
 
 from runtime.scripts.calibrate import (
     CALIBRATION_IMU_SAMPLING_HZ,
+    DEFAULT_IMU_BASELINE_S,
+    DEFAULT_IMU_GUIDANCE_PAUSE_S,
+    DEFAULT_IMU_MOTION_S,
     _axis_label,
     _capture_imu_series,
     _format_footswitch_status_line,
     _infer_rotation_axis_from_gyro,
     _init_calibration_bno085,
     _load_axis_map_measurements,
+    _measure_axis_once,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
     calibrate_imu_axis_sign_only,
@@ -212,6 +216,17 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     assert "enable_rotation_vector\": True" in init_src
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
+
+
+def test_imu_axis_calibration_uses_short_motion_windows() -> None:
+    measure_src = inspect.getsource(_measure_axis_once)
+
+    assert DEFAULT_IMU_BASELINE_S == 1.0
+    assert DEFAULT_IMU_MOTION_S == 2.0
+    assert DEFAULT_IMU_GUIDANCE_PAUSE_S == 0.0
+    assert "START MOVING" in measure_src
+    assert "STOP" in measure_src
+    assert "GET READY" not in measure_src
 
 
 def test_infer_rotation_axis_from_gyro_detects_yaw_axis() -> None:

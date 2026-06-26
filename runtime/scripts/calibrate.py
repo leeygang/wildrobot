@@ -38,12 +38,12 @@ DEFAULT_PAUSE_S = 3.0
 POLICY_ACTION_HOME_PAUSE_S = 3.0
 RANGE_TEST_MS = 3000
 DEFAULT_IMU_SAMPLES = 100
-DEFAULT_IMU_BASELINE_S = 3.0
-DEFAULT_IMU_MOTION_S = 3.0
+DEFAULT_IMU_BASELINE_S = 1.0
+DEFAULT_IMU_MOTION_S = 2.0
 DEFAULT_IMU_PREVIEW_S = 2.0
 DEFAULT_IMU_PROGRESS_EVERY_S = 0.0
 DEFAULT_PROMPT_REPRINT_S = 3.0
-DEFAULT_IMU_GUIDANCE_PAUSE_S = 5.0
+DEFAULT_IMU_GUIDANCE_PAUSE_S = 0.0
 DEFAULT_IMU_MIN_ANGLE_RAD = 0.5
 # Keep status prints sparse; some SSH/PTY stacks will drop/reorder lines under high churn.
 DEFAULT_IMU_STATUS_HZ = 2.0
@@ -2416,8 +2416,8 @@ def _measure_axis_once(
         action_hint = instruction_lines[0].split(":", 1)[1].strip()
     for line in instruction.splitlines():
         _log_line(line)
-    _pause(label=f"{body_axis_name}: get robot still; baseline starts in", seconds=DEFAULT_IMU_GUIDANCE_PAUSE_S)
 
+    _log_line(f"{body_axis_name}: HOLD STILL")
     _log_line(f"{body_axis_name}: baseline capture (hold still) {baseline_s:.1f}s")
     last_ts = _wait_for_imu_stream(imu, timeout_s=2.0)
     baseline_gyro, baseline_quat, last_ts = _capture_imu_series(
@@ -2436,35 +2436,19 @@ def _measure_axis_once(
     )
 
     if action_hint:
-        _log_line(f"{body_axis_name}: prepare to rotate ({action_hint})")
+        _log_line(_yellow(f"{body_axis_name}: START MOVING - {action_hint} ({motion_s:.1f}s)"))
     else:
-        _log_line(f"{body_axis_name}: prepare to rotate (motion capture starts soon)")
-    _status_loop(
-        label=(
-            f"{body_axis_name}: GET READY for {action_hint} (rotate window)"
-            if action_hint
-            else f"{body_axis_name}: GET READY for motion capture (rotate window)"
-        ),
-        seconds=3.0,
-        hz=DEFAULT_IMU_STATUS_HZ,
-    )
-    if action_hint:
-        _log_line(_yellow(f"{body_axis_name}: ROTATE NOW - {action_hint} ({motion_s:.1f}s)"))
-    else:
-        _log_line(_yellow(f"{body_axis_name}: ROTATE NOW (motion capture {motion_s:.1f}s)"))
+        _log_line(_yellow(f"{body_axis_name}: START MOVING ({motion_s:.1f}s)"))
     _bell()
-    _bell()
-    _log_line(_yellow(f"{body_axis_name}: motion capture started"))
     motion_gyro, motion_quat, last_ts = _capture_imu_series(
         imu,
         duration_s=float(motion_s),
         last_ts=last_ts,
-        label=_yellow(f"{body_axis_name}: ROTATE NOW"),
+        label=_yellow(f"{body_axis_name}: START MOVING"),
         sample_dt_s=0.01,
         progress_every_s=1.0,
     )
-    _log_line(_yellow(f"{body_axis_name}: ROTATE NOW window ended"))
-    _log_line(_yellow(f"{body_axis_name}: motion capture finished"))
+    _log_line(_yellow(f"{body_axis_name}: STOP"))
     _log_line(f"{body_axis_name}: motion complete (samples={int(motion_quat.shape[0])})")
     _log_line(f"{body_axis_name}: computing dominant rotation axis")
     if motion_gyro.shape[0] == 0:
@@ -2615,8 +2599,6 @@ def _calibrate_axis_from_motion(
     print("\n" + "-" * 60)
     print(f"IMU axis calibration for body axis {body_axis_name}")
     print(instruction)
-    # Give the operator time to read and prepare without racing the script.
-    _pause(label="Get robot still; baseline starts in", seconds=DEFAULT_IMU_GUIDANCE_PAUSE_S)
 
     # Avoid additional "press Enter" prompts here: they are easy to miss under some
     # PTY/launcher setups and lead to a "stuck" experience. If the user chose to run
@@ -2636,14 +2618,11 @@ def _calibrate_axis_from_motion(
         )
 
         print("", flush=True)
-        print("Motion capture is next.", flush=True)
-        _countdown(label="Motion capture starts", seconds=3.0)
-        print(f"Starting motion capture for {motion_s:.1f}s. Do not press keys during capture.", flush=True)
-        print(f"MOVE NOW! Rotate a lot around the instructed axis for ~{motion_s:.1f}s.", flush=True)
+        print(f"START MOVING for {motion_s:.1f}s.", flush=True)
         motion_gyro, motion_quat, last_ts = _capture_imu_series(
             imu, duration_s=float(motion_s), last_ts=last_ts, sample_dt_s=0.01
         )
-        print("Motion capture complete.", flush=True)
+        print("STOP.", flush=True)
         print("Computing dominant rotation axis...", flush=True)
         if motion_gyro.shape[0] == 0:
             print("No IMU samples captured.", flush=True)
@@ -3019,7 +2998,7 @@ def calibrate_imu_axis_map_full(
                                 "Redo with a cleaner single-axis rotation, or your IMU mount is rotated (needs full permutation solve)."
                             )
                         )
-                        _pause(label=f"{step}: resetting before retry", seconds=2.0)
+                        _pause(label=f"{step}: reset robot pose now; retry starts in", seconds=2.0)
                         continue
 
                     sign = "+" if dot >= 0.0 else "-"
@@ -3040,7 +3019,7 @@ def calibrate_imu_axis_map_full(
                     )
                 )
                 # Give the operator a moment to reset the robot to a stable still pose.
-                _pause(label=f"{step}: resetting before retry", seconds=2.0)
+                _pause(label=f"{step}: reset robot pose now; retry starts in", seconds=2.0)
 
             if accepted is None:
                 print(
@@ -3060,10 +3039,10 @@ def calibrate_imu_axis_map_full(
             write_bno_config(raw_config, output_path, axis_map_measurements=measurements)
             _log_line(f"{step}: accepted angle_rad={angles_by_body[step]:.3f} axis_sensor={axes_by_body[step].tolist()}")
             _log_line(
-                f"{step}: saved measurement to {output_path}; rerun option 2 to resume if interrupted."
+                f"{step}: saved measurement to {output_path}."
             )
             if step != "body_x":
-                _pause(label=f"{step}: reposition for next axis", seconds=3.0)
+                _pause(label=f"{step}: reset robot pose now; next axis starts in", seconds=2.0)
         avg_align = float(np.mean([align_by_body[k] for k in ("body_x", "body_y", "body_z")]))
 
         def angle_text(step: str) -> str:
@@ -3202,7 +3181,7 @@ def calibrate_imu_axis_sign_only(
                         "Rotate more during the motion window."
                     )
                 )
-                _pause(label=f"{body_axis}: resetting before retry", seconds=2.0)
+                _pause(label=f"{body_axis}: reset robot pose now; retry starts in", seconds=2.0)
                 continue
 
             dot = float(np.dot(m.axis_sensor.astype(np.float32), expected_axis))
@@ -3216,7 +3195,7 @@ def calibrate_imu_axis_sign_only(
                         "This suggests your IMU mount is rotated (needs full axis_map solve) or the motion was not clean."
                     )
                 )
-                _pause(label=f"{body_axis}: resetting before retry", seconds=2.0)
+                _pause(label=f"{body_axis}: reset robot pose now; retry starts in", seconds=2.0)
                 continue
 
             sign = "+" if dot >= 0.0 else "-"
@@ -3429,11 +3408,10 @@ Examples (copy/paste):
         print(
             "\nOptions:\n"
             "  1) Calibrate upside_down (mount inversion)\n"
-            "  2) Calibrate axis_map signs (resumable: body_z -> body_y -> body_x, then write)\n"
-            "  3) Calibrate body_z sign only (yaw-left)\n"
-            "  4) Calibrate body_y sign only (pitch-up)\n"
-            "  5) Calibrate body_x sign only (roll-right)\n"
-            "  6) Clear saved axis_map measurements\n"
+            "  2) Calibrate body_x axis (roll-right)\n"
+            "  3) Calibrate body_y axis (pitch-up)\n"
+            "  4) Calibrate body_z axis (yaw-left)\n"
+            "  5) Clear saved axis_map measurements\n"
             "  q) Quit\n",
             flush=True,
         )
@@ -3456,7 +3434,7 @@ Examples (copy/paste):
         config = WrRuntimeConfig.load(output_path)
         upside_down = bool(getattr(config.bno085, "upside_down", False))
 
-        if choice == "6":
+        if choice in {"5", "6"}:
             bno_cfg = raw_config.setdefault("bno085", {}) if isinstance(raw_config, dict) else {}
             bno_cfg.pop("axis_map_measurements", None)
             _write_json_with_retries(output_path, raw_config)
@@ -3464,11 +3442,12 @@ Examples (copy/paste):
             return
 
         if choice == "2":
-            calibrate_imu_axis_map_full(
+            calibrate_imu_axis_sign_only(
                 config=config,
                 raw_config=raw_config,
                 output_path=output_path,
                 upside_down=upside_down,
+                body_axis="body_x",
             )
             return
         if choice == "3":
@@ -3477,7 +3456,7 @@ Examples (copy/paste):
                 raw_config=raw_config,
                 output_path=output_path,
                 upside_down=upside_down,
-                body_axis="body_z",
+                body_axis="body_y",
             )
             return
         if choice == "4":
@@ -3486,16 +3465,7 @@ Examples (copy/paste):
                 raw_config=raw_config,
                 output_path=output_path,
                 upside_down=upside_down,
-                body_axis="body_y",
-            )
-            return
-        if choice == "5":
-            calibrate_imu_axis_sign_only(
-                config=config,
-                raw_config=raw_config,
-                output_path=output_path,
-                upside_down=upside_down,
-                body_axis="body_x",
+                body_axis="body_z",
             )
             return
 
