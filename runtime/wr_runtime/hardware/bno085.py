@@ -13,6 +13,7 @@ from .imu import Imu, ImuSample
 
 
 _INPUT_SENSOR_REPORT_CHANNEL = 3
+_IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS = {0x7B}
 
 
 def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
@@ -36,6 +37,28 @@ def _input_report_sequence(imu) -> Optional[int]:
         return int(seq[_INPUT_SENSOR_REPORT_CHANNEL])
     except Exception:
         return None
+
+
+def _is_ignorable_unknown_sensor_report(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, KeyError)
+        and len(getattr(exc, "args", ())) == 1
+        and exc.args[0] in _IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS
+    )
+
+
+def _enable_feature_allowing_unknown_reports(imu, *args, max_unknown_reports: int = 5, **kwargs) -> None:
+    last_exc: BaseException | None = None
+    for _ in range(max(1, int(max_unknown_reports))):
+        try:
+            imu.enable_feature(*args, **kwargs)
+            return
+        except Exception as exc:
+            if not _is_ignorable_unknown_sensor_report(exc):
+                raise
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
 
 
 class BNO085IMU(Imu):
@@ -100,21 +123,21 @@ class BNO085IMU(Imu):
                 {"report_interval_ms": max(1, int(1000 / max(1, self.sampling_hz)))},
             ):
                 try:
-                    imu.enable_feature(report_id, **kwargs)
+                    _enable_feature_allowing_unknown_reports(imu, report_id, **kwargs)
                     return
                 except TypeError:
                     pass
             for args in ((report_id, interval_us), (report_id,)):
                 try:
-                    imu.enable_feature(*args)
+                    _enable_feature_allowing_unknown_reports(imu, *args)
                     return
                 except TypeError:
                     pass
-            imu.enable_feature(report_id)
+            _enable_feature_allowing_unknown_reports(imu, report_id)
 
-        # The Adafruit driver occasionally throws IndexError during enable_feature() if the
-        # I2C stream returns a corrupted/partial packet (common on marginal wiring/power).
-        # We retry by reinitializing the bus+device.
+        # The Adafruit driver can throw during enable_feature() when it drains
+        # stale/unknown packets from the input report channel. We retry by
+        # reinitializing the bus+device if the per-feature retry above cannot clear it.
         last_exc: Exception | None = None
         self._i2c = None
         self._imu = None  # type: ignore[assignment]
@@ -308,9 +331,11 @@ class BNO085IMU(Imu):
         raw_norm = float(np.linalg.norm(quat_xyzw))
         diag["quat_norm"] = raw_norm
 
-        # Always renormalize quaternions if they are finite and non-zero.
-        # Some BNO08X report paths (or library versions) can yield non-unit quats.
-        if np.isfinite(raw_norm) and raw_norm > 1e-6:
+        if (
+            np.isfinite(raw_norm)
+            and raw_norm > 1e-6
+            and abs(raw_norm - 1.0) <= self.max_quat_norm_deviation
+        ):
             quat_xyzw = (quat_xyzw / raw_norm).astype(np.float32)
             diag["quat_status"] = "normalized"
         else:

@@ -223,9 +223,19 @@ def main() -> int:
     print(f"  slow_reads_over_0.2s: {slow_read_count}/{total}", flush=True)
     print(f"  very_slow_reads_over_1.0s: {very_slow_read_count}/{total}", flush=True)
 
+    valid_ratio = valid_count / float(total)
+    if valid_count == 0 or timestamp_changes == 0:
+        print("Result: IMU did not produce a fresh valid stream.", flush=True)
+        return 2
     if quat_changes == 0 and gyro_changes == 0:
         print("Result: IMU payload did not change. BNO08x reports are frozen or not being refreshed.", flush=True)
         return 2
+    if valid_ratio < 0.5:
+        print(
+            f"Result: IMU payload changed, but fresh valid sample rate is low ({valid_ratio:.1%}).",
+            flush=True,
+        )
+        return 3
     print("Result: IMU payload changed.", flush=True)
     return 0
 

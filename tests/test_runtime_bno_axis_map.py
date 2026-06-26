@@ -78,3 +78,73 @@ def test_input_report_sequence_reads_adafruit_channel_counter() -> None:
         _sequence_number = [0, 1, 2, 42, 4, 5]
 
     assert _input_report_sequence(FakeAdafruitImu()) == 42
+
+
+def test_enable_feature_retries_unknown_0x7b_report() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _enable_feature_allowing_unknown_reports
+
+    class FakeAdafruitImu:
+        def __init__(self):
+            self.calls = 0
+
+        def enable_feature(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyError(0x7B)
+
+    imu = FakeAdafruitImu()
+
+    _enable_feature_allowing_unknown_reports(imu, 0x02, report_interval=5000)
+
+    assert imu.calls == 2
+
+
+def test_enable_feature_does_not_hide_other_key_errors() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _enable_feature_allowing_unknown_reports
+
+    class FakeAdafruitImu:
+        def enable_feature(self, *args, **kwargs):
+            raise KeyError(0x7C)
+
+    with pytest.raises(KeyError):
+        _enable_feature_allowing_unknown_reports(FakeAdafruitImu(), 0x02)
+
+
+def test_bno_read_rejects_bad_quaternion_norm() -> None:
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 0, 0, 0]
+
+        @property
+        def game_quaternion(self):
+            self._sequence_number[3] += 1
+            return (0.001, 0.001, 0.001, 0.001)
+
+        @property
+        def gyro(self):
+            return (0.0, 0.0, 0.0)
+
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu._imu = FakeAdafruitImu()
+    imu._latest = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=None,
+        valid=False,
+    )
+    imu._use_game_quat = True
+    imu.enable_rotation_vector = False
+    imu.max_quat_norm_deviation = 0.1
+    imu.suppress_debug = True
+    imu.upside_down = False
+    imu._r_bs = None
+    imu._diag = {}
+
+    sample = imu._read_sample_once()
+
+    assert not sample.valid
+    assert sample.timestamp_s is None
+    np.testing.assert_allclose(sample.quat_xyzw, [0.0, 0.0, 0.0, 1.0])
+    assert imu.diag["quat_status"] == "bad_norm"
