@@ -12,6 +12,19 @@ import numpy as np
 from .imu import Imu, ImuSample
 
 
+def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
+    if previous.timestamp_s is None or not previous.valid:
+        return True
+    prev_quat = np.asarray(previous.quat_xyzw, dtype=np.float32)
+    prev_gyro = np.asarray(previous.gyro_rad_s, dtype=np.float32)
+    next_quat = np.asarray(quat_xyzw, dtype=np.float32)
+    next_gyro = np.asarray(gyro_rad_s, dtype=np.float32)
+    return not (
+        np.array_equal(prev_quat, next_quat)
+        and np.array_equal(prev_gyro, next_gyro)
+    )
+
+
 class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
@@ -302,13 +315,18 @@ class BNO085IMU(Imu):
                 diag["quat_status"] = "bad_axis_map_norm"
 
         quat_out = quat_xyzw if valid else self._latest.quat_xyzw
+        payload_changed = _imu_payload_changed(self._latest, quat_out, gyro_rad_s)
+        if valid and not payload_changed:
+            diag["payload_status"] = "stale"
+        else:
+            diag["payload_status"] = "fresh" if valid else "invalid"
 
         self._diag = diag
         return ImuSample(
             quat_xyzw=quat_out,
             gyro_rad_s=gyro_rad_s,
-            timestamp_s=time.monotonic(),
-            valid=bool(valid),
+            timestamp_s=time.monotonic() if payload_changed else self._latest.timestamp_s,
+            valid=bool(valid and payload_changed),
         )
 
     def _loop(self) -> None:

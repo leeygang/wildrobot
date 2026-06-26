@@ -46,3 +46,26 @@ def test_axis_map_rejects_left_handed_reflection() -> None:
 
     with pytest.raises(ValueError, match="right-handed"):
         _axis_map_to_r_bs(["+X", "-Y", "+Z"])
+
+
+def test_imu_payload_changed_only_when_report_values_change() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _imu_payload_changed
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.array([0.1, 0.0, 0.0], dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    assert not _imu_payload_changed(
+        sample,
+        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        np.array([0.1, 0.0, 0.0], dtype=np.float32),
+    )
+    assert _imu_payload_changed(
+        sample,
+        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        np.array([0.2, 0.0, 0.0], dtype=np.float32),
+    )
