@@ -3,10 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from runtime.scripts.calibrate import (
     _axis_label,
     _format_footswitch_status_line,
+    _wait_for_imu_stream,
     compose_policy_action_target_rad,
     evaluate_policy_action,
     JointAxisMetadata,
@@ -91,6 +95,32 @@ def test_format_footswitch_status_line_raw_switches() -> None:
         )
         == "left_toe=1, left_heel=0, right_toe=1, right_heel=0"
     )
+
+
+def test_wait_for_imu_stream_error_includes_diagnostics() -> None:
+    class _StaleImu:
+        polling_mode = True
+        error_count = 2
+        last_error = "stale"
+        diag = {"quat_status": "missing"}
+
+        def read(self):
+            return SimpleNamespace(
+                timestamp_s=0.0,
+                valid=False,
+                quat_xyzw=[0.0, 0.0, 0.0, 1.0],
+                gyro_rad_s=[0.0, 0.0, 0.0],
+            )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _wait_for_imu_stream(_StaleImu(), timeout_s=0.0)
+
+    msg = str(excinfo.value)
+    assert "timestamp_s not advancing" in msg
+    assert "polling_mode=True" in msg
+    assert "valid=False" in msg
+    assert "last_error=stale" in msg
+    assert "diag={'quat_status': 'missing'}" in msg
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:

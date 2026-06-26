@@ -1975,17 +1975,48 @@ def _wait_for_imu_stream(imu, *, timeout_s: float = 2.0) -> float:
     Returns the latest timestamp_s to use as a baseline for subsequent capture calls.
     """
     start = time.monotonic()
-    last_ts = float(getattr(imu.read(), "timestamp_s", 0.0))
+    last_sample = imu.read()
+    last_ts = float(getattr(last_sample, "timestamp_s", 0.0) or 0.0)
+    reads = 1
     while time.monotonic() - start < timeout_s:
         s = imu.read()
-        ts = float(getattr(s, "timestamp_s", 0.0))
+        reads += 1
+        last_sample = s
+        ts = float(getattr(s, "timestamp_s", 0.0) or 0.0)
         if ts > 0.0 and ts != last_ts:
             return ts
         time.sleep(0.01)
     raise RuntimeError(
         "IMU stream did not produce fresh samples (timestamp_s not advancing). "
-        "Check I2C wiring/address and ensure the IMU is powered."
+        "Check I2C wiring/address and ensure the IMU is powered. "
+        f"reads={reads}; {_format_imu_debug(imu, last_sample)}"
     )
+
+
+def _format_imu_debug(imu, sample) -> str:
+    parts = [
+        f"polling_mode={getattr(imu, 'polling_mode', None)}",
+        f"valid={getattr(sample, 'valid', None)}",
+        f"timestamp_s={getattr(sample, 'timestamp_s', None)}",
+    ]
+    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float32).reshape(-1)
+    if quat.size == 4:
+        parts.append(f"quat_norm={float(np.linalg.norm(quat)):.3f}")
+        parts.append(f"quat={np.round(quat, 4).tolist()}")
+    gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
+    if gyro.size == 3:
+        parts.append(f"gyro={np.round(gyro, 4).tolist()}")
+    for attr in ("error_count", "last_error", "diag"):
+        if hasattr(imu, attr):
+            try:
+                parts.append(f"{attr}={getattr(imu, attr)}")
+            except Exception:
+                pass
+    last_traceback = getattr(imu, "last_traceback", None)
+    if last_traceback:
+        last_line = str(last_traceback).strip().splitlines()[-1]
+        parts.append(f"last_traceback_tail={last_line}")
+    return "; ".join(parts)
 
 
 def _countdown(*, label: str, seconds: float) -> None:
