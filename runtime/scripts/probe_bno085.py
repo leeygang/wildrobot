@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +51,47 @@ def _default_config_path() -> Path:
     return _RUNTIME_ROOT / "configs" / "runtime_config_v2.json"
 
 
+@contextlib.contextmanager
+def _alarm_timeout(seconds: float, *, message: str):
+    seconds_i = int(max(0, round(float(seconds))))
+    if seconds_i <= 0 or not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def _handler(signum, frame):  # noqa: ARG001
+        raise TimeoutError(message)
+
+    old_handler = signal.getsignal(signal.SIGALRM)
+    try:
+        signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(seconds_i)
+        yield
+    finally:
+        try:
+            signal.alarm(0)
+        except Exception:
+            pass
+        try:
+            signal.signal(signal.SIGALRM, old_handler)
+        except Exception:
+            pass
+
+
+def _start_init_heartbeat(done: threading.Event, *, start_s: float) -> threading.Thread:
+    def _run() -> None:
+        if done.wait(2.0):
+            return
+        while not done.is_set():
+            elapsed = time.monotonic() - start_s
+            print(f"Still initializing BNO085... elapsed_s={elapsed:.1f}", flush=True)
+            if done.wait(5.0):
+                return
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Probe BNO085/BNO08x IMU samples and report whether quat/gyro payloads are changing."
@@ -78,6 +122,12 @@ def main() -> int:
         type=int,
         default=None,
         help="Override I2C bus frequency from config, e.g. 400000.",
+    )
+    parser.add_argument(
+        "--init-timeout",
+        type=float,
+        default=20.0,
+        help="Seconds to wait for BNO08x initialization before failing; use 0 to disable.",
     )
     parser.add_argument(
         "--print-every",
@@ -135,17 +185,39 @@ def main() -> int:
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
 
-    imu = BNO085IMU(
-        i2c_address=address,
-        upside_down=cfg.bno085.upside_down,
-        sampling_hz=sampling_hz,
-        axis_map=axis_map,
-        suppress_debug=not bool(args.debug),
-        i2c_frequency_hz=i2c_frequency_hz,
-        init_retries=cfg.bno085.init_retries,
-        polling_mode=polling_mode,
-        enable_rotation_vector=enable_rotation_vector,
-    )
+    print("Initializing BNO085...", flush=True)
+    init_start_s = time.monotonic()
+    init_done = threading.Event()
+    _start_init_heartbeat(init_done, start_s=init_start_s)
+    try:
+        with _alarm_timeout(
+            args.init_timeout,
+            message=(
+                "Timed out initializing BNO085. The process is likely blocked inside "
+                "BNO08x enable_feature()/packet processing or the I2C bus."
+            ),
+        ):
+            imu = BNO085IMU(
+                i2c_address=address,
+                upside_down=cfg.bno085.upside_down,
+                sampling_hz=sampling_hz,
+                axis_map=axis_map,
+                suppress_debug=not bool(args.debug),
+                i2c_frequency_hz=i2c_frequency_hz,
+                init_retries=cfg.bno085.init_retries,
+                polling_mode=polling_mode,
+                enable_rotation_vector=enable_rotation_vector,
+            )
+    except TimeoutError as exc:
+        init_done.set()
+        print(f"BNO085 init timeout after {time.monotonic() - init_start_s:.1f}s: {exc}", flush=True)
+        print("Try power-cycling the IMU/robot, then rerun i2cdetect and this probe.", flush=True)
+        return 4
+    except Exception:
+        init_done.set()
+        raise
+    init_done.set()
+    print(f"BNO085 init complete in {time.monotonic() - init_start_s:.2f}s", flush=True)
 
     prev_q: np.ndarray | None = None
     prev_g: np.ndarray | None = None
