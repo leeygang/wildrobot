@@ -204,12 +204,12 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
     init_src = inspect.getsource(_init_calibration_bno085)
 
-    assert CALIBRATION_IMU_SAMPLING_HZ == 200
+    assert CALIBRATION_IMU_SAMPLING_HZ == 20
     assert "sampling_hz" in init_src
     assert "_init_calibration_bno085" in full_src
     assert "_init_calibration_bno085" in sign_src
     assert "polling_mode\": False" in init_src
-    assert "enable_rotation_vector\": False" in init_src
+    assert "enable_rotation_vector\": True" in init_src
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
 

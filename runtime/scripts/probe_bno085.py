@@ -114,7 +114,7 @@ def main() -> int:
         "--dt",
         type=float,
         default=None,
-        help="Seconds between samples. Defaults to 0.05, or 0.01 with --calibration-mode.",
+        help="Seconds between samples. Defaults to 0.05.",
     )
     parser.add_argument("--sampling-hz", type=int, default=50, help="BNO08x feature report rate.")
     parser.add_argument(
@@ -145,7 +145,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Use the same BNO08x setup as IMU calibration: background reader, "
-            "200 Hz reports, and game-quaternion+gyro only."
+            "20 Hz reports, and rotation-vector fallback enabled."
         ),
     )
     parser.add_argument(
@@ -165,10 +165,10 @@ def main() -> int:
     axis_map = cfg.bno085.axis_map if args.runtime_frame else None
     calibration_mode = bool(args.calibration_mode)
     polling_mode = False if calibration_mode else not bool(args.background)
-    sampling_hz = 200 if calibration_mode else max(1, int(args.sampling_hz))
-    enable_rotation_vector = False if calibration_mode else True
+    sampling_hz = 20 if calibration_mode else max(1, int(args.sampling_hz))
+    enable_rotation_vector = True
     i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
-    dt_s = float(args.dt) if args.dt is not None else (0.01 if calibration_mode else 0.05)
+    dt_s = float(args.dt) if args.dt is not None else 0.05
     total = (
         max(1, int(round(float(args.seconds) / max(1e-6, dt_s))))
         if args.seconds is not None

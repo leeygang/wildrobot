@@ -50,7 +50,7 @@ DEFAULT_IMU_STATUS_HZ = 2.0
 DEFAULT_IMU_MAX_ATTEMPTS = 3
 DEFAULT_IMU_AXIS_ALIGN_COS = 0.9  # require inferred axis to align with expected sensor axis
 DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
-CALIBRATION_IMU_SAMPLING_HZ = 200
+CALIBRATION_IMU_SAMPLING_HZ = 20
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
@@ -1684,11 +1684,11 @@ def _apply_upside_down_quat(quat_xyzw: List[float]) -> List[float]:
 
 
 def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down: bool):
-    """Create a ToddlerBot-style BNO08x reader for calibration.
+    """Create a stable BNO08x reader for calibration.
 
-    ToddlerBot reads BNO08x from a background thread at 200 Hz and enables gyro plus
-    one quaternion report. Calibration needs the same fresh-stream behavior more than
-    the runtime fallback report path.
+    Keep ToddlerBot's background-reader pattern, but use the proven WR Pi profile:
+    20 Hz with rotation-vector fallback enabled. This still gives roughly 60 fresh
+    samples per 3 second window and avoids the 200 Hz stream stalls seen on the Pi.
     """
     kwargs = {
         "i2c_address": config.bno085.i2c_address,
@@ -1698,7 +1698,7 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         "suppress_debug": config.bno085.suppress_debug,
         "i2c_frequency_hz": config.bno085.i2c_frequency_hz,
         "init_retries": config.bno085.init_retries,
-        "enable_rotation_vector": False,
+        "enable_rotation_vector": True,
     }
     try:
         return BNO085IMU(**kwargs)
