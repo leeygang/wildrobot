@@ -197,3 +197,116 @@ def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
 
     assert robot_io._last_valid_imu_sample is valid_sample
     assert robot_io._imu_invalid_consecutive == 0
+
+
+def test_hardware_preflight_prints_all_statuses(capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.array([0.01, 0.02, 0.03], dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeActuators:
+        port = "/dev/ttyUSB0"
+        baudrate = 9600
+        servo_ids_list = [7, 8]
+        controller = SimpleNamespace(get_battery_voltage=lambda: 7.4)
+
+        def get_positions_rad(self):
+            return np.array([0.0, 0.1], dtype=np.float32)
+
+    class _FakeFootSwitches:
+        def read(self):
+            return SimpleNamespace(switches=[True, True, True, True])
+
+    class _FakeRobotIO:
+        actuators = _FakeActuators()
+        imu = SimpleNamespace(
+            read=lambda: sample,
+            error_count=0,
+            last_error=None,
+            diag={"quat_source": "game_quaternion"},
+        )
+        foot_switches = _FakeFootSwitches()
+        _last_valid_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_valid_imu_sample = sample
+
+    run_policy._run_hardware_preflight(
+        robot_io=_FakeRobotIO(),
+        actuator_names=["left_hip_pitch", "right_hip_pitch"],
+        home_q_rad=np.array([0.0, 0.1], dtype=np.float32),
+        joint_min_rad=np.array([-1.0, -1.0], dtype=np.float32),
+        joint_max_rad=np.array([1.0, 1.0], dtype=np.float32),
+        imu_startup_timeout_s=0.1,
+        require_all_footswitches=True,
+        home_tolerance_deg=25.0,
+    )
+
+    out = capsys.readouterr().out
+    assert "Servo board: port=/dev/ttyUSB0 baud=9600 voltage=7.40V" in out
+    assert "left_hip_pitch" in out
+    assert "right_hip_pitch" in out
+    assert "IMU: valid=True" in out
+    assert (
+        "Footswitches: left_toe=1, left_heel=1, right_toe=1, right_heel=1" in out
+    )
+    assert "Hardware preflight OK." in out
+
+
+def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeActuators:
+        port = "/dev/ttyUSB0"
+        baudrate = 9600
+        servo_ids_list = [7]
+        controller = SimpleNamespace(get_battery_voltage=lambda: None)
+
+        def get_positions_rad(self):
+            return np.array([0.0], dtype=np.float32)
+
+    class _FakeFootSwitches:
+        def read(self):
+            return SimpleNamespace(switches=[True, True, True, False])
+
+    class _FakeRobotIO:
+        actuators = _FakeActuators()
+        imu = SimpleNamespace(
+            read=lambda: sample,
+            error_count=0,
+            last_error=None,
+            diag={},
+        )
+        foot_switches = _FakeFootSwitches()
+        _last_valid_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_valid_imu_sample = sample
+
+    with pytest.raises(SystemExit, match="Hardware preflight failed"):
+        run_policy._run_hardware_preflight(
+            robot_io=_FakeRobotIO(),
+            actuator_names=["left_hip_pitch"],
+            home_q_rad=np.array([0.0], dtype=np.float32),
+            joint_min_rad=np.array([-1.0], dtype=np.float32),
+            joint_max_rad=np.array([1.0], dtype=np.float32),
+            imu_startup_timeout_s=0.1,
+            require_all_footswitches=True,
+            home_tolerance_deg=25.0,
+        )
+
+    out = capsys.readouterr().out
+    assert "right_heel=0" in out
+    assert "footswitches open at walk start" in out

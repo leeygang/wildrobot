@@ -52,6 +52,8 @@ _LEG_LOG_JOINTS = (
     ("RAR", "right_ankle_roll"),
 )
 
+_FOOT_SWITCH_LABELS = ("left_toe", "left_heel", "right_toe", "right_heel")
+
 
 def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray:
     if text is None:
@@ -174,6 +176,232 @@ def _format_foot_switches(info: dict) -> str:
     return f"fs=[LT={values[0]},LH={values[1]},RT={values[2]},RH={values[3]}]"
 
 
+def _format_rad_deg(value_rad: float) -> str:
+    return f"{float(np.rad2deg(value_rad)):+.1f}"
+
+
+def _run_hardware_preflight(
+    *,
+    robot_io,
+    actuator_names: List[str],
+    home_q_rad: np.ndarray,
+    joint_min_rad: np.ndarray,
+    joint_max_rad: np.ndarray,
+    imu_startup_timeout_s: float,
+    require_all_footswitches: bool,
+    home_tolerance_deg: float,
+) -> None:
+    """Print and validate hardware state before the policy writes commands."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    print("Hardware preflight:", flush=True)
+
+    _preflight_servos(
+        robot_io=robot_io,
+        actuator_names=actuator_names,
+        home_q_rad=home_q_rad,
+        joint_min_rad=joint_min_rad,
+        joint_max_rad=joint_max_rad,
+        home_tolerance_deg=home_tolerance_deg,
+        errors=errors,
+        warnings=warnings,
+    )
+    _preflight_imu(
+        robot_io=robot_io,
+        imu_startup_timeout_s=imu_startup_timeout_s,
+        errors=errors,
+    )
+    _preflight_footswitches(
+        robot_io=robot_io,
+        require_all_footswitches=require_all_footswitches,
+        errors=errors,
+    )
+
+    for warning in warnings:
+        print(f"  WARNING: {warning}", flush=True)
+    if errors:
+        print("Hardware preflight FAILED:", flush=True)
+        for error in errors:
+            print(f"  ERROR: {error}", flush=True)
+        raise SystemExit(
+            "Hardware preflight failed; fix errors above before running policy."
+        )
+    print("Hardware preflight OK.", flush=True)
+
+
+def _preflight_servos(
+    *,
+    robot_io,
+    actuator_names: List[str],
+    home_q_rad: np.ndarray,
+    joint_min_rad: np.ndarray,
+    joint_max_rad: np.ndarray,
+    home_tolerance_deg: float,
+    errors: List[str],
+    warnings: List[str],
+) -> None:
+    actuators = robot_io.actuators
+    port = getattr(actuators, "port", "unknown")
+    baudrate = getattr(actuators, "baudrate", "unknown")
+    controller = getattr(actuators, "controller", None)
+    voltage = None
+    if controller is not None and hasattr(controller, "get_battery_voltage"):
+        try:
+            voltage = controller.get_battery_voltage()
+        except Exception as exc:
+            warnings.append(f"servo board voltage read failed: {exc!r}")
+
+    voltage_text = "unknown" if voltage is None else f"{float(voltage):.2f}V"
+    print(
+        f"  Servo board: port={port} baud={baudrate} voltage={voltage_text}",
+        flush=True,
+    )
+
+    try:
+        positions = actuators.get_positions_rad()
+    except Exception as exc:
+        positions = None
+        errors.append(f"servo position read raised {exc!r}")
+
+    if positions is None:
+        last_error = getattr(actuators, "_last_error", None)
+        suffix = f": {last_error!r}" if last_error is not None else ""
+        errors.append(f"servo position read failed{suffix}")
+        return
+
+    pos = np.asarray(positions, dtype=np.float32).reshape(-1)
+    expected_n = len(actuator_names)
+    if pos.size != expected_n:
+        errors.append(f"servo position count {pos.size} != actuator count {expected_n}")
+        return
+
+    ids = list(getattr(actuators, "servo_ids_list", []))
+    if len(ids) != expected_n:
+        ids = [None] * expected_n
+
+    finite = np.isfinite(pos)
+    limit_tol = np.deg2rad(5.0)
+    home_tol = np.deg2rad(max(0.0, float(home_tolerance_deg)))
+    max_home_err = 0.0
+    print("  Servos:", flush=True)
+    for idx, name in enumerate(actuator_names):
+        sid = ids[idx]
+        sid_text = "?" if sid is None else str(int(sid))
+        q = float(pos[idx])
+        home = float(home_q_rad[idx])
+        qmin = float(joint_min_rad[idx])
+        qmax = float(joint_max_rad[idx])
+        home_err = q - home
+        max_home_err = max(max_home_err, abs(home_err))
+        status = "OK"
+        if not bool(finite[idx]):
+            status = "ERROR"
+            errors.append(f"{name} servo id={sid_text} readback is non-finite")
+        elif q < qmin - limit_tol or q > qmax + limit_tol:
+            status = "ERROR"
+            errors.append(
+                f"{name} servo id={sid_text} readback {_format_rad_deg(q)}deg "
+                f"is outside policy range [{_format_rad_deg(qmin)}, {_format_rad_deg(qmax)}]deg"
+            )
+        elif abs(home_err) > home_tol:
+            status = "WARN"
+        print(
+            "    "
+            f"{name:<20} id={sid_text:>3} "
+            f"pos={_format_rad_deg(q)}deg "
+            f"home={_format_rad_deg(home)}deg "
+            f"err={_format_rad_deg(home_err)}deg "
+            f"range=[{_format_rad_deg(qmin)}, {_format_rad_deg(qmax)}]deg "
+            f"{status}",
+            flush=True,
+        )
+
+    if max_home_err > home_tol:
+        warnings.append(
+            f"max servo home error {float(np.rad2deg(max_home_err)):.1f}deg "
+            f"> tolerance {float(home_tolerance_deg):.1f}deg"
+        )
+
+
+def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str]) -> None:
+    try:
+        if hasattr(robot_io, "wait_for_valid_imu_sample"):
+            robot_io.wait_for_valid_imu_sample(timeout_s=float(imu_startup_timeout_s))
+        sample = getattr(robot_io, "_last_valid_imu_sample", None)
+        if sample is None:
+            sample = robot_io.imu.read()
+    except Exception as exc:
+        errors.append(f"IMU valid sample unavailable: {exc}")
+        print(f"  IMU: ERROR {exc}", flush=True)
+        return
+
+    valid = bool(getattr(sample, "valid", True))
+    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float32).reshape(-1)
+    gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
+    quat_norm = float(np.linalg.norm(quat)) if quat.size == 4 else float("nan")
+    imu = robot_io.imu
+    diag = getattr(imu, "diag", None)
+    diag_text = f" diag={diag}" if diag else ""
+    print(
+        "  IMU: "
+        f"valid={valid} "
+        f"quat={np.round(quat, 4).tolist()} "
+        f"quat_norm={quat_norm:.3f} "
+        f"gyro={np.round(gyro, 4).tolist()} "
+        f"errors={getattr(imu, 'error_count', 0)} "
+        f"last_error={getattr(imu, 'last_error', None)}"
+        f"{diag_text}",
+        flush=True,
+    )
+    if not valid:
+        errors.append("IMU sample is invalid")
+    if (
+        quat.size != 4
+        or not np.all(np.isfinite(quat))
+        or not (0.9 <= quat_norm <= 1.1)
+    ):
+        errors.append(
+            f"IMU quaternion is invalid: quat={quat.tolist()} norm={quat_norm:.3f}"
+        )
+    if gyro.size != 3 or not np.all(np.isfinite(gyro)):
+        errors.append(f"IMU gyro is invalid: gyro={gyro.tolist()}")
+
+
+def _preflight_footswitches(
+    *,
+    robot_io,
+    require_all_footswitches: bool,
+    errors: List[str],
+) -> None:
+    try:
+        sample = robot_io.foot_switches.read()
+    except Exception as exc:
+        errors.append(f"footswitch read failed: {exc!r}")
+        print(f"  Footswitches: ERROR {exc!r}", flush=True)
+        return
+
+    switches = np.asarray(sample.switches, dtype=np.float32).reshape(-1)
+    if switches.size != len(_FOOT_SWITCH_LABELS) or not np.all(np.isfinite(switches)):
+        errors.append(f"footswitch sample invalid: {switches.tolist()}")
+        print(f"  Footswitches: ERROR values={switches.tolist()}", flush=True)
+        return
+
+    values = [int(round(float(v))) for v in switches]
+    states = ", ".join(
+        f"{name}={value}" for name, value in zip(_FOOT_SWITCH_LABELS, values)
+    )
+    print(f"  Footswitches: {states} (1=pressed, 0=open)", flush=True)
+    if require_all_footswitches:
+        open_names = [
+            name for name, value in zip(_FOOT_SWITCH_LABELS, values) if value == 0
+        ]
+        if open_names:
+            errors.append(
+                "footswitches open at walk start: "
+                f"{open_names}; use --allow-unpressed-footswitch for suspended tests"
+            )
+
+
 def run_policy_loop(
     *,
     runner: RuntimePolicyRunner,
@@ -269,6 +497,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=3.0,
         help="Hardware only: wait this long for the first valid IMU sample before starting control.",
     )
+    parser.add_argument(
+        "--allow-unpressed-footswitch",
+        action="store_true",
+        help="Hardware preflight only: do not fail if one or more footswitches are open.",
+    )
+    parser.add_argument(
+        "--preflight-home-tolerance-deg",
+        type=float,
+        default=25.0,
+        help="Warn when any servo starts this many degrees away from policy home.",
+    )
+    parser.add_argument(
+        "--skip-hardware-preflight",
+        action="store_true",
+        help="Skip hardware preflight checks before the policy loop.",
+    )
     args = parser.parse_args(argv)
 
     bundle_path = Path(args.bundle)
@@ -321,14 +565,53 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         if args.runtime_config is None:
             raise SystemExit("--runtime-config is required unless --dry-run is set.")
+        if not args.skip_hardware_preflight and bundle.spec.robot.home_ctrl_rad is None:
+            raise SystemExit(
+                "policy_spec.robot.home_ctrl_rad is required for hardware preflight"
+            )
         robot_io = _build_hardware_robot_io(
             runtime_config_path=Path(args.runtime_config),
             actuator_names=actuator_names,
             control_dt=ctrl_dt,
         )
-        if hasattr(robot_io, "wait_for_valid_imu_sample"):
+        if not args.skip_hardware_preflight:
+            home = np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
+            joint_min = np.asarray(
+                [
+                    float(bundle.spec.robot.joints[name].range_min_rad)
+                    for name in actuator_names
+                ],
+                dtype=np.float32,
+            )
+            joint_max = np.asarray(
+                [
+                    float(bundle.spec.robot.joints[name].range_max_rad)
+                    for name in actuator_names
+                ],
+                dtype=np.float32,
+            )
+            try:
+                _run_hardware_preflight(
+                    robot_io=robot_io,
+                    actuator_names=actuator_names,
+                    home_q_rad=home,
+                    joint_min_rad=joint_min,
+                    joint_max_rad=joint_max,
+                    imu_startup_timeout_s=float(args.imu_startup_timeout_s),
+                    require_all_footswitches=not bool(
+                        args.allow_unpressed_footswitch
+                    ),
+                    home_tolerance_deg=float(args.preflight_home_tolerance_deg),
+                )
+            except BaseException:
+                try:
+                    robot_io.close()
+                finally:
+                    raise
+        elif hasattr(robot_io, "wait_for_valid_imu_sample"):
             print(
-                f"Waiting for first valid IMU sample (timeout {float(args.imu_startup_timeout_s):.1f}s)...",
+                "Skipping hardware preflight; waiting for first valid IMU sample "
+                f"(timeout {float(args.imu_startup_timeout_s):.1f}s)...",
                 flush=True,
             )
             robot_io.wait_for_valid_imu_sample(timeout_s=float(args.imu_startup_timeout_s))
