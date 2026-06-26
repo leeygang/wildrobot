@@ -24,7 +24,9 @@ from runtime.scripts.calibrate import (
     _init_calibration_bno085,
     _load_axis_map_measurements,
     _measure_axis_once,
+    _resolve_single_axis_map_update,
     _select_axis_inference_result,
+    _solve_axis_map_from_measurements,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
     calibrate_imu_axis_sign_only,
@@ -306,6 +308,81 @@ def test_load_axis_map_measurements_normalizes_valid_axes() -> None:
     assert sorted(axes) == ["body_y", "body_z"]
     np.testing.assert_allclose(axes["body_z"], [0.0, 0.0, -1.0])
     np.testing.assert_allclose(axes["body_y"], [0.0, -1.0, 0.0])
+
+
+def test_solve_axis_map_from_measurements_keeps_map_right_handed() -> None:
+    axis_map, avg_dot, reason = _solve_axis_map_from_measurements(
+        axes_by_body={
+            "body_x": np.array([-1.0, 0.0, 0.0], dtype=np.float32),
+            "body_y": np.array([0.0, -1.0, 0.0], dtype=np.float32),
+            "body_z": np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        }
+    )
+
+    assert axis_map == ["-X", "-Y", "+Z"]
+    assert avg_dot == pytest.approx(1.0)
+    assert "right-handed" in reason
+    assert WrRuntimeConfig._axis_map_det(axis_map) == 1
+
+
+def test_solve_axis_map_from_measurements_rejects_left_handed_measurements() -> None:
+    axis_map, avg_dot, reason = _solve_axis_map_from_measurements(
+        axes_by_body={
+            "body_x": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "body_y": np.array([0.0, -1.0, 0.0], dtype=np.float32),
+            "body_z": np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        }
+    )
+
+    assert axis_map is None
+    assert avg_dot == pytest.approx(1.0)
+    assert "left-handed" in reason
+
+
+def test_single_axis_update_defers_left_handed_partial_map() -> None:
+    axis_map, reason = _resolve_single_axis_map_update(
+        current_axis_map=["+X", "-Y", "-Z"],
+        body_axis="body_z",
+        measured_mapping="+Z",
+        axes_by_body={
+            "body_z": np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    assert axis_map is None
+    assert "left-handed" in reason
+
+
+def test_single_axis_update_solves_when_all_axes_are_saved() -> None:
+    axis_map, reason = _resolve_single_axis_map_update(
+        current_axis_map=["+X", "-Y", "-Z"],
+        body_axis="body_z",
+        measured_mapping="+Z",
+        axes_by_body={
+            "body_x": np.array([-1.0, 0.0, 0.0], dtype=np.float32),
+            "body_y": np.array([0.0, -1.0, 0.0], dtype=np.float32),
+            "body_z": np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    assert axis_map == ["-X", "-Y", "+Z"]
+    assert "solved" in reason
+
+
+def test_single_axis_update_rejects_inconsistent_saved_axes() -> None:
+    axis_map, reason = _resolve_single_axis_map_update(
+        current_axis_map=["+X", "-Y", "-Z"],
+        body_axis="body_z",
+        measured_mapping="+Z",
+        axes_by_body={
+            "body_x": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "body_y": np.array([0.0, -1.0, 0.0], dtype=np.float32),
+            "body_z": np.array([0.0, 0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    assert axis_map is None
+    assert "left-handed" in reason
 
 
 def test_full_axis_calibration_is_resumable() -> None:

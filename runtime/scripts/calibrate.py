@@ -2396,6 +2396,63 @@ def _load_axis_map_measurements(raw_config: dict) -> dict[str, np.ndarray]:
     return axes
 
 
+def _axis_vec_to_mapping(axis_vec: np.ndarray) -> str:
+    axis_vec = np.asarray(axis_vec, dtype=np.float32).reshape(3)
+    idx = int(np.argmax(np.abs(axis_vec)))
+    sign = "+" if float(axis_vec[idx]) >= 0.0 else "-"
+    letter = ["X", "Y", "Z"][idx]
+    return f"{sign}{letter}"
+
+
+def _solve_axis_map_from_measurements(
+    *, axes_by_body: dict[str, np.ndarray]
+) -> tuple[Optional[list[str]], float, str]:
+    required = ["body_x", "body_y", "body_z"]
+    missing = [k for k in required if k not in axes_by_body]
+    if missing:
+        return None, 0.0, f"missing measurements: {missing}"
+
+    a = np.stack([axes_by_body[k].astype(np.float32) for k in required], axis=0)
+    a = a / np.clip(np.linalg.norm(a, axis=1, keepdims=True), 1e-6, None)
+
+    axis_map = [_axis_vec_to_mapping(axis) for axis in a]
+    letters = [entry[1] for entry in axis_map]
+    basis = np.eye(3, dtype=np.float32)
+    dots = [abs(float(np.dot(a[i], basis["XYZ".index(axis_map[i][1])]))) for i in range(3)]
+    avg_dot = float(np.mean(dots))
+    if len(set(letters)) != 3:
+        return None, avg_dot, f"measurements map multiple body axes to the same sensor axis: {axis_map}"
+    if WrRuntimeConfig._axis_map_det(axis_map) < 0:
+        return None, avg_dot, f"measurements form a left-handed map: {axis_map}"
+    return axis_map, avg_dot, "direct right-handed mapping from saved measurements"
+
+
+def _resolve_single_axis_map_update(
+    *,
+    current_axis_map: Optional[list[str]],
+    body_axis: str,
+    measured_mapping: str,
+    axes_by_body: dict[str, np.ndarray],
+) -> tuple[Optional[list[str]], str]:
+    solved = _solve_axis_map_from_measurements(axes_by_body=axes_by_body)
+    axis_map, avg_dot, reason = solved
+    if axis_map is not None:
+        return axis_map, f"solved from body_x/body_y/body_z measurements (avg_dot={avg_dot:.3f})"
+
+    axis_map = (
+        [str(x).strip().upper() for x in current_axis_map]
+        if isinstance(current_axis_map, list) and len(current_axis_map) == 3
+        else ["+X", "+Y", "+Z"]
+    )
+    idx = {"body_x": 0, "body_y": 1, "body_z": 2}[body_axis]
+    axis_map[idx] = measured_mapping
+    if WrRuntimeConfig._axis_map_det(axis_map) > 0:
+        return axis_map, "single-axis update keeps a right-handed map"
+    if len(axes_by_body) >= 3:
+        return None, reason
+    return None, f"single-axis update would be left-handed: {axis_map}"
+
+
 def _select_axis_inference_result(
     *,
     gyro_result: Optional[tuple[float, np.ndarray]],
@@ -2769,53 +2826,6 @@ def calibrate_imu_axis_map_step(
         if isinstance(v, list) and len(v) == 3:
             measured_axes[k] = np.asarray([float(v[0]), float(v[1]), float(v[2])], dtype=np.float32)
 
-    def axis_vec_to_mapping(axis_vec: np.ndarray) -> str:
-        axis_vec = np.asarray(axis_vec, dtype=np.float32).reshape(3)
-        idx = int(np.argmax(np.abs(axis_vec)))
-        sign = "+" if float(axis_vec[idx]) >= 0.0 else "-"
-        letter = ["X", "Y", "Z"][idx]
-        return f"{sign}{letter}"
-
-    def solve_axis_map_from_measurements(*, axes_by_body: dict[str, np.ndarray]) -> Optional[list[str]]:
-        required = ["body_x", "body_y", "body_z"]
-        if any(k not in axes_by_body for k in required):
-            return None
-
-        a = np.stack([axes_by_body[k].astype(np.float32) for k in required], axis=0)
-        a = a / np.clip(np.linalg.norm(a, axis=1, keepdims=True), 1e-6, None)
-
-        basis = np.eye(3, dtype=np.float32)
-        axis_letters = ["X", "Y", "Z"]
-
-        import itertools
-
-        best_score = -1e9
-        best_perm = None
-        best_signs = None
-
-        for perm in itertools.permutations([0, 1, 2], 3):
-            for signs in itertools.product([-1.0, 1.0], repeat=3):
-                rows = np.stack([signs[i] * basis[perm[i]] for i in range(3)], axis=0).astype(np.float32)
-                if float(np.linalg.det(rows)) < 0.0:
-                    continue
-                score = float(np.sum(rows * a))
-                if score > best_score:
-                    best_score = score
-                    best_perm = perm
-                    best_signs = signs
-
-        if best_perm is None or best_signs is None:
-            return None
-
-        axis_map: list[str] = []
-        for i in range(3):
-            sign = "+" if best_signs[i] > 0 else "-"
-            axis_map.append(f"{sign}{axis_letters[best_perm[i]]}")
-
-        avg = best_score / 3.0
-        print(f"Solved axis_map avg_dot={avg:.3f}", flush=True)
-        return axis_map
-
     if step == "clear":
         bno_cfg.pop("axis_map_measurements", None)
         write_bno_config(raw_config, output_path, axis_map_measurements=None)
@@ -2823,11 +2833,11 @@ def calibrate_imu_axis_map_step(
         return
 
     if step == "solve":
-        axis_map = solve_axis_map_from_measurements(axes_by_body=measured_axes)
+        axis_map, avg_dot, solve_reason = _solve_axis_map_from_measurements(axes_by_body=measured_axes)
         if axis_map is None:
-            have = sorted(measured_axes.keys())
-            print(f"Not enough measurements to solve axis_map (need body_x/body_y/body_z). Have: {have}", flush=True)
+            print(f"Cannot solve bno085.axis_map: {solve_reason}", flush=True)
             return
+        print(f"Solved axis_map avg_dot={avg_dot:.3f}", flush=True)
         resp = _prompt_choice_strict(f"Write bno085.axis_map={axis_map} to config?")
         if resp == "y":
             write_bno_config(raw_config, output_path, axis_map=axis_map)
@@ -2889,7 +2899,7 @@ def calibrate_imu_axis_map_step(
         bno_cfg["axis_map_measurements"] = measurements
         write_bno_config(raw_config, output_path, axis_map_measurements=measurements)
 
-        proposed = axis_vec_to_mapping(measured)
+        proposed = _axis_vec_to_mapping(measured)
         print(f"Saved {step} measurement to {output_path}", flush=True)
         print(f"Naive per-axis mapping would be: {step} -> {proposed}", flush=True)
     finally:
@@ -3064,6 +3074,10 @@ def calibrate_imu_axis_map_full(
             )
             if step != "body_x":
                 _pause(label=f"{step}: reset robot pose now; next axis starts in", seconds=2.0)
+        axis_map, solve_avg_dot, solve_reason = _solve_axis_map_from_measurements(axes_by_body=axes_by_body)
+        if axis_map is None:
+            print(f"Cannot solve bno085.axis_map: {solve_reason}", flush=True)
+            return
         avg_align = float(np.mean([align_by_body[k] for k in ("body_x", "body_y", "body_z")]))
 
         def angle_text(step: str) -> str:
@@ -3077,8 +3091,9 @@ def calibrate_imu_axis_map_full(
             f"  body_z: angle_rad={angle_text('body_z')} axis_sensor={axes_by_body['body_z'].tolist()}\n"
             f"  body_y: angle_rad={angle_text('body_y')} axis_sensor={axes_by_body['body_y'].tolist()}\n"
             f"  body_x: angle_rad={angle_text('body_x')} axis_sensor={axes_by_body['body_x'].tolist()}\n"
-            f"  assumption: no permutation (only sign flips)\n"
+            f"  solve: right-handed axis_map from saved measurements\n"
             f"  solved_axis_map: {axis_map}\n"
+            f"  solve_avg_dot: {solve_avg_dot:.3f}\n"
             f"  avg_alignment(|dot|): {avg_align:.3f}\n"
         )
         summary_lines = summary.rstrip().splitlines()
@@ -3243,10 +3258,8 @@ def calibrate_imu_axis_sign_only(
             )
             return
 
-        idx = {"body_x": 0, "body_y": 1, "body_z": 2}[body_axis]
         current_map = getattr(config.bno085, "axis_map", None)
-        axis_map = list(current_map) if isinstance(current_map, list) and len(current_map) == 3 else ["+X", "+Y", "+Z"]
-        axis_map[idx] = f"{sign}{axis_letter}"
+        measured_mapping = f"{sign}{axis_letter}"
 
         # Update measurements block for traceability.
         bno_cfg = raw_config.setdefault("bno085", {}) if isinstance(raw_config, dict) else {}
@@ -3258,6 +3271,13 @@ def calibrate_imu_axis_sign_only(
             float(accepted.axis_sensor[1]),
             float(accepted.axis_sensor[2]),
         ]
+        axes_by_body = _load_axis_map_measurements({"bno085": {"axis_map_measurements": measurements}})
+        axis_map, axis_map_source = _resolve_single_axis_map_update(
+            current_axis_map=current_map,
+            body_axis=body_axis,
+            measured_mapping=measured_mapping,
+            axes_by_body=axes_by_body,
+        )
 
         result_lines = [
             "IMU single-axis calibration result:",
@@ -3266,11 +3286,27 @@ def calibrate_imu_axis_sign_only(
             f"  axis_sensor: {accepted.axis_sensor.tolist()}",
             f"  expected_axis: {axis_letter}",
             f"  alignment(|dot|): {align:.3f}",
-            f"  recommended mapping: {body_axis}={sign}{axis_letter}",
-            f"  new axis_map: {axis_map}",
+            f"  recommended mapping: {body_axis}={measured_mapping}",
+            f"  saved measurements: {sorted(axes_by_body.keys())}",
+            f"  axis_map decision: {axis_map_source}",
         ]
+        if axis_map is not None:
+            result_lines.append(f"  new axis_map: {axis_map}")
+        else:
+            result_lines.append("  new axis_map: not written until enough axes are measured")
         for line in result_lines:
             _log_line(line)
+
+        if axis_map is None:
+            write_bno_config(raw_config, output_path, axis_map_measurements=measurements)
+            _log_line(f"Saved {body_axis} measurement to {output_path}.")
+            _log_line(
+                _yellow(
+                    "Not writing bno085.axis_map yet because changing only this axis would create a left-handed map. "
+                    "Calibrate the remaining missing axis/axes, then the script can solve a valid right-handed map."
+                )
+            )
+            return
 
         token = _wait_for_token(
             prompt_lines=[
