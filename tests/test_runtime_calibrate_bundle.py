@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import time
 from pathlib import Path
@@ -12,6 +13,8 @@ from runtime.scripts.calibrate import (
     _axis_label,
     _format_footswitch_status_line,
     _wait_for_imu_stream,
+    calibrate_imu_axis_map_full,
+    calibrate_imu_axis_sign_only,
     compose_policy_action_target_rad,
     evaluate_policy_action,
     JointAxisMetadata,
@@ -138,6 +141,16 @@ def test_wait_for_imu_stream_accepts_slow_first_valid_sample() -> None:
             )
 
     assert _wait_for_imu_stream(_SlowFirstValidImu(), timeout_s=0.001) == 123.0
+
+
+def test_imu_axis_calibration_uses_background_reader() -> None:
+    full_src = inspect.getsource(calibrate_imu_axis_map_full)
+    sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
+
+    assert "polling_mode=False" in full_src
+    assert "polling_mode=False" in sign_src
+    assert "polling_mode=True" not in full_src
+    assert "polling_mode=True" not in sign_src
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:

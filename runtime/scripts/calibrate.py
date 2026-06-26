@@ -1721,7 +1721,7 @@ def calibrate_imu_upside_down(
                     i2c_address=config.bno085.i2c_address,
                     upside_down=False,
                     sampling_hz=50,
-                    polling_mode=True,
+                    polling_mode=False,
                 )
             except TypeError:
                 # Back-compat with older BNO085IMU implementations.
@@ -2665,7 +2665,7 @@ def calibrate_imu_axis_map_full(
                 i2c_address=config.bno085.i2c_address,
                 upside_down=upside_down,
                 sampling_hz=50,
-                polling_mode=True,
+                polling_mode=False,
             )
         except TypeError:
             return BNO085IMU(
@@ -2865,7 +2865,7 @@ def calibrate_imu_axis_sign_only(
                 i2c_address=config.bno085.i2c_address,
                 upside_down=upside_down,
                 sampling_hz=50,
-                polling_mode=True,
+                polling_mode=False,
             )
         except TypeError:
             return BNO085IMU(
