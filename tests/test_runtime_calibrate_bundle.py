@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,6 +122,22 @@ def test_wait_for_imu_stream_error_includes_diagnostics() -> None:
     assert "valid=False" in msg
     assert "last_error=stale" in msg
     assert "diag={'quat_status': 'missing'}" in msg
+
+
+def test_wait_for_imu_stream_accepts_slow_first_valid_sample() -> None:
+    class _SlowFirstValidImu:
+        polling_mode = True
+
+        def read(self):
+            time.sleep(0.02)
+            return SimpleNamespace(
+                timestamp_s=123.0,
+                valid=True,
+                quat_xyzw=[0.0, 0.0, 0.0, 1.0],
+                gyro_rad_s=[0.0, 0.0, 0.0],
+            )
+
+    assert _wait_for_imu_stream(_SlowFirstValidImu(), timeout_s=0.001) == 123.0
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:

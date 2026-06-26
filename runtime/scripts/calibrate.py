@@ -1978,6 +1978,13 @@ def _wait_for_imu_stream(imu, *, timeout_s: float = 2.0) -> float:
     last_sample = imu.read()
     last_ts = float(getattr(last_sample, "timestamp_s", 0.0) or 0.0)
     reads = 1
+    first_read_s = time.monotonic() - start
+    if first_read_s >= timeout_s and last_ts > 0.0 and bool(getattr(last_sample, "valid", True)):
+        _log_line(
+            "IMU first read was slow but valid "
+            f"(read_s={first_read_s:.3f}, timestamp_s={last_ts:.3f}); continuing."
+        )
+        return last_ts
     while time.monotonic() - start < timeout_s:
         s = imu.read()
         reads += 1
