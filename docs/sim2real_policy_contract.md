@@ -778,7 +778,7 @@ The actor observation contract assumes the IMU signals are expressed in the **ro
 - `Signals.quat_xyzw`: quaternion in `xyzw` order, representing the robot body attitude in a convention compatible with
   `policy_contract.*.frames.gravity_local_from_quat(quat_xyzw)` (upright → gravity_local ≈ `[0, 0, -1]`).
 - `Signals.gyro_rad_s`: angular velocity `[wx, wy, wz]` in rad/s about body X/Y/Z.
-  - yaw-left should yield `wz > 0`, pitch-up should yield `wy > 0`, roll-right should yield `wx > 0`.
+  - yaw-left should yield `wz > 0`, pitch-down should yield `wy > 0`, roll-right should yield `wx > 0`.
 
 `policy_contract` (NumPy/JAX) is responsible for converting these raw signals into the model observation features
 (e.g., `gravity_local`, `angvel_heading_local`, normalization, layout packing).
@@ -807,7 +807,7 @@ This mirrors the actuator design: servo offsets/directions are applied in the ac
 3) **Calibrate mount inversion and axis signs**
    - Run the interactive tool: `runtime/scripts/calibrate.py --calibrate-imu`.
    - Prefer the “sign-only” flow if you believe the board axes are aligned with the robot body axes:
-     - Calibrate `body_z` (yaw-left), `body_y` (pitch-up), `body_x` (roll-right).
+     - Calibrate `body_z` (yaw-left), `body_y` (pitch-down), `body_x` (roll-right).
    - The tool enforces two gates:
      - **motion magnitude**: rotation angle must exceed a minimum threshold (prevents accidental “no-motion” acceptance)
      - **axis alignment**: dominant axis must align with the expected axis (guards against silent X/Y swaps due to messy motion or rotated mounting)
@@ -818,7 +818,7 @@ This mirrors the actuator design: servo offsets/directions are applied in the ac
      - `gyro_rad_s` should be near zero (small noise OK).
    - Small manual motions:
      - yaw-left → `gyro_z` positive and dominant
-     - pitch-up → `gyro_y` positive and dominant
+     - pitch-down → `gyro_y` positive and dominant
      - roll-right → `gyro_x` positive and dominant
 
 5) **Policy loop integration**

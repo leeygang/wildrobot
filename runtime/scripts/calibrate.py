@@ -2877,7 +2877,7 @@ def calibrate_imu_axis_map_step(
                 "Expected: positive rotation around +Z in the robot body frame."
             ),
             "body_y": (
-                "Action: pitch UP (nose up), then return to still.\n"
+                "Action: pitch DOWN (nose down), then return to still.\n"
                 "Expected: positive rotation around +Y in the robot body frame."
             ),
             "body_x": (
@@ -2966,7 +2966,7 @@ def calibrate_imu_axis_map_full(
                 "Expected: positive rotation around +Z in the robot body frame."
             ),
             "body_y": (
-                "Action: pitch UP (nose up), then return to still.\n"
+                "Action: pitch DOWN (nose down), then return to still.\n"
                 "Expected: positive rotation around +Y in the robot body frame."
             ),
             "body_x": (
@@ -3158,7 +3158,7 @@ def calibrate_imu_axis_sign_only(
             "Expected: positive rotation around +Z in the robot body frame."
         ),
         "body_y": (
-            "Action: pitch UP (nose up), then return to still.\n"
+            "Action: pitch DOWN (nose down), then return to still.\n"
             "Expected: positive rotation around +Y in the robot body frame."
         ),
         "body_x": (
@@ -3479,7 +3479,7 @@ Examples (copy/paste):
             "\nOptions:\n"
             "  1) Calibrate upside_down (mount inversion)\n"
             "  2) Calibrate body_x axis (roll-right)\n"
-            "  3) Calibrate body_y axis (pitch-up)\n"
+            "  3) Calibrate body_y axis (pitch-down)\n"
             "  4) Calibrate body_z axis (yaw-left)\n"
             "  5) Clear saved axis_map measurements\n"
             "  q) Quit\n",

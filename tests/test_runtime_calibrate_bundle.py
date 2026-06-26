@@ -242,6 +242,13 @@ def test_imu_axis_calibration_uses_short_motion_windows() -> None:
     assert "GET READY" not in measure_src
 
 
+def test_imu_body_y_positive_prompt_uses_right_hand_rule() -> None:
+    sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
+
+    assert "Action: pitch DOWN (nose down)" in sign_src
+    assert "Action: pitch UP (nose up)" not in sign_src
+
+
 def test_infer_rotation_axis_from_gyro_detects_yaw_axis() -> None:
     baseline = np.zeros((20, 3), dtype=np.float32)
     motion = np.zeros((100, 3), dtype=np.float32)
