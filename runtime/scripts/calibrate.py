@@ -1918,6 +1918,11 @@ def _capture_imu_series(
     samples: List[np.ndarray] = []
     quat_samples: List[np.ndarray] = []
     last_progress = start
+    start_ts = float(last_ts)
+    fresh_updates = 0
+    duplicate_reads = 0
+    valid_reads = 0
+    zero_gyro_reads = 0
 
     while time.monotonic() - start < duration_s:
         t0 = time.monotonic()
@@ -1933,13 +1938,21 @@ def _capture_imu_series(
         if ts > 0.0 and ts != last_ts:
             last_ts = ts
             stale_since = time.monotonic()
+            fresh_updates += 1
         elif time.monotonic() - stale_since > stall_timeout_s:
             raise RuntimeError(
                 "IMU sample stream stalled during gyro capture (timestamp_s stopped updating). "
                 "Check I2C stability/power."
             )
+        else:
+            duplicate_reads += 1
 
-        samples.append(np.asarray(s.gyro_rad_s, dtype=np.float32))
+        gyro_sample = np.asarray(s.gyro_rad_s, dtype=np.float32)
+        if bool(getattr(s, "valid", True)):
+            valid_reads += 1
+        if gyro_sample.shape == (3,) and float(np.linalg.norm(gyro_sample)) < 1e-8:
+            zero_gyro_reads += 1
+        samples.append(gyro_sample)
         quat_samples.append(np.asarray(s.quat_xyzw, dtype=np.float32))
         now = time.monotonic()
         if progress_every_s > 0 and now - last_progress >= progress_every_s:
@@ -1961,7 +1974,11 @@ def _capture_imu_series(
         )
     if progress_every_s > 0:
         elapsed = time.monotonic() - start
-        _log_line(f"{label}: capture complete: {len(samples)} samples (t={elapsed:.1f}/{duration_s:.1f}s)")
+        _log_line(
+            f"{label}: capture complete: {len(samples)} samples (t={elapsed:.1f}/{duration_s:.1f}s) "
+            f"valid={valid_reads}/{len(samples)} timestamp_updates={fresh_updates} duplicate_reads={duplicate_reads} "
+            f"zero_gyro={zero_gyro_reads} ts={start_ts:.3f}->{last_ts:.3f}"
+        )
     return (
         np.stack(samples, axis=0).astype(np.float32),
         np.stack(quat_samples, axis=0).astype(np.float32),
@@ -2240,6 +2257,76 @@ def _infer_rotation_axis_from_gyro(
     return angle_rad, (rot_vec / angle_rad).astype(np.float32)
 
 
+def _format_vec3(v: np.ndarray, *, precision: int = 4) -> str:
+    a = np.asarray(v, dtype=np.float32).reshape(3)
+    return "[" + ", ".join(f"{float(x):+.{precision}f}" for x in a) + "]"
+
+
+def _log_gyro_axis_debug(
+    *,
+    body_axis_name: str,
+    baseline_gyro: np.ndarray,
+    motion_gyro: np.ndarray,
+    duration_s: float,
+) -> None:
+    baseline = np.asarray(baseline_gyro, dtype=np.float32).reshape(-1, 3)
+    motion = np.asarray(motion_gyro, dtype=np.float32).reshape(-1, 3)
+    if motion.shape[0] == 0:
+        _log_line(f"{body_axis_name}: gyro debug: no motion gyro samples")
+        return
+
+    bias = (
+        np.mean(baseline, axis=0).astype(np.float32)
+        if baseline.shape[0] > 0
+        else np.zeros(3, dtype=np.float32)
+    )
+    corrected = motion - bias.reshape(1, 3)
+    speed = np.linalg.norm(corrected, axis=1).astype(np.float32)
+    finite = np.isfinite(speed)
+    finite_count = int(np.count_nonzero(finite))
+    speed_finite = speed[finite] if finite_count > 0 else np.zeros(1, dtype=np.float32)
+    threshold = max(0.05, 0.25 * float(np.percentile(speed_finite, 90.0)))
+    active = finite & (speed >= threshold)
+    if int(np.count_nonzero(active)) < 3:
+        active = finite
+    dt = float(duration_s) / max(1, finite_count)
+    corrected_active = corrected[active] if int(np.count_nonzero(active)) > 0 else corrected[finite]
+    positive_impulse = np.sum(np.clip(corrected_active, 0.0, None), axis=0).astype(np.float32) * dt
+    negative_impulse = np.sum(np.clip(corrected_active, None, 0.0), axis=0).astype(np.float32) * dt
+    signed_impulses = np.concatenate([positive_impulse, -negative_impulse]).astype(np.float32)
+    labels = ["+X", "+Y", "+Z", "-X", "-Y", "-Z"]
+    best_idx = int(np.argmax(signed_impulses))
+    impulse_text = ", ".join(f"{label}={float(value):.4f}" for label, value in zip(labels, signed_impulses, strict=True))
+    mid_idx = motion.shape[0] // 2
+
+    _log_line(
+        f"{body_axis_name}: gyro debug samples baseline={baseline.shape[0]} motion={motion.shape[0]} "
+        f"finite_motion={finite_count}"
+    )
+    if baseline.shape[0] > 0:
+        _log_line(
+            f"{body_axis_name}: gyro debug baseline mean_rad_s={_format_vec3(bias)} "
+            f"std_rad_s={_format_vec3(np.std(baseline, axis=0).astype(np.float32))}"
+        )
+    _log_line(
+        f"{body_axis_name}: gyro debug motion mean_rad_s={_format_vec3(np.mean(motion, axis=0).astype(np.float32))} "
+        f"max_abs_rad_s={_format_vec3(np.max(np.abs(motion), axis=0).astype(np.float32))}"
+    )
+    _log_line(
+        f"{body_axis_name}: gyro debug corrected_speed_rad_s "
+        f"p50={float(np.percentile(speed_finite, 50.0)):.4f} "
+        f"p90={float(np.percentile(speed_finite, 90.0)):.4f} "
+        f"p99={float(np.percentile(speed_finite, 99.0)):.4f} "
+        f"max={float(np.max(speed_finite)):.4f} threshold={threshold:.4f} "
+        f"active={int(np.count_nonzero(active))}/{motion.shape[0]}"
+    )
+    _log_line(f"{body_axis_name}: gyro debug signed_impulse_rad {impulse_text} best={labels[best_idx]}")
+    _log_line(
+        f"{body_axis_name}: gyro debug motion first/mid/last "
+        f"{_format_vec3(motion[0])} / {_format_vec3(motion[mid_idx])} / {_format_vec3(motion[-1])}"
+    )
+
+
 def _load_axis_map_measurements(raw_config: dict) -> dict[str, np.ndarray]:
     bno_cfg = raw_config.get("bno085", {}) if isinstance(raw_config, dict) else {}
     measurements = bno_cfg.get("axis_map_measurements", {})
@@ -2310,12 +2397,12 @@ def _measure_axis_once(
         seconds=3.0,
         hz=DEFAULT_IMU_STATUS_HZ,
     )
-    _bell()
-    _bell()
     if action_hint:
-        _log_line(_yellow(f"{body_axis_name}: ROTATE NOW — {action_hint} ({motion_s:.1f}s)"))
+        _log_line(_yellow(f"{body_axis_name}: ROTATE NOW - {action_hint} ({motion_s:.1f}s)"))
     else:
         _log_line(_yellow(f"{body_axis_name}: ROTATE NOW (motion capture {motion_s:.1f}s)"))
+    _bell()
+    _bell()
     _log_line(_yellow(f"{body_axis_name}: motion capture started"))
     motion_gyro, motion_quat, last_ts = _capture_imu_series(
         imu,
@@ -2343,6 +2430,12 @@ def _measure_axis_once(
             ),
         ):
             _log_line(f"{body_axis_name}: axis inference step: gyro dominant axis")
+            _log_gyro_axis_debug(
+                body_axis_name=body_axis_name,
+                baseline_gyro=baseline_gyro,
+                motion_gyro=motion_gyro,
+                duration_s=float(motion_s),
+            )
             gyro_result = _infer_rotation_axis_from_gyro(
                 baseline_gyro=baseline_gyro,
                 motion_gyro=motion_gyro,
@@ -2404,6 +2497,13 @@ def _measure_axis_once(
             w = np.clip(np.abs(rel[:, 3]), 0.0, 1.0).astype(np.float32)
             ang = (2.0 * np.arccos(w)).astype(np.float32)
             i_max = int(np.argmax(ang))
+            _log_line(f"{body_axis_name}: quat_max_relative_angle_rad={float(ang[i_max]):.6f}")
+            mid_idx = motion_q.shape[0] // 2
+            _log_line(
+                f"{body_axis_name}: quat debug baseline_ref={np.round(q0, 4).tolist()} "
+                f"motion_first/mid/last={np.round(motion_q[0], 4).tolist()} / "
+                f"{np.round(motion_q[mid_idx], 4).tolist()} / {np.round(motion_q[-1], 4).tolist()}"
+            )
             q_rel = rel[i_max].astype(np.float32)
             v = q_rel[:3].astype(np.float32)
             v_norm = float(np.linalg.norm(v))
