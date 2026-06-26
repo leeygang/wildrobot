@@ -69,3 +69,12 @@ def test_imu_payload_changed_only_when_report_values_change() -> None:
         np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         np.array([0.2, 0.0, 0.0], dtype=np.float32),
     )
+
+
+def test_input_report_sequence_reads_adafruit_channel_counter() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _input_report_sequence
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 1, 2, 42, 4, 5]
+
+    assert _input_report_sequence(FakeAdafruitImu()) == 42

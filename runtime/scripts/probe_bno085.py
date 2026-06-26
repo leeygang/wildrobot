@@ -73,9 +73,9 @@ def main() -> int:
         help="Apply bno085.axis_map from the config. Default prints the raw configured mount frame.",
     )
     parser.add_argument(
-        "--suppress-debug",
+        "--debug",
         action="store_true",
-        help="Suppress Adafruit BNO08x debug output.",
+        help="Show verbose Adafruit BNO08x packet debug output.",
     )
     args = parser.parse_args()
 
@@ -97,7 +97,7 @@ def main() -> int:
         upside_down=cfg.bno085.upside_down,
         sampling_hz=max(1, int(args.sampling_hz)),
         axis_map=axis_map,
-        suppress_debug=bool(args.suppress_debug),
+        suppress_debug=not bool(args.debug),
         i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
         init_retries=cfg.bno085.init_retries,
         polling_mode=polling_mode,
@@ -113,11 +113,14 @@ def main() -> int:
     timestamp_changes = 0
     max_gyro_norm = 0.0
     max_quat_angle_from_first = 0.0
+    max_read_s = 0.0
     last_ts = None
 
     try:
         for i in range(max(1, int(args.samples))):
+            read_t0 = time.monotonic()
             sample = imu.read()
+            read_s = time.monotonic() - read_t0
             q = np.asarray(sample.quat_xyzw, dtype=np.float32)
             g = np.asarray(sample.gyro_rad_s, dtype=np.float32)
             ts = getattr(sample, "timestamp_s", None)
@@ -137,9 +140,10 @@ def main() -> int:
                 first_q = q.copy()
             max_gyro_norm = max(max_gyro_norm, float(np.linalg.norm(g)))
             max_quat_angle_from_first = max(max_quat_angle_from_first, _quat_angle_delta_rad(first_q, q))
+            max_read_s = max(max_read_s, read_s)
 
             print(
-                f"{i:03d} valid={bool(getattr(sample, 'valid', True))} ts={ts} "
+                f"{i:03d} read_s={read_s:.3f} valid={bool(getattr(sample, 'valid', True))} ts={ts} "
                 f"quat={_fmt_vec(q, digits=5)} gyro={_fmt_vec(g, digits=5)} diag={diag}",
                 flush=True,
             )
@@ -161,6 +165,7 @@ def main() -> int:
     print(f"  gyro_payload_changes: {gyro_changes}", flush=True)
     print(f"  max_gyro_norm_rad_s: {max_gyro_norm:.6f}", flush=True)
     print(f"  max_quat_angle_from_first_rad: {max_quat_angle_from_first:.6f}", flush=True)
+    print(f"  max_read_s: {max_read_s:.6f}", flush=True)
 
     if quat_changes == 0 and gyro_changes == 0:
         print("Result: IMU payload did not change. BNO08x reports are frozen or not being refreshed.", flush=True)

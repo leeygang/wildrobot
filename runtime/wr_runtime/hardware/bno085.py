@@ -12,8 +12,11 @@ import numpy as np
 from .imu import Imu, ImuSample
 
 
+_INPUT_SENSOR_REPORT_CHANNEL = 3
+
+
 def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
-    if previous.timestamp_s is None or not previous.valid:
+    if previous.timestamp_s is None:
         return True
     prev_quat = np.asarray(previous.quat_xyzw, dtype=np.float32)
     prev_gyro = np.asarray(previous.gyro_rad_s, dtype=np.float32)
@@ -23,6 +26,16 @@ def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s:
         np.array_equal(prev_quat, next_quat)
         and np.array_equal(prev_gyro, next_gyro)
     )
+
+
+def _input_report_sequence(imu) -> Optional[int]:
+    seq = getattr(imu, "_sequence_number", None)
+    if not isinstance(seq, list) or len(seq) <= _INPUT_SENSOR_REPORT_CHANNEL:
+        return None
+    try:
+        return int(seq[_INPUT_SENSOR_REPORT_CHANNEL])
+    except Exception:
+        return None
 
 
 class BNO085IMU(Imu):
@@ -241,6 +254,7 @@ class BNO085IMU(Imu):
 
         valid = True
         diag: dict[str, object] = {"quat_source": None, "quat_exception": False, "gyro_exception": False}
+        seq_before = _input_report_sequence(self._imu)
         with self._maybe_silence_debug_output():
             quat = None
             gyro = None
@@ -268,6 +282,11 @@ class BNO085IMU(Imu):
             except Exception:
                 diag["gyro_exception"] = True
                 gyro = None
+        seq_after = _input_report_sequence(self._imu)
+        seq_available = seq_before is not None and seq_after is not None
+        input_report_advanced = bool(seq_available and seq_after != seq_before)
+        diag["input_report_seq"] = seq_after
+        diag["input_report_advanced"] = input_report_advanced if seq_available else None
 
         if quat is None:
             quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
@@ -316,7 +335,16 @@ class BNO085IMU(Imu):
 
         quat_out = quat_xyzw if valid else self._latest.quat_xyzw
         payload_changed = _imu_payload_changed(self._latest, quat_out, gyro_rad_s)
-        if valid and not payload_changed:
+        report_fresh = (
+            valid
+            and (
+                self._latest.timestamp_s is None
+                or input_report_advanced
+                or (not seq_available and payload_changed)
+            )
+        )
+        diag["payload_changed"] = payload_changed
+        if valid and not report_fresh:
             diag["payload_status"] = "stale"
         else:
             diag["payload_status"] = "fresh" if valid else "invalid"
@@ -325,8 +353,8 @@ class BNO085IMU(Imu):
         return ImuSample(
             quat_xyzw=quat_out,
             gyro_rad_s=gyro_rad_s,
-            timestamp_s=time.monotonic() if payload_changed else self._latest.timestamp_s,
-            valid=bool(valid and payload_changed),
+            timestamp_s=time.monotonic() if report_fresh else self._latest.timestamp_s,
+            valid=bool(report_fresh),
         )
 
     def _loop(self) -> None:
