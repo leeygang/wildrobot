@@ -295,7 +295,7 @@ def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
         def wait_for_valid_imu_sample(self, *, timeout_s):
             self._last_valid_imu_sample = sample
 
-    with pytest.raises(SystemExit, match="Hardware preflight failed"):
+    with pytest.raises(SystemExit, match="right_heel"):
         run_policy._run_hardware_preflight(
             robot_io=_FakeRobotIO(),
             actuator_names=["left_hip_pitch"],

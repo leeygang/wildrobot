@@ -223,8 +223,10 @@ def _run_hardware_preflight(
         print("Hardware preflight FAILED:", flush=True)
         for error in errors:
             print(f"  ERROR: {error}", flush=True)
+        error_lines = "\n".join(f"  - {error}" for error in errors)
         raise SystemExit(
-            "Hardware preflight failed; fix errors above before running policy."
+            "Hardware preflight failed; fix errors before running policy:\n"
+            f"{error_lines}"
         )
     print("Hardware preflight OK.", flush=True)
 
