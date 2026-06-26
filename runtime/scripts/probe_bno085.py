@@ -63,6 +63,18 @@ def main() -> int:
     parser.add_argument("--dt", type=float, default=0.05, help="Seconds between samples.")
     parser.add_argument("--sampling-hz", type=int, default=50, help="BNO08x feature report rate.")
     parser.add_argument(
+        "--i2c-frequency-hz",
+        type=int,
+        default=None,
+        help="Override I2C bus frequency from config, e.g. 400000.",
+    )
+    parser.add_argument(
+        "--print-every",
+        type=int,
+        default=1,
+        help="Print every N samples; use 0 to print only summary.",
+    )
+    parser.add_argument(
         "--background",
         action="store_true",
         help="Use the runtime background reader instead of direct polling.",
@@ -83,11 +95,13 @@ def main() -> int:
     address = int(args.address if args.address is not None else cfg.bno085.i2c_address)
     axis_map = cfg.bno085.axis_map if args.runtime_frame else None
     polling_mode = not bool(args.background)
+    i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
 
     print(
         "BNO085/BNO08x probe: "
         f"config={args.config} address=0x{address:02X} upside_down={cfg.bno085.upside_down} "
-        f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={args.sampling_hz}",
+        f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={args.sampling_hz} "
+        f"i2c_frequency_hz={i2c_frequency_hz}",
         flush=True,
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
@@ -98,7 +112,7 @@ def main() -> int:
         sampling_hz=max(1, int(args.sampling_hz)),
         axis_map=axis_map,
         suppress_debug=not bool(args.debug),
-        i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
+        i2c_frequency_hz=i2c_frequency_hz,
         init_retries=cfg.bno085.init_retries,
         polling_mode=polling_mode,
     )
@@ -114,7 +128,10 @@ def main() -> int:
     max_gyro_norm = 0.0
     max_quat_angle_from_first = 0.0
     max_read_s = 0.0
+    slow_read_count = 0
+    very_slow_read_count = 0
     last_ts = None
+    start_s = time.monotonic()
 
     try:
         for i in range(max(1, int(args.samples))):
@@ -141,12 +158,18 @@ def main() -> int:
             max_gyro_norm = max(max_gyro_norm, float(np.linalg.norm(g)))
             max_quat_angle_from_first = max(max_quat_angle_from_first, _quat_angle_delta_rad(first_q, q))
             max_read_s = max(max_read_s, read_s)
+            if read_s > 0.2:
+                slow_read_count += 1
+            if read_s > 1.0:
+                very_slow_read_count += 1
 
-            print(
-                f"{i:03d} read_s={read_s:.3f} valid={bool(getattr(sample, 'valid', True))} ts={ts} "
-                f"quat={_fmt_vec(q, digits=5)} gyro={_fmt_vec(g, digits=5)} diag={diag}",
-                flush=True,
-            )
+            print_every = int(args.print_every)
+            if print_every > 0 and i % print_every == 0:
+                print(
+                    f"{i:03d} read_s={read_s:.3f} valid={bool(getattr(sample, 'valid', True))} ts={ts} "
+                    f"quat={_fmt_vec(q, digits=5)} gyro={_fmt_vec(g, digits=5)} diag={diag}",
+                    flush=True,
+                )
 
             prev_q = q.copy()
             prev_g = g.copy()
@@ -156,8 +179,10 @@ def main() -> int:
         imu.close()
 
     total = max(1, int(args.samples))
+    elapsed_s = time.monotonic() - start_s
     print("", flush=True)
     print("Summary:", flush=True)
+    print(f"  elapsed_s: {elapsed_s:.3f}", flush=True)
     print(f"  valid_samples: {valid_count}/{total}", flush=True)
     print(f"  stale_or_invalid_samples: {stale_count}/{total}", flush=True)
     print(f"  timestamp_changes: {timestamp_changes}", flush=True)
@@ -166,6 +191,8 @@ def main() -> int:
     print(f"  max_gyro_norm_rad_s: {max_gyro_norm:.6f}", flush=True)
     print(f"  max_quat_angle_from_first_rad: {max_quat_angle_from_first:.6f}", flush=True)
     print(f"  max_read_s: {max_read_s:.6f}", flush=True)
+    print(f"  slow_reads_over_0.2s: {slow_read_count}/{total}", flush=True)
+    print(f"  very_slow_reads_over_1.0s: {very_slow_read_count}/{total}", flush=True)
 
     if quat_changes == 0 and gyro_changes == 0:
         print("Result: IMU payload did not change. BNO08x reports are frozen or not being refreshed.", flush=True)
