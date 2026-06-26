@@ -11,9 +11,12 @@ import numpy as np
 import pytest
 
 from runtime.scripts.calibrate import (
+    CALIBRATION_IMU_SAMPLING_HZ,
     _axis_label,
+    _capture_imu_series,
     _format_footswitch_status_line,
     _infer_rotation_axis_from_gyro,
+    _init_calibration_bno085,
     _load_axis_map_measurements,
     _wait_for_imu_stream,
     calibrate_imu_axis_map_full,
@@ -146,12 +149,67 @@ def test_wait_for_imu_stream_accepts_slow_first_valid_sample() -> None:
     assert _wait_for_imu_stream(_SlowFirstValidImu(), timeout_s=0.001) == 123.0
 
 
+def test_capture_imu_series_keeps_only_fresh_valid_samples(monkeypatch) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["t"] += 0.001
+        return clock["t"]
+
+    monkeypatch.setattr(calibrate_mod.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+
+    def sample(ts: float, valid: bool, gyro_x: float):
+        return SimpleNamespace(
+            timestamp_s=ts,
+            valid=valid,
+            quat_xyzw=[gyro_x, 0.0, 0.0, 1.0],
+            gyro_rad_s=[gyro_x, 0.0, 0.0],
+        )
+
+    class _SequenceImu:
+        polling_mode = False
+
+        def __init__(self):
+            self.samples = [
+                sample(1.0, True, 1.0),
+                sample(1.0, True, 2.0),   # duplicate timestamp
+                sample(2.0, False, 3.0),  # invalid fresh report
+                sample(3.0, True, 4.0),
+            ]
+
+        def read(self):
+            if self.samples:
+                return self.samples.pop(0)
+            return sample(3.0, True, 5.0)
+
+    gyro, quat, last_ts = _capture_imu_series(
+        _SequenceImu(),
+        duration_s=0.03,
+        last_ts=0.0,
+        sample_dt_s=0.0,
+        stall_timeout_s=1.0,
+        progress_every_s=0.0,
+    )
+
+    assert last_ts == 3.0
+    np.testing.assert_allclose(gyro[:, 0], [1.0, 4.0])
+    np.testing.assert_allclose(quat[:, 0], [1.0, 4.0])
+
+
 def test_imu_axis_calibration_uses_background_reader() -> None:
     full_src = inspect.getsource(calibrate_imu_axis_map_full)
     sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
+    init_src = inspect.getsource(_init_calibration_bno085)
 
-    assert "polling_mode=False" in full_src
-    assert "polling_mode=False" in sign_src
+    assert CALIBRATION_IMU_SAMPLING_HZ == 200
+    assert "sampling_hz" in init_src
+    assert "_init_calibration_bno085" in full_src
+    assert "_init_calibration_bno085" in sign_src
+    assert "polling_mode\": False" in init_src
+    assert "enable_rotation_vector\": False" in init_src
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
 

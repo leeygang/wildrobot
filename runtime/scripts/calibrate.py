@@ -50,6 +50,7 @@ DEFAULT_IMU_STATUS_HZ = 2.0
 DEFAULT_IMU_MAX_ATTEMPTS = 3
 DEFAULT_IMU_AXIS_ALIGN_COS = 0.9  # require inferred axis to align with expected sensor axis
 DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
+CALIBRATION_IMU_SAMPLING_HZ = 200
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
@@ -1682,6 +1683,33 @@ def _apply_upside_down_quat(quat_xyzw: List[float]) -> List[float]:
     return [x, -y, -z, w]
 
 
+def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down: bool):
+    """Create a ToddlerBot-style BNO08x reader for calibration.
+
+    ToddlerBot reads BNO08x from a background thread at 200 Hz and enables gyro plus
+    one quaternion report. Calibration needs the same fresh-stream behavior more than
+    the runtime fallback report path.
+    """
+    kwargs = {
+        "i2c_address": config.bno085.i2c_address,
+        "upside_down": upside_down,
+        "sampling_hz": CALIBRATION_IMU_SAMPLING_HZ,
+        "polling_mode": False,
+        "suppress_debug": config.bno085.suppress_debug,
+        "i2c_frequency_hz": config.bno085.i2c_frequency_hz,
+        "init_retries": config.bno085.init_retries,
+        "enable_rotation_vector": False,
+    }
+    try:
+        return BNO085IMU(**kwargs)
+    except TypeError as exc:
+        # Back-compat for target images with an older local BNO085IMU wrapper.
+        if "unexpected" not in str(exc):
+            raise
+        kwargs.pop("enable_rotation_vector", None)
+        return BNO085IMU(**kwargs)
+
+
 def calibrate_imu_upside_down(
     *,
     config: WrRuntimeConfig,
@@ -1716,36 +1744,36 @@ def calibrate_imu_upside_down(
                 "Check wiring/address, confirm /dev/i2c-1 exists, and run 'sudo i2cdetect -y 1' on the robot."
             ),
         ):
-            try:
-                imu = BNO085IMU(
-                    i2c_address=config.bno085.i2c_address,
-                    upside_down=False,
-                    sampling_hz=50,
-                    polling_mode=False,
-                )
-            except TypeError:
-                # Back-compat with older BNO085IMU implementations.
-                imu = BNO085IMU(
-                    i2c_address=config.bno085.i2c_address,
-                    upside_down=False,
-                    sampling_hz=50,
-                )
+            imu = _init_calibration_bno085(
+                BNO085IMU,
+                config=config,
+                upside_down=False,
+            )
     except TimeoutError as exc:
         raise RuntimeError(str(exc)) from exc
     try:
         time.sleep(0.2)
+        _log_line(
+            "IMU init: "
+            f"polling_mode={getattr(imu, 'polling_mode', None)} "
+            f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
+            f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
+            f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
+        )
         # Ensure the background reader is producing fresh samples (not stuck on I2C).
         last_ts = float(getattr(imu.read(), "timestamp_s", 0.0))
         start_wait = time.monotonic()
         while True:
             s0 = imu.read()
             ts0 = float(getattr(s0, "timestamp_s", 0.0))
-            if ts0 > 0.0 and ts0 != last_ts:
+            if ts0 > 0.0 and ts0 != last_ts and bool(getattr(s0, "valid", True)):
                 last_ts = ts0
                 break
+            if ts0 > 0.0 and ts0 != last_ts:
+                last_ts = ts0
             if time.monotonic() - start_wait > 3.0:
                 raise RuntimeError(
-                    "IMU is not producing samples (timestamp_s not updating). "
+                    "IMU is not producing fresh valid samples. "
                     "Check I2C wiring/address, and verify the BNO08X is visible with 'sudo i2cdetect -y 1'."
                 )
             time.sleep(0.05)
@@ -1754,17 +1782,26 @@ def calibrate_imu_upside_down(
         g_flipped = []
         total = max(1, int(samples))
         stale_since = time.monotonic()
-        for i in range(total):
+        collected = 0
+        reads = 0
+        while collected < total:
             s = imu.read()
+            reads += 1
             ts = float(getattr(s, "timestamp_s", 0.0))
-            if ts != last_ts and ts > 0.0:
+            valid = bool(getattr(s, "valid", True))
+            fresh = ts != last_ts and ts > 0.0
+            if fresh:
                 last_ts = ts
+            if fresh and valid:
                 stale_since = time.monotonic()
             elif time.monotonic() - stale_since > 2.0:
                 raise RuntimeError(
-                    "IMU sample stream stalled during calibration (timestamp_s stopped updating). "
+                    "IMU sample stream stalled during calibration (no fresh valid samples). "
                     "This often indicates an intermittent I2C bus lock or power issue."
                 )
+            if not (fresh and valid):
+                time.sleep(0.01)
+                continue
 
             q = normalize_quat_xyzw(np.asarray(s.quat_xyzw, dtype=np.float32))
             g0 = gravity_local_from_quat(q)
@@ -1773,8 +1810,9 @@ def calibrate_imu_upside_down(
             )
             g_normal.append(g0)
             g_flipped.append(g1)
-            if (i + 1) % 25 == 0:
-                print(f"  ... {i + 1}/{total}", flush=True)
+            collected += 1
+            if collected % 25 == 0:
+                print(f"  ... {collected}/{total} fresh samples (reads={reads})", flush=True)
             time.sleep(0.01)
 
         print("Computing gravity means...", flush=True)
@@ -1912,22 +1950,25 @@ def _capture_imu_series(
     stall_timeout_s: float = 2.0,
     progress_every_s: float = DEFAULT_IMU_PROGRESS_EVERY_S,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Capture IMU samples for duration, ensuring timestamp_s advances."""
+    """Capture fresh valid IMU samples for duration, ensuring timestamp_s advances."""
     start = time.monotonic()
     stale_since = time.monotonic()
     samples: List[np.ndarray] = []
     quat_samples: List[np.ndarray] = []
     last_progress = start
     start_ts = float(last_ts)
-    fresh_updates = 0
+    timestamp_updates = 0
     duplicate_reads = 0
     valid_reads = 0
+    invalid_reads = 0
     zero_gyro_reads = 0
+    reads = 0
 
     while time.monotonic() - start < duration_s:
         t0 = time.monotonic()
         s = imu.read()
         t1 = time.monotonic()
+        reads += 1
         read_dt = t1 - t0
         if read_dt > 0.2:
             raise RuntimeError(
@@ -1935,38 +1976,45 @@ def _capture_imu_series(
                 "This can indicate an I2C bus lock or a blocked background reader thread."
             )
         ts = float(getattr(s, "timestamp_s", 0.0))
-        if ts > 0.0 and ts != last_ts:
+        valid = bool(getattr(s, "valid", True))
+        timestamp_changed = ts > 0.0 and ts != last_ts
+        if timestamp_changed:
             last_ts = ts
-            stale_since = time.monotonic()
-            fresh_updates += 1
-        elif time.monotonic() - stale_since > stall_timeout_s:
-            raise RuntimeError(
-                "IMU sample stream stalled during gyro capture (timestamp_s stopped updating). "
-                "Check I2C stability/power."
-            )
+            timestamp_updates += 1
         else:
             duplicate_reads += 1
 
         gyro_sample = np.asarray(s.gyro_rad_s, dtype=np.float32)
-        if bool(getattr(s, "valid", True)):
+        if valid:
             valid_reads += 1
+        else:
+            invalid_reads += 1
         if gyro_sample.shape == (3,) and float(np.linalg.norm(gyro_sample)) < 1e-8:
             zero_gyro_reads += 1
-        samples.append(gyro_sample)
-        quat_samples.append(np.asarray(s.quat_xyzw, dtype=np.float32))
+        if timestamp_changed and valid:
+            stale_since = time.monotonic()
+            samples.append(gyro_sample)
+            quat_samples.append(np.asarray(s.quat_xyzw, dtype=np.float32))
+        elif time.monotonic() - stale_since > stall_timeout_s:
+            raise RuntimeError(
+                "IMU sample stream stalled during gyro capture (no fresh valid samples). "
+                f"Check I2C stability/power. reads={reads} valid_reads={valid_reads} "
+                f"invalid_reads={invalid_reads} duplicate_reads={duplicate_reads}; {_format_imu_debug(imu, s)}"
+            )
         now = time.monotonic()
         if progress_every_s > 0 and now - last_progress >= progress_every_s:
             elapsed = now - start
             remaining = max(0.0, duration_s - elapsed)
             _log_line(
-                f"{label}: captured {len(samples)} samples (t={elapsed:.1f}/{duration_s:.1f}s, remaining={remaining:.1f}s)"
+                f"{label}: captured {len(samples)} fresh samples "
+                f"(t={elapsed:.1f}/{duration_s:.1f}s, remaining={remaining:.1f}s, reads={reads})"
             )
             last_progress = now
         time.sleep(sample_dt_s)
 
     if not samples:
         if progress_every_s > 0:
-            print("  ... capture complete: 0 samples", flush=True)
+            print("  ... capture complete: 0 fresh samples", flush=True)
         return (
             np.zeros((0, 3), dtype=np.float32),
             np.zeros((0, 4), dtype=np.float32),
@@ -1975,9 +2023,10 @@ def _capture_imu_series(
     if progress_every_s > 0:
         elapsed = time.monotonic() - start
         _log_line(
-            f"{label}: capture complete: {len(samples)} samples (t={elapsed:.1f}/{duration_s:.1f}s) "
-            f"valid={valid_reads}/{len(samples)} timestamp_updates={fresh_updates} duplicate_reads={duplicate_reads} "
-            f"zero_gyro={zero_gyro_reads} ts={start_ts:.3f}->{last_ts:.3f}"
+            f"{label}: capture complete: {len(samples)} fresh samples (t={elapsed:.1f}/{duration_s:.1f}s) "
+            f"reads={reads} valid_reads={valid_reads} invalid_reads={invalid_reads} "
+            f"timestamp_updates={timestamp_updates} duplicate_reads={duplicate_reads} "
+            f"zero_gyro_reads={zero_gyro_reads} ts={start_ts:.3f}->{last_ts:.3f}"
         )
     return (
         np.stack(samples, axis=0).astype(np.float32),
@@ -2007,11 +2056,13 @@ def _wait_for_imu_stream(imu, *, timeout_s: float = 2.0) -> float:
         reads += 1
         last_sample = s
         ts = float(getattr(s, "timestamp_s", 0.0) or 0.0)
-        if ts > 0.0 and ts != last_ts:
+        if ts > 0.0 and ts != last_ts and bool(getattr(s, "valid", True)):
             return ts
+        if ts > 0.0 and ts != last_ts:
+            last_ts = ts
         time.sleep(0.01)
     raise RuntimeError(
-        "IMU stream did not produce fresh samples (timestamp_s not advancing). "
+        "IMU stream did not produce fresh valid samples (timestamp_s not advancing with valid=True). "
         "Check I2C wiring/address and ensure the IMU is powered. "
         f"reads={reads}; {_format_imu_debug(imu, last_sample)}"
     )
@@ -2793,10 +2844,10 @@ def calibrate_imu_axis_map_step(
                 "Timed out initializing BNO085 IMU for axis measurement. Check I2C wiring/address and ensure no other process is holding the I2C lock."
             ),
         ):
-            imu = BNO085IMU(
-                i2c_address=config.bno085.i2c_address,
+            imu = _init_calibration_bno085(
+                BNO085IMU,
+                config=config,
                 upside_down=upside_down,
-                sampling_hz=50,
             )
     except TimeoutError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -2806,6 +2857,8 @@ def calibrate_imu_axis_map_step(
         _log_line(
             "IMU init: "
             f"polling_mode={getattr(imu, 'polling_mode', None)} "
+            f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
+            f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
             f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
         )
         instruction_by_axis = {
@@ -2870,19 +2923,11 @@ def calibrate_imu_axis_map_full(
             ) from exc
 
         def _init_imu():
-            try:
-                return BNO085IMU(
-                    i2c_address=config.bno085.i2c_address,
-                    upside_down=upside_down,
-                    sampling_hz=50,
-                    polling_mode=False,
-                )
-            except TypeError:
-                return BNO085IMU(
-                    i2c_address=config.bno085.i2c_address,
-                    upside_down=upside_down,
-                    sampling_hz=50,
-                )
+            return _init_calibration_bno085(
+                BNO085IMU,
+                config=config,
+                upside_down=upside_down,
+            )
 
         try:
             with _alarm_timeout(
@@ -2898,6 +2943,13 @@ def calibrate_imu_axis_map_full(
     try:
         if imu is not None:
             time.sleep(0.2)
+            _log_line(
+                "IMU init: "
+                f"polling_mode={getattr(imu, 'polling_mode', None)} "
+                f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
+                f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
+                f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
+            )
         instruction_by_axis = {
             "body_z": (
                 "Action: yaw LEFT (turn counter-clockwise when viewed from above), then return to still.\n"
@@ -3103,19 +3155,11 @@ def calibrate_imu_axis_sign_only(
         raise ValueError(f"Unknown body_axis: {body_axis}")
 
     def _init_imu():
-        try:
-            return BNO085IMU(
-                i2c_address=config.bno085.i2c_address,
-                upside_down=upside_down,
-                sampling_hz=50,
-                polling_mode=False,
-            )
-        except TypeError:
-            return BNO085IMU(
-                i2c_address=config.bno085.i2c_address,
-                upside_down=upside_down,
-                sampling_hz=50,
-            )
+        return _init_calibration_bno085(
+            BNO085IMU,
+            config=config,
+            upside_down=upside_down,
+        )
 
     with _alarm_timeout(
         10,
@@ -3130,6 +3174,8 @@ def calibrate_imu_axis_sign_only(
         _log_line(
             "IMU init: "
             f"polling_mode={getattr(imu, 'polling_mode', None)} "
+            f"sampling_hz={getattr(imu, 'sampling_hz', None)} "
+            f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
             f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
         )
 

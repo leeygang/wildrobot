@@ -62,6 +62,7 @@ class BNO085IMU(Imu):
         i2c_frequency_hz: int = 100000,
         init_retries: int = 3,
         polling_mode: bool = False,
+        enable_rotation_vector: bool = True,
     ):
         self.i2c_address = int(i2c_address)
         self.upside_down = bool(upside_down)
@@ -71,6 +72,7 @@ class BNO085IMU(Imu):
         self.i2c_frequency_hz = int(i2c_frequency_hz)
         self.init_retries = int(init_retries)
         self.polling_mode = bool(polling_mode)
+        self.enable_rotation_vector = bool(enable_rotation_vector)
         self._axis_map = list(axis_map) if axis_map is not None else None
         self._r_bs = _axis_map_to_r_bs(self._axis_map) if self._axis_map is not None else None
 
@@ -121,12 +123,10 @@ class BNO085IMU(Imu):
                 i2c = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
                 imu = BNO08X_I2C(i2c, address=self.i2c_address)
                 with self._maybe_silence_debug_output():
-                    # Always enable ROTATION_VECTOR because the library's `.quaternion` accessor
-                    # expects that report. If GAME_ROTATION_VECTOR is available, enable it too
-                    # and prefer `.game_quaternion` at read time (mag-free, typically more robust).
-                    _enable_feature_best_effort(imu, BNO_REPORT_ROTATION_VECTOR)
                     if _GAME_QUAT_REPORT is not None:
                         _enable_feature_best_effort(imu, _GAME_QUAT_REPORT)
+                    if self.enable_rotation_vector or _GAME_QUAT_REPORT is None:
+                        _enable_feature_best_effort(imu, BNO_REPORT_ROTATION_VECTOR)
                     _enable_feature_best_effort(imu, BNO_REPORT_GYROSCOPE)
                 self._i2c = i2c
                 self._imu = imu
@@ -269,7 +269,7 @@ class BNO085IMU(Imu):
                 diag["quat_exception"] = True
                 quat = None
 
-            if quat is None:
+            if quat is None and (self.enable_rotation_vector or not self._use_game_quat):
                 try:
                     quat = self._imu.quaternion
                     diag["quat_source"] = "quaternion"
