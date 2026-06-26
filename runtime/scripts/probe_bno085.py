@@ -60,7 +60,18 @@ def main() -> int:
     )
     parser.add_argument("--address", type=_parse_i2c_address, default=None, help="Override I2C address, e.g. 0x4B.")
     parser.add_argument("--samples", type=int, default=120, help="Number of samples to print.")
-    parser.add_argument("--dt", type=float, default=0.05, help="Seconds between samples.")
+    parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Run duration in seconds; overrides --samples.",
+    )
+    parser.add_argument(
+        "--dt",
+        type=float,
+        default=None,
+        help="Seconds between samples. Defaults to 0.05, or 0.01 with --calibration-mode.",
+    )
     parser.add_argument("--sampling-hz", type=int, default=50, help="BNO08x feature report rate.")
     parser.add_argument(
         "--i2c-frequency-hz",
@@ -80,6 +91,14 @@ def main() -> int:
         help="Use the runtime background reader instead of direct polling.",
     )
     parser.add_argument(
+        "--calibration-mode",
+        action="store_true",
+        help=(
+            "Use the same BNO08x setup as IMU calibration: background reader, "
+            "200 Hz reports, and game-quaternion+gyro only."
+        ),
+    )
+    parser.add_argument(
         "--runtime-frame",
         action="store_true",
         help="Apply bno085.axis_map from the config. Default prints the raw configured mount frame.",
@@ -94,14 +113,24 @@ def main() -> int:
     cfg = WrRuntimeConfig.load(args.config)
     address = int(args.address if args.address is not None else cfg.bno085.i2c_address)
     axis_map = cfg.bno085.axis_map if args.runtime_frame else None
-    polling_mode = not bool(args.background)
+    calibration_mode = bool(args.calibration_mode)
+    polling_mode = False if calibration_mode else not bool(args.background)
+    sampling_hz = 200 if calibration_mode else max(1, int(args.sampling_hz))
+    enable_rotation_vector = False if calibration_mode else True
     i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
+    dt_s = float(args.dt) if args.dt is not None else (0.01 if calibration_mode else 0.05)
+    total = (
+        max(1, int(round(float(args.seconds) / max(1e-6, dt_s))))
+        if args.seconds is not None
+        else max(1, int(args.samples))
+    )
 
     print(
         "BNO085/BNO08x probe: "
         f"config={args.config} address=0x{address:02X} upside_down={cfg.bno085.upside_down} "
-        f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={args.sampling_hz} "
-        f"i2c_frequency_hz={i2c_frequency_hz}",
+        f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
+        f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
+        f"samples={total} dt={dt_s:.3f}",
         flush=True,
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
@@ -109,12 +138,13 @@ def main() -> int:
     imu = BNO085IMU(
         i2c_address=address,
         upside_down=cfg.bno085.upside_down,
-        sampling_hz=max(1, int(args.sampling_hz)),
+        sampling_hz=sampling_hz,
         axis_map=axis_map,
         suppress_debug=not bool(args.debug),
         i2c_frequency_hz=i2c_frequency_hz,
         init_retries=cfg.bno085.init_retries,
         polling_mode=polling_mode,
+        enable_rotation_vector=enable_rotation_vector,
     )
 
     prev_q: np.ndarray | None = None
@@ -134,7 +164,7 @@ def main() -> int:
     start_s = time.monotonic()
 
     try:
-        for i in range(max(1, int(args.samples))):
+        for i in range(total):
             read_t0 = time.monotonic()
             sample = imu.read()
             read_s = time.monotonic() - read_t0
@@ -174,11 +204,10 @@ def main() -> int:
             prev_q = q.copy()
             prev_g = g.copy()
             last_ts = ts
-            time.sleep(max(0.0, float(args.dt)))
+            time.sleep(max(0.0, dt_s))
     finally:
         imu.close()
 
-    total = max(1, int(args.samples))
     elapsed_s = time.monotonic() - start_s
     print("", flush=True)
     print("Summary:", flush=True)
