@@ -30,7 +30,7 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_imu_warn_time_s: float = 0.0
 
     def _imu_sample_is_startup_ready(self, imu_sample: object) -> bool:
-        if not bool(getattr(imu_sample, "valid", True)) or not bool(getattr(imu_sample, "fresh", True)):
+        if not bool(getattr(imu_sample, "valid", True)):
             return False
         diag = getattr(self.imu, "diag", None)
         if not isinstance(diag, dict):
@@ -44,6 +44,11 @@ class HardwareRobotIO(RobotIO[Signals]):
         if gyro_status in {"missing", "bad"}:
             return False
         return True
+
+    def _imu_sample_resets_startup_readiness(self, imu_sample: object) -> bool:
+        if bool(getattr(imu_sample, "fresh", True)):
+            return not self._imu_sample_is_startup_ready(imu_sample)
+        return not bool(getattr(imu_sample, "valid", True))
 
     def wait_for_valid_imu_sample(
         self,
@@ -64,9 +69,9 @@ class HardwareRobotIO(RobotIO[Signals]):
         required_consecutive = max(1, int(required_consecutive))
         while time.monotonic() <= deadline:
             imu_sample = self.imu.read()
-            if self._imu_sample_is_startup_ready(imu_sample):
+            if bool(getattr(imu_sample, "fresh", True)) and self._imu_sample_is_startup_ready(imu_sample):
                 consecutive_ready += 1
-            else:
+            elif self._imu_sample_resets_startup_readiness(imu_sample):
                 consecutive_ready = 0
             if consecutive_ready >= required_consecutive:
                 self._imu_nonfresh_consecutive = 0

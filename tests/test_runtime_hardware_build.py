@@ -298,6 +298,56 @@ def test_hardware_robot_io_wait_rejects_startup_gyro_integrated_imu_sample() -> 
     assert robot_io._last_fresh_imu_sample is direct_sample
 
 
+def test_hardware_robot_io_wait_counts_direct_samples_across_cached_reads() -> None:
+    direct_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=True,
+    )
+    cached_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=False,
+    )
+
+    class _FakeImu:
+        def __init__(self) -> None:
+            self.samples = [
+                direct_sample,
+                cached_sample,
+                cached_sample,
+                direct_sample,
+                cached_sample,
+                direct_sample,
+                cached_sample,
+                direct_sample,
+                cached_sample,
+                direct_sample,
+                cached_sample,
+                direct_sample,
+            ]
+            self.diag = {"quat_status": "normalized", "gyro_status": "raw"}
+
+        def read(self):
+            return self.samples.pop(0)
+
+    robot_io = HardwareRobotIO(
+        actuator_names=["j"],
+        control_dt=0.02,
+        actuators=SimpleNamespace(),
+        imu=_FakeImu(),
+        foot_switches=SimpleNamespace(),
+    )
+
+    robot_io.wait_for_valid_imu_sample(timeout_s=1.0, poll_s=0.0)
+
+    assert robot_io._last_fresh_imu_sample is direct_sample
+
+
 def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
     import wr_runtime.hardware.robot_io as robot_io_mod
 
