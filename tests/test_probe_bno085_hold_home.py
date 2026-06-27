@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import runpy
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,3 +88,37 @@ def test_home_servo_commands_reject_missing_servo(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="left_hip_pitch"):
         symbols["_home_servo_commands"](cfg, bundle_dir)
+
+
+def test_home_command_thread_repeats_until_stopped() -> None:
+    symbols = _probe_symbols()
+
+    class FakeController:
+        def __init__(self):
+            self.calls: list[tuple[list[tuple[int, int]], int]] = []
+
+        def move_servos(self, commands: list[tuple[int, int]], time_ms: int) -> bool:
+            self.calls.append((list(commands), int(time_ms)))
+            return True
+
+    controller = FakeController()
+    stop_event = threading.Event()
+    thread, stats = symbols["_start_home_command_thread"](
+        controller,
+        [(1, 500)],
+        start_s=time.monotonic(),
+        home_after_s=0.0,
+        home_move_ms=20,
+        repeat_home_hz=100.0,
+        stop_event=stop_event,
+    )
+
+    time.sleep(0.035)
+    stop_event.set()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert len(controller.calls) >= 2
+    assert controller.calls[0] == ([(1, 500)], 20)
+    assert stats["sent"] == len(controller.calls)
+    assert stats["error"] is None

@@ -101,6 +101,68 @@ def _home_servo_commands(cfg: WrRuntimeConfig, bundle_dir: Path) -> list[tuple[i
     return commands
 
 
+def _start_home_command_thread(
+    controller: HiwonderBoardController,
+    commands: list[tuple[int, int]],
+    *,
+    start_s: float,
+    home_after_s: float,
+    home_move_ms: int,
+    repeat_home_hz: float,
+    stop_event: threading.Event,
+) -> tuple[threading.Thread, dict[str, object]]:
+    stats: dict[str, object] = {
+        "sent": 0,
+        "first_sent_s": None,
+        "last_sent_s": None,
+        "error": None,
+    }
+
+    def _run() -> None:
+        delay_s = max(0.0, home_after_s - (time.monotonic() - start_s))
+        if stop_event.wait(delay_s):
+            return
+
+        interval_s = 1.0 / repeat_home_hz if repeat_home_hz > 0.0 else None
+        next_send_s = time.monotonic()
+        while not stop_event.is_set():
+            now_s = time.monotonic()
+            elapsed_s = now_s - start_s
+            sent = int(stats["sent"])
+            if sent == 0:
+                if interval_s is None:
+                    mode = "once"
+                else:
+                    mode = f"at {repeat_home_hz:.1f} Hz"
+                print(
+                    f"[t={elapsed_s:.3f}] Commanding bundle home pose "
+                    f"({len(commands)} servos, move_ms={home_move_ms}, {mode})",
+                    flush=True,
+                )
+
+            try:
+                controller.move_servos(commands, home_move_ms)
+            except Exception as exc:
+                stats["error"] = f"{type(exc).__name__}: {exc}"
+                print(f"[t={elapsed_s:.3f}] Home command loop failed: {stats['error']}", flush=True)
+                return
+
+            stats["sent"] = sent + 1
+            if stats["first_sent_s"] is None:
+                stats["first_sent_s"] = elapsed_s
+            stats["last_sent_s"] = elapsed_s
+            if interval_s is None:
+                return
+
+            next_send_s += interval_s
+            wait_s = max(0.0, next_send_s - time.monotonic())
+            stop_event.wait(wait_s)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread, stats
+
+
 @contextlib.contextmanager
 def _alarm_timeout(seconds: float, *, message: str):
     seconds_i = int(max(0, round(float(seconds))))
@@ -227,6 +289,16 @@ def main() -> int:
         help="Hiwonder move duration for --hold-home, in milliseconds.",
     )
     parser.add_argument(
+        "--repeat-home-hz",
+        type=float,
+        default=0.0,
+        help=(
+            "After --home-after-s, keep re-sending the bundle home pose at this rate. "
+            "Use 50 with --home-move-ms 20 to mimic policy servo command traffic. "
+            "A positive value implies --hold-home."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Show verbose Adafruit BNO08x packet debug output.",
@@ -249,7 +321,9 @@ def main() -> int:
         if args.seconds is not None
         else max(1, int(args.samples))
     )
-    bundle_dir = _resolve_bundle_dir(args.config, args.bundle) if args.hold_home else None
+    repeat_home_hz = max(0.0, float(args.repeat_home_hz))
+    hold_home_requested = bool(args.hold_home) or repeat_home_hz > 0.0
+    bundle_dir = _resolve_bundle_dir(args.config, args.bundle) if hold_home_requested else None
     home_move_ms = max(0, int(args.home_move_ms))
     home_after_s = max(0.0, float(args.home_after_s))
 
@@ -258,7 +332,8 @@ def main() -> int:
         f"config={args.config} address=0x{address:02X} upside_down={cfg.bno085.upside_down} "
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
-        f"samples={total} dt={dt_s:.3f} hold_home={bool(args.hold_home)}",
+        f"samples={total} dt={dt_s:.3f} hold_home={hold_home_requested} "
+        f"repeat_home_hz={repeat_home_hz:.1f}",
         flush=True,
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
@@ -299,8 +374,10 @@ def main() -> int:
 
     home_controller: HiwonderBoardController | None = None
     home_commands: list[tuple[int, int]] = []
-    home_sent = False
-    if args.hold_home:
+    home_stop_event: threading.Event | None = None
+    home_thread: threading.Thread | None = None
+    home_stats: dict[str, object] | None = None
+    if hold_home_requested:
         try:
             assert bundle_dir is not None
             home_commands = _home_servo_commands(cfg, bundle_dir)
@@ -311,7 +388,8 @@ def main() -> int:
         print(
             "Hold-home enabled: "
             f"bundle={bundle_dir} servos={len(home_commands)} "
-            f"home_after_s={home_after_s:.3f} home_move_ms={home_move_ms}",
+            f"home_after_s={home_after_s:.3f} home_move_ms={home_move_ms} "
+            f"repeat_home_hz={repeat_home_hz:.1f}",
             flush=True,
         )
 
@@ -330,23 +408,20 @@ def main() -> int:
     very_slow_read_count = 0
     last_ts = None
     start_s = time.monotonic()
+    if home_controller is not None:
+        home_stop_event = threading.Event()
+        home_thread, home_stats = _start_home_command_thread(
+            home_controller,
+            home_commands,
+            start_s=start_s,
+            home_after_s=home_after_s,
+            home_move_ms=home_move_ms,
+            repeat_home_hz=repeat_home_hz,
+            stop_event=home_stop_event,
+        )
 
     try:
         for i in range(total):
-            elapsed_before_read_s = time.monotonic() - start_s
-            if (
-                home_controller is not None
-                and not home_sent
-                and elapsed_before_read_s >= home_after_s
-            ):
-                print(
-                    f"[t={elapsed_before_read_s:.3f}] Commanding bundle home pose "
-                    f"({len(home_commands)} servos, move_ms={home_move_ms})",
-                    flush=True,
-                )
-                home_controller.move_servos(home_commands, home_move_ms)
-                home_sent = True
-
             read_t0 = time.monotonic()
             sample = imu.read()
             read_s = time.monotonic() - read_t0
@@ -390,6 +465,10 @@ def main() -> int:
             last_ts = ts
             time.sleep(max(0.0, dt_s))
     finally:
+        if home_stop_event is not None:
+            home_stop_event.set()
+        if home_thread is not None:
+            home_thread.join(timeout=1.0)
         imu.close()
         if home_controller is not None:
             home_controller.close()
@@ -398,8 +477,13 @@ def main() -> int:
     print("", flush=True)
     print("Summary:", flush=True)
     print(f"  elapsed_s: {elapsed_s:.3f}", flush=True)
-    if args.hold_home:
-        print(f"  hold_home_sent: {home_sent}", flush=True)
+    if hold_home_requested:
+        home_sent_count = int((home_stats or {}).get("sent", 0))
+        print(f"  hold_home_sent: {home_sent_count > 0}", flush=True)
+        print(f"  home_command_count: {home_sent_count}", flush=True)
+        print(f"  repeat_home_hz: {repeat_home_hz:.1f}", flush=True)
+        if home_stats is not None and home_stats.get("error") is not None:
+            print(f"  home_command_error: {home_stats['error']}", flush=True)
     print(f"  fresh_valid_samples: {valid_count}/{total}", flush=True)
     print(f"  nonfresh_or_invalid_samples: {stale_count}/{total}", flush=True)
     print(f"  timestamp_changes: {timestamp_changes}", flush=True)
@@ -410,6 +494,10 @@ def main() -> int:
     print(f"  max_read_s: {max_read_s:.6f}", flush=True)
     print(f"  slow_reads_over_0.2s: {slow_read_count}/{total}", flush=True)
     print(f"  very_slow_reads_over_1.0s: {very_slow_read_count}/{total}", flush=True)
+
+    if home_stats is not None and home_stats.get("error") is not None:
+        print(f"Result: Home command loop failed: {home_stats['error']}", flush=True)
+        return 5
 
     valid_ratio = valid_count / float(total)
     if valid_count == 0 or timestamp_changes == 0:
