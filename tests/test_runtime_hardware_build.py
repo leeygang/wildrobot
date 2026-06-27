@@ -222,7 +222,16 @@ def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
 
     class _FakeImu:
         def __init__(self) -> None:
-            self.samples = [invalid_sample, invalid_sample, valid_sample]
+            self.samples = [
+                invalid_sample,
+                invalid_sample,
+                valid_sample,
+                valid_sample,
+                valid_sample,
+                valid_sample,
+                valid_sample,
+                valid_sample,
+            ]
 
         def read(self):
             return self.samples.pop(0)
@@ -240,6 +249,53 @@ def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
     assert robot_io._last_fresh_imu_sample is valid_sample
     assert robot_io._imu_nonfresh_consecutive == 0
     assert robot_io._last_fresh_imu_wall_time_s is not None
+
+
+def test_hardware_robot_io_wait_rejects_startup_gyro_integrated_imu_sample() -> None:
+    integrated_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=True,
+    )
+    direct_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=2.0,
+        valid=True,
+        fresh=True,
+    )
+
+    class _FakeImu:
+        def __init__(self) -> None:
+            self.samples = [
+                ("integrated_from_gyro_after_missing", integrated_sample),
+                ("normalized", direct_sample),
+                ("normalized", direct_sample),
+                ("normalized", direct_sample),
+                ("normalized", direct_sample),
+                ("normalized", direct_sample),
+                ("normalized", direct_sample),
+            ]
+            self.diag = {}
+
+        def read(self):
+            quat_status, sample = self.samples.pop(0)
+            self.diag = {"quat_status": quat_status, "gyro_status": "raw"}
+            return sample
+
+    robot_io = HardwareRobotIO(
+        actuator_names=["j"],
+        control_dt=0.02,
+        actuators=SimpleNamespace(),
+        imu=_FakeImu(),
+        foot_switches=SimpleNamespace(),
+    )
+
+    robot_io.wait_for_valid_imu_sample(timeout_s=1.0, poll_s=0.0)
+
+    assert robot_io._last_fresh_imu_sample is direct_sample
 
 
 def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:

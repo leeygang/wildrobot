@@ -78,6 +78,12 @@ def _integrate_quat_xyzw_body_gyro(
     return quat_xyzw.copy()
 
 
+def _record_diag_exception(diag: dict[str, object], prefix: str, exc: BaseException) -> None:
+    diag[f"{prefix}_exception"] = True
+    diag[f"{prefix}_exception_type"] = type(exc).__name__
+    diag[f"{prefix}_exception_msg"] = str(exc)
+
+
 def _input_report_sequence(imu) -> Optional[int]:
     seq = getattr(imu, "_sequence_number", None)
     if not isinstance(seq, list) or len(seq) <= _INPUT_SENSOR_REPORT_CHANNEL:
@@ -348,22 +354,22 @@ class BNO085IMU(Imu):
                 if self._use_game_quat:
                     quat = self._imu.game_quaternion
                     diag["quat_source"] = "game_quaternion"
-            except Exception:
-                diag["quat_exception"] = True
+            except Exception as exc:
+                _record_diag_exception(diag, "quat", exc)
                 quat = None
 
             if quat is None and (self.enable_rotation_vector or not self._use_game_quat):
                 try:
                     quat = self._imu.quaternion
                     diag["quat_source"] = "quaternion"
-                except Exception:
-                    diag["quat_exception"] = True
+                except Exception as exc:
+                    _record_diag_exception(diag, "quat", exc)
                     quat = None
 
             try:
                 gyro = self._imu.gyro
-            except Exception:
-                diag["gyro_exception"] = True
+            except Exception as exc:
+                _record_diag_exception(diag, "gyro", exc)
                 gyro = None
         seq_after = _input_report_sequence(self._imu)
         seq_available = seq_before is not None and seq_after is not None

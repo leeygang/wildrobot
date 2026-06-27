@@ -29,7 +29,29 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_fresh_imu_wall_time_s: Optional[float] = None
     _last_imu_warn_time_s: float = 0.0
 
-    def wait_for_valid_imu_sample(self, *, timeout_s: float = 3.0, poll_s: float = 0.02) -> None:
+    def _imu_sample_is_startup_ready(self, imu_sample: object) -> bool:
+        if not bool(getattr(imu_sample, "valid", True)) or not bool(getattr(imu_sample, "fresh", True)):
+            return False
+        diag = getattr(self.imu, "diag", None)
+        if not isinstance(diag, dict):
+            return True
+        quat_status = str(diag.get("quat_status", ""))
+        gyro_status = str(diag.get("gyro_status", ""))
+        if quat_status.startswith("integrated_from_gyro"):
+            return False
+        if quat_status in {"missing", "bad_norm", "bad_axis_map_norm"}:
+            return False
+        if gyro_status in {"missing", "bad"}:
+            return False
+        return True
+
+    def wait_for_valid_imu_sample(
+        self,
+        *,
+        timeout_s: float = 3.0,
+        poll_s: float = 0.02,
+        required_consecutive: int = 6,
+    ) -> None:
         """Wait until the IMU has produced at least one valid sample.
 
         BNO08X reports can be unavailable for a short period after enabling
@@ -38,11 +60,15 @@ class HardwareRobotIO(RobotIO[Signals]):
         diagnostics if the sensor never becomes valid.
         """
         deadline = time.monotonic() + max(0.0, float(timeout_s))
+        consecutive_ready = 0
+        required_consecutive = max(1, int(required_consecutive))
         while time.monotonic() <= deadline:
             imu_sample = self.imu.read()
-            if bool(getattr(imu_sample, "valid", True)) and bool(
-                getattr(imu_sample, "fresh", True)
-            ):
+            if self._imu_sample_is_startup_ready(imu_sample):
+                consecutive_ready += 1
+            else:
+                consecutive_ready = 0
+            if consecutive_ready >= required_consecutive:
                 self._imu_nonfresh_consecutive = 0
                 self._last_fresh_imu_sample = imu_sample
                 self._last_fresh_imu_wall_time_s = time.monotonic()
@@ -61,7 +87,9 @@ class HardwareRobotIO(RobotIO[Signals]):
             if parts:
                 extra = " (" + ", ".join(parts) + ")"
         raise RuntimeError(
-            f"IMU did not produce a fresh valid sample within {float(timeout_s):.2f}s; aborting for safety{extra}"
+            "IMU did not produce enough direct fresh valid samples within "
+            f"{float(timeout_s):.2f}s; required_consecutive={required_consecutive}; "
+            f"abort for safety{extra}"
         )
 
     def read(self) -> Signals:
