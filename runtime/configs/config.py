@@ -373,6 +373,8 @@ class BNO085Config:
     axis_map: Optional[list[str]] = None
     i2c_frequency_hz: int = 100_000
     init_retries: int = 3
+    sampling_hz: Optional[int] = None
+    enable_rotation_vector: bool = True
 
 
 @dataclass(frozen=True)
@@ -809,6 +811,10 @@ class WrRuntimeConfig:
             axis_map=axis_map,
             i2c_frequency_hz=int(bno.get("i2c_frequency_hz", 100_000)),
             init_retries=int(bno.get("init_retries", 3)),
+            sampling_hz=(
+                int(bno["sampling_hz"]) if bno.get("sampling_hz") is not None else None
+            ),
+            enable_rotation_vector=bool(bno.get("enable_rotation_vector", True)),
         )
 
     @staticmethod
@@ -875,6 +881,12 @@ class WrRuntimeConfig:
                 "suppress_debug": self.bno085.suppress_debug,
                 "i2c_frequency_hz": int(self.bno085.i2c_frequency_hz),
                 "init_retries": int(self.bno085.init_retries),
+                **(
+                    {"sampling_hz": int(self.bno085.sampling_hz)}
+                    if self.bno085.sampling_hz is not None
+                    else {}
+                ),
+                "enable_rotation_vector": bool(self.bno085.enable_rotation_vector),
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),

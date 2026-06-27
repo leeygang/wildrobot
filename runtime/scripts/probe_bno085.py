@@ -166,7 +166,9 @@ def main() -> int:
     calibration_mode = bool(args.calibration_mode)
     polling_mode = False if calibration_mode else not bool(args.background)
     sampling_hz = 20 if calibration_mode else max(1, int(args.sampling_hz))
-    enable_rotation_vector = True
+    enable_rotation_vector = (
+        True if calibration_mode else bool(cfg.bno085.enable_rotation_vector)
+    )
     i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
     dt_s = float(args.dt) if args.dt is not None else 0.05
     total = (

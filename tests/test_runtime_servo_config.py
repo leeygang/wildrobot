@@ -128,6 +128,28 @@ def test_left_handed_bno_axis_map_raises(tmp_path: Path) -> None:
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
+def test_bno_runtime_stream_options_parse_and_serialize(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+            },
+        },
+        "bno085": {
+            "sampling_hz": 20,
+            "enable_rotation_vector": False,
+        },
+    }
+
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+    assert cfg.bno085.sampling_hz == 20
+    assert cfg.bno085.enable_rotation_vector is False
+    out = cfg.to_dict()
+    assert out["bno085"]["sampling_hz"] == 20
+    assert out["bno085"]["enable_rotation_vector"] is False
+
+
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
     canonical = ServoControllerConfig(
         type="hiwonder",

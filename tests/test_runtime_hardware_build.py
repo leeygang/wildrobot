@@ -79,6 +79,8 @@ def _fake_runtime_config() -> SimpleNamespace:
         suppress_debug=True,
         i2c_frequency_hz=100_000,
         init_retries=3,
+        sampling_hz=None,
+        enable_rotation_vector=True,
     )
     foot_switches = SimpleNamespace(
         get_all_pins=lambda: {
@@ -143,7 +145,47 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
 
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
+    assert captured["imu"]["enable_rotation_vector"] is True
     assert captured["foot"]["pins"]["left_toe"] == "D5"
+
+
+def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None:
+    import configs
+    import wr_runtime.hardware.actuators as act_mod
+    import wr_runtime.hardware.bno085 as bno_mod
+    import wr_runtime.hardware.foot_switches as fs_mod
+    from wr_runtime.control import run_policy
+
+    captured = {}
+    cfg = _fake_runtime_config()
+    cfg.bno085.sampling_hz = 20
+    cfg.bno085.enable_rotation_vector = False
+
+    class _FakeActuators:
+        def __init__(self, **kwargs):
+            pass
+
+    class _FakeImu:
+        def __init__(self, **kwargs):
+            captured["imu"] = kwargs
+
+    class _FakeFootSwitches:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
+    monkeypatch.setattr(act_mod, "HiwonderBoardActuators", _FakeActuators)
+    monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
+    monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
+
+    run_policy._build_hardware_robot_io(
+        runtime_config_path="ignored",
+        actuator_names=["j"],
+        control_dt=0.02,
+    )
+
+    assert captured["imu"]["sampling_hz"] == 20
+    assert captured["imu"]["enable_rotation_vector"] is False
 
 
 def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> None:

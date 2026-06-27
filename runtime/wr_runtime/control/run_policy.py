@@ -118,11 +118,16 @@ def _build_hardware_robot_io(
     imu = BNO085IMU(
         i2c_address=cfg.bno085.i2c_address,
         upside_down=cfg.bno085.upside_down,
-        sampling_hz=max(1, int(round(1.0 / control_dt))),
+        sampling_hz=(
+            int(cfg.bno085.sampling_hz)
+            if cfg.bno085.sampling_hz is not None
+            else max(1, int(round(1.0 / control_dt)))
+        ),
         axis_map=cfg.bno085.axis_map,
         suppress_debug=cfg.bno085.suppress_debug,
         i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
         init_retries=cfg.bno085.init_retries,
+        enable_rotation_vector=cfg.bno085.enable_rotation_vector,
     )
     foot_switches = FootSwitches(pins=cfg.foot_switches.get_all_pins())
     return HardwareRobotIO(
