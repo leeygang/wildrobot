@@ -150,6 +150,99 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
     assert imu.diag["quat_status"] == "bad_norm"
 
 
+def test_bno_read_integrates_gyro_when_runtime_quaternion_is_bad() -> None:
+    import time
+
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 0, 0, 0]
+
+        @property
+        def game_quaternion(self):
+            self._sequence_number[3] += 1
+            return (0.0, 0.0, 0.0, 2.0)
+
+        @property
+        def gyro(self):
+            return (0.0, 0.0, 1.0)
+
+    previous = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=time.monotonic() - 0.02,
+        valid=True,
+        fresh=True,
+    )
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu._imu = FakeAdafruitImu()
+    imu._latest = previous
+    imu._last_report_sample = previous
+    imu._use_game_quat = True
+    imu.enable_rotation_vector = False
+    imu.max_quat_norm_deviation = 0.1
+    imu.suppress_debug = True
+    imu.upside_down = False
+    imu._r_bs = None
+    imu._diag = {}
+
+    sample = imu._read_sample_once()
+
+    assert sample.valid is True
+    assert sample.fresh is True
+    assert sample.timestamp_s is not None
+    assert sample.timestamp_s > previous.timestamp_s
+    np.testing.assert_allclose(np.linalg.norm(sample.quat_xyzw), 1.0, rtol=1e-5)
+    assert imu.diag["quat_status"] == "integrated_from_gyro_after_bad_norm"
+
+
+def test_bno_read_does_not_integrate_from_old_cached_quaternion() -> None:
+    import time
+
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 0, 0, 0]
+
+        @property
+        def game_quaternion(self):
+            self._sequence_number[3] += 1
+            return (0.0, 0.0, 0.0, 2.0)
+
+        @property
+        def gyro(self):
+            return (0.0, 0.0, 1.0)
+
+    previous = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=time.monotonic() - 1.0,
+        valid=True,
+        fresh=True,
+    )
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu._imu = FakeAdafruitImu()
+    imu._latest = previous
+    imu._last_report_sample = previous
+    imu._use_game_quat = True
+    imu.enable_rotation_vector = False
+    imu.max_quat_norm_deviation = 0.1
+    imu.suppress_debug = True
+    imu.upside_down = False
+    imu._r_bs = None
+    imu._diag = {}
+
+    sample = imu._read_sample_once()
+
+    assert sample.valid is False
+    assert sample.fresh is False
+    assert sample.timestamp_s == previous.timestamp_s
+    assert imu.diag["quat_status"] == "bad_norm"
+    assert float(imu.diag["quat_integration_skipped_dt_s"]) > 0.25
+
+
 def test_bno_read_does_not_probe_game_quaternion_property_twice() -> None:
     from runtime.wr_runtime.hardware.bno085 import BNO085IMU
     from runtime.wr_runtime.hardware.imu import ImuSample
