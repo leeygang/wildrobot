@@ -385,6 +385,7 @@ def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
         actuators=SimpleNamespace(
             get_positions_rad=lambda: np.array([0.0], dtype=np.float32),
             estimate_velocities_rad_s=lambda dt: np.array([0.0], dtype=np.float32),
+            set_targets_rad=lambda targets, move_time_ms=None: None,
         ),
         imu=_FakeImu(),
         foot_switches=SimpleNamespace(
@@ -394,12 +395,17 @@ def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
     )
 
     robot_io.read()
+    assert robot_io.last_timing_s["imu_read"] >= 0.0
+    assert robot_io.last_timing_s["actuator_read"] >= 0.0
+    assert robot_io.last_timing_s["footswitch_read"] >= 0.0
     for t in (0.02, 0.04, 0.06, 0.08, 0.10, 0.12):
         now[0] = t
         signals = robot_io.read()
         assert np.allclose(signals.quat_xyzw, valid_sample.quat_xyzw)
 
     assert robot_io._imu_nonfresh_consecutive == 6
+    robot_io.write_ctrl(np.array([0.1], dtype=np.float32))
+    assert robot_io.last_timing_s["write_ctrl"] >= 0.0
 
     now[0] = 0.251
     with pytest.raises(RuntimeError, match="IMU cached sample is too old"):

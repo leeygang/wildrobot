@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from typing import List, Optional
 
@@ -28,6 +28,7 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_fresh_imu_sample: Optional[object] = None
     _last_fresh_imu_wall_time_s: Optional[float] = None
     _last_imu_warn_time_s: float = 0.0
+    last_timing_s: dict[str, float] = field(default_factory=dict, init=False)
 
     def _imu_sample_is_startup_ready(self, imu_sample: object) -> bool:
         if not bool(getattr(imu_sample, "valid", True)):
@@ -98,7 +99,10 @@ class HardwareRobotIO(RobotIO[Signals]):
         )
 
     def read(self) -> Signals:
+        read_t0 = time.monotonic()
+        imu_t0 = read_t0
         imu_sample = self.imu.read()
+        imu_read_s = time.monotonic() - imu_t0
         sample_valid = bool(getattr(imu_sample, "valid", True))
         sample_fresh = bool(getattr(imu_sample, "fresh", True))
         if not sample_valid or not sample_fresh:
@@ -138,7 +142,9 @@ class HardwareRobotIO(RobotIO[Signals]):
             self._last_fresh_imu_sample = imu_sample
             self._last_fresh_imu_wall_time_s = time.monotonic()
 
+        actuator_t0 = time.monotonic()
         joint_pos = self.actuators.get_positions_rad()
+        actuator_read_s = time.monotonic() - actuator_t0
         if joint_pos is None:
             port = getattr(self.actuators, "port", "unknown")
             baudrate = getattr(self.actuators, "baudrate", "unknown")
@@ -149,12 +155,17 @@ class HardwareRobotIO(RobotIO[Signals]):
             raise RuntimeError(
                 f"Failed to read joint positions for {self.actuator_names} on port {port} baud {baudrate}{err_msg}"
             )
+        vel_t0 = time.monotonic()
         joint_vel = self.actuators.estimate_velocities_rad_s(self.control_dt)
+        velocity_s = time.monotonic() - vel_t0
+        foot_t0 = time.monotonic()
         foot_sample = self.foot_switches.read()
+        footswitch_s = time.monotonic() - foot_t0
+        signal_t0 = time.monotonic()
         foot = np.array(foot_sample.switches, dtype=np.float32)
         quat_xyzw = normalize_quat_xyzw(np.asarray(imu_sample.quat_xyzw, dtype=np.float32))
 
-        return Signals(
+        signals = Signals(
             quat_xyzw=quat_xyzw,
             gyro_rad_s=np.asarray(imu_sample.gyro_rad_s, dtype=np.float32),
             joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
@@ -162,9 +173,24 @@ class HardwareRobotIO(RobotIO[Signals]):
             foot_switches=foot,
             timestamp_s=float(getattr(imu_sample, "timestamp_s", 0.0) or 0.0),
         )
+        signal_build_s = time.monotonic() - signal_t0
+        self.last_timing_s = {
+            "imu_read": imu_read_s,
+            "actuator_read": actuator_read_s,
+            "velocity_estimate": velocity_s,
+            "footswitch_read": footswitch_s,
+            "signal_build": signal_build_s,
+            "read_total": time.monotonic() - read_t0,
+        }
+        return signals
 
     def write_ctrl(self, ctrl_targets_rad) -> None:
+        write_t0 = time.monotonic()
         self.actuators.set_targets_rad(np.asarray(ctrl_targets_rad, dtype=np.float32), move_time_ms=None)
+        self.last_timing_s = {
+            **self.last_timing_s,
+            "write_ctrl": time.monotonic() - write_t0,
+        }
 
     def close(self) -> None:
         try:

@@ -63,6 +63,10 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
         assert np.all(np.isfinite(ctrl))
     assert logs, "expected at least one logged step"
     assert logs[0]["obs"].shape == (1129,)
+    assert logs[0]["timing_s"]["read"] >= 0.0
+    assert logs[0]["timing_s"]["policy"] >= 0.0
+    assert logs[0]["timing_s"]["write"] >= 0.0
+    assert logs[0]["timing_s"]["work"] >= 0.0
 
     # step_idx advanced and clamped within the reference horizon.
     assert runner.step_idx == min(8, runtime_policy_config.reference.n_steps - 1)
@@ -87,6 +91,9 @@ def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):
     )
     info = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
     np.testing.assert_allclose(info["target_q_rad"], runner.home_q_rad, atol=1e-6)
+    assert set(["read", "obs", "policy", "compose", "write", "step"]).issubset(
+        info["timing_s"]
+    )
 
 
 class _BadShapePolicy:

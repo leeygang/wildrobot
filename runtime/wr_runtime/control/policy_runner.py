@@ -29,6 +29,7 @@ reproduces the env's 1-iteration proprio-history lag exactly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Optional
 
 import numpy as np
@@ -281,15 +282,46 @@ class RuntimePolicyRunner:
             target_q, applied = compose_and_apply(raw)
             robot_io.write_ctrl(target_q)
         """
+        step_t0 = time.monotonic()
+        read_t0 = time.monotonic()
         signals = self._robot_io.read()
+        read_s = time.monotonic() - read_t0
+
+        obs_t0 = time.monotonic()
         if not self._state.first_step:
             self.roll_history(signals)
         self._state.first_step = False
 
         obs = self.build_obs(signals, velocity_cmd)
+        obs_s = time.monotonic() - obs_t0
+
+        policy_t0 = time.monotonic()
         raw = np.asarray(self._policy.predict(obs), dtype=np.float32).reshape(-1)
+        policy_s = time.monotonic() - policy_t0
+
+        compose_t0 = time.monotonic()
         target_q, applied = self.compose_and_apply(raw)
+        compose_s = time.monotonic() - compose_t0
+
+        write_t0 = time.monotonic()
         self._robot_io.write_ctrl(target_q)
+        write_s = time.monotonic() - write_t0
+
+        timing_s = {
+            "read": read_s,
+            "obs": obs_s,
+            "policy": policy_s,
+            "compose": compose_s,
+            "write": write_s,
+            "step": time.monotonic() - step_t0,
+        }
+        io_timing_s = getattr(self._robot_io, "last_timing_s", None)
+        if isinstance(io_timing_s, dict):
+            for key, value in io_timing_s.items():
+                try:
+                    timing_s[f"io_{key}"] = float(value)
+                except (TypeError, ValueError):
+                    pass
 
         return {
             "step_idx": int(self._state.step_idx),
@@ -298,6 +330,7 @@ class RuntimePolicyRunner:
             "applied_action": applied,
             "target_q_rad": target_q,
             "signals": signals,
+            "timing_s": timing_s,
         }
 
 

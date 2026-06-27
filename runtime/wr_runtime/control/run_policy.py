@@ -241,6 +241,108 @@ def _format_rad_deg(value_rad: float) -> str:
     return f"{float(np.rad2deg(value_rad)):+.1f}"
 
 
+def _format_ms(value_s: float | None) -> str:
+    if value_s is None or not np.isfinite(float(value_s)):
+        return "n/a"
+    return f"{float(value_s) * 1000.0:.1f}"
+
+
+def _format_hz_from_period(value_s: float | None) -> str:
+    if value_s is None or not np.isfinite(float(value_s)) or float(value_s) <= 0.0:
+        return "n/a"
+    return f"{1.0 / float(value_s):.1f}"
+
+
+def _timing_values(samples: List[dict], key: str) -> List[float]:
+    out = []
+    for sample in samples:
+        value = sample.get(key)
+        if value is None:
+            continue
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(value_f):
+            out.append(value_f)
+    return out
+
+
+def _timing_avg(samples: List[dict], key: str) -> float | None:
+    values = _timing_values(samples, key)
+    if not values:
+        return None
+    return float(np.mean(values))
+
+
+def _timing_max(samples: List[dict], key: str) -> float | None:
+    values = _timing_values(samples, key)
+    if not values:
+        return None
+    return float(np.max(values))
+
+
+def _format_step_timing(timing_s: dict) -> str:
+    loop_period_s = timing_s.get("loop_period")
+    return (
+        f"timing[loop_hz={_format_hz_from_period(loop_period_s)} "
+        f"work_ms={_format_ms(timing_s.get('work'))} "
+        f"read_ms={_format_ms(timing_s.get('read'))} "
+        f"policy_ms={_format_ms(timing_s.get('policy'))} "
+        f"write_ms={_format_ms(timing_s.get('write'))} "
+        f"servo_read_ms={_format_ms(timing_s.get('io_actuator_read'))} "
+        f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))}]"
+    )
+
+
+def _print_timing_summary(
+    *,
+    timing_samples: List[dict],
+    ctrl_dt: float,
+    realtime: bool,
+) -> None:
+    if not timing_samples:
+        return
+    target_hz = 1.0 / float(ctrl_dt) if float(ctrl_dt) > 0.0 else float("nan")
+    loop_avg_s = _timing_avg(timing_samples, "loop_period")
+    work_avg_s = _timing_avg(timing_samples, "work")
+    print(
+        "Timing summary: "
+        f"target_hz={target_hz:.1f} realtime={realtime} "
+        f"loop_hz_avg={_format_hz_from_period(loop_avg_s)} "
+        f"work_hz_avg={_format_hz_from_period(work_avg_s)} "
+        f"work_ms_avg={_format_ms(work_avg_s)} "
+        f"work_ms_max={_format_ms(_timing_max(timing_samples, 'work'))}",
+        flush=True,
+    )
+    print(
+        "  Step avg/max ms: "
+        f"read={_format_ms(_timing_avg(timing_samples, 'read'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'read'))} "
+        f"obs={_format_ms(_timing_avg(timing_samples, 'obs'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'obs'))} "
+        f"policy={_format_ms(_timing_avg(timing_samples, 'policy'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'policy'))} "
+        f"compose={_format_ms(_timing_avg(timing_samples, 'compose'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'compose'))} "
+        f"write={_format_ms(_timing_avg(timing_samples, 'write'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'write'))}",
+        flush=True,
+    )
+    print(
+        "  IO avg/max ms: "
+        f"imu={_format_ms(_timing_avg(timing_samples, 'io_imu_read'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'io_imu_read'))} "
+        f"servo_read={_format_ms(_timing_avg(timing_samples, 'io_actuator_read'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'io_actuator_read'))} "
+        f"footswitch={_format_ms(_timing_avg(timing_samples, 'io_footswitch_read'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'io_footswitch_read'))} "
+        f"servo_write={_format_ms(_timing_avg(timing_samples, 'io_write_ctrl'))}/"
+        f"{_format_ms(_timing_max(timing_samples, 'io_write_ctrl'))}",
+        flush=True,
+    )
+
+
 def _run_hardware_preflight(
     *,
     robot_io,
@@ -484,9 +586,22 @@ def run_policy_loop(
     leg_indices = _actuator_indices(
         actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
     )
+    timing_samples: List[dict] = []
+    last_loop_start_s: float | None = None
     for step in range(int(max_steps)):
-        t0 = time.monotonic()
+        loop_start_s = time.monotonic()
+        loop_period_s = (
+            None if last_loop_start_s is None else loop_start_s - last_loop_start_s
+        )
+        last_loop_start_s = loop_start_s
         info = runner.step(velocity_cmd)
+        work_s = time.monotonic() - loop_start_s
+        timing_s = dict(info.get("timing_s", {}))
+        timing_s["work"] = work_s
+        if loop_period_s is not None:
+            timing_s["loop_period"] = loop_period_s
+        info["timing_s"] = timing_s
+        timing_samples.append(timing_s)
         if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
             applied = info["applied_action"]
             target = info["target_q_rad"]
@@ -515,6 +630,7 @@ def run_policy_loop(
                 )
             if foot_summary:
                 extra_parts.append(foot_summary)
+            extra_parts.append(_format_step_timing(timing_s))
             extra = " " + " ".join(extra_parts) if extra_parts else ""
             print(
                 f"[step {step:5d}] idx={info['step_idx']:5d} "
@@ -525,10 +641,15 @@ def run_policy_loop(
             )
             logs.append(info)
         if realtime:
-            elapsed = time.monotonic() - t0
+            elapsed = time.monotonic() - loop_start_s
             remaining = ctrl_dt - elapsed
             if remaining > 0:
                 time.sleep(remaining)
+    _print_timing_summary(
+        timing_samples=timing_samples,
+        ctrl_dt=ctrl_dt,
+        realtime=realtime,
+    )
     return logs
 
 
