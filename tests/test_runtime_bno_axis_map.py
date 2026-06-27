@@ -150,6 +150,52 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
     assert imu.diag["quat_status"] == "bad_norm"
 
 
+def test_bno_read_does_not_probe_game_quaternion_property_twice() -> None:
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 0, 0, 0]
+
+        def __init__(self) -> None:
+            self.game_quaternion_reads = 0
+
+        @property
+        def game_quaternion(self):
+            self.game_quaternion_reads += 1
+            self._sequence_number[3] += 1
+            return (0.0, 0.0, 0.0, 1.0)
+
+        @property
+        def gyro(self):
+            return (0.0, 0.0, 0.0)
+
+    adafruit_imu = FakeAdafruitImu()
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu._imu = adafruit_imu
+    imu._latest = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=None,
+        valid=False,
+        fresh=False,
+    )
+    imu._last_report_sample = imu._latest
+    imu._use_game_quat = True
+    imu.enable_rotation_vector = False
+    imu.max_quat_norm_deviation = 0.1
+    imu.suppress_debug = True
+    imu.upside_down = False
+    imu._r_bs = None
+    imu._diag = {}
+
+    sample = imu._read_sample_once()
+
+    assert sample.valid is True
+    assert sample.fresh is True
+    assert adafruit_imu.game_quaternion_reads == 1
+
+
 def test_bno_background_read_marks_cached_sample_not_fresh() -> None:
     from queue import Queue
 

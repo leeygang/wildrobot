@@ -297,7 +297,7 @@ class BNO085IMU(Imu):
             # The Adafruit driver raises RuntimeError if a report isn't available yet.
             # Treat that as an invalid sample rather than crashing the reader loop.
             try:
-                if self._use_game_quat and hasattr(self._imu, "game_quaternion"):
+                if self._use_game_quat:
                     quat = self._imu.game_quaternion
                     diag["quat_source"] = "game_quaternion"
             except Exception:
