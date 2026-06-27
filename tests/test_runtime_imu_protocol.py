@@ -27,6 +27,7 @@ def test_dummy_imu_satisfies_protocol() -> None:
     assert sample.quat_xyzw.shape == (4,)
     assert sample.gyro_rad_s.shape == (3,)
     assert sample.valid is True
+    assert sample.fresh is True
 
 
 class InvalidImu:
@@ -46,4 +47,5 @@ def test_invalid_flag_propagates() -> None:
     imu: Imu = InvalidImu()
     sample = imu.read()
     assert sample.valid is False
+    assert sample.fresh is True
     assert sample.timestamp_s is None

@@ -334,7 +334,7 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
     try:
         if hasattr(robot_io, "wait_for_valid_imu_sample"):
             robot_io.wait_for_valid_imu_sample(timeout_s=float(imu_startup_timeout_s))
-        sample = getattr(robot_io, "_last_valid_imu_sample", None)
+        sample = getattr(robot_io, "_last_fresh_imu_sample", None)
         if sample is None:
             sample = robot_io.imu.read()
     except Exception as exc:
@@ -343,6 +343,7 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
         return
 
     valid = bool(getattr(sample, "valid", True))
+    fresh = bool(getattr(sample, "fresh", True))
     quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float32).reshape(-1)
     gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
     quat_norm = float(np.linalg.norm(quat)) if quat.size == 4 else float("nan")
@@ -352,6 +353,7 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
     print(
         "  IMU: "
         f"valid={valid} "
+        f"fresh={fresh} "
         f"quat={np.round(quat, 4).tolist()} "
         f"quat_norm={quat_norm:.3f} "
         f"gyro={np.round(gyro, 4).tolist()} "
@@ -362,6 +364,8 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
     )
     if not valid:
         errors.append("IMU sample is invalid")
+    if not fresh:
+        errors.append("IMU sample is not fresh")
     if (
         quat.size != 4
         or not np.all(np.isfinite(quat))

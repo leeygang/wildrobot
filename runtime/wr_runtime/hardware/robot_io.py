@@ -22,10 +22,11 @@ class HardwareRobotIO(RobotIO[Signals]):
     actuators: Actuators
     imu: Imu
     foot_switches: FootSwitches
-    max_consecutive_invalid_imu: int = 5
+    max_cached_imu_age_s: float = 0.25
 
-    _imu_invalid_consecutive: int = 0
-    _last_valid_imu_sample: Optional[object] = None
+    _imu_nonfresh_consecutive: int = 0
+    _last_fresh_imu_sample: Optional[object] = None
+    _last_fresh_imu_wall_time_s: Optional[float] = None
     _last_imu_warn_time_s: float = 0.0
 
     def wait_for_valid_imu_sample(self, *, timeout_s: float = 3.0, poll_s: float = 0.02) -> None:
@@ -39,9 +40,12 @@ class HardwareRobotIO(RobotIO[Signals]):
         deadline = time.monotonic() + max(0.0, float(timeout_s))
         while time.monotonic() <= deadline:
             imu_sample = self.imu.read()
-            if bool(getattr(imu_sample, "valid", True)):
-                self._imu_invalid_consecutive = 0
-                self._last_valid_imu_sample = imu_sample
+            if bool(getattr(imu_sample, "valid", True)) and bool(
+                getattr(imu_sample, "fresh", True)
+            ):
+                self._imu_nonfresh_consecutive = 0
+                self._last_fresh_imu_sample = imu_sample
+                self._last_fresh_imu_wall_time_s = time.monotonic()
                 return
             time.sleep(max(0.0, float(poll_s)))
 
@@ -57,16 +61,22 @@ class HardwareRobotIO(RobotIO[Signals]):
             if parts:
                 extra = " (" + ", ".join(parts) + ")"
         raise RuntimeError(
-            f"IMU did not produce a valid sample within {float(timeout_s):.2f}s; aborting for safety{extra}"
+            f"IMU did not produce a fresh valid sample within {float(timeout_s):.2f}s; aborting for safety{extra}"
         )
 
     def read(self) -> Signals:
         imu_sample = self.imu.read()
-        if not getattr(imu_sample, "valid", True):
-            self._imu_invalid_consecutive += 1
-            if self._last_valid_imu_sample is None:
-                raise RuntimeError("IMU reported invalid sample before any valid sample was observed; aborting for safety")
-            if self._imu_invalid_consecutive > int(self.max_consecutive_invalid_imu):
+        sample_valid = bool(getattr(imu_sample, "valid", True))
+        sample_fresh = bool(getattr(imu_sample, "fresh", True))
+        if not sample_valid or not sample_fresh:
+            self._imu_nonfresh_consecutive += 1
+            if self._last_fresh_imu_sample is None:
+                raise RuntimeError("IMU reported no fresh valid sample before startup; aborting for safety")
+            now = time.monotonic()
+            last_fresh_s = self._last_fresh_imu_wall_time_s
+            cached_age_s = float("inf") if last_fresh_s is None else now - last_fresh_s
+            diag = getattr(self.imu, "diag", None)
+            if cached_age_s > float(self.max_cached_imu_age_s):
                 extra = ""
                 if hasattr(self.imu, "error_count") and hasattr(self.imu, "last_error"):
                     try:
@@ -74,22 +84,26 @@ class HardwareRobotIO(RobotIO[Signals]):
                     except Exception:
                         extra = ""
                 raise RuntimeError(
-                    "IMU reported invalid sample for too long; aborting for safety. "
-                    f"invalid_consecutive={self._imu_invalid_consecutive} max={self.max_consecutive_invalid_imu}{extra}"
+                    "IMU cached sample is too old; aborting for safety. "
+                    f"cached_age_s={cached_age_s:.3f} max={self.max_cached_imu_age_s:.3f} "
+                    f"nonfresh_consecutive={self._imu_nonfresh_consecutive} "
+                    f"sample_valid={sample_valid} sample_fresh={sample_fresh} diag={diag}{extra}"
                 )
 
-            now = time.monotonic()
             if now - self._last_imu_warn_time_s > 1.0:
                 self._last_imu_warn_time_s = now
                 print(
-                    "Warning: IMU sample invalid; reusing last valid sample "
-                    f"(invalid_consecutive={self._imu_invalid_consecutive}/{self.max_consecutive_invalid_imu}).",
+                    "Warning: IMU sample not fresh; reusing last fresh sample "
+                    f"(nonfresh_consecutive={self._imu_nonfresh_consecutive}, "
+                    f"cached_age_s={cached_age_s:.3f}/{self.max_cached_imu_age_s:.3f}, "
+                    f"sample_valid={sample_valid}, sample_fresh={sample_fresh}, diag={diag}).",
                     flush=True,
                 )
-            imu_sample = self._last_valid_imu_sample
+            imu_sample = self._last_fresh_imu_sample
         else:
-            self._imu_invalid_consecutive = 0
-            self._last_valid_imu_sample = imu_sample
+            self._imu_nonfresh_consecutive = 0
+            self._last_fresh_imu_sample = imu_sample
+            self._last_fresh_imu_wall_time_s = time.monotonic()
 
         joint_pos = self.actuators.get_positions_rad()
         if joint_pos is None:

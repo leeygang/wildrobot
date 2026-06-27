@@ -4,6 +4,7 @@ import contextlib
 import io
 import os
 import traceback
+from dataclasses import replace
 from queue import Queue
 from threading import Thread
 from typing import Optional
@@ -176,7 +177,9 @@ class BNO085IMU(Imu):
             gyro_rad_s=np.zeros(3, dtype=np.float32),
             timestamp_s=None,
             valid=False,
+            fresh=False,
         )
+        self._last_report_sample = self._latest
 
         self._q: Optional[Queue[ImuSample]] = None
         self._running = False
@@ -228,12 +231,21 @@ class BNO085IMU(Imu):
 
         # Drain queue to keep freshest sample
         if self._q is None:
-            return self._latest
+            return replace(self._latest, fresh=False)
+        drained = False
         try:
             while True:
                 self._latest = self._q.get_nowait()
+                drained = True
         except Exception:
             pass
+        if not drained:
+            self._diag = {
+                **self._diag,
+                "payload_status": "stale",
+                "read_status": "cached",
+            }
+            return replace(self._latest, fresh=False)
         return self._latest
 
     def _try_disable_debug(self) -> None:
@@ -358,12 +370,13 @@ class BNO085IMU(Imu):
                 valid = False
                 diag["quat_status"] = "bad_axis_map_norm"
 
-        quat_out = quat_xyzw if valid else self._latest.quat_xyzw
-        payload_changed = _imu_payload_changed(self._latest, quat_out, gyro_rad_s)
+        last_report_sample = getattr(self, "_last_report_sample", self._latest)
+        quat_out = quat_xyzw if valid else last_report_sample.quat_xyzw
+        payload_changed = _imu_payload_changed(last_report_sample, quat_out, gyro_rad_s)
         report_fresh = (
             valid
             and (
-                self._latest.timestamp_s is None
+                last_report_sample.timestamp_s is None
                 or input_report_advanced
                 or (not seq_available and payload_changed)
             )
@@ -375,12 +388,18 @@ class BNO085IMU(Imu):
             diag["payload_status"] = "fresh" if valid else "invalid"
 
         self._diag = diag
-        return ImuSample(
+        sample = ImuSample(
             quat_xyzw=quat_out,
             gyro_rad_s=gyro_rad_s,
-            timestamp_s=time.monotonic() if report_fresh else self._latest.timestamp_s,
-            valid=bool(report_fresh),
+            timestamp_s=(
+                time.monotonic() if report_fresh else last_report_sample.timestamp_s
+            ),
+            valid=bool(valid),
+            fresh=bool(report_fresh),
         )
+        if report_fresh:
+            self._last_report_sample = sample
+        return sample
 
     def _loop(self) -> None:
         import time
@@ -411,6 +430,7 @@ class BNO085IMU(Imu):
                         gyro_rad_s=self._latest.gyro_rad_s,
                         timestamp_s=time.monotonic(),
                         valid=False,
+                        fresh=False,
                     )
                     if self._q is not None:
                         if self._q.full():

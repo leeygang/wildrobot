@@ -148,3 +148,30 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
     assert sample.timestamp_s is None
     np.testing.assert_allclose(sample.quat_xyzw, [0.0, 0.0, 0.0, 1.0])
     assert imu.diag["quat_status"] == "bad_norm"
+
+
+def test_bno_background_read_marks_cached_sample_not_fresh() -> None:
+    from queue import Queue
+
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu.polling_mode = False
+    imu._q = Queue(maxsize=1)
+    imu._latest = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=True,
+    )
+    imu._diag = {}
+
+    sample = imu.read()
+
+    assert sample.valid is True
+    assert sample.fresh is False
+    assert sample.timestamp_s == 1.0
+    assert imu.diag["payload_status"] == "stale"
+    assert imu.diag["read_status"] == "cached"

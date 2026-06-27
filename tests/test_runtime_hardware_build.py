@@ -237,8 +237,67 @@ def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
 
     robot_io.wait_for_valid_imu_sample(timeout_s=1.0, poll_s=0.0)
 
-    assert robot_io._last_valid_imu_sample is valid_sample
-    assert robot_io._imu_invalid_consecutive == 0
+    assert robot_io._last_fresh_imu_sample is valid_sample
+    assert robot_io._imu_nonfresh_consecutive == 0
+    assert robot_io._last_fresh_imu_wall_time_s is not None
+
+
+def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
+    import wr_runtime.hardware.robot_io as robot_io_mod
+
+    valid_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+    stale_sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=False,
+    )
+    now = [0.0]
+    monkeypatch.setattr(robot_io_mod.time, "monotonic", lambda: now[0])
+
+    class _FakeImu:
+        def __init__(self) -> None:
+            self.first = True
+            self.error_count = 0
+            self.last_error = None
+
+        def read(self):
+            if self.first:
+                self.first = False
+                return valid_sample
+            return stale_sample
+
+    robot_io = HardwareRobotIO(
+        actuator_names=["j"],
+        control_dt=0.02,
+        actuators=SimpleNamespace(
+            get_positions_rad=lambda: np.array([0.0], dtype=np.float32),
+            estimate_velocities_rad_s=lambda dt: np.array([0.0], dtype=np.float32),
+        ),
+        imu=_FakeImu(),
+        foot_switches=SimpleNamespace(
+            read=lambda: SimpleNamespace(switches=[True, True, True, True])
+        ),
+        max_cached_imu_age_s=0.25,
+    )
+
+    robot_io.read()
+    for t in (0.02, 0.04, 0.06, 0.08, 0.10, 0.12):
+        now[0] = t
+        signals = robot_io.read()
+        assert np.allclose(signals.quat_xyzw, valid_sample.quat_xyzw)
+
+    assert robot_io._imu_nonfresh_consecutive == 6
+
+    now[0] = 0.251
+    with pytest.raises(RuntimeError, match="IMU cached sample is too old"):
+        robot_io.read()
 
 
 def test_hardware_preflight_prints_all_statuses(capsys) -> None:
@@ -273,10 +332,10 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
             diag={"quat_source": "game_quaternion"},
         )
         foot_switches = _FakeFootSwitches()
-        _last_valid_imu_sample = None
+        _last_fresh_imu_sample = None
 
         def wait_for_valid_imu_sample(self, *, timeout_s):
-            self._last_valid_imu_sample = sample
+            self._last_fresh_imu_sample = sample
 
     run_policy._run_hardware_preflight(
         robot_io=_FakeRobotIO(),
@@ -332,10 +391,10 @@ def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
             diag={},
         )
         foot_switches = _FakeFootSwitches()
-        _last_valid_imu_sample = None
+        _last_fresh_imu_sample = None
 
         def wait_for_valid_imu_sample(self, *, timeout_s):
-            self._last_valid_imu_sample = sample
+            self._last_fresh_imu_sample = sample
 
     with pytest.raises(SystemExit, match="right_heel"):
         run_policy._run_hardware_preflight(

@@ -247,9 +247,11 @@ def main() -> int:
             ts = getattr(sample, "timestamp_s", None)
             diag = getattr(imu, "diag", {})
 
-            if bool(getattr(sample, "valid", True)):
+            sample_valid = bool(getattr(sample, "valid", True))
+            sample_fresh = bool(getattr(sample, "fresh", True))
+            if sample_valid and sample_fresh:
                 valid_count += 1
-            if diag.get("payload_status") == "stale" or not bool(getattr(sample, "valid", True)):
+            if diag.get("payload_status") == "stale" or not sample_valid or not sample_fresh:
                 stale_count += 1
             if prev_q is not None and not np.array_equal(q, prev_q):
                 quat_changes += 1
@@ -270,7 +272,7 @@ def main() -> int:
             print_every = int(args.print_every)
             if print_every > 0 and i % print_every == 0:
                 print(
-                    f"{i:03d} read_s={read_s:.3f} valid={bool(getattr(sample, 'valid', True))} ts={ts} "
+                    f"{i:03d} read_s={read_s:.3f} valid={sample_valid} fresh={sample_fresh} ts={ts} "
                     f"quat={_fmt_vec(q, digits=5)} gyro={_fmt_vec(g, digits=5)} diag={diag}",
                     flush=True,
                 )
@@ -286,8 +288,8 @@ def main() -> int:
     print("", flush=True)
     print("Summary:", flush=True)
     print(f"  elapsed_s: {elapsed_s:.3f}", flush=True)
-    print(f"  valid_samples: {valid_count}/{total}", flush=True)
-    print(f"  stale_or_invalid_samples: {stale_count}/{total}", flush=True)
+    print(f"  fresh_valid_samples: {valid_count}/{total}", flush=True)
+    print(f"  nonfresh_or_invalid_samples: {stale_count}/{total}", flush=True)
     print(f"  timestamp_changes: {timestamp_changes}", flush=True)
     print(f"  quat_payload_changes: {quat_changes}", flush=True)
     print(f"  gyro_payload_changes: {gyro_changes}", flush=True)
