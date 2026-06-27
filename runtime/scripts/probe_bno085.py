@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import signal
 import sys
 import threading
@@ -20,6 +21,7 @@ if str(_RUNTIME_ROOT) not in sys.path:
 
 from configs.config import WrRuntimeConfig  # noqa: E402
 from wr_runtime.hardware.bno085 import BNO085IMU  # noqa: E402
+from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController  # noqa: E402
 
 
 def _parse_i2c_address(value: str) -> int:
@@ -49,6 +51,54 @@ def _default_config_path() -> Path:
     if bundle_cfg.exists():
         return bundle_cfg
     return _RUNTIME_ROOT / "configs" / "runtime_config_v2.json"
+
+
+def _resolve_bundle_dir(config_path: Path, bundle_path: Path | None) -> Path:
+    if bundle_path is not None:
+        bundle_dir = bundle_path.expanduser()
+    else:
+        bundle_dir = config_path.expanduser().resolve().parent
+    policy_spec = bundle_dir / "policy_spec.json"
+    if not policy_spec.exists():
+        raise FileNotFoundError(
+            "--hold-home needs a policy bundle containing policy_spec.json; "
+            f"could not find {policy_spec}. Pass --bundle explicitly."
+        )
+    return bundle_dir
+
+
+def _load_bundle_home(bundle_dir: Path) -> tuple[list[str], list[float]]:
+    policy_spec_path = bundle_dir / "policy_spec.json"
+    data = json.loads(policy_spec_path.read_text())
+    robot = data.get("robot")
+    if not isinstance(robot, dict):
+        raise ValueError(f"{policy_spec_path} missing robot block")
+    actuator_names = robot.get("actuator_names")
+    home_ctrl_rad = robot.get("home_ctrl_rad")
+    if not isinstance(actuator_names, list) or not isinstance(home_ctrl_rad, list):
+        raise ValueError(f"{policy_spec_path} robot block must include actuator_names and home_ctrl_rad lists")
+    if len(actuator_names) != len(home_ctrl_rad):
+        raise ValueError(
+            f"{policy_spec_path} actuator_names/home_ctrl_rad length mismatch: "
+            f"{len(actuator_names)} != {len(home_ctrl_rad)}"
+        )
+    return [str(name) for name in actuator_names], [float(rad) for rad in home_ctrl_rad]
+
+
+def _home_servo_commands(cfg: WrRuntimeConfig, bundle_dir: Path) -> list[tuple[int, int]]:
+    actuator_names, home_ctrl_rad = _load_bundle_home(bundle_dir)
+    missing = [name for name in actuator_names if name not in cfg.servo_controller.servos]
+    if missing:
+        raise ValueError(
+            "Runtime config is missing servo entries required by policy home pose: "
+            f"{missing}"
+        )
+
+    commands: list[tuple[int, int]] = []
+    for name, target_rad in zip(actuator_names, home_ctrl_rad, strict=True):
+        servo = cfg.servo_controller.servos[name]
+        commands.append((int(servo.id), servo.joint_target_rad_to_elect_unit(target_rad)))
+    return commands
 
 
 @contextlib.contextmanager
@@ -154,6 +204,29 @@ def main() -> int:
         help="Apply bno085.axis_map from the config. Default prints the raw configured mount frame.",
     )
     parser.add_argument(
+        "--bundle",
+        type=Path,
+        default=None,
+        help="Policy bundle directory used by --hold-home. Inferred from --config parent when possible.",
+    )
+    parser.add_argument(
+        "--hold-home",
+        action="store_true",
+        help="During the probe, command all policy servos to the bundle home pose once.",
+    )
+    parser.add_argument(
+        "--home-after-s",
+        type=float,
+        default=2.0,
+        help="Seconds after probe start before --hold-home sends the home command.",
+    )
+    parser.add_argument(
+        "--home-move-ms",
+        type=int,
+        default=800,
+        help="Hiwonder move duration for --hold-home, in milliseconds.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Show verbose Adafruit BNO08x packet debug output.",
@@ -176,13 +249,16 @@ def main() -> int:
         if args.seconds is not None
         else max(1, int(args.samples))
     )
+    bundle_dir = _resolve_bundle_dir(args.config, args.bundle) if args.hold_home else None
+    home_move_ms = max(0, int(args.home_move_ms))
+    home_after_s = max(0.0, float(args.home_after_s))
 
     print(
         "BNO085/BNO08x probe: "
         f"config={args.config} address=0x{address:02X} upside_down={cfg.bno085.upside_down} "
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
-        f"samples={total} dt={dt_s:.3f}",
+        f"samples={total} dt={dt_s:.3f} hold_home={bool(args.hold_home)}",
         flush=True,
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
@@ -221,6 +297,24 @@ def main() -> int:
     init_done.set()
     print(f"BNO085 init complete in {time.monotonic() - init_start_s:.2f}s", flush=True)
 
+    home_controller: HiwonderBoardController | None = None
+    home_commands: list[tuple[int, int]] = []
+    home_sent = False
+    if args.hold_home:
+        try:
+            assert bundle_dir is not None
+            home_commands = _home_servo_commands(cfg, bundle_dir)
+            home_controller = HiwonderBoardController(cfg.servo_controller)
+        except Exception:
+            imu.close()
+            raise
+        print(
+            "Hold-home enabled: "
+            f"bundle={bundle_dir} servos={len(home_commands)} "
+            f"home_after_s={home_after_s:.3f} home_move_ms={home_move_ms}",
+            flush=True,
+        )
+
     prev_q: np.ndarray | None = None
     prev_g: np.ndarray | None = None
     first_q: np.ndarray | None = None
@@ -239,6 +333,20 @@ def main() -> int:
 
     try:
         for i in range(total):
+            elapsed_before_read_s = time.monotonic() - start_s
+            if (
+                home_controller is not None
+                and not home_sent
+                and elapsed_before_read_s >= home_after_s
+            ):
+                print(
+                    f"[t={elapsed_before_read_s:.3f}] Commanding bundle home pose "
+                    f"({len(home_commands)} servos, move_ms={home_move_ms})",
+                    flush=True,
+                )
+                home_controller.move_servos(home_commands, home_move_ms)
+                home_sent = True
+
             read_t0 = time.monotonic()
             sample = imu.read()
             read_s = time.monotonic() - read_t0
@@ -283,11 +391,15 @@ def main() -> int:
             time.sleep(max(0.0, dt_s))
     finally:
         imu.close()
+        if home_controller is not None:
+            home_controller.close()
 
     elapsed_s = time.monotonic() - start_s
     print("", flush=True)
     print("Summary:", flush=True)
     print(f"  elapsed_s: {elapsed_s:.3f}", flush=True)
+    if args.hold_home:
+        print(f"  hold_home_sent: {home_sent}", flush=True)
     print(f"  fresh_valid_samples: {valid_count}/{total}", flush=True)
     print(f"  nonfresh_or_invalid_samples: {stale_count}/{total}", flush=True)
     print(f"  timestamp_changes: {timestamp_changes}", flush=True)
