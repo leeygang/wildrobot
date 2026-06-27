@@ -145,6 +145,7 @@
     "suppress_debug": true,
     "i2c_frequency_hz": 100000,
     "init_retries": 3,
+    "sampling_hz": 20,
     "enable_rotation_vector": false,
     "axis_map": [
       "+X",
