@@ -24,10 +24,12 @@ Hardware run (on the robot), forward walk for 500 control steps::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 import time
+import traceback
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TextIO
 
 import numpy as np
 
@@ -53,6 +55,60 @@ _LEG_LOG_JOINTS = (
 )
 
 _FOOT_SWITCH_LABELS = ("left_toe", "left_heel", "right_toe", "right_heel")
+
+
+class _LogStream:
+    def __init__(
+        self,
+        console_stream: TextIO,
+        log_stream: TextIO,
+        *,
+        mirror_console: bool,
+    ):
+        self._console_stream = console_stream
+        self._log_stream = log_stream
+        self._mirror_console = bool(mirror_console)
+
+    @property
+    def encoding(self):
+        return getattr(self._console_stream, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._console_stream, "errors", "replace")
+
+    def write(self, text: str) -> int:
+        self._log_stream.write(text)
+        self._log_stream.flush()
+        if self._mirror_console:
+            self._console_stream.write(text)
+            self._console_stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        self._log_stream.flush()
+        if self._mirror_console:
+            self._console_stream.flush()
+
+    def isatty(self) -> bool:
+        return self._mirror_console and bool(self._console_stream.isatty())
+
+
+@contextlib.contextmanager
+def _output_log_context(log_path: Optional[str], *, mirror_console: bool):
+    if log_path is None:
+        yield
+        return
+
+    path = Path(log_path).expanduser()
+    if path.parent != Path("."):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as log_stream:
+        stdout = _LogStream(sys.stdout, log_stream, mirror_console=mirror_console)
+        stderr = _LogStream(sys.stderr, log_stream, mirror_console=mirror_console)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            yield
 
 
 def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray:
@@ -494,6 +550,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument("--max-steps", type=int, default=500, help="Number of control steps.")
     parser.add_argument("--log-steps", type=int, default=20, help="Log every N steps (0=off).")
+    log_group = parser.add_mutually_exclusive_group()
+    log_group.add_argument(
+        "--log",
+        type=str,
+        default=None,
+        help="Write stdout/stderr to this file while still printing to the console.",
+    )
+    log_group.add_argument(
+        "--log-only",
+        type=str,
+        default=None,
+        help="Write stdout/stderr to this file without printing to the console.",
+    )
     parser.add_argument(
         "--velocity-cmd", type=str, default=None,
         help="Command 'vx' or 'vx,vy,wz' (default: bundle default_velocity_cmd).",
@@ -526,6 +595,30 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    log_path = args.log if args.log is not None else args.log_only
+    if log_path is not None:
+        with _output_log_context(log_path, mirror_console=args.log is not None):
+            try:
+                return _run_policy_from_args(args)
+            except SystemExit as exc:
+                code = exc.code
+                if code is None:
+                    return 0
+                if isinstance(code, int):
+                    return int(code)
+                print(code, file=sys.stderr)
+                return 1
+            except KeyboardInterrupt:
+                print("Interrupted.", file=sys.stderr)
+                return 130
+            except BaseException:
+                traceback.print_exc()
+                return 1
+
+    return _run_policy_from_args(args)
+
+
+def _run_policy_from_args(args: argparse.Namespace) -> int:
     bundle_path = Path(args.bundle)
     bundle = PolicyBundle.load(bundle_path)
     validate_spec(bundle.spec)

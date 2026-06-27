@@ -6,6 +6,8 @@ for a finite number of steps, with no servos/IMU attached.
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -13,6 +15,7 @@ from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 from runtime.wr_runtime.control.run_policy import (
     _format_leg_targets_deg,
+    _output_log_context,
     run_policy_loop,
 )
 
@@ -121,3 +124,33 @@ def test_leg_target_summary_uses_actuator_names():
     assert _format_leg_targets_deg(target_q_rad, actuator_names) == (
         "LHP=+12.5 LK=+28.0 RK=+30.0"
     )
+
+
+def test_output_log_context_tees_stdout_and_stderr(tmp_path, capsys):
+    log_path = tmp_path / "run.log"
+
+    with _output_log_context(str(log_path), mirror_console=True):
+        print("console and file")
+        print("stderr too", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    assert "console and file" in captured.out
+    assert "stderr too" in captured.err
+    text = log_path.read_text()
+    assert "console and file" in text
+    assert "stderr too" in text
+
+
+def test_output_log_context_can_suppress_console(tmp_path, capsys):
+    log_path = tmp_path / "run-only.log"
+
+    with _output_log_context(str(log_path), mirror_console=False):
+        print("file only")
+        print("hidden stderr", file=sys.stderr)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    text = log_path.read_text()
+    assert "file only" in text
+    assert "hidden stderr" in text
