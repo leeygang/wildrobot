@@ -282,6 +282,13 @@ def _timing_max(samples: List[dict], key: str) -> float | None:
     return float(np.max(values))
 
 
+def _timing_percentile(samples: List[dict], key: str, percentile: float) -> float | None:
+    values = _timing_values(samples, key)
+    if not values:
+        return None
+    return float(np.percentile(np.asarray(values, dtype=np.float64), float(percentile)))
+
+
 def _format_step_timing(timing_s: dict) -> str:
     loop_period_s = timing_s.get("loop_period")
     return (
@@ -300,44 +307,60 @@ def _print_timing_summary(
     timing_samples: List[dict],
     ctrl_dt: float,
     realtime: bool,
+    completed: bool = True,
 ) -> None:
     if not timing_samples:
         return
     target_hz = 1.0 / float(ctrl_dt) if float(ctrl_dt) > 0.0 else float("nan")
     loop_avg_s = _timing_avg(timing_samples, "loop_period")
     work_avg_s = _timing_avg(timing_samples, "work")
+    deadline_misses = sum(
+        1 for sample in timing_samples if float(sample.get("work", 0.0)) > float(ctrl_dt)
+    )
     print(
         "Timing summary: "
-        f"target_hz={target_hz:.1f} realtime={realtime} "
+        f"status={'completed' if completed else 'partial'} "
+        f"steps={len(timing_samples)} target_hz={target_hz:.1f} realtime={realtime} "
         f"loop_hz_avg={_format_hz_from_period(loop_avg_s)} "
         f"work_hz_avg={_format_hz_from_period(work_avg_s)} "
+        f"deadline_misses={deadline_misses}/{len(timing_samples)} "
         f"work_ms_avg={_format_ms(work_avg_s)} "
+        f"work_ms_p95={_format_ms(_timing_percentile(timing_samples, 'work', 95.0))} "
         f"work_ms_max={_format_ms(_timing_max(timing_samples, 'work'))}",
         flush=True,
     )
     print(
-        "  Step avg/max ms: "
+        "  Step avg/p95/max ms: "
         f"read={_format_ms(_timing_avg(timing_samples, 'read'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'read', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'read'))} "
         f"obs={_format_ms(_timing_avg(timing_samples, 'obs'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'obs', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'obs'))} "
         f"policy={_format_ms(_timing_avg(timing_samples, 'policy'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'policy', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'policy'))} "
         f"compose={_format_ms(_timing_avg(timing_samples, 'compose'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'compose', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'compose'))} "
         f"write={_format_ms(_timing_avg(timing_samples, 'write'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'write', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'write'))}",
         flush=True,
     )
     print(
-        "  IO avg/max ms: "
+        "  IO avg/p95/max ms: "
         f"imu={_format_ms(_timing_avg(timing_samples, 'io_imu_read'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'io_imu_read', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'io_imu_read'))} "
         f"servo_read={_format_ms(_timing_avg(timing_samples, 'io_actuator_read'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'io_actuator_read', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'io_actuator_read'))} "
         f"footswitch={_format_ms(_timing_avg(timing_samples, 'io_footswitch_read'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'io_footswitch_read', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'io_footswitch_read'))} "
         f"servo_write={_format_ms(_timing_avg(timing_samples, 'io_write_ctrl'))}/"
+        f"{_format_ms(_timing_percentile(timing_samples, 'io_write_ctrl', 95.0))}/"
         f"{_format_ms(_timing_max(timing_samples, 'io_write_ctrl'))}",
         flush=True,
     )
@@ -588,68 +611,73 @@ def run_policy_loop(
     )
     timing_samples: List[dict] = []
     last_loop_start_s: float | None = None
-    for step in range(int(max_steps)):
-        loop_start_s = time.monotonic()
-        loop_period_s = (
-            None if last_loop_start_s is None else loop_start_s - last_loop_start_s
-        )
-        last_loop_start_s = loop_start_s
-        info = runner.step(velocity_cmd)
-        work_s = time.monotonic() - loop_start_s
-        timing_s = dict(info.get("timing_s", {}))
-        timing_s["work"] = work_s
-        if loop_period_s is not None:
-            timing_s["loop_period"] = loop_period_s
-        info["timing_s"] = timing_s
-        timing_samples.append(timing_s)
-        if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
-            applied = info["applied_action"]
-            target = info["target_q_rad"]
-            leg_applied_max = (
-                float(np.max(np.abs(applied[leg_indices]))) if leg_indices else None
+    completed = False
+    try:
+        for step in range(int(max_steps)):
+            loop_start_s = time.monotonic()
+            loop_period_s = (
+                None if last_loop_start_s is None else loop_start_s - last_loop_start_s
             )
-            leg_summary = _format_leg_targets_deg(target, actuator_names)
-            observed = np.asarray(info["signals"].joint_pos_rad, dtype=np.float32)
-            observed_leg_summary = _format_leg_values_deg(observed, actuator_names)
-            leg_err_max = (
-                float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
-                if leg_indices and observed.size >= target.size
-                else None
-            )
-            foot_summary = _format_foot_switches(info)
-            extra_parts = []
-            if leg_applied_max is not None:
-                extra_parts.append(f"leg|applied|max={leg_applied_max:.3f}")
-            if leg_summary:
-                extra_parts.append(f"leg_deg={leg_summary}")
-            if observed_leg_summary:
-                extra_parts.append(f"obs_leg_deg={observed_leg_summary}")
-            if leg_err_max is not None:
-                extra_parts.append(
-                    f"leg_err|max_deg={float(np.rad2deg(leg_err_max)):.1f}"
+            last_loop_start_s = loop_start_s
+            info = runner.step(velocity_cmd)
+            work_s = time.monotonic() - loop_start_s
+            timing_s = dict(info.get("timing_s", {}))
+            timing_s["work"] = work_s
+            if loop_period_s is not None:
+                timing_s["loop_period"] = loop_period_s
+            info["timing_s"] = timing_s
+            timing_samples.append(timing_s)
+            if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
+                applied = info["applied_action"]
+                target = info["target_q_rad"]
+                leg_applied_max = (
+                    float(np.max(np.abs(applied[leg_indices]))) if leg_indices else None
                 )
-            if foot_summary:
-                extra_parts.append(foot_summary)
-            extra_parts.append(_format_step_timing(timing_s))
-            extra = " " + " ".join(extra_parts) if extra_parts else ""
-            print(
-                f"[step {step:5d}] idx={info['step_idx']:5d} "
-                f"|applied|max={float(np.max(np.abs(applied))):.3f} "
-                f"target[0:3]={np.round(target[:3], 4).tolist()}"
-                f"{extra}",
-                flush=True,
-            )
-            logs.append(info)
-        if realtime:
-            elapsed = time.monotonic() - loop_start_s
-            remaining = ctrl_dt - elapsed
-            if remaining > 0:
-                time.sleep(remaining)
-    _print_timing_summary(
-        timing_samples=timing_samples,
-        ctrl_dt=ctrl_dt,
-        realtime=realtime,
-    )
+                leg_summary = _format_leg_targets_deg(target, actuator_names)
+                observed = np.asarray(info["signals"].joint_pos_rad, dtype=np.float32)
+                observed_leg_summary = _format_leg_values_deg(observed, actuator_names)
+                leg_err_max = (
+                    float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
+                    if leg_indices and observed.size >= target.size
+                    else None
+                )
+                foot_summary = _format_foot_switches(info)
+                extra_parts = []
+                if leg_applied_max is not None:
+                    extra_parts.append(f"leg|applied|max={leg_applied_max:.3f}")
+                if leg_summary:
+                    extra_parts.append(f"leg_deg={leg_summary}")
+                if observed_leg_summary:
+                    extra_parts.append(f"obs_leg_deg={observed_leg_summary}")
+                if leg_err_max is not None:
+                    extra_parts.append(
+                        f"leg_err|max_deg={float(np.rad2deg(leg_err_max)):.1f}"
+                    )
+                if foot_summary:
+                    extra_parts.append(foot_summary)
+                extra_parts.append(_format_step_timing(timing_s))
+                extra = " " + " ".join(extra_parts) if extra_parts else ""
+                print(
+                    f"[step {step:5d}] idx={info['step_idx']:5d} "
+                    f"|applied|max={float(np.max(np.abs(applied))):.3f} "
+                    f"target[0:3]={np.round(target[:3], 4).tolist()}"
+                    f"{extra}",
+                    flush=True,
+                )
+                logs.append(info)
+            if realtime:
+                elapsed = time.monotonic() - loop_start_s
+                remaining = ctrl_dt - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+        completed = True
+    finally:
+        _print_timing_summary(
+            timing_samples=timing_samples,
+            ctrl_dt=ctrl_dt,
+            realtime=realtime,
+            completed=completed,
+        )
     return logs
 
 

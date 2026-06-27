@@ -31,6 +31,18 @@ class _SmallPolicy:
         return np.full(self._n, 0.1, dtype=np.float32)
 
 
+class _FailsAfterFirstPolicy:
+    def __init__(self, action_dim: int) -> None:
+        self._n = action_dim
+        self._calls = 0
+
+    def predict(self, obs):
+        self._calls += 1
+        if self._calls > 1:
+            raise RuntimeError("policy failed")
+        return np.zeros(self._n, dtype=np.float32)
+
+
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
     action_dim = v8_spec.model.action_dim
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
@@ -73,6 +85,38 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
 
     robot_io.close()
     assert robot_io.closed is True
+
+
+def test_loop_prints_partial_timing_summary_on_error(
+    v8_spec, runtime_policy_config, capsys
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_FailsAfterFirstPolicy(v8_spec.model.action_dim),
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(RuntimeError, match="policy failed"):
+        run_policy_loop(
+            runner=runner,
+            max_steps=8,
+            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+            log_steps=1,
+            ctrl_dt=runtime_policy_config.ctrl_dt,
+            realtime=False,
+            actuator_names=list(v8_spec.robot.actuator_names),
+        )
+
+    captured = capsys.readouterr()
+    assert "Timing summary: status=partial" in captured.out
+    assert "steps=1" in captured.out
 
 
 def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):
