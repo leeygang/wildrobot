@@ -203,14 +203,14 @@ Responsibilities:
 - Prioritize writes over reads.
 - Poll scheduled servo read groups when no write is pending.
 - Update full joint-state cache.
-- Publish a non-blocking snapshot for the policy thread.
+- Publish a non-blocking cached servo state for the policy thread.
 
 Important behavior:
 
 ```text
 policy thread:
-  snapshot = servo_io.snapshot()
-  action = policy(snapshot, imu, footswitches)
+  servo_state = servo_io.get_cached_servo_state()
+  action = policy(servo_state, imu, footswitches)
   servo_io.submit_targets(action)
 
 servo worker thread:
@@ -253,7 +253,7 @@ class Actuators:
     def set_targets_rad(self, targets_rad: np.ndarray, *, move_time_ms: int | None = None) -> None: ...
     def get_positions_rad(self) -> np.ndarray: ...
     def get_velocities_rad_s(self) -> np.ndarray: ...
-    def get_state_snapshot(self) -> ServoStateSnapshot: ...
+    def get_cached_servo_state(self) -> CachedServoState: ...
     def disable(self) -> None: ...
     def close(self) -> None: ...
 ```
@@ -261,13 +261,15 @@ class Actuators:
 For the background-worker design, `get_positions_rad()` should return cached
 state and should not perform serial IO directly.
 
-## Snapshot Data Model
+## Cached Servo State Data Model
 
-The worker should publish one immutable snapshot:
+The worker should publish one immutable cached servo state. This is not a
+serial-bus read; it returns the latest cached positions, velocities, ages, and
+diagnostics populated by the worker thread.
 
 ```python
 @dataclass(frozen=True)
-class ServoStateSnapshot:
+class CachedServoState:
     position_rad: np.ndarray
     velocity_rad_s: np.ndarray
     position_age_s: np.ndarray
@@ -357,7 +359,7 @@ Start with the simplest path that tests the design:
 3. Implement a timing probe that uses `RawServoBus` instead of hand-built packet
    code.
 4. Implement `ServoIOWorker` with a small fixed read schedule.
-5. Wire `HiwonderBoardActuators` to cached snapshots behind an explicit config
+5. Wire `HiwonderBoardActuators` to cached servo state behind an explicit config
    flag.
 6. Print servo IO summary metrics at policy exit.
 
