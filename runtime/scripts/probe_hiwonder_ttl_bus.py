@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import serial
 
@@ -45,35 +45,59 @@ def _build_packet(servo_id: int, command: int, params: Optional[List[int]] = Non
     return bytes(packet)
 
 
-def _read_packet(ser: serial.Serial, *, timeout_s: float) -> Optional[bytes]:
+def _read_available_until_quiet(
+    ser: serial.Serial, *, timeout_s: float, quiet_s: float = 0.02
+) -> bytes:
     deadline = time.monotonic() + timeout_s
+    quiet_deadline: Optional[float] = None
+    chunks = bytearray()
+    while time.monotonic() < deadline:
+        waiting = int(getattr(ser, "in_waiting", 0))
+        data = ser.read(waiting or 1)
+        if data:
+            chunks.extend(data)
+            quiet_deadline = time.monotonic() + quiet_s
+            continue
+        if quiet_deadline is not None and time.monotonic() >= quiet_deadline:
+            break
+    return bytes(chunks)
+
+
+def _read_packet(ser: serial.Serial, *, timeout_s: float) -> Tuple[Optional[bytes], bytes]:
+    deadline = time.monotonic() + timeout_s
+    raw = bytearray()
     while time.monotonic() < deadline:
         first = ser.read(1)
         if not first:
             continue
+        raw.extend(first)
         if first != b"\x55":
             continue
         second = ser.read(1)
+        raw.extend(second)
         if second != b"\x55":
             continue
 
         meta = ser.read(2)
+        raw.extend(meta)
         if len(meta) != 2:
             continue
         servo_id = meta[0]
         length = meta[1]
         if length < 3:
             continue
-        body = ser.read(length)
-        if len(body) != length:
+        # Length counts command + params + checksum, not the ID/length bytes.
+        body = ser.read(length - 1)
+        raw.extend(body)
+        if len(body) != length - 1:
             continue
 
         packet = bytes([0x55, 0x55, servo_id, length]) + body
         expected = _checksum(packet[:-1])
         if packet[-1] != expected:
             continue
-        return packet
-    return None
+        return packet, bytes(raw)
+    return None, bytes(raw)
 
 
 def _read_servo_id(
@@ -82,6 +106,7 @@ def _read_servo_id(
     target_id: int,
     timeout_s: float,
     print_raw: bool,
+    dump_raw: bool,
 ) -> Optional[int]:
     ser.reset_input_buffer()
     ser.reset_output_buffer()
@@ -91,30 +116,74 @@ def _read_servo_id(
         print(f"TX: {_format_bytes(request)}")
     ser.write(request)
     ser.flush()
+    if dump_raw:
+        data = _read_available_until_quiet(ser, timeout_s=timeout_s)
+        if data:
+            print(f"RX_ANY: {_format_bytes(data)}")
+        else:
+            print("RX_ANY: <none>")
+        for packet in _parse_packets_from_bytes(data):
+            if print_raw:
+                print(f"RX: {_format_bytes(packet)}")
+            servo_id = _servo_id_from_packet(packet, target_id=target_id)
+            if servo_id is not None:
+                return servo_id
+        return None
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        packet = _read_packet(ser, timeout_s=max(0.0, deadline - time.monotonic()))
+        packet, raw = _read_packet(ser, timeout_s=max(0.0, deadline - time.monotonic()))
         if packet is None:
             return None
         if print_raw:
             print(f"RX: {_format_bytes(packet)}")
 
-        response_id = int(packet[2])
-        length = int(packet[3])
-        command = int(packet[4])
-        params = list(packet[5:-1])
-
-        # Some adapters echo transmitted bytes. Ignore an ID_READ packet with no data.
-        if command != CMD_ID_READ or length < 4 or not params:
-            continue
-
-        reported_id = int(params[0])
-        if target_id != SERVO_BROADCAST_ID and response_id != target_id:
-            continue
-        return reported_id
+        servo_id = _servo_id_from_packet(packet, target_id=target_id)
+        if servo_id is not None:
+            return servo_id
 
     return None
+
+
+def _servo_id_from_packet(packet: bytes, *, target_id: int) -> Optional[int]:
+    response_id = int(packet[2])
+    length = int(packet[3])
+    command = int(packet[4])
+    params = list(packet[5:-1])
+
+    # Some adapters echo transmitted bytes. Ignore an ID_READ packet with no data.
+    if command != CMD_ID_READ or length < 4 or not params:
+        return None
+
+    reported_id = int(params[0])
+    if target_id != SERVO_BROADCAST_ID and response_id != target_id:
+        return None
+    return reported_id
+
+
+def _parse_packets_from_bytes(data: bytes) -> List[bytes]:
+    packets: List[bytes] = []
+    for i in range(0, max(0, len(data) - 1)):
+        if data[i : i + 2] != HEADER:
+            continue
+        if i + 4 > len(data):
+            continue
+        length = int(data[i + 3])
+        if length < 3:
+            continue
+        end = i + 4 + (length - 1)
+        if end > len(data):
+            continue
+        packet = data[i:end]
+        expected = _checksum(packet[:-1])
+        if packet[-1] == expected:
+            packets.append(packet)
+            continue
+        print(
+            "Ignoring packet with bad checksum: "
+            f"{_format_bytes(packet)} expected={expected:02X}"
+        )
+    return packets
 
 
 def main() -> int:
@@ -139,6 +208,11 @@ def main() -> int:
     parser.add_argument("--timeout-s", type=float, default=0.25)
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--print-raw", action="store_true", help="Print raw TX/RX packets.")
+    parser.add_argument(
+        "--dump-raw",
+        action="store_true",
+        help="Print any bytes received after each request, even if they do not parse.",
+    )
     args = parser.parse_args()
 
     print("Hiwonder TTL bus-servo ID probe")
@@ -164,6 +238,7 @@ def main() -> int:
                 target_id=int(args.target_id),
                 timeout_s=float(args.timeout_s),
                 print_raw=bool(args.print_raw),
+                dump_raw=bool(args.dump_raw),
             )
             if servo_id is not None:
                 print(f"PASS: servo id={servo_id}")
