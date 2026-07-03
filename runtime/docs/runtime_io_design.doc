@@ -1,0 +1,363 @@
+# Runtime IO Design: High-Rate Writes With Cached/Staggered Reads
+
+This document captures the agreed WildRobot runtime IO direction for the
+Hiwonder/HTD servo bus. It is intended to guide the implementation of the next
+runtime IO flow.
+
+## Problem
+
+The current runtime loop is synchronous:
+
+```text
+robot_io.read()
+  -> IMU read
+  -> all-servo position read
+  -> velocity estimate
+  -> footswitch read
+policy inference
+robot_io.write_ctrl()
+  -> all-servo target write
+sleep until next 20 ms tick
+```
+
+This matches the exported policy contract, but it does not match the bandwidth
+of the current 115200 baud Hiwonder/HTD bus.
+
+Current code paths:
+
+- `runtime/wr_runtime/control/policy_runner.py`: policy step order.
+- `runtime/wr_runtime/hardware/robot_io.py`: reads IMU, all actuators, footswitches.
+- `runtime/wr_runtime/hardware/actuators.py`: `HiwonderBoardActuators.get_positions_rad()`
+  reads every policy actuator every step.
+- `runtime/wr_runtime/hardware/actuators.py`: `set_targets_rad()` writes targets
+  independently from reads.
+
+The current walking bundle expects:
+
+- `ctrl_dt = 0.02` / `control_hz = 50`.
+- `action_dim = 21`.
+- A 21-joint actuator order from `policy_spec.json`.
+
+So the runtime must preserve the 21D policy interface unless we retrain/export a
+new policy.
+
+## Evidence
+
+Measured with the Hiwonder TTL bus timing probe at 115200 baud:
+
+```text
+3 servos read+write:
+  total_cycle avg 7.971 ms, p95 8.094 ms
+  write_cycle avg 0.894 ms
+  read_cycle avg 7.073 ms
+
+1 servo read:
+  read_cycle avg 3.640 ms
+
+1 servo read+write:
+  total_cycle avg 4.537 ms
+```
+
+Reads dominate the cycle time. Writes are comparatively cheap.
+
+The old full runtime timing log shows the same shape:
+
+```text
+servo_read_ms commonly around 140 ms, with spikes above 500 ms
+servo_write_ms commonly around 70-80 ms through the LSC board path
+```
+
+IMU and footswitch latency are not the bottleneck:
+
+```text
+non-servo read overhead from wr_policy_timing.log:
+  avg 0.168 ms
+  p50 0.200 ms
+  p95 0.300 ms
+  max 0.400 ms
+```
+
+In background mode, BNO085 `read()` drains an in-memory queue; the I2C work is
+done by the IMU worker thread. Footswitch reads are four GPIO reads.
+
+## ToddlerBot Comparison
+
+ToddlerBot uses Dynamixel servos at 2,000,000 baud and can rely on much faster
+servo feedback. Its Dynamixel stack also aligns with public best practice:
+sync/bulk read and sync/bulk write where supported by the protocol.
+
+WildRobot currently uses Hiwonder/HTD raw serial bus servos at 115200 baud. The
+available protocol path does not provide a useful high-rate group read equivalent
+for all joints. Therefore WildRobot needs an explicit scheduling/cache layer
+rather than copying ToddlerBot's direct full-feedback loop.
+
+References:
+
+- ROBOTIS Dynamixel Protocol 2.0: sync read/write and bulk read/write.
+- ROS control / ros2_control hardware interfaces: control loops commonly
+  separate controller update from hardware read/write details.
+- Local ToddlerBot source: `~/projects/toddlerbot/examples/test_dynamixel.py`
+  and `~/projects/toddlerbot/toddlerbot/sim/real_world.py`.
+
+## Goal
+
+Keep policy writes at 50 Hz while avoiding a full all-servo read every 20 ms.
+
+The desired runtime loop is:
+
+```text
+every 20 ms policy step:
+  read IMU
+  read footswitches
+  read one scheduled servo group
+  update full joint-position cache
+  estimate velocities from cache update timestamps
+  build the full 21D policy observation from cached actuator state
+  run policy
+  write all 21 servo targets
+```
+
+The policy still receives a full 21-joint observation vector every step. Some
+joint entries may be cached from earlier steps, but their age must be tracked.
+
+## Non-Goals
+
+- Do not change the ONNX policy input/output shape.
+- Do not remove joints from `policy_spec.json` for this change.
+- Do not retrain for 17 actuators or 20 Hz as part of this design.
+- Do not hide stale feedback. Cache age must be measured and bounded.
+
+## Proposed Servo Read Schedule
+
+Start with a walking-prioritized schedule:
+
+```text
+step 0: read left leg
+step 1: read right leg
+step 2: read left leg
+step 3: read right leg
+step 4: read torso + arms
+repeat
+```
+
+Suggested groups:
+
+```text
+left_leg:
+  left_hip_pitch
+  left_hip_roll
+  left_knee_pitch
+  left_ankle_pitch
+  left_ankle_roll
+
+right_leg:
+  right_hip_pitch
+  right_hip_roll
+  right_knee_pitch
+  right_ankle_pitch
+  right_ankle_roll
+
+torso_arms:
+  waist_yaw
+  left_shoulder_pitch
+  left_shoulder_roll
+  left_elbow_pitch
+  left_wrist_yaw
+  left_wrist_pitch
+  right_shoulder_pitch
+  right_shoulder_roll
+  right_elbow_pitch
+  right_wrist_yaw
+  right_wrist_pitch
+```
+
+At 50 Hz this gives approximately:
+
+```text
+leg feedback:        20 Hz per side
+torso/arm feedback:  10 Hz
+servo target writes: 50 Hz
+IMU/footswitch:      50 Hz runtime read
+```
+
+If the torso/arm group is still too slow, split it into two groups:
+
+```text
+waist_left_arm
+right_arm
+```
+
+Then use a longer repeated schedule while keeping legs most frequent.
+
+## Cache Semantics
+
+The actuator layer should maintain:
+
+```text
+position_cache_rad[N]
+previous_position_cache_rad[N]
+velocity_cache_rad_s[N]
+last_update_wall_time_s[N]
+last_update_loop_step[N]
+read_fail_count_by_joint[N]
+last_read_group_name
+last_read_group_ids
+```
+
+On each `get_positions_rad()` call:
+
+1. Select the next read group.
+2. Read only that group's servo IDs.
+3. Convert returned units to radians for those joints.
+4. Update cache entries for successful replies.
+5. Update per-joint velocity using actual time since that joint's previous
+   successful update.
+6. Leave missing joints at their last cached values and increment failure
+   counters.
+7. Return the full cached position vector in policy actuator order.
+
+Startup must perform a complete initial read before walking. The cache should not
+start from zeros unless explicitly running in dry-run/mock mode.
+
+## Velocity Estimation
+
+Current velocity estimation uses the control period. That is wrong for staggered
+reads because a joint may update every 50-100 ms.
+
+Velocity should be computed per joint:
+
+```text
+vel[j] = (pos[j] - prev_pos[j]) / (update_time[j] - prev_update_time[j])
+```
+
+If a joint was not updated in the current step, keep its previous velocity or
+decay it toward zero. The first implementation should keep the previous velocity
+and expose age metrics; changing the velocity model should be evaluated with logs.
+
+## Safety Limits
+
+Suggested initial limits:
+
+```text
+leg joint max cache age:       0.12 s
+waist/arm max cache age:       0.25 s
+wrist max cache age:           0.50 s
+read failure warning streak:   1 group failure
+read failure abort threshold:  cache age limit exceeded
+```
+
+Abort conditions:
+
+- Any leg joint cache age exceeds the configured leg limit.
+- Any non-leg critical joint cache age exceeds its configured limit.
+- Initial full read cannot populate all policy joints.
+- Servo writes miss deadlines repeatedly.
+
+Warnings:
+
+- A scheduled group read partially succeeds.
+- A non-critical joint cache age is growing but still under its limit.
+- Any group read p95 approaches the remaining 20 ms loop budget.
+
+## Metrics
+
+The runtime timing summary should report:
+
+```text
+servo_read_group
+servo_read_ids
+servo_read_count
+servo_read_fail_count
+servo_cache_age_max_ms
+servo_cache_age_leg_max_ms
+servo_cache_age_arm_max_ms
+servo_cache_stale_joint_count
+servo_cache_uninitialized_count
+```
+
+Existing metrics to keep:
+
+```text
+work_ms avg/p95/max
+read_ms avg/p95/max
+policy_ms avg/p95/max
+servo_read_ms avg/p95/max
+servo_write_ms avg/p95/max
+imu_read_ms avg/p95/max
+footswitch_read_ms avg/p95/max
+deadline_misses
+```
+
+Success criteria for the first runtime test:
+
+```text
+work_ms_p95 < 20 ms
+deadline_misses near 0
+leg cache age p95 < 120 ms
+no cache-age aborts
+servo write p95 remains low
+IMU freshness no worse than current baseline
+```
+
+## Configuration
+
+Add this as an opt-in runtime config section first:
+
+```json
+"servo_read_schedule": {
+  "mode": "staggered",
+  "groups": [
+    ["left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch", "left_ankle_roll"],
+    ["right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch", "right_ankle_roll"],
+    ["left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch", "left_ankle_roll"],
+    ["right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch", "right_ankle_roll"],
+    ["waist_yaw", "left_shoulder_pitch", "left_shoulder_roll", "left_elbow_pitch", "left_wrist_yaw", "left_wrist_pitch",
+     "right_shoulder_pitch", "right_shoulder_roll", "right_elbow_pitch", "right_wrist_yaw", "right_wrist_pitch"]
+  ],
+  "max_cache_age_s": {
+    "leg": 0.12,
+    "arm": 0.25,
+    "wrist": 0.50,
+    "default": 0.25
+  }
+}
+```
+
+Default behavior should remain current full-read mode until the staggered path is
+tested.
+
+## Implementation Plan
+
+1. Add actuator cache and partial-read support.
+   - Verify with unit tests using a fake Hiwonder controller.
+   - Confirm full-read mode remains unchanged.
+
+2. Add a staggered read schedule option.
+   - Verify that each policy step returns a full position vector.
+   - Verify group order and cache ages.
+
+3. Fix velocity estimation for staggered reads.
+   - Verify per-joint velocities use actual update intervals.
+   - Verify unchanged joints keep finite values.
+
+4. Add runtime metrics.
+   - Verify timing summary includes cache age and group read data.
+   - Verify logs can prove whether the loop meets 50 Hz.
+
+5. Run staged hardware tests.
+   - First with servos unloaded or robot suspended.
+   - Then standing still.
+   - Then short walking with `--max-steps` and full timing logs.
+
+## Open Questions
+
+- Should wrist joints be physically removed or only deprioritized in the read
+  schedule?
+- Should wrist action writes be kept at 50 Hz, held at home, or masked?
+- Should arm readback be split from waist readback if the combined group is too
+  slow?
+- Should stale joint velocity decay to zero instead of holding the previous
+  velocity?
+
+These should be answered from timing logs after the first staggered-read
+implementation, not guessed in advance.
