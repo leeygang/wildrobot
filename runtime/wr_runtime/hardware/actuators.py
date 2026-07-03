@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 import numpy as np
 
 from .hiwonder_board_controller import HiwonderBoardController
+from .servo_io_worker import ServoIOWorker
 
 
 class Actuators(Protocol):
@@ -282,3 +283,115 @@ class HiwonderBoardActuators(Actuators):
             self.controller.close()
         except Exception:
             pass
+
+
+class HiwonderCachedActuators(Actuators):
+    """Actuator adapter backed by a ServoIOWorker cache.
+
+    The worker owns raw serial IO and stores servo electrical units. This
+    adapter keeps the runtime-facing actuator API in calibrated joint radians.
+    """
+
+    def __init__(
+        self,
+        actuator_names: Sequence[str],
+        servo_ids: Dict[str, int],
+        default_move_time_ms: Optional[int],
+        joint_servo_offset_units: Dict[str, int],
+        servo_io: ServoIOWorker,
+        joint_motor_unit_directions: Optional[Dict[str, float]] = None,
+        joint_angle_at_zero_unit_deg: Optional[Dict[str, float]] = None,
+        servo_model: ServoModel | None = None,
+    ) -> None:
+        self.actuator_names: List[str] = list(actuator_names)
+        self.default_move_time_ms = default_move_time_ms
+        self.servo_io = servo_io
+        self.servo_model = servo_model or ServoModel()
+
+        self.servo_ids_list: List[int] = []
+        offsets: List[int] = []
+        motor_signs: List[float] = []
+        centers_rad: List[float] = []
+        joint_motor_unit_directions = joint_motor_unit_directions or {}
+        joint_angle_at_zero_unit_deg = joint_angle_at_zero_unit_deg or {}
+        for name in self.actuator_names:
+            if name not in servo_ids:
+                raise KeyError(f"Servo ID missing for joint '{name}'")
+            self.servo_ids_list.append(int(servo_ids[name]))
+            offsets.append(int(joint_servo_offset_units.get(name, 0)))
+            motor_signs.append(float(joint_motor_unit_directions.get(name, 1.0)))
+            centers_rad.append(float(np.deg2rad(joint_angle_at_zero_unit_deg.get(name, 0.0))))
+
+        self.offsets_unit = np.asarray(offsets, dtype=np.float32)
+        self.motor_signs = np.asarray(motor_signs, dtype=np.float32)
+        self.centers_rad = np.asarray(centers_rad, dtype=np.float32)
+
+    def set_targets_rad(self, targets_rad: np.ndarray, *, move_time_ms: int | None = None) -> None:
+        targets = np.asarray(targets_rad, dtype=np.float32)
+        if targets.shape[0] != len(self.servo_ids_list):
+            raise ValueError(f"Expected {len(self.servo_ids_list)} targets, got {targets.shape[0]}")
+
+        move_time = move_time_ms if move_time_ms is not None else self.default_move_time_ms
+        if move_time is None:
+            raise ValueError("move_time_ms must be provided when no default_move_time_ms is set")
+
+        units = joint_target_rad_to_servo_pos_elec_units(
+            targets,
+            self.offsets_unit,
+            self.motor_signs,
+            self.centers_rad,
+            self.servo_model,
+        )
+        positions_by_servo_id = dict(
+            zip(self.servo_ids_list, np.rint(units).astype(int).tolist())
+        )
+        self.servo_io.submit_targets_units(positions_by_servo_id, move_time_ms=int(move_time))
+
+    def get_positions_rad(self) -> Optional[np.ndarray]:
+        state = self.servo_io.get_cached_servo_state()
+        index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
+        unit_values: list[float] = []
+        for sid in self.servo_ids_list:
+            idx = index_by_servo_id.get(int(sid))
+            if idx is None:
+                return None
+            value = float(state.position_units[idx])
+            if not np.isfinite(value):
+                return None
+            unit_values.append(value)
+
+        units = np.asarray(unit_values, dtype=np.float32)
+        return servo_pos_elect_units_to_joint_target_rad(
+            units,
+            self.offsets_unit,
+            self.motor_signs,
+            self.centers_rad,
+            self.servo_model,
+        ).astype(np.float32)
+
+    def estimate_velocities_rad_s(self, dt: float) -> np.ndarray:
+        state = self.servo_io.get_cached_servo_state()
+        index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
+        velocities: list[float] = []
+        for i, sid in enumerate(self.servo_ids_list):
+            idx = index_by_servo_id.get(int(sid))
+            if idx is None:
+                velocities.append(0.0)
+                continue
+            units_s = float(state.velocity_units_s[idx])
+            if not np.isfinite(units_s):
+                velocities.append(0.0)
+                continue
+            velocities.append(float(self.motor_signs[i]) * units_s / float(self.servo_model.units_per_rad))
+        return np.asarray(velocities, dtype=np.float32)
+
+    def disable(self) -> None:
+        self.servo_io.stop()
+        for sid in self.servo_ids_list:
+            try:
+                self.servo_io.raw_bus.unload(int(sid))
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        self.servo_io.close()
