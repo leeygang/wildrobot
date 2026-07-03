@@ -76,29 +76,43 @@ def _parse_packets(data: bytes, *, print_bad: bool = False) -> List[bytes]:
     return packets
 
 
-def _read_available_until_quiet(
-    ser: serial.Serial, *, timeout_s: float, quiet_s: float = 0.003
-) -> bytes:
-    deadline = time.perf_counter() + timeout_s
-    quiet_deadline: Optional[float] = None
-    chunks = bytearray()
-    while time.perf_counter() < deadline:
-        waiting = int(getattr(ser, "in_waiting", 0))
-        data = ser.read(waiting or 1)
-        if data:
-            chunks.extend(data)
-            quiet_deadline = time.perf_counter() + quiet_s
-            continue
-        if quiet_deadline is not None and time.perf_counter() >= quiet_deadline:
-            break
-    return bytes(chunks)
-
-
 def _write_packet(ser: serial.Serial, packet: bytes, *, print_raw: bool) -> None:
     if print_raw:
         print(f"TX: {_format_bytes(packet)}")
     ser.write(packet)
     ser.flush()
+
+
+def _find_position_response(data: bytes, servo_id: int) -> Optional[bytes]:
+    for response in _parse_packets(data, print_bad=False):
+        if int(response[2]) != int(servo_id):
+            continue
+        if int(response[4]) != CMD_POS_READ:
+            continue
+        if len(response[5:-1]) < 2:
+            continue
+        return response
+    return None
+
+
+def _read_position_response(
+    ser: serial.Serial,
+    servo_id: int,
+    *,
+    timeout_s: float,
+) -> tuple[Optional[bytes], bytes]:
+    deadline = time.perf_counter() + timeout_s
+    raw = bytearray()
+    while time.perf_counter() < deadline:
+        waiting = int(getattr(ser, "in_waiting", 0))
+        data = ser.read(waiting or 1)
+        if not data:
+            continue
+        raw.extend(data)
+        response = _find_position_response(bytes(raw), servo_id)
+        if response is not None:
+            return response, bytes(raw)
+    return None, bytes(raw)
 
 
 def _read_position(
@@ -107,22 +121,18 @@ def _read_position(
     ser.reset_input_buffer()
     packet = _build_packet(servo_id, CMD_POS_READ)
     _write_packet(ser, packet, print_raw=print_raw)
-    data = _read_available_until_quiet(ser, timeout_s=timeout_s)
+    response, data = _read_position_response(ser, servo_id, timeout_s=timeout_s)
     if print_raw:
         print(f"RX_ANY: {_format_bytes(data) if data else '<none>'}")
 
-    for response in _parse_packets(data, print_bad=print_raw):
+    if response is None:
         if print_raw:
-            print(f"RX: {_format_bytes(response)}")
-        if int(response[2]) != int(servo_id):
-            continue
-        if int(response[4]) != CMD_POS_READ:
-            continue
-        params = list(response[5:-1])
-        if len(params) < 2:
-            continue
-        return int(params[0]) | (int(params[1]) << 8)
-    return None
+            _parse_packets(data, print_bad=True)
+        return None
+    if print_raw:
+        print(f"RX: {_format_bytes(response)}")
+    params = list(response[5:-1])
+    return int(params[0]) | (int(params[1]) << 8)
 
 
 def _write_position(
@@ -235,7 +245,8 @@ def main() -> int:
         bytesize=serial.EIGHTBITS,
         parity=serial.PARITY_NONE,
         stopbits=serial.STOPBITS_ONE,
-        timeout=min(max(float(args.timeout_s), 0.001), 0.05),
+        # Keep per-read waits short. --timeout-s is the total response budget.
+        timeout=0.001,
     ) as ser:
         time.sleep(0.1)
 
