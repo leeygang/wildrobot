@@ -139,6 +139,58 @@
       }
     }
   },
+  "servo_read_schedule": {
+    "mode": "staggered",
+    "groups": [
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "waist_yaw",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_elbow_pitch",
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_elbow_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch"
+      ]
+    ],
+    "max_cache_age_s": {
+      "leg": 0.12,
+      "arm": 0.25,
+      "wrist": 0.5,
+      "default": 0.25
+    }
+  },
   "bno085": {
     "i2c_address": "0x4B",
     "upside_down": false,
