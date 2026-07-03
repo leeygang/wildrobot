@@ -410,6 +410,31 @@ class FootSwitchConfig:
         return (self.left_toe, self.left_heel, self.right_toe, self.right_heel)
 
 
+@dataclass(frozen=True)
+class ServoReadScheduleConfig:
+    """Optional runtime servo read schedule.
+
+    ``mode="full"`` preserves the old behavior: read all policy servos every
+    control step. ``mode="staggered"`` reads an initial full state, then reads
+    one configured joint group per step while returning the full cached state.
+    """
+
+    mode: str = "full"
+    groups: List[List[str]] = field(default_factory=list)
+    max_cache_age_s: Dict[str, float] = field(
+        default_factory=lambda: {
+            "leg": 0.12,
+            "arm": 0.25,
+            "wrist": 0.50,
+            "default": 0.25,
+        }
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode == "staggered"
+
+
 # =============================================================================
 # Main Configuration Class
 # =============================================================================
@@ -450,6 +475,7 @@ class WrRuntimeConfig:
     policy_onnx_path: str
     control: ControlConfig
     servo_controller: ServoControllerConfig
+    servo_read_schedule: ServoReadScheduleConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
     realism_profile_path: Optional[str] = None
@@ -590,6 +616,7 @@ class WrRuntimeConfig:
         # Parse nested configs
         control = cls._parse_control_config(data)
         servo_controller = cls._parse_servo_controller_config(data, joint_specs)
+        servo_read_schedule = cls._parse_servo_read_schedule_config(data)
         bno085 = cls._parse_bno085_config(data)
         foot_switches = cls._parse_foot_switch_config(data)
 
@@ -598,6 +625,7 @@ class WrRuntimeConfig:
             policy_onnx_path=data["policy_onnx_path"],
             control=control,
             servo_controller=servo_controller,
+            servo_read_schedule=servo_read_schedule,
             bno085=bno085,
             foot_switches=foot_switches,
             realism_profile_path=(
@@ -736,6 +764,56 @@ class WrRuntimeConfig:
             )
 
         return _parse_block(canonical_block, "servo_controller.servos")
+
+    @staticmethod
+    def _parse_servo_read_schedule_config(data: dict) -> ServoReadScheduleConfig:
+        raw = data.get("servo_read_schedule")
+        if raw is None:
+            return ServoReadScheduleConfig()
+        if not isinstance(raw, dict):
+            raise ValueError("servo_read_schedule must be an object")
+
+        groups_raw = raw.get("groups", [])
+        if groups_raw is None:
+            groups_raw = []
+        if not isinstance(groups_raw, list):
+            raise ValueError("servo_read_schedule.groups must be a list of joint-name lists")
+
+        groups: List[List[str]] = []
+        for i, group in enumerate(groups_raw):
+            if not isinstance(group, list) or not group:
+                raise ValueError(
+                    f"servo_read_schedule.groups[{i}] must be a non-empty list"
+                )
+            names = [str(name) for name in group]
+            if any(not name.strip() for name in names):
+                raise ValueError(
+                    f"servo_read_schedule.groups[{i}] contains an empty joint name"
+                )
+            groups.append(names)
+
+        mode = str(raw.get("mode", "staggered" if groups else "full")).lower()
+        if mode not in {"full", "staggered"}:
+            raise ValueError("servo_read_schedule.mode must be 'full' or 'staggered'")
+        if mode == "staggered" and not groups:
+            raise ValueError("servo_read_schedule.groups is required for staggered mode")
+
+        default_limits = ServoReadScheduleConfig().max_cache_age_s
+        limits_raw = raw.get("max_cache_age_s", {})
+        if limits_raw is None:
+            limits_raw = {}
+        if not isinstance(limits_raw, dict):
+            raise ValueError("servo_read_schedule.max_cache_age_s must be an object")
+        limits = dict(default_limits)
+        for key, value in limits_raw.items():
+            value_f = float(value)
+            if value_f <= 0.0:
+                raise ValueError(
+                    f"servo_read_schedule.max_cache_age_s.{key} must be positive"
+                )
+            limits[str(key)] = value_f
+
+        return ServoReadScheduleConfig(mode=mode, groups=groups, max_cache_age_s=limits)
 
     @staticmethod
     def _validate_motor_signs(motor_signs: Dict[str, float]) -> None:
@@ -890,6 +968,17 @@ class WrRuntimeConfig:
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
+            **(
+                {
+                    "servo_read_schedule": {
+                        "mode": self.servo_read_schedule.mode,
+                        "groups": self.servo_read_schedule.groups,
+                        "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
+                    }
+                }
+                if self.servo_read_schedule.enabled or self.servo_read_schedule.groups
+                else {}
+            ),
             **(
                 {"realism_profile_path": self.realism_profile_path}
                 if self.realism_profile_path is not None

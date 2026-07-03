@@ -142,6 +142,8 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     # default_move_time_ms None -> one control period (20 ms at 50 Hz).
     assert a["default_move_time_ms"] == 20
     assert a["joint_servo_offset_units"] == {"j": 3}
+    assert a["read_schedule_mode"] == "full"
+    assert a["read_schedule_groups"] == []
 
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
@@ -186,6 +188,49 @@ def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None
 
     assert captured["imu"]["sampling_hz"] == 20
     assert captured["imu"]["enable_rotation_vector"] is False
+
+
+def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None:
+    import configs
+    import wr_runtime.hardware.actuators as act_mod
+    import wr_runtime.hardware.bno085 as bno_mod
+    import wr_runtime.hardware.foot_switches as fs_mod
+    from wr_runtime.control import run_policy
+
+    captured = {}
+    cfg = _fake_runtime_config()
+    cfg.servo_read_schedule = SimpleNamespace(
+        mode="staggered",
+        groups=[["j"]],
+        max_cache_age_s={"default": 0.25},
+    )
+
+    class _FakeActuators:
+        def __init__(self, **kwargs):
+            captured["actuators"] = kwargs
+
+    class _FakeImu:
+        def __init__(self, **kwargs):
+            pass
+
+    class _FakeFootSwitches:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
+    monkeypatch.setattr(act_mod, "HiwonderBoardActuators", _FakeActuators)
+    monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
+    monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
+
+    run_policy._build_hardware_robot_io(
+        runtime_config_path="ignored",
+        actuator_names=["j"],
+        control_dt=0.02,
+    )
+
+    assert captured["actuators"]["read_schedule_mode"] == "staggered"
+    assert captured["actuators"]["read_schedule_groups"] == [["j"]]
+    assert captured["actuators"]["read_schedule_max_cache_age_s"] == {"default": 0.25}
 
 
 def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> None:

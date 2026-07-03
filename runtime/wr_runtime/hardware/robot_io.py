@@ -29,6 +29,7 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_fresh_imu_wall_time_s: Optional[float] = None
     _last_imu_warn_time_s: float = 0.0
     last_timing_s: dict[str, float] = field(default_factory=dict, init=False)
+    last_servo_metrics: dict = field(default_factory=dict, init=False)
 
     def _imu_sample_is_startup_ready(self, imu_sample: object) -> bool:
         if not bool(getattr(imu_sample, "valid", True)):
@@ -158,6 +159,14 @@ class HardwareRobotIO(RobotIO[Signals]):
         vel_t0 = time.monotonic()
         joint_vel = self.actuators.estimate_velocities_rad_s(self.control_dt)
         velocity_s = time.monotonic() - vel_t0
+        servo_metrics = {}
+        metrics_fn = getattr(self.actuators, "get_servo_cache_metrics", None)
+        if callable(metrics_fn):
+            try:
+                servo_metrics = dict(metrics_fn())
+            except Exception as exc:
+                servo_metrics = {"servo_metrics_error": repr(exc)}
+        self.last_servo_metrics = servo_metrics
         foot_t0 = time.monotonic()
         foot_sample = self.foot_switches.read()
         footswitch_s = time.monotonic() - foot_t0
@@ -182,6 +191,9 @@ class HardwareRobotIO(RobotIO[Signals]):
             "signal_build": signal_build_s,
             "read_total": time.monotonic() - read_t0,
         }
+        for key, value in servo_metrics.items():
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                self.last_timing_s[key] = float(value)
         return signals
 
     def write_ctrl(self, ctrl_targets_rad) -> None:

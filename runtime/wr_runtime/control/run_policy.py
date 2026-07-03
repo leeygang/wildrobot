@@ -161,6 +161,11 @@ def _build_hardware_robot_io(
     if default_move_time_ms is None:
         default_move_time_ms = max(1, int(round(control_dt * 1000.0)))
 
+    read_schedule = getattr(cfg, "servo_read_schedule", None)
+    read_schedule_mode = getattr(read_schedule, "mode", "full")
+    read_schedule_groups = getattr(read_schedule, "groups", [])
+    read_schedule_max_cache_age_s = getattr(read_schedule, "max_cache_age_s", {})
+
     actuators = HiwonderBoardActuators(
         actuator_names=actuator_names,
         servo_ids=sc.servo_ids,
@@ -170,6 +175,9 @@ def _build_hardware_robot_io(
         joint_servo_offset_units=sc.joint_servo_offset_units,
         joint_motor_unit_directions=sc.joint_motor_unit_directions,
         joint_angle_at_zero_unit_deg=sc.joint_angle_at_zero_unit_deg,
+        read_schedule_mode=read_schedule_mode,
+        read_schedule_groups=read_schedule_groups,
+        read_schedule_max_cache_age_s=read_schedule_max_cache_age_s,
     )
     imu = BNO085IMU(
         i2c_address=cfg.bno085.i2c_address,
@@ -282,6 +290,13 @@ def _timing_max(samples: List[dict], key: str) -> float | None:
     return float(np.max(values))
 
 
+def _timing_sum(samples: List[dict], key: str) -> float | None:
+    values = _timing_values(samples, key)
+    if not values:
+        return None
+    return float(np.sum(values))
+
+
 def _timing_percentile(samples: List[dict], key: str, percentile: float) -> float | None:
     values = _timing_values(samples, key)
     if not values:
@@ -298,7 +313,23 @@ def _format_step_timing(timing_s: dict) -> str:
         f"policy_ms={_format_ms(timing_s.get('policy'))} "
         f"write_ms={_format_ms(timing_s.get('write'))} "
         f"servo_read_ms={_format_ms(timing_s.get('io_actuator_read'))} "
-        f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))}]"
+        f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))} "
+        f"servo_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_max_s'))}]"
+    )
+
+
+def _format_servo_step_metrics(metrics: dict | None) -> str:
+    if not isinstance(metrics, dict) or not metrics:
+        return ""
+    group = metrics.get("servo_read_group")
+    ids = metrics.get("servo_read_ids")
+    age_s = metrics.get("servo_cache_age_max_s")
+    stale = metrics.get("servo_cache_stale_joint_count")
+    uninit = metrics.get("servo_cache_uninitialized_count")
+    return (
+        "servo_cache="
+        f"[group={group} ids={ids} age_ms={_format_ms(age_s)} "
+        f"stale={stale} uninit={uninit}]"
     )
 
 
@@ -308,6 +339,7 @@ def _print_timing_summary(
     ctrl_dt: float,
     realtime: bool,
     completed: bool = True,
+    servo_metric_samples: List[dict] | None = None,
 ) -> None:
     if not timing_samples:
         return
@@ -364,6 +396,32 @@ def _print_timing_summary(
         f"{_format_ms(_timing_max(timing_samples, 'io_write_ctrl'))}",
         flush=True,
     )
+    servo_metric_samples = servo_metric_samples or []
+    if servo_metric_samples or _timing_values(timing_samples, "io_servo_cache_age_max_s"):
+        last_metrics = servo_metric_samples[-1] if servo_metric_samples else {}
+        print(
+            "  Servo cache avg/p95/max ms: "
+            f"all={_format_ms(_timing_avg(timing_samples, 'io_servo_cache_age_max_s'))}/"
+            f"{_format_ms(_timing_percentile(timing_samples, 'io_servo_cache_age_max_s', 95.0))}/"
+            f"{_format_ms(_timing_max(timing_samples, 'io_servo_cache_age_max_s'))} "
+            f"leg={_format_ms(_timing_avg(timing_samples, 'io_servo_cache_age_leg_max_s'))}/"
+            f"{_format_ms(_timing_percentile(timing_samples, 'io_servo_cache_age_leg_max_s', 95.0))}/"
+            f"{_format_ms(_timing_max(timing_samples, 'io_servo_cache_age_leg_max_s'))} "
+            f"arm={_format_ms(_timing_avg(timing_samples, 'io_servo_cache_age_arm_max_s'))}/"
+            f"{_format_ms(_timing_percentile(timing_samples, 'io_servo_cache_age_arm_max_s', 95.0))}/"
+            f"{_format_ms(_timing_max(timing_samples, 'io_servo_cache_age_arm_max_s'))}",
+            flush=True,
+        )
+        print(
+            "  Servo read/cache summary: "
+            f"read_count={_timing_sum(timing_samples, 'io_servo_read_count')} "
+            f"read_fail_count={_timing_sum(timing_samples, 'io_servo_read_fail_count')} "
+            f"stale_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_stale_joint_count')} "
+            f"uninitialized_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_uninitialized_count')} "
+            f"last_group={last_metrics.get('servo_read_group')} "
+            f"last_ids={last_metrics.get('servo_read_ids')}",
+            flush=True,
+        )
 
 
 def _run_hardware_preflight(
@@ -610,6 +668,7 @@ def run_policy_loop(
         actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
     )
     timing_samples: List[dict] = []
+    servo_metric_samples: List[dict] = []
     last_loop_start_s: float | None = None
     completed = False
     try:
@@ -627,6 +686,9 @@ def run_policy_loop(
                 timing_s["loop_period"] = loop_period_s
             info["timing_s"] = timing_s
             timing_samples.append(timing_s)
+            servo_metrics = info.get("servo_metrics")
+            if isinstance(servo_metrics, dict) and servo_metrics:
+                servo_metric_samples.append(servo_metrics)
             if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
                 applied = info["applied_action"]
                 target = info["target_q_rad"]
@@ -655,6 +717,9 @@ def run_policy_loop(
                     )
                 if foot_summary:
                     extra_parts.append(foot_summary)
+                servo_summary = _format_servo_step_metrics(servo_metrics)
+                if servo_summary:
+                    extra_parts.append(servo_summary)
                 extra_parts.append(_format_step_timing(timing_s))
                 extra = " " + " ".join(extra_parts) if extra_parts else ""
                 print(
@@ -677,6 +742,7 @@ def run_policy_loop(
             ctrl_dt=ctrl_dt,
             realtime=realtime,
             completed=completed,
+            servo_metric_samples=servo_metric_samples,
         )
     return logs
 

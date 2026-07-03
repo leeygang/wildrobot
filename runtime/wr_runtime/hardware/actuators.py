@@ -77,6 +77,9 @@ class HiwonderBoardActuators(Actuators):
         max_retries: int = 3,
         retry_backoff_s: float = 0.002,
         controller: Optional[HiwonderBoardController] = None,
+        read_schedule_mode: str = "full",
+        read_schedule_groups: Optional[Sequence[Sequence[str]]] = None,
+        read_schedule_max_cache_age_s: Optional[Dict[str, float]] = None,
     ) -> None:
         self.actuator_names: List[str] = list(actuator_names)
         self.port = port
@@ -110,6 +113,160 @@ class HiwonderBoardActuators(Actuators):
         self._last_positions: Optional[np.ndarray] = None
         self._prev_positions: Optional[np.ndarray] = None
         self._last_error: Optional[Exception] = None
+        self.read_schedule_mode = str(read_schedule_mode or "full").lower()
+        self._read_schedule_groups = self._build_read_schedule_groups(
+            read_schedule_groups or []
+        )
+        self._read_group_cursor = 0
+        self._position_cache_rad = np.full(len(self.servo_ids_list), np.nan, dtype=np.float32)
+        self._velocity_cache_rad_s = np.zeros(len(self.servo_ids_list), dtype=np.float32)
+        self._prev_position_cache_rad = np.full(len(self.servo_ids_list), np.nan, dtype=np.float32)
+        self._last_update_wall_time_s = np.full(len(self.servo_ids_list), np.nan, dtype=np.float64)
+        self._read_fail_count_by_joint = np.zeros(len(self.servo_ids_list), dtype=np.int32)
+        self._last_read_group_name: Optional[str] = None
+        self._last_read_group_ids: List[int] = []
+        self._last_read_count = 0
+        self._last_read_fail_count = 0
+        self._last_cache_age_s = np.full(len(self.servo_ids_list), np.inf, dtype=np.float32)
+        self._cache_age_limit_s = self._build_cache_age_limits(
+            read_schedule_max_cache_age_s or {}
+        )
+        if self.read_schedule_mode not in {"full", "staggered"}:
+            raise ValueError("read_schedule_mode must be 'full' or 'staggered'")
+        if self.read_schedule_mode == "staggered" and not self._read_schedule_groups:
+            raise ValueError("staggered read schedule requires at least one group")
+
+    def _build_read_schedule_groups(
+        self, groups: Sequence[Sequence[str]]
+    ) -> list[tuple[str, list[int], list[int]]]:
+        by_name = {name: i for i, name in enumerate(self.actuator_names)}
+        out: list[tuple[str, list[int], list[int]]] = []
+        for group_idx, names in enumerate(groups):
+            indices: list[int] = []
+            group_names: list[str] = []
+            for name in names:
+                name_s = str(name)
+                if name_s not in by_name:
+                    raise KeyError(f"servo_read_schedule group references unknown joint '{name_s}'")
+                idx = by_name[name_s]
+                if idx in indices:
+                    continue
+                indices.append(idx)
+                group_names.append(name_s)
+            if not indices:
+                raise ValueError(f"servo_read_schedule group {group_idx} is empty")
+            label = self._infer_read_group_label(group_idx, group_names)
+            servo_ids = [int(self.servo_ids_list[i]) for i in indices]
+            out.append((label, indices, servo_ids))
+        return out
+
+    @staticmethod
+    def _infer_read_group_label(group_idx: int, names: Sequence[str]) -> str:
+        names_set = set(names)
+        if names_set and all(name.startswith("left_") for name in names_set):
+            if any(part in name for name in names_set for part in ("hip", "knee", "ankle")):
+                return "left_leg"
+        if names_set and all(name.startswith("right_") for name in names_set):
+            if any(part in name for name in names_set for part in ("hip", "knee", "ankle")):
+                return "right_leg"
+        if any("wrist" in name or "shoulder" in name or "elbow" in name for name in names_set):
+            return "torso_arms"
+        return f"group_{group_idx}"
+
+    def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
+        defaults = {"leg": 0.12, "arm": 0.25, "wrist": 0.50, "default": 0.25}
+        merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
+        age_limits = []
+        for name in self.actuator_names:
+            if any(part in name for part in ("hip", "knee", "ankle")):
+                key = "leg"
+            elif "wrist" in name:
+                key = "wrist"
+            elif any(part in name for part in ("shoulder", "elbow")):
+                key = "arm"
+            else:
+                key = "default"
+            age_limits.append(float(merged.get(key, merged["default"])))
+        return np.asarray(age_limits, dtype=np.float32)
+
+    def _cache_is_initialized(self) -> bool:
+        return bool(np.all(np.isfinite(self._position_cache_rad)))
+
+    def _cache_age_s(self, now_s: float | None = None) -> np.ndarray:
+        now = time.monotonic() if now_s is None else float(now_s)
+        age = now - self._last_update_wall_time_s
+        age[~np.isfinite(self._last_update_wall_time_s)] = np.inf
+        return age.astype(np.float32)
+
+    def _update_cache_from_units(
+        self,
+        *,
+        indices: Sequence[int],
+        units_by_servo_id: Dict[int, int],
+        now_s: float,
+    ) -> int:
+        updated = 0
+        for idx in indices:
+            servo_id = int(self.servo_ids_list[idx])
+            if servo_id not in units_by_servo_id:
+                self._read_fail_count_by_joint[idx] += 1
+                continue
+            units = np.asarray([float(units_by_servo_id[servo_id])], dtype=np.float32)
+            q_rad = float(
+                servo_pos_elect_units_to_joint_target_rad(
+                    units,
+                    self.offsets_unit[idx : idx + 1],
+                    self.motor_signs[idx : idx + 1],
+                    self.centers_rad[idx : idx + 1],
+                    self.servo_model,
+                )[0]
+            )
+            prev_q = float(self._position_cache_rad[idx])
+            prev_time = float(self._last_update_wall_time_s[idx])
+            self._prev_position_cache_rad[idx] = prev_q
+            self._position_cache_rad[idx] = q_rad
+            if np.isfinite(prev_q) and np.isfinite(prev_time) and now_s > prev_time:
+                self._velocity_cache_rad_s[idx] = (q_rad - prev_q) / (now_s - prev_time)
+            self._last_update_wall_time_s[idx] = now_s
+            self._read_fail_count_by_joint[idx] = 0
+            updated += 1
+        self._last_cache_age_s = self._cache_age_s(now_s)
+        return updated
+
+    def _update_full_read_cache(self, units: np.ndarray, radians: np.ndarray) -> None:
+        now_s = time.monotonic()
+        previous = self._position_cache_rad.copy()
+        previous_time = self._last_update_wall_time_s.copy()
+        self._prev_position_cache_rad = previous
+        self._position_cache_rad = np.asarray(radians, dtype=np.float32).copy()
+        for idx, q_rad in enumerate(self._position_cache_rad):
+            prev_q = float(previous[idx])
+            prev_t = float(previous_time[idx])
+            if np.isfinite(prev_q) and np.isfinite(prev_t) and now_s > prev_t:
+                self._velocity_cache_rad_s[idx] = (float(q_rad) - prev_q) / (now_s - prev_t)
+        self._last_update_wall_time_s[:] = now_s
+        self._read_fail_count_by_joint[:] = 0
+        self._last_read_group_name = "full"
+        self._last_read_group_ids = [int(sid) for sid in self.servo_ids_list]
+        self._last_read_count = int(units.size)
+        self._last_read_fail_count = 0
+        self._last_cache_age_s = self._cache_age_s(now_s)
+
+    def _check_cache_age_or_raise(self) -> None:
+        age = self._cache_age_s()
+        self._last_cache_age_s = age
+        uninitialized = np.where(~np.isfinite(age))[0].tolist()
+        stale = np.where(age > self._cache_age_limit_s)[0].tolist()
+        if uninitialized:
+            names = [self.actuator_names[i] for i in uninitialized]
+            raise RuntimeError(f"servo cache has uninitialized joints: {names}")
+        if stale:
+            details = [
+                f"{self.actuator_names[i]} age_s={float(age[i]):.3f} "
+                f"limit_s={float(self._cache_age_limit_s[i]):.3f}"
+                for i in stale
+            ]
+            raise RuntimeError("servo cache age exceeded: " + "; ".join(details))
 
     def set_targets_rad(self, targets_rad: np.ndarray, *, move_time_ms: int | None = None) -> None:
         targets = np.asarray(targets_rad, dtype=np.float32)
@@ -146,6 +303,11 @@ class HiwonderBoardActuators(Actuators):
         ) from last_err
 
     def get_positions_rad(self) -> Optional[np.ndarray]:
+        if self.read_schedule_mode == "staggered":
+            return self._get_positions_rad_staggered()
+        return self._get_positions_rad_full()
+
+    def _get_positions_rad_full(self) -> Optional[np.ndarray]:
         last_err: Optional[Exception] = None
         self._last_error = None
         for attempt in range(self.max_retries):
@@ -204,19 +366,73 @@ class HiwonderBoardActuators(Actuators):
             ).astype(np.float32)
             self._prev_positions = self._last_positions
             self._last_positions = radians
+            self._update_full_read_cache(units, radians)
             self._last_error = None
             return radians
 
         self._last_error = last_err
         return None
 
-    def _read_positions_complete(self) -> Optional[List[tuple[int, int]]]:
+    def _get_positions_rad_staggered(self) -> Optional[np.ndarray]:
+        if not self._cache_is_initialized():
+            return self._initialize_position_cache()
+
+        group_name, indices, servo_ids = self._read_schedule_groups[
+            self._read_group_cursor % len(self._read_schedule_groups)
+        ]
+        self._read_group_cursor += 1
+        self._last_read_group_name = group_name
+        self._last_read_group_ids = [int(sid) for sid in servo_ids]
+        self._last_read_count = 0
+        self._last_read_fail_count = len(servo_ids)
+        self._last_error = None
+
+        try:
+            resp = self._read_positions_complete(servo_ids)
+        except Exception as exc:
+            self._last_error = exc
+            resp = None
+
+        pos_map: dict[int, int] = {}
+        if resp:
+            pos_map = {int(sid): int(pos) for sid, pos in resp}
+        now_s = time.monotonic()
+        updated = self._update_cache_from_units(
+            indices=indices,
+            units_by_servo_id=pos_map,
+            now_s=now_s,
+        )
+        self._last_read_count = int(updated)
+        self._last_read_fail_count = len(indices) - int(updated)
+        if self._last_read_fail_count > 0 and self._last_error is None:
+            missing = [int(sid) for sid in servo_ids if int(sid) not in pos_map]
+            self._last_error = RuntimeError(
+                f"staggered servo read incomplete group={group_name} missing_ids={missing}"
+            )
+        self._check_cache_age_or_raise()
+        self._last_positions = self._position_cache_rad.copy()
+        return self._position_cache_rad.copy()
+
+    def _initialize_position_cache(self) -> Optional[np.ndarray]:
+        previous_mode = self.read_schedule_mode
+        self.read_schedule_mode = "full"
+        try:
+            positions = self._get_positions_rad_full()
+        finally:
+            self.read_schedule_mode = previous_mode
+        if positions is None:
+            return None
+        return np.asarray(positions, dtype=np.float32).copy()
+
+    def _read_positions_complete(
+        self, servo_ids: Optional[Sequence[int]] = None
+    ) -> Optional[List[tuple[int, int]]]:
         """Read all requested servo IDs, tolerating partial replies.
 
         Many boards/links will sometimes reply with only a subset of IDs.
         We merge whatever we got, then retry only the missing IDs.
         """
-        ids = [int(x) for x in self.servo_ids_list]
+        ids = [int(x) for x in (servo_ids if servo_ids is not None else self.servo_ids_list)]
         results: dict[int, int] = {}
 
         # First try: request all IDs at once.
@@ -268,9 +484,53 @@ class HiwonderBoardActuators(Actuators):
         return responding, not_responding
 
     def estimate_velocities_rad_s(self, dt: float) -> np.ndarray:
+        if self.read_schedule_mode == "staggered":
+            return self._velocity_cache_rad_s.copy()
         if self._last_positions is None or self._prev_positions is None or dt <= 0.0:
             return np.zeros(len(self.servo_ids_list), dtype=np.float32)
         return (self._last_positions - self._prev_positions) / float(dt)
+
+    def get_servo_cache_metrics(self) -> dict:
+        age = self._cache_age_s()
+        self._last_cache_age_s = age
+        finite_age = age[np.isfinite(age)]
+        max_age = float(np.max(finite_age)) if finite_age.size else float("inf")
+        leg_mask = np.asarray(
+            [
+                any(part in name for part in ("hip", "knee", "ankle"))
+                for name in self.actuator_names
+            ],
+            dtype=bool,
+        )
+        arm_mask = np.asarray(
+            [
+                any(part in name for part in ("shoulder", "elbow"))
+                for name in self.actuator_names
+            ],
+            dtype=bool,
+        )
+        wrist_mask = np.asarray(["wrist" in name for name in self.actuator_names], dtype=bool)
+
+        def _masked_max(mask: np.ndarray) -> float:
+            vals = age[mask & np.isfinite(age)]
+            return float(np.max(vals)) if vals.size else 0.0
+
+        uninitialized = int(np.count_nonzero(~np.isfinite(age)))
+        stale = int(np.count_nonzero(age > self._cache_age_limit_s))
+        return {
+            "servo_read_mode": self.read_schedule_mode,
+            "servo_read_group": self._last_read_group_name,
+            "servo_read_ids": list(self._last_read_group_ids),
+            "servo_read_count": int(self._last_read_count),
+            "servo_read_fail_count": int(self._last_read_fail_count),
+            "servo_cache_age_max_s": max_age,
+            "servo_cache_age_leg_max_s": _masked_max(leg_mask),
+            "servo_cache_age_arm_max_s": _masked_max(arm_mask),
+            "servo_cache_age_wrist_max_s": _masked_max(wrist_mask),
+            "servo_cache_stale_joint_count": stale,
+            "servo_cache_uninitialized_count": uninitialized,
+            "servo_read_fail_count_total": int(np.sum(self._read_fail_count_by_joint)),
+        }
 
     def disable(self) -> None:
         try:

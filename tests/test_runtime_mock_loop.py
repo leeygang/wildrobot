@@ -16,6 +16,7 @@ from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 from runtime.wr_runtime.control.run_policy import (
     _format_leg_targets_deg,
     _output_log_context,
+    _print_timing_summary,
     run_policy_loop,
 )
 
@@ -117,6 +118,33 @@ def test_loop_prints_partial_timing_summary_on_error(
     captured = capsys.readouterr()
     assert "Timing summary: status=partial" in captured.out
     assert "steps=1" in captured.out
+
+
+def test_timing_summary_prints_servo_cache_metrics(capsys):
+    _print_timing_summary(
+        timing_samples=[
+            {
+                "work": 0.01,
+                "io_servo_cache_age_max_s": 0.08,
+                "io_servo_cache_age_leg_max_s": 0.04,
+                "io_servo_cache_age_arm_max_s": 0.08,
+                "io_servo_read_count": 5,
+                "io_servo_read_fail_count": 1,
+                "io_servo_cache_stale_joint_count": 0,
+                "io_servo_cache_uninitialized_count": 0,
+            }
+        ],
+        ctrl_dt=0.02,
+        realtime=True,
+        servo_metric_samples=[
+            {"servo_read_group": "left_leg", "servo_read_ids": [1, 2, 3, 4, 9]}
+        ],
+    )
+
+    out = capsys.readouterr().out
+    assert "Servo cache avg/p95/max ms" in out
+    assert "Servo read/cache summary" in out
+    assert "last_group=left_leg" in out
 
 
 def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):

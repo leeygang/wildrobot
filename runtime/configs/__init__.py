@@ -9,6 +9,7 @@ from configs.config import (
     FootSwitchConfig,
     ServoControllerConfig,
     ServoConfig,
+    ServoReadScheduleConfig,
     ServoSpec,
     load_config,
     RuntimeConfig,
@@ -25,6 +26,7 @@ __all__ = [
     "ServoControllerConfig",
     "HiwonderControllerConfig",  # Legacy alias
     "ServoConfig",
+    "ServoReadScheduleConfig",
     "ServoSpec",
     "BNO085Config",
     "FootSwitchConfig",

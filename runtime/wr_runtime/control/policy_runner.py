@@ -322,6 +322,9 @@ class RuntimePolicyRunner:
                     timing_s[f"io_{key}"] = float(value)
                 except (TypeError, ValueError):
                     pass
+        servo_metrics = getattr(self._robot_io, "last_servo_metrics", None)
+        if not isinstance(servo_metrics, dict):
+            servo_metrics = {}
 
         return {
             "step_idx": int(self._state.step_idx),
@@ -331,6 +334,7 @@ class RuntimePolicyRunner:
             "target_q_rad": target_q,
             "signals": signals,
             "timing_s": timing_s,
+            "servo_metrics": dict(servo_metrics),
         }
 
 
