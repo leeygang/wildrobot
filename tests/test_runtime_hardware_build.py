@@ -74,11 +74,16 @@ def _fake_runtime_config() -> SimpleNamespace:
         joint_angle_at_zero_unit_deg={"j": 0.0},
     )
     bno085 = SimpleNamespace(
+        transport="spi",
         i2c_address=0x4B,
         upside_down=False,
         axis_map=["+X", "-Y", "-Z"],
         suppress_debug=True,
         i2c_frequency_hz=100_000,
+        spi_baudrate=1_000_000,
+        spi_cs_pin="D8",
+        spi_int_pin="D17",
+        spi_reset_pin="D27",
         init_retries=3,
         sampling_hz=None,
         enable_rotation_vector=True,
@@ -178,7 +183,12 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert a["baudrate"] == 115200
     assert captured["worker_started"] is True
 
+    assert captured["imu"]["transport"] == "spi"
     assert captured["imu"]["i2c_address"] == 0x4B
+    assert captured["imu"]["spi_baudrate"] == 1_000_000
+    assert captured["imu"]["spi_cs_pin"] == "D8"
+    assert captured["imu"]["spi_int_pin"] == "D17"
+    assert captured["imu"]["spi_reset_pin"] == "D27"
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
     assert captured["imu"]["enable_rotation_vector"] is True
     assert captured["foot"]["pins"]["left_toe"] == "D5"

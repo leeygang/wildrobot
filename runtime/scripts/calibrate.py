@@ -1691,12 +1691,17 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
     samples per 3 second window and avoids the 200 Hz stream stalls seen on the Pi.
     """
     kwargs = {
+        "transport": config.bno085.transport,
         "i2c_address": config.bno085.i2c_address,
         "upside_down": upside_down,
         "sampling_hz": CALIBRATION_IMU_SAMPLING_HZ,
         "polling_mode": False,
         "suppress_debug": config.bno085.suppress_debug,
         "i2c_frequency_hz": config.bno085.i2c_frequency_hz,
+        "spi_baudrate": config.bno085.spi_baudrate,
+        "spi_cs_pin": config.bno085.spi_cs_pin,
+        "spi_int_pin": config.bno085.spi_int_pin,
+        "spi_reset_pin": config.bno085.spi_reset_pin,
         "init_retries": config.bno085.init_retries,
         "enable_rotation_vector": True,
     }
@@ -1706,6 +1711,8 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         # Back-compat for target images with an older local BNO085IMU wrapper.
         if "unexpected" not in str(exc):
             raise
+        for key in ("transport", "spi_baudrate", "spi_cs_pin", "spi_int_pin", "spi_reset_pin"):
+            kwargs.pop(key, None)
         kwargs.pop("enable_rotation_vector", None)
         return BNO085IMU(**kwargs)
 
@@ -1740,8 +1747,8 @@ def calibrate_imu_upside_down(
         with _alarm_timeout(
             10,
             message=(
-                "Timed out initializing BNO085 IMU. This usually means I2C is not responding or the process is blocked on the I2C bus lock. "
-                "Check wiring/address, confirm /dev/i2c-1 exists, and run 'sudo i2cdetect -y 1' on the robot."
+                "Timed out initializing BNO085 IMU. The configured IMU transport is not responding. "
+                "Check wiring, power, protocol-select pins, and bno085 transport settings."
             ),
         ):
             imu = _init_calibration_bno085(
@@ -1760,7 +1767,7 @@ def calibrate_imu_upside_down(
             f"enable_rotation_vector={getattr(imu, 'enable_rotation_vector', None)} "
             f"suppress_debug={getattr(imu, 'suppress_debug', None)}"
         )
-        # Ensure the background reader is producing fresh samples (not stuck on I2C).
+        # Ensure the background reader is producing fresh samples.
         last_ts = float(getattr(imu.read(), "timestamp_s", 0.0))
         start_wait = time.monotonic()
         while True:
@@ -1774,7 +1781,7 @@ def calibrate_imu_upside_down(
             if time.monotonic() - start_wait > 3.0:
                 raise RuntimeError(
                     "IMU is not producing fresh valid samples. "
-                    "Check I2C wiring/address, and verify the BNO08X is visible with 'sudo i2cdetect -y 1'."
+                    "Check BNO08X wiring, power, protocol-select pins, and bno085 transport settings."
                 )
             time.sleep(0.05)
 
@@ -1797,7 +1804,7 @@ def calibrate_imu_upside_down(
             elif time.monotonic() - stale_since > 2.0:
                 raise RuntimeError(
                     "IMU sample stream stalled during calibration (no fresh valid samples). "
-                    "This often indicates an intermittent I2C bus lock or power issue."
+                    "This often indicates an intermittent IMU transport or power issue."
                 )
             if not (fresh and valid):
                 time.sleep(0.01)
@@ -1973,7 +1980,7 @@ def _capture_imu_series(
         if read_dt > 0.2:
             raise RuntimeError(
                 f"IMU read() is unexpectedly slow ({read_dt:.3f}s). "
-                "This can indicate an I2C bus lock or a blocked background reader thread."
+                "This can indicate a blocked IMU transport or background reader thread."
             )
         ts = float(getattr(s, "timestamp_s", 0.0))
         valid = bool(getattr(s, "valid", True))
@@ -1998,7 +2005,7 @@ def _capture_imu_series(
         elif time.monotonic() - stale_since > stall_timeout_s:
             raise RuntimeError(
                 "IMU sample stream stalled during gyro capture (no fresh valid samples). "
-                f"Check I2C stability/power. reads={reads} valid_reads={valid_reads} "
+                f"Check IMU transport stability/power. reads={reads} valid_reads={valid_reads} "
                 f"invalid_reads={invalid_reads} duplicate_reads={duplicate_reads}; {_format_imu_debug(imu, s)}"
             )
         now = time.monotonic()
@@ -2063,7 +2070,7 @@ def _wait_for_imu_stream(imu, *, timeout_s: float = 2.0) -> float:
         time.sleep(0.01)
     raise RuntimeError(
         "IMU stream did not produce fresh valid samples (timestamp_s not advancing with valid=True). "
-        "Check I2C wiring/address and ensure the IMU is powered. "
+        "Check IMU wiring, power, protocol-select pins, and bno085 transport settings. "
         f"reads={reads}; {_format_imu_debug(imu, last_sample)}"
     )
 
@@ -2851,7 +2858,7 @@ def calibrate_imu_axis_map_step(
         with _alarm_timeout(
             10,
             message=(
-                "Timed out initializing BNO085 IMU for axis measurement. Check I2C wiring/address and ensure no other process is holding the I2C lock."
+                "Timed out initializing BNO085 IMU for axis measurement. Check IMU wiring, power, protocol-select pins, and transport config."
             ),
         ):
             imu = _init_calibration_bno085(
@@ -2943,7 +2950,7 @@ def calibrate_imu_axis_map_full(
             with _alarm_timeout(
                 10,
                 message=(
-                    "Timed out initializing BNO085 IMU for axis calibration. Check I2C wiring/address and ensure no other process is holding the I2C lock."
+                    "Timed out initializing BNO085 IMU for axis calibration. Check IMU wiring, power, protocol-select pins, and transport config."
                 ),
             ):
                 imu = _init_imu()
@@ -3188,7 +3195,7 @@ def calibrate_imu_axis_sign_only(
                     10,
                     message=(
                         "Timed out initializing BNO085 IMU for axis calibration. "
-                        "Check I2C wiring/address and ensure no other process is holding the I2C lock."
+                        "Check IMU wiring, power, protocol-select pins, and transport config."
                     ),
                 ):
                     imu = _init_imu()

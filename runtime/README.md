@@ -88,8 +88,13 @@ Minimal example:
   },
 
   "bno085": {
+    "transport": "spi",
     "i2c_address": "0x4B",
     "upside_down": false,
+    "spi_baudrate": 1000000,
+    "spi_cs_pin": "D8",
+    "spi_int_pin": "D17",
+    "spi_reset_pin": "D27",
     "axis_map": ["+X", "+Y", "+Z"]
   },
 

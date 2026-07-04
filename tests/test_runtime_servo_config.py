@@ -136,18 +136,46 @@ def test_bno_runtime_stream_options_parse_and_serialize(tmp_path: Path) -> None:
             },
         },
         "bno085": {
+            "transport": "spi",
             "sampling_hz": 20,
             "enable_rotation_vector": False,
+            "spi_baudrate": 1000000,
+            "spi_cs_pin": "D8",
+            "spi_int_pin": "D17",
+            "spi_reset_pin": "D27",
         },
     }
 
     cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
+    assert cfg.bno085.transport == "spi"
     assert cfg.bno085.sampling_hz == 20
     assert cfg.bno085.enable_rotation_vector is False
+    assert cfg.bno085.spi_baudrate == 1000000
+    assert cfg.bno085.spi_cs_pin == "D8"
+    assert cfg.bno085.spi_int_pin == "D17"
+    assert cfg.bno085.spi_reset_pin == "D27"
     out = cfg.to_dict()
+    assert out["bno085"]["transport"] == "spi"
     assert out["bno085"]["sampling_hz"] == 20
     assert out["bno085"]["enable_rotation_vector"] is False
+    assert out["bno085"]["spi_cs_pin"] == "D8"
+
+
+def test_bno_transport_rejects_unknown_value(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+            },
+        },
+        "bno085": {
+            "transport": "uart",
+        },
+    }
+
+    with pytest.raises(ValueError, match="bno085.transport"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
 def test_servo_read_schedule_parses_and_serializes(tmp_path: Path) -> None:

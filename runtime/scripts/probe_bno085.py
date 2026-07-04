@@ -212,9 +212,39 @@ def main() -> int:
         "--config",
         type=Path,
         default=_default_config_path(),
-        help="Runtime config path used for i2c_address/upside_down settings.",
+        help="Runtime config path used for BNO085 transport and mounting settings.",
     )
     parser.add_argument("--address", type=_parse_i2c_address, default=None, help="Override I2C address, e.g. 0x4B.")
+    parser.add_argument(
+        "--transport",
+        choices=("i2c", "spi"),
+        default=None,
+        help="Override BNO08x transport from config.",
+    )
+    parser.add_argument(
+        "--spi-baudrate",
+        type=int,
+        default=None,
+        help="Override SPI baudrate from config, e.g. 1000000.",
+    )
+    parser.add_argument(
+        "--spi-cs-pin",
+        type=str,
+        default=None,
+        help="Override SPI chip-select Blinka pin from config, e.g. D8.",
+    )
+    parser.add_argument(
+        "--spi-int-pin",
+        type=str,
+        default=None,
+        help="Override SPI interrupt Blinka pin from config, e.g. D17.",
+    )
+    parser.add_argument(
+        "--spi-reset-pin",
+        type=str,
+        default=None,
+        help="Override SPI reset Blinka pin from config, e.g. D27.",
+    )
     parser.add_argument("--samples", type=int, default=120, help="Number of samples to print.")
     parser.add_argument(
         "--seconds",
@@ -306,6 +336,7 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = WrRuntimeConfig.load(args.config)
+    transport = str(args.transport or cfg.bno085.transport).strip().lower()
     address = int(args.address if args.address is not None else cfg.bno085.i2c_address)
     axis_map = cfg.bno085.axis_map if args.runtime_frame else None
     calibration_mode = bool(args.calibration_mode)
@@ -315,6 +346,10 @@ def main() -> int:
         True if calibration_mode else bool(cfg.bno085.enable_rotation_vector)
     )
     i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
+    spi_baudrate = int(args.spi_baudrate or cfg.bno085.spi_baudrate)
+    spi_cs_pin = str(args.spi_cs_pin or cfg.bno085.spi_cs_pin)
+    spi_int_pin = str(args.spi_int_pin or cfg.bno085.spi_int_pin)
+    spi_reset_pin = str(args.spi_reset_pin or cfg.bno085.spi_reset_pin)
     dt_s = float(args.dt) if args.dt is not None else 0.05
     total = (
         max(1, int(round(float(args.seconds) / max(1e-6, dt_s))))
@@ -329,7 +364,9 @@ def main() -> int:
 
     print(
         "BNO085/BNO08x probe: "
-        f"config={args.config} address=0x{address:02X} upside_down={cfg.bno085.upside_down} "
+        f"config={args.config} transport={transport} address=0x{address:02X} "
+        f"spi_baudrate={spi_baudrate} spi_cs={spi_cs_pin} spi_int={spi_int_pin} "
+        f"spi_reset={spi_reset_pin} upside_down={cfg.bno085.upside_down} "
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
         f"samples={total} dt={dt_s:.3f} hold_home={hold_home_requested} "
@@ -347,16 +384,21 @@ def main() -> int:
             args.init_timeout,
             message=(
                 "Timed out initializing BNO085. The process is likely blocked inside "
-                "BNO08x enable_feature()/packet processing or the I2C bus."
+                "BNO08x enable_feature()/packet processing or the configured IMU transport."
             ),
         ):
             imu = BNO085IMU(
+                transport=transport,
                 i2c_address=address,
                 upside_down=cfg.bno085.upside_down,
                 sampling_hz=sampling_hz,
                 axis_map=axis_map,
                 suppress_debug=not bool(args.debug),
                 i2c_frequency_hz=i2c_frequency_hz,
+                spi_baudrate=spi_baudrate,
+                spi_cs_pin=spi_cs_pin,
+                spi_int_pin=spi_int_pin,
+                spi_reset_pin=spi_reset_pin,
                 init_retries=cfg.bno085.init_retries,
                 polling_mode=polling_mode,
                 enable_rotation_vector=enable_rotation_vector,
@@ -364,7 +406,7 @@ def main() -> int:
     except TimeoutError as exc:
         init_done.set()
         print(f"BNO085 init timeout after {time.monotonic() - init_start_s:.1f}s: {exc}", flush=True)
-        print("Try power-cycling the IMU/robot, then rerun i2cdetect and this probe.", flush=True)
+        print("Try power-cycling the IMU/robot, then verify wiring and rerun this probe.", flush=True)
         return 4
     except Exception:
         init_done.set()

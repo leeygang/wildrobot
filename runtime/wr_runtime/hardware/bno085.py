@@ -116,6 +116,19 @@ def _enable_feature_allowing_unknown_reports(imu, *args, max_unknown_reports: in
         raise last_exc
 
 
+def _resolve_board_pin(board_module, pin_name: str):
+    name = str(pin_name).strip()
+    if name.lower().startswith("board."):
+        name = name.split(".", 1)[1]
+    upper_name = name.upper()
+    if upper_name.startswith("GPIO") and upper_name[4:].isdigit():
+        name = f"D{upper_name[4:]}"
+    try:
+        return getattr(board_module, name)
+    except AttributeError as exc:
+        raise ValueError(f"Unknown Blinka board pin for BNO085 SPI: {pin_name!r}") from exc
+
+
 class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
@@ -134,20 +147,32 @@ class BNO085IMU(Imu):
         upside_down: bool = False,
         sampling_hz: int = 50,
         *,
+        transport: str = "i2c",
         axis_map: Optional[list[str]] = None,
         suppress_debug: bool = True,
         max_quat_norm_deviation: float = 0.1,
         i2c_frequency_hz: int = 100000,
+        spi_baudrate: int = 1_000_000,
+        spi_cs_pin: str = "D8",
+        spi_int_pin: str = "D17",
+        spi_reset_pin: str = "D27",
         init_retries: int = 3,
         polling_mode: bool = False,
         enable_rotation_vector: bool = True,
     ):
+        self.transport = str(transport).strip().lower()
+        if self.transport not in {"i2c", "spi"}:
+            raise ValueError("BNO085IMU transport must be 'i2c' or 'spi'")
         self.i2c_address = int(i2c_address)
         self.upside_down = bool(upside_down)
         self.sampling_hz = int(sampling_hz)
         self.max_quat_norm_deviation = float(max_quat_norm_deviation)
         self.suppress_debug = bool(suppress_debug)
         self.i2c_frequency_hz = int(i2c_frequency_hz)
+        self.spi_baudrate = int(spi_baudrate)
+        self.spi_cs_pin = str(spi_cs_pin)
+        self.spi_int_pin = str(spi_int_pin)
+        self.spi_reset_pin = str(spi_reset_pin)
         self.init_retries = int(init_retries)
         self.polling_mode = bool(polling_mode)
         self.enable_rotation_vector = bool(enable_rotation_vector)
@@ -194,34 +219,60 @@ class BNO085IMU(Imu):
         # stale/unknown packets from the input report channel. We retry by
         # reinitializing the bus+device if the per-feature retry above cannot clear it.
         last_exc: Exception | None = None
-        self._i2c = None
+        self._bus = None
+        self._digital_pins = ()
         self._imu = None  # type: ignore[assignment]
         for attempt in range(max(1, self.init_retries)):
+            bus = None
+            digital_pins = ()
             try:
-                i2c = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
-                imu = BNO08X_I2C(i2c, address=self.i2c_address)
                 with self._maybe_silence_debug_output():
+                    if self.transport == "spi":
+                        import digitalio
+                        from adafruit_bno08x.spi import BNO08X_SPI
+
+                        bus = busio.SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
+                        cs = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_cs_pin))
+                        int_pin = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_int_pin))
+                        reset = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_reset_pin))
+                        digital_pins = (cs, int_pin, reset)
+                        imu = BNO08X_SPI(
+                            bus,
+                            cs,
+                            int_pin,
+                            reset,
+                            baudrate=self.spi_baudrate,
+                            debug=not self.suppress_debug,
+                        )
+                    else:
+                        bus = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
+                        imu = BNO08X_I2C(bus, address=self.i2c_address)
                     if _GAME_QUAT_REPORT is not None:
                         _enable_feature_best_effort(imu, _GAME_QUAT_REPORT)
                     if self.enable_rotation_vector or _GAME_QUAT_REPORT is None:
                         _enable_feature_best_effort(imu, BNO_REPORT_ROTATION_VECTOR)
                     _enable_feature_best_effort(imu, BNO_REPORT_GYROSCOPE)
-                self._i2c = i2c
+                self._bus = bus
+                self._digital_pins = digital_pins
                 self._imu = imu
                 time.sleep(0.05)
                 break
             except Exception as exc:
                 last_exc = exc
-                try:
-                    i2c.deinit()
-                except Exception:
-                    pass
+                self._deinit_transport(bus, digital_pins)
                 time.sleep(0.2 * (attempt + 1))
         if self._imu is None:
+            if self.transport == "spi":
+                detail = (
+                    f"spi_baudrate={self.spi_baudrate} cs={self.spi_cs_pin} "
+                    f"int={self.spi_int_pin} reset={self.spi_reset_pin}"
+                )
+            else:
+                detail = f"address=0x{self.i2c_address:02X} freq={self.i2c_frequency_hz}Hz"
             raise RuntimeError(
                 "Failed to initialize BNO085 IMU (enable_feature failed). "
-                "This often indicates I2C noise/power issues or an incompatible address. "
-                f"address=0x{self.i2c_address:02X} freq={self.i2c_frequency_hz}Hz retries={self.init_retries}"
+                "Check IMU power, wiring, protocol-select pins, and runtime transport config. "
+                f"transport={self.transport} {detail} retries={self.init_retries}"
             ) from last_exc
         if self.suppress_debug:
             self._try_disable_debug()
@@ -273,8 +324,20 @@ class BNO085IMU(Imu):
         except Exception:
             pass
         try:
-            if getattr(self, "_i2c", None) is not None:
-                self._i2c.deinit()  # type: ignore[union-attr]
+            self._deinit_transport(getattr(self, "_bus", None), getattr(self, "_digital_pins", ()))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _deinit_transport(bus, digital_pins=()) -> None:
+        for pin in digital_pins or ():
+            try:
+                pin.deinit()
+            except Exception:
+                pass
+        try:
+            if bus is not None:
+                bus.deinit()
         except Exception:
             pass
 

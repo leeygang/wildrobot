@@ -110,6 +110,20 @@ def test_enable_feature_does_not_hide_other_key_errors() -> None:
         _enable_feature_allowing_unknown_reports(FakeAdafruitImu(), 0x02)
 
 
+def test_resolve_board_pin_accepts_blinka_and_gpio_names() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _resolve_board_pin
+
+    class FakeBoard:
+        D8 = object()
+        D17 = object()
+
+    assert _resolve_board_pin(FakeBoard, "D8") is FakeBoard.D8
+    assert _resolve_board_pin(FakeBoard, "board.D8") is FakeBoard.D8
+    assert _resolve_board_pin(FakeBoard, "GPIO17") is FakeBoard.D17
+    with pytest.raises(ValueError, match="Unknown Blinka board pin"):
+        _resolve_board_pin(FakeBoard, "NOPE")
+
+
 def test_bno_read_rejects_bad_quaternion_norm() -> None:
     from runtime.wr_runtime.hardware.bno085 import BNO085IMU
     from runtime.wr_runtime.hardware.imu import ImuSample

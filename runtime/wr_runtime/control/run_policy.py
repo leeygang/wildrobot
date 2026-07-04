@@ -129,7 +129,7 @@ def _build_hardware_robot_io(
 ):
     """Construct the real hardware RobotIO from the runtime config.
 
-    Imported lazily (GPIO / serial / I2C backends are Linux-only), and wires the
+    Imported lazily (GPIO / serial / IMU bus backends are Linux-only), and wires the
     concrete hardware classes (HiwonderCachedActuators / BNO085IMU / FootSwitches)
     directly — there are no ``*.from_config`` factories.
     """
@@ -220,6 +220,7 @@ def _build_hardware_robot_io(
         baudrate=sc.baudrate,
     )
     imu = BNO085IMU(
+        transport=cfg.bno085.transport,
         i2c_address=cfg.bno085.i2c_address,
         upside_down=cfg.bno085.upside_down,
         sampling_hz=(
@@ -230,6 +231,10 @@ def _build_hardware_robot_io(
         axis_map=cfg.bno085.axis_map,
         suppress_debug=cfg.bno085.suppress_debug,
         i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
+        spi_baudrate=cfg.bno085.spi_baudrate,
+        spi_cs_pin=cfg.bno085.spi_cs_pin,
+        spi_int_pin=cfg.bno085.spi_int_pin,
+        spi_reset_pin=cfg.bno085.spi_reset_pin,
         init_retries=cfg.bno085.init_retries,
         enable_rotation_vector=cfg.bno085.enable_rotation_vector,
     )

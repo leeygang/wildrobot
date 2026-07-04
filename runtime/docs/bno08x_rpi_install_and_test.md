@@ -2,7 +2,7 @@
 
 This runbook targets the purple `GY-BNO08X` breakout (pins labeled `VCC_3V3`, `GND`, `SCL/SCK/RX`, `SDA/MISO/TX`, `ADDR/MOSI`, `CS`, `INT`, `RST`, `PS0`, `PS1`) wired to a Raspberry Pi 4B over **I2C** or **SPI**.
 
-The WildRobot runtime IMU driver is `runtime/wr_runtime/hardware/bno085.py` (currently using the Adafruit `adafruit_bno08x` library over I2C). The SPI wiring below is for the planned SPI migration after I2C freshness issues.
+The WildRobot runtime IMU driver is `runtime/wr_runtime/hardware/bno085.py` (using the Adafruit `adafruit_bno08x` library over I2C or SPI). SPI is the recommended WildRobot runtime wiring after the I2C freshness issues seen during walking tests.
 
 ## 1) Wiring (I2C mode)
 
@@ -56,15 +56,47 @@ Wire:
 
 Board silkscreens vary. Follow the SPI alternate function printed on your board, not just the short I2C label. For example, on boards labeled `SCL/SCK/RX`, `SDA/MISO/TX`, and `ADDR/MOSI`, wire `SCK` to pin 23, `MISO` to pin 21, and `MOSI` to pin 19. Confirm against the board schematic before applying power.
 
-## 2) Enable I2C on Raspberry Pi (Ubuntu / Raspberry Pi OS)
+## 2) Enable the Raspberry Pi bus (Ubuntu / Raspberry Pi OS)
 
-### Check that the I2C device exists
+### SPI mode
+
+Check that the SPI device exists:
+
+```bash
+ls -la /dev/spidev*
+```
+
+Expected for the wiring above: `/dev/spidev0.0`.
+
+If it is missing, enable SPI:
+
+```bash
+sudo raspi-config
+```
+
+Enable: **Interface Options → SPI** then reboot.
+
+On images without `raspi-config`, edit `/boot/firmware/config.txt` (Ubuntu) or `/boot/config.txt` (Pi OS) and ensure:
+
+```ini
+dtparam=spi=on
+```
+
+Reboot:
+
+```bash
+sudo reboot
+```
+
+### I2C mode
+
+Check that the I2C device exists:
 
 ```bash
 ls -la /dev/i2c-*
 ```
 
-If you don’t see `/dev/i2c-1`, enable I2C:
+If you do not see `/dev/i2c-1`, enable I2C:
 
 ### Option A: `raspi-config` (if available)
 
@@ -90,7 +122,7 @@ sudo reboot
 
 ## 3) Install tools + Python deps
 
-### Install I2C tools
+### Optional I2C tools
 
 ```bash
 sudo apt-get update
@@ -130,6 +162,13 @@ Expected: you should see a device at `0x4a` or `0x4b`.
 Set your runtime JSON accordingly:
 - `bno085.i2c_address: "0x4A"` (or `"0x4B"`)
 
+For SPI runtime, set your runtime JSON accordingly:
+- `bno085.transport: "spi"`
+- `bno085.spi_baudrate: 1000000`
+- `bno085.spi_cs_pin: "D8"`
+- `bno085.spi_int_pin: "D17"`
+- `bno085.spi_reset_pin: "D27"`
+
 ## 5) Smoke test via the runtime IMU driver
 
 From repo root on the Pi:
@@ -140,7 +179,15 @@ import time
 import numpy as np
 from runtime.wr_runtime.hardware.bno085 import BNO085IMU
 
-imu = BNO085IMU(i2c_address=0x4A, upside_down=False, sampling_hz=50)
+imu = BNO085IMU(
+    transport="spi",
+    spi_baudrate=1000000,
+    spi_cs_pin="D8",
+    spi_int_pin="D17",
+    spi_reset_pin="D27",
+    upside_down=False,
+    sampling_hz=50,
+)
 try:
     time.sleep(0.2)
     for i in range(20):
@@ -159,7 +206,7 @@ Checks:
 - `|quat|` should be ~`1.0` (close to 1, not 0 or NaN).
 - When stationary, `gyro(rad/s)` should be near `[0, 0, 0]` (small noise is normal).
 
-If you don’t get updates (values stuck), check `i2cdetect`, wiring, and power.
+If you do not get updates (values stuck), check wiring, power, `PS0`/`PS1`, `/dev/spidev0.0`, and the configured transport.
 
 ## 6) Orientation sanity checks (mounting / axis mapping)
 

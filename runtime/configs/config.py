@@ -20,7 +20,7 @@ Usage:
     # Access nested config
     print(config.control.hz)  # 50.0
     print(config.hiwonder_controller.get_servo_id("left_hip_pitch"))  # 1
-    print(config.bno085.i2c_address)  # 0x4A
+    print(config.bno085.transport)  # "i2c" or "spi"
 """
 
 from __future__ import annotations
@@ -367,11 +367,16 @@ class ServoControllerConfig:
 class BNO085Config:
     """BNO085 IMU configuration (runtime-facing fields)."""
 
+    transport: str = "i2c"
     i2c_address: int = 0x4A
     upside_down: bool = False
     suppress_debug: bool = True
     axis_map: Optional[list[str]] = None
     i2c_frequency_hz: int = 100_000
+    spi_baudrate: int = 1_000_000
+    spi_cs_pin: str = "D8"
+    spi_int_pin: str = "D17"
+    spi_reset_pin: str = "D27"
     init_retries: int = 3
     sampling_hz: Optional[int] = None
     enable_rotation_vector: bool = True
@@ -467,7 +472,7 @@ class WrRuntimeConfig:
 
         # Access hardware settings
         servo_id = config.hiwonder_controller.get_servo_id("left_hip_pitch")
-        imu_addr = config.bno085.i2c_address
+        imu_transport = config.bno085.transport
         toe_pin = config.foot_switches.left_toe
     """
 
@@ -855,6 +860,9 @@ class WrRuntimeConfig:
         i2c_addr = bno.get("i2c_address", 0x4A)
         if isinstance(i2c_addr, str):
             i2c_addr = int(i2c_addr, 0)  # Handles "0x4A" format
+        transport = str(bno.get("transport", "i2c")).strip().lower()
+        if transport not in {"i2c", "spi"}:
+            raise ValueError("bno085.transport must be 'i2c' or 'spi'")
 
         axis_map_raw = bno.get("axis_map")
         axis_map = None
@@ -883,11 +891,16 @@ class WrRuntimeConfig:
             axis_map = normalized
 
         return BNO085Config(
+            transport=transport,
             i2c_address=i2c_addr,
             upside_down=bool(bno.get("upside_down", False)),
             suppress_debug=bool(bno.get("suppress_debug", True)),
             axis_map=axis_map,
             i2c_frequency_hz=int(bno.get("i2c_frequency_hz", 100_000)),
+            spi_baudrate=int(bno.get("spi_baudrate", 1_000_000)),
+            spi_cs_pin=str(bno.get("spi_cs_pin", "D8")),
+            spi_int_pin=str(bno.get("spi_int_pin", "D17")),
+            spi_reset_pin=str(bno.get("spi_reset_pin", "D27")),
             init_retries=int(bno.get("init_retries", 3)),
             sampling_hz=(
                 int(bno["sampling_hz"]) if bno.get("sampling_hz") is not None else None
@@ -954,10 +967,15 @@ class WrRuntimeConfig:
                 ),
             },
             "bno085": {
+                "transport": self.bno085.transport,
                 "i2c_address": hex(self.bno085.i2c_address),
                 "upside_down": self.bno085.upside_down,
                 "suppress_debug": self.bno085.suppress_debug,
                 "i2c_frequency_hz": int(self.bno085.i2c_frequency_hz),
+                "spi_baudrate": int(self.bno085.spi_baudrate),
+                "spi_cs_pin": self.bno085.spi_cs_pin,
+                "spi_int_pin": self.bno085.spi_int_pin,
+                "spi_reset_pin": self.bno085.spi_reset_pin,
                 "init_retries": int(self.bno085.init_retries),
                 **(
                     {"sampling_hz": int(self.bno085.sampling_hz)}

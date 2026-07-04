@@ -220,10 +220,15 @@
     }
   },
   "bno085": {
+    "transport": "spi",
     "i2c_address": "0x4B",
     "upside_down": false,
     "suppress_debug": true,
     "i2c_frequency_hz": 100000,
+    "spi_baudrate": 1000000,
+    "spi_cs_pin": "D8",
+    "spi_int_pin": "D17",
+    "spi_reset_pin": "D27",
     "init_retries": 3,
     "sampling_hz": 20,
     "enable_rotation_vector": false,
