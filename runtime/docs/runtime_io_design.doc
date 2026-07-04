@@ -320,9 +320,9 @@ Add this as an opt-in runtime config section first:
   ],
   "max_cache_age_s": {
     "leg": 0.12,
-    "arm": 0.25,
-    "wrist": 0.50,
-    "default": 0.25
+    "arm": 0.75,
+    "wrist": 1.00,
+    "default": 0.75
   }
 }
 ```

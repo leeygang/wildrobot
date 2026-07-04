@@ -59,6 +59,7 @@ def test_worker_reads_one_servo_into_cache():
     assert state.servo_ids == (3,)
     assert int(state.position_units[0]) == 501
     assert state.last_read_group == "single"
+    assert state.last_read_servo_id == 3
     assert raw_bus.reads
 
 

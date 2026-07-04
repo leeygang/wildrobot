@@ -181,7 +181,7 @@ class HiwonderBoardActuators(Actuators):
         return f"group_{group_idx}"
 
     def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
-        defaults = {"leg": 0.12, "arm": 0.25, "wrist": 0.50, "default": 0.25}
+        defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
         merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
         age_limits = []
         for name in self.actuator_names:
@@ -602,7 +602,7 @@ class HiwonderCachedActuators(Actuators):
         self._cache_age_limit_s = self._build_cache_age_limits(cache_age_limits_s or {})
 
     def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
-        defaults = {"leg": 0.12, "arm": 0.25, "wrist": 0.50, "default": 0.25}
+        defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
         merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
         age_limits = []
         for name in self.actuator_names:
@@ -625,18 +625,22 @@ class HiwonderCachedActuators(Actuators):
                 return True
             time.sleep(0.002)
         self._last_error = RuntimeError(
-            f"servo cache did not initialize within {float(timeout_s):.2f}s"
+            f"servo cache did not become fresh within {float(timeout_s):.2f}s"
         )
         return False
 
     def _cached_state_ready(self) -> bool:
         state = self.servo_io.get_cached_servo_state()
         index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
-        for sid in self.servo_ids_list:
+        for joint_idx, sid in enumerate(self.servo_ids_list):
             idx = index_by_servo_id.get(int(sid))
             if idx is None:
                 return False
             if not np.isfinite(float(state.position_units[idx])):
+                return False
+            age_s = float(state.position_age_s[idx])
+            limit_s = float(self._cache_age_limit_s[joint_idx])
+            if not np.isfinite(age_s) or age_s > limit_s:
                 return False
         return True
 
@@ -748,7 +752,9 @@ class HiwonderCachedActuators(Actuators):
         return {
             "servo_read_mode": "ttl_worker",
             "servo_read_group": state.last_read_group,
-            "servo_read_ids": [],
+            "servo_read_ids": (
+                [] if state.last_read_servo_id is None else [int(state.last_read_servo_id)]
+            ),
             "servo_read_count": int(metrics.read_success),
             "servo_read_fail_count": int(metrics.read_failures),
             "servo_cache_age_max_s": max_age,

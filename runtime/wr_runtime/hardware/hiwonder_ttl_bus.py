@@ -96,7 +96,7 @@ class SerialTransportConfig:
     port: str
     baudrate: int = 115200
     byte_timeout_s: float = 0.001
-    write_timeout_s: float = 0.002
+    write_timeout_s: float = 0.020
     bytesize: int = serial.EIGHTBITS
     parity: str = serial.PARITY_NONE
     stopbits: int = serial.STOPBITS_ONE

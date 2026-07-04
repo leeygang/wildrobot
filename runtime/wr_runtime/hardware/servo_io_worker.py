@@ -42,6 +42,7 @@ class CachedServoState:
     read_fail_count: np.ndarray
     last_update_time_s: np.ndarray
     last_read_group: str | None
+    last_read_servo_id: int | None
     last_error: str | None
 
 
@@ -104,6 +105,7 @@ class ServoIOWorker:
         self._retry_attempts: dict[int, int] = {}
         self._stale_log_time: dict[int, float] = {}
         self._last_read_group: str | None = None
+        self._last_read_servo_id: int | None = None
         self._last_error: str | None = None
         self._metrics = ServoIOMetrics()
 
@@ -198,6 +200,7 @@ class ServoIOWorker:
             last_update = self._last_update_time_s.copy()
             fail_count = self._read_fail_count.copy()
             last_group = self._last_read_group
+            last_read_servo_id = self._last_read_servo_id
             last_error = self._last_error
         age = now - last_update
         age[~np.isfinite(last_update)] = np.inf
@@ -209,6 +212,7 @@ class ServoIOWorker:
             read_fail_count=fail_count,
             last_update_time_s=last_update,
             last_read_group=last_group,
+            last_read_servo_id=last_read_servo_id,
             last_error=last_error,
         )
 
@@ -334,6 +338,7 @@ class ServoIOWorker:
             self._retry_attempts.pop(int(servo_id), None)
             self._stale_log_time.pop(int(servo_id), None)
             self._last_read_group = group_name
+            self._last_read_servo_id = int(servo_id)
             self._last_error = None
             self._metrics = ServoIOMetrics(
                 write_targets_submitted=self._metrics.write_targets_submitted,
@@ -380,7 +385,7 @@ class ServoIOWorker:
                 message += f" error={exc!r}"
             self._last_error = message
             stale_errors = self._metrics.stale_cache_errors
-            if age_s >= max_cache_age_s:
+            if not math.isfinite(age_s) or age_s >= max_cache_age_s:
                 stale_errors += 1
             self._metrics = ServoIOMetrics(
                 write_targets_submitted=self._metrics.write_targets_submitted,
@@ -394,7 +399,7 @@ class ServoIOWorker:
                 latest_read_latency_s=self._metrics.latest_read_latency_s,
             )
 
-        if age_s >= max_cache_age_s:
+        if not math.isfinite(age_s) or age_s >= max_cache_age_s:
             self._log_stale_cache(servo_id, age_s, max_cache_age_s)
 
     def _log_stale_cache(self, servo_id: int, age_s: float, max_cache_age_s: float) -> None:
@@ -403,10 +408,16 @@ class ServoIOWorker:
         if now - last < float(self.config.stale_log_period_s):
             return
         self._stale_log_time[int(servo_id)] = now
-        self._log_error(
-            f"Servo cache expired: servo_id={servo_id} age_s={age_s:.3f} "
-            f"max_cache_age_s={max_cache_age_s:.3f}"
-        )
+        if not math.isfinite(float(age_s)):
+            self._log_error(
+                f"Servo cache uninitialized: servo_id={servo_id} "
+                f"max_cache_age_s={max_cache_age_s:.3f}"
+            )
+        else:
+            self._log_error(
+                f"Servo cache expired: servo_id={servo_id} age_s={age_s:.3f} "
+                f"max_cache_age_s={max_cache_age_s:.3f}"
+            )
 
     def _set_last_error(self, message: str) -> None:
         with self._lock:

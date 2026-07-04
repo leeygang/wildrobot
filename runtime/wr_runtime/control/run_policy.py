@@ -294,7 +294,8 @@ def _group_cache_age_limit_s(
         key = "arm"
     else:
         key = "default"
-    return float(max_cache_age_s.get(key, max_cache_age_s.get("default", 0.25)))
+    defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
+    return float(max_cache_age_s.get(key, max_cache_age_s.get("default", defaults[key])))
 
 
 def _actuator_indices(
@@ -508,8 +509,8 @@ def _print_timing_summary(
         )
         print(
             "  Servo read/cache summary: "
-            f"read_count={_timing_sum(timing_samples, 'io_servo_read_count')} "
-            f"read_fail_count={_timing_sum(timing_samples, 'io_servo_read_fail_count')} "
+            f"read_count={last_metrics.get('servo_read_count')} "
+            f"read_fail_count={last_metrics.get('servo_read_fail_count')} "
             f"stale_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_stale_joint_count')} "
             f"uninitialized_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_uninitialized_count')} "
             f"last_group={last_metrics.get('servo_read_group')} "

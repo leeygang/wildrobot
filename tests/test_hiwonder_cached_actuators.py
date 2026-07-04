@@ -1,7 +1,7 @@
 import numpy as np
 
 from runtime.wr_runtime.hardware.actuators import HiwonderCachedActuators, ServoModel
-from runtime.wr_runtime.hardware.servo_io_worker import CachedServoState
+from runtime.wr_runtime.hardware.servo_io_worker import CachedServoState, ServoIOMetrics
 
 
 class FakeServoIO:
@@ -16,6 +16,9 @@ class FakeServoIO:
 
     def get_cached_servo_state(self):
         return self.state
+
+    def get_metrics(self):
+        return ServoIOMetrics(read_success=3, read_failures=1)
 
     def stop(self):
         self.stopped = True
@@ -33,6 +36,7 @@ def _state():
         read_fail_count=np.array([0, 0], dtype=np.int32),
         last_update_time_s=np.array([1.0, 1.0], dtype=np.float64),
         last_read_group="test",
+        last_read_servo_id=2,
         last_error=None,
     )
 
@@ -76,3 +80,23 @@ def test_cached_actuators_close_delegates_to_worker():
     actuators.close()
 
     assert fake_io.closed is True
+
+
+def test_cached_actuators_reports_last_read_servo_id():
+    fake_io = FakeServoIO(_state())
+    actuators = _actuators(fake_io)
+
+    metrics = actuators.get_servo_cache_metrics()
+
+    assert metrics["servo_read_group"] == "test"
+    assert metrics["servo_read_ids"] == [2]
+
+
+def test_cached_actuators_initial_cache_requires_fresh_age():
+    state = _state()
+    state.position_age_s[:] = 2.0
+    fake_io = FakeServoIO(state)
+    actuators = _actuators(fake_io)
+
+    assert actuators.wait_for_initial_cache(timeout_s=0.001) is False
+    assert "did not become fresh" in repr(actuators._last_error)
