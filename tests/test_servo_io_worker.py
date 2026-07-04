@@ -1,3 +1,4 @@
+import math
 import time
 
 from runtime.wr_runtime.hardware.servo_io_worker import (
@@ -28,6 +29,18 @@ class FakeRawBus:
 
     def move_time_write(self, servo_id: int, position: int, time_ms: int):
         self.writes.append((int(servo_id), int(position), int(time_ms)))
+
+
+class FakeLogger:
+    def __init__(self):
+        self.errors = []
+        self.warnings = []
+
+    def error(self, message: str):
+        self.errors.append(str(message))
+
+    def warning(self, message: str):
+        self.warnings.append(str(message))
 
 
 def _wait_until(predicate, *, timeout_s=0.5):
@@ -149,3 +162,37 @@ def test_worker_close_closes_transport():
     worker.close()
 
     assert raw_bus.transport.closed is True
+
+
+def test_uninitialized_cache_logs_warning_not_error():
+    raw_bus = FakeRawBus({3: None})
+    logger = FakeLogger()
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(read_groups=(ServoReadGroup(name="single", servo_ids=(3,)),)),
+        logger=logger,
+    )
+
+    worker._log_stale_cache(3, math.inf, 0.16)
+
+    assert logger.errors == []
+    assert logger.warnings == [
+        "Servo cache not initialized yet: servo_id=3 max_cache_age_s=0.160"
+    ]
+
+
+def test_expired_cache_logs_error():
+    raw_bus = FakeRawBus({3: None})
+    logger = FakeLogger()
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(read_groups=(ServoReadGroup(name="single", servo_ids=(3,)),)),
+        logger=logger,
+    )
+
+    worker._log_stale_cache(3, 0.2, 0.16)
+
+    assert logger.warnings == []
+    assert logger.errors == [
+        "Servo cache expired: servo_id=3 age_s=0.200 max_cache_age_s=0.160"
+    ]

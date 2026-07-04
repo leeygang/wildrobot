@@ -403,8 +403,8 @@ class ServoIOWorker:
             return
         self._stale_log_time[int(servo_id)] = now
         if not math.isfinite(float(age_s)):
-            self._log_error(
-                f"Servo cache uninitialized: servo_id={servo_id} "
+            self._log_warning(
+                f"Servo cache not initialized yet: servo_id={servo_id} "
                 f"max_cache_age_s={max_cache_age_s:.3f}"
             )
         else:
@@ -422,6 +422,12 @@ class ServoIOWorker:
             self.logger.error(message)
         else:
             print(f"ERROR: {message}", flush=True)
+
+    def _log_warning(self, message: str) -> None:
+        if self.logger is not None:
+            self.logger.warning(message)
+        else:
+            print(f"Warning: {message}", flush=True)
 
 
 __all__ = [
