@@ -425,11 +425,12 @@ def _format_servo_step_metrics(metrics: dict | None) -> str:
     uninit = metrics.get("servo_cache_uninitialized_count")
     write_commands = metrics.get("servo_write_commands")
     write_skipped = metrics.get("servo_write_commands_skipped")
+    write_deadband = metrics.get("servo_write_deadband_units")
     return (
         "servo_cache="
         f"[group={group} ids={ids} age_ms={_format_ms(age_s)} "
         f"stale={stale} uninit={uninit} "
-        f"writes={write_commands} skipped={write_skipped}]"
+        f"writes={write_commands} skipped={write_skipped} deadband={write_deadband}]"
     )
 
 
@@ -522,6 +523,7 @@ def _print_timing_summary(
             f"last_ids={last_metrics.get('servo_read_ids')} "
             f"write_commands={last_metrics.get('servo_write_commands')} "
             f"write_skipped={last_metrics.get('servo_write_commands_skipped')} "
+            f"write_deadband_units={last_metrics.get('servo_write_deadband_units')} "
             f"write_failures={last_metrics.get('servo_write_failures')} "
             f"write_targets={last_metrics.get('servo_write_targets_submitted')} "
             f"write_replaced={last_metrics.get('servo_write_targets_replaced')}",

@@ -749,6 +749,9 @@ class HiwonderCachedActuators(Actuators):
             vals = age[mask & np.isfinite(age)]
             return float(np.max(vals)) if vals.size else 0.0
 
+        servo_io_config = getattr(self.servo_io, "config", None)
+        write_deadband_units = int(getattr(servo_io_config, "write_deadband_units", 0))
+
         return {
             "servo_read_mode": "ttl_worker",
             "servo_read_group": state.last_read_group,
@@ -768,6 +771,7 @@ class HiwonderCachedActuators(Actuators):
             "servo_write_targets_replaced": int(metrics.write_targets_replaced),
             "servo_write_commands": int(metrics.write_commands),
             "servo_write_commands_skipped": int(metrics.write_commands_skipped),
+            "servo_write_deadband_units": write_deadband_units,
             "servo_write_failures": int(metrics.write_failures),
             "servo_latest_write_latency_s": float(metrics.latest_write_latency_s),
             "servo_latest_read_latency_s": float(metrics.latest_read_latency_s),

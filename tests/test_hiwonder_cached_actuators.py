@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 
 from runtime.wr_runtime.hardware.actuators import HiwonderCachedActuators, ServoModel
@@ -5,8 +7,9 @@ from runtime.wr_runtime.hardware.servo_io_worker import CachedServoState, ServoI
 
 
 class FakeServoIO:
-    def __init__(self, state):
+    def __init__(self, state, *, write_deadband_units=0):
         self.state = state
+        self.config = SimpleNamespace(write_deadband_units=int(write_deadband_units))
         self.submitted = []
         self.closed = False
         self.stopped = False
@@ -83,13 +86,14 @@ def test_cached_actuators_close_delegates_to_worker():
 
 
 def test_cached_actuators_reports_last_read_servo_id():
-    fake_io = FakeServoIO(_state())
+    fake_io = FakeServoIO(_state(), write_deadband_units=3)
     actuators = _actuators(fake_io)
 
     metrics = actuators.get_servo_cache_metrics()
 
     assert metrics["servo_read_group"] == "test"
     assert metrics["servo_read_ids"] == [2]
+    assert metrics["servo_write_deadband_units"] == 3
 
 
 def test_cached_actuators_initial_cache_requires_fresh_age():

@@ -111,6 +111,34 @@ def test_worker_skips_unchanged_successful_target():
     assert metrics.write_commands_skipped == 1
 
 
+def test_worker_skips_target_within_write_deadband():
+    raw_bus = FakeRawBus({3: 501})
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            read_groups=(ServoReadGroup(name="single", servo_ids=(3,)),),
+            write_deadband_units=3,
+            idle_sleep_s=0.0001,
+        ),
+    )
+
+    worker.start()
+    try:
+        worker.submit_targets_units({3: 520}, move_time_ms=20)
+        assert _wait_until(lambda: raw_bus.writes == [(3, 520, 20)])
+        worker.submit_targets_units({3: 522}, move_time_ms=20)
+        assert _wait_until(lambda: worker.get_metrics().write_commands_skipped >= 1)
+        worker.submit_targets_units({3: 524}, move_time_ms=20)
+        assert _wait_until(lambda: raw_bus.writes == [(3, 520, 20), (3, 524, 20)])
+    finally:
+        worker.stop()
+
+    metrics = worker.get_metrics()
+    assert metrics.write_targets_submitted == 3
+    assert metrics.write_commands == 2
+    assert metrics.write_commands_skipped == 1
+
+
 def test_worker_close_closes_transport():
     raw_bus = FakeRawBus({3: 501})
     worker = ServoIOWorker(

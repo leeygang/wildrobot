@@ -279,6 +279,7 @@ servo_cache_stale_joint_count
 servo_cache_uninitialized_count
 servo_write_commands
 servo_write_commands_skipped
+servo_write_deadband_units
 ```
 
 Existing metrics to keep:

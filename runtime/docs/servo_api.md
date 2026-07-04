@@ -314,11 +314,12 @@ if a newer target arrives before the worker writes the previous target:
 
 This prevents stale commands from being replayed after the loop is already late.
 
-After a successful write, the worker should suppress exact duplicate per-servo
-commands. If the rounded target unit and move time for a servo are unchanged
-from the last successful command, skip that servo command and count it in
-`write_commands_skipped`. This keeps static policy output from starving feedback
-reads.
+After a successful write, the worker should suppress duplicate or near-duplicate
+per-servo commands. If the move time is unchanged and the rounded target unit is
+within `write_deadband_units` of the last successful command, skip that servo
+command and count it in `write_commands_skipped`. The current default is 3 servo
+units, about 0.7 deg on an HTD-45H. This keeps small policy target jitter from
+starving feedback reads.
 
 Configuration ownership:
 
@@ -336,6 +337,7 @@ class ServoIOWorkerConfig:
     read_groups: tuple[ServoReadGroup, ...] = ()
     read_group_schedule: tuple[str, ...] = ()
     max_write_attempts: int = 2
+    write_deadband_units: int = 3
     max_read_attempts: int = 2
     retry_cache_age_s: float = 0.08
     max_cache_age_s: float = 0.25
@@ -426,6 +428,7 @@ write_attempt_count
 write_retry_count
 write_failure_count
 write_commands_skipped
+write_deadband_units
 write_target_replaced_count
 write_latency_ms avg/p50/p95/max
 write_deadline_miss_count
@@ -672,6 +675,7 @@ Minimum metrics to print in policy summary:
 servo_worker_hz
 servo_write_count
 servo_write_skipped_count
+servo_write_deadband_units
 servo_write_latency_ms avg/p50/p95/max
 servo_read_count
 servo_read_latency_ms avg/p50/p95/max

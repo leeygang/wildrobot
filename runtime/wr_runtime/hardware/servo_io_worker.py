@@ -26,6 +26,7 @@ class ServoIOWorkerConfig:
     read_groups: tuple[ServoReadGroup, ...] = ()
     read_group_schedule: tuple[str, ...] = ()
     max_write_attempts: int = 2
+    write_deadband_units: int = 3
     max_read_attempts: int = 2
     retry_cache_age_s: float = 0.08
     max_cache_age_s: float = 0.25
@@ -250,11 +251,18 @@ class ServoIOWorker:
         write_commands = 0
         write_commands_skipped = 0
         write_failures = 0
+        write_deadband_units = max(0, int(self.config.write_deadband_units))
         for servo_id, position in positions_by_servo_id.items():
             target_key = (int(position), int(move_time_ms))
-            if self._last_written_target_by_servo.get(int(servo_id)) == target_key:
-                write_commands_skipped += 1
-                continue
+            last_target = self._last_written_target_by_servo.get(int(servo_id))
+            if last_target is not None:
+                last_position, last_move_time_ms = last_target
+                if (
+                    int(move_time_ms) == int(last_move_time_ms)
+                    and abs(int(position) - int(last_position)) <= write_deadband_units
+                ):
+                    write_commands_skipped += 1
+                    continue
             ok = False
             last_error: Exception | None = None
             for attempt in range(max(1, int(self.config.max_write_attempts))):
