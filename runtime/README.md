@@ -72,9 +72,9 @@ Minimal example:
   "yaw_rate_cmd": 0.0,
 
   "servo_controller": {
-    "type": "hiwonder",
-    "port": "/dev/ttyUSB0",
-    "baudrate": 9600,
+    "type": "hiwonder_ttl_bus",
+    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+    "baudrate": 115200,
     "servos": {
       "left_hip_pitch":  { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
       "left_hip_roll":   { "id": 2, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
@@ -109,7 +109,7 @@ Notes:
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
-- Hiwonder servo controller UART wiring through FT232 is documented in [`docs/hiwonder_servo_controller_uart.md`](docs/hiwonder_servo_controller_uart.md).
+- Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 - `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.
 
@@ -167,8 +167,10 @@ From the repo root on the device:
 ```bash
 cd ~/wildrobot/runtime
 
-# (Recommended) sanity-check Hiwonder serial comms before starting control loop
-uv run python scripts/test_hiwonder_board.py --port /dev/ttyUSB0 --baudrate 9600 --servo-ids 1,2,3
+# (Recommended) sanity-check raw TTL bus reads before starting control loop
+uv run python scripts/probe_hiwonder_ttl_timing.py \
+  --port /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
+  --baudrate 115200 --servo-ids 1,2,3 --mode read --cycles 20
 
 # Validate the bundle is self-consistent (policy_spec + ONNX dims + actuator order).
 # Works on non-Linux dev machines too (rpi-gpio is gated to Linux).
@@ -188,10 +190,10 @@ Notes:
 The loop runs for `--max-steps` control steps and then exits, disabling
 actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
 
-If you see `Servo position response missing or incomplete`:
-- Confirm the board is powered and servos have external power.
-- Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match your board (9600 is common).
-- Try smaller `--servo-ids` lists in `scripts/test_hiwonder_board.py` (some links are unreliable with large multi-servo reads).
+If you see servo cache initialization or position-read failures:
+- Confirm the USB TTL debug board is powered and servos have external power.
+- Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match the debug board (`115200`).
+- Try smaller `--servo-ids` lists in `scripts/probe_hiwonder_ttl_timing.py` to isolate bus or servo issues.
 
 ## Bundle utilities
 

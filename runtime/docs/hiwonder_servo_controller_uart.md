@@ -1,4 +1,9 @@
-# Hiwonder Servo Controller UART via FT232
+# Legacy Hiwonder LSC Controller UART via FT232
+
+This path is deprecated for policy runtime. `wildrobot-run-policy` now requires
+the raw Hiwonder/HTD TTL bus backend (`servo_controller.type:
+"hiwonder_ttl_bus"`) through the USB TTL debug board. Keep this note only for
+legacy LSC controller-board diagnostics.
 
 This note covers the serial wiring used when a Raspberry Pi 4 talks to the
 Hiwonder servo controller through an FT232 USB-to-UART adapter.
@@ -30,7 +35,7 @@ silkscreen explicitly indicates that its `RXD`/`TXD` header expects 5V TTL.
 ## Runtime Config
 
 After the FT232 is plugged into the Pi, it usually appears as `/dev/ttyUSB0`.
-The default runtime config uses:
+Legacy LSC controller-board diagnostics use:
 
 ```json
 "servo_controller": {
@@ -40,8 +45,7 @@ The default runtime config uses:
 }
 ```
 
-If the adapter appears as another device, update `servo_controller.port` in the
-runtime config.
+Do not use this config for `wildrobot-run-policy`.
 
 ## Test
 

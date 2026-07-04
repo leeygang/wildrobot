@@ -23,7 +23,7 @@ sleep until next 20 ms tick
 This matches the exported policy contract, but it does not match the bandwidth
 of the current 115200 baud Hiwonder/HTD bus.
 
-Current code paths:
+Legacy synchronous code paths:
 
 - `runtime/wr_runtime/control/policy_runner.py`: policy step order.
 - `runtime/wr_runtime/hardware/robot_io.py`: reads IMU, all actuators, footswitches.
@@ -31,6 +31,10 @@ Current code paths:
   reads every policy actuator every step.
 - `runtime/wr_runtime/hardware/actuators.py`: `set_targets_rad()` writes targets
   independently from reads.
+
+Current policy runtime uses `HiwonderCachedActuators` with `ServoIOWorker` and
+the raw TTL bus backend. The old `HiwonderBoardActuators` LSC-controller path is
+deprecated and not accepted by `wildrobot-run-policy`.
 
 The current walking bundle expects:
 

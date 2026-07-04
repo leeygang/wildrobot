@@ -64,9 +64,10 @@ def test_hardware_protocols_have_no_from_config() -> None:
 
 def _fake_runtime_config() -> SimpleNamespace:
     servo_controller = SimpleNamespace(
+        type="hiwonder_ttl_bus",
         servo_ids={"j": 1},
-        port="/dev/ttyUSB0",
-        baudrate=9600,
+        port="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+        baudrate=115200,
         default_move_time_ms=None,
         joint_servo_offset_units={"j": 3},
         joint_motor_unit_directions={"j": -1.0},
@@ -97,18 +98,50 @@ def _fake_runtime_config() -> SimpleNamespace:
     )
 
 
+def _patch_ttl_servo_backend(monkeypatch, captured):
+    import wr_runtime.hardware.actuators as act_mod
+    import wr_runtime.hardware.hiwonder_ttl_bus as ttl_mod
+    import wr_runtime.hardware.servo_io_worker as worker_mod
+
+    class _FakeTransport:
+        def __init__(self, config):
+            captured["transport_config"] = config
+            self.port = config.port
+            self.baudrate = config.baudrate
+
+    class _FakeRawBus:
+        def __init__(self, transport, config):
+            captured["raw_bus_config"] = config
+            self.transport = transport
+
+    class _FakeServoIOWorker:
+        def __init__(self, raw_bus, config):
+            captured["worker_config"] = config
+            self.raw_bus = raw_bus
+            self.started = False
+
+        def start(self):
+            self.started = True
+            captured["worker_started"] = True
+
+    class _FakeActuators:
+        def __init__(self, **kwargs):
+            captured["actuators"] = kwargs
+
+    monkeypatch.setattr(ttl_mod, "SerialTransport", _FakeTransport)
+    monkeypatch.setattr(ttl_mod, "RawServoBus", _FakeRawBus)
+    monkeypatch.setattr(worker_mod, "ServoIOWorker", _FakeServoIOWorker)
+    monkeypatch.setattr(act_mod, "HiwonderCachedActuators", _FakeActuators)
+
+
 def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     import configs
-    import wr_runtime.hardware.actuators as act_mod
     import wr_runtime.hardware.bno085 as bno_mod
     import wr_runtime.hardware.foot_switches as fs_mod
     from wr_runtime.control import run_policy
 
     captured = {}
-
-    class _FakeActuators:
-        def __init__(self, **kwargs):
-            captured["actuators"] = kwargs
+    _patch_ttl_servo_backend(monkeypatch, captured)
 
     class _FakeImu:
         def __init__(self, **kwargs):
@@ -121,7 +154,6 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(
         lambda path: _fake_runtime_config()
     ))
-    monkeypatch.setattr(act_mod, "HiwonderBoardActuators", _FakeActuators)
     monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
     monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
 
@@ -137,13 +169,14 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
 
     a = captured["actuators"]
     assert a["servo_ids"] == {"j": 1}
-    assert a["port"] == "/dev/ttyUSB0"
-    assert a["baudrate"] == 9600
+    assert captured["transport_config"].port == "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    assert captured["transport_config"].baudrate == 115200
     # default_move_time_ms None -> one control period (20 ms at 50 Hz).
     assert a["default_move_time_ms"] == 20
     assert a["joint_servo_offset_units"] == {"j": 3}
-    assert a["read_schedule_mode"] == "full"
-    assert a["read_schedule_groups"] == []
+    assert a["port"] == "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    assert a["baudrate"] == 115200
+    assert captured["worker_started"] is True
 
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
@@ -153,19 +186,15 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
 
 def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None:
     import configs
-    import wr_runtime.hardware.actuators as act_mod
     import wr_runtime.hardware.bno085 as bno_mod
     import wr_runtime.hardware.foot_switches as fs_mod
     from wr_runtime.control import run_policy
 
     captured = {}
+    _patch_ttl_servo_backend(monkeypatch, captured)
     cfg = _fake_runtime_config()
     cfg.bno085.sampling_hz = 20
     cfg.bno085.enable_rotation_vector = False
-
-    class _FakeActuators:
-        def __init__(self, **kwargs):
-            pass
 
     class _FakeImu:
         def __init__(self, **kwargs):
@@ -176,7 +205,6 @@ def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None
             pass
 
     monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
-    monkeypatch.setattr(act_mod, "HiwonderBoardActuators", _FakeActuators)
     monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
     monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
 
@@ -192,22 +220,18 @@ def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None
 
 def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None:
     import configs
-    import wr_runtime.hardware.actuators as act_mod
     import wr_runtime.hardware.bno085 as bno_mod
     import wr_runtime.hardware.foot_switches as fs_mod
     from wr_runtime.control import run_policy
 
     captured = {}
+    _patch_ttl_servo_backend(monkeypatch, captured)
     cfg = _fake_runtime_config()
     cfg.servo_read_schedule = SimpleNamespace(
         mode="staggered",
         groups=[["j"]],
         max_cache_age_s={"default": 0.25},
     )
-
-    class _FakeActuators:
-        def __init__(self, **kwargs):
-            captured["actuators"] = kwargs
 
     class _FakeImu:
         def __init__(self, **kwargs):
@@ -218,7 +242,6 @@ def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None
             pass
 
     monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
-    monkeypatch.setattr(act_mod, "HiwonderBoardActuators", _FakeActuators)
     monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
     monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
 
@@ -228,9 +251,27 @@ def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None
         control_dt=0.02,
     )
 
-    assert captured["actuators"]["read_schedule_mode"] == "staggered"
-    assert captured["actuators"]["read_schedule_groups"] == [["j"]]
-    assert captured["actuators"]["read_schedule_max_cache_age_s"] == {"default": 0.25}
+    worker_config = captured["worker_config"]
+    assert tuple(worker_config.read_group_schedule) == ("group_0",)
+    assert len(worker_config.read_groups) == 1
+    assert worker_config.read_groups[0].servo_ids == (1,)
+    assert captured["actuators"]["cache_age_limits_s"] == {"default": 0.25}
+
+
+def test_build_hardware_robot_io_rejects_deprecated_hiwonder_board(monkeypatch) -> None:
+    import configs
+    from wr_runtime.control import run_policy
+
+    cfg = _fake_runtime_config()
+    cfg.servo_controller.type = "hiwonder"
+    monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
+
+    with pytest.raises(SystemExit, match="deprecated LSC controller-board"):
+        run_policy._build_hardware_robot_io(
+            runtime_config_path="ignored",
+            actuator_names=["j"],
+            control_dt=0.02,
+        )
 
 
 def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> None:
@@ -506,7 +547,7 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
     )
 
     out = capsys.readouterr().out
-    assert "Servo board: port=/dev/ttyUSB0 baud=9600 voltage=7.40V" in out
+    assert "Servo bus: port=/dev/ttyUSB0 baud=9600 voltage=7.40V" in out
     assert "left_hip_pitch" in out
     assert "right_hip_pitch" in out
     assert "IMU: valid=True" in out

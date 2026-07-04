@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Protocol, Sequence
 
@@ -61,7 +62,7 @@ def servo_pos_elect_units_to_joint_target_rad(
 
 
 class HiwonderBoardActuators(Actuators):
-    """Actuator implementation backed by the Hiwonder servo board."""
+    """Deprecated actuator implementation for the old Hiwonder LSC board."""
 
     def __init__(
         self,
@@ -81,6 +82,12 @@ class HiwonderBoardActuators(Actuators):
         read_schedule_groups: Optional[Sequence[Sequence[str]]] = None,
         read_schedule_max_cache_age_s: Optional[Dict[str, float]] = None,
     ) -> None:
+        warnings.warn(
+            "HiwonderBoardActuators is deprecated and is not used by policy "
+            "runtime. Use HiwonderCachedActuators with the raw TTL servo bus.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.actuator_names: List[str] = list(actuator_names)
         self.port = port
         self.baudrate = baudrate
@@ -562,11 +569,18 @@ class HiwonderCachedActuators(Actuators):
         joint_motor_unit_directions: Optional[Dict[str, float]] = None,
         joint_angle_at_zero_unit_deg: Optional[Dict[str, float]] = None,
         servo_model: ServoModel | None = None,
+        cache_age_limits_s: Optional[Dict[str, float]] = None,
+        port: Optional[str] = None,
+        baudrate: Optional[int] = None,
     ) -> None:
         self.actuator_names: List[str] = list(actuator_names)
         self.default_move_time_ms = default_move_time_ms
         self.servo_io = servo_io
         self.servo_model = servo_model or ServoModel()
+        transport = getattr(getattr(servo_io, "raw_bus", None), "transport", None)
+        self.port = port or getattr(transport, "port", "unknown")
+        self.baudrate = int(baudrate or getattr(transport, "baudrate", 0) or 0)
+        self._last_error: Optional[Exception] = None
 
         self.servo_ids_list: List[int] = []
         offsets: List[int] = []
@@ -585,6 +599,46 @@ class HiwonderCachedActuators(Actuators):
         self.offsets_unit = np.asarray(offsets, dtype=np.float32)
         self.motor_signs = np.asarray(motor_signs, dtype=np.float32)
         self.centers_rad = np.asarray(centers_rad, dtype=np.float32)
+        self._cache_age_limit_s = self._build_cache_age_limits(cache_age_limits_s or {})
+
+    def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
+        defaults = {"leg": 0.12, "arm": 0.25, "wrist": 0.50, "default": 0.25}
+        merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
+        age_limits = []
+        for name in self.actuator_names:
+            if any(part in name for part in ("hip", "knee", "ankle")):
+                key = "leg"
+            elif "wrist" in name:
+                key = "wrist"
+            elif any(part in name for part in ("shoulder", "elbow")):
+                key = "arm"
+            else:
+                key = "default"
+            age_limits.append(float(merged.get(key, merged["default"])))
+        return np.asarray(age_limits, dtype=np.float32)
+
+    def wait_for_initial_cache(self, *, timeout_s: float = 3.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._cached_state_ready():
+                self._last_error = None
+                return True
+            time.sleep(0.002)
+        self._last_error = RuntimeError(
+            f"servo cache did not initialize within {float(timeout_s):.2f}s"
+        )
+        return False
+
+    def _cached_state_ready(self) -> bool:
+        state = self.servo_io.get_cached_servo_state()
+        index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
+        for sid in self.servo_ids_list:
+            idx = index_by_servo_id.get(int(sid))
+            if idx is None:
+                return False
+            if not np.isfinite(float(state.position_units[idx])):
+                return False
+        return True
 
     def set_targets_rad(self, targets_rad: np.ndarray, *, move_time_ms: int | None = None) -> None:
         targets = np.asarray(targets_rad, dtype=np.float32)
@@ -611,16 +665,27 @@ class HiwonderCachedActuators(Actuators):
         state = self.servo_io.get_cached_servo_state()
         index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
         unit_values: list[float] = []
-        for sid in self.servo_ids_list:
+        for joint_idx, sid in enumerate(self.servo_ids_list):
             idx = index_by_servo_id.get(int(sid))
             if idx is None:
+                self._last_error = RuntimeError(f"missing cached servo id {sid}")
                 return None
             value = float(state.position_units[idx])
             if not np.isfinite(value):
+                self._last_error = RuntimeError(f"missing cached position for servo id {sid}")
+                return None
+            age_s = float(state.position_age_s[idx])
+            limit_s = float(self._cache_age_limit_s[joint_idx])
+            if not np.isfinite(age_s) or age_s > limit_s:
+                self._last_error = RuntimeError(
+                    f"servo cache age exceeded for id {sid}: "
+                    f"age_s={age_s:.3f} limit_s={limit_s:.3f}"
+                )
                 return None
             unit_values.append(value)
 
         units = np.asarray(unit_values, dtype=np.float32)
+        self._last_error = None
         return servo_pos_elect_units_to_joint_target_rad(
             units,
             self.offsets_unit,
@@ -644,6 +709,60 @@ class HiwonderCachedActuators(Actuators):
                 continue
             velocities.append(float(self.motor_signs[i]) * units_s / float(self.servo_model.units_per_rad))
         return np.asarray(velocities, dtype=np.float32)
+
+    def get_servo_cache_metrics(self) -> dict:
+        state = self.servo_io.get_cached_servo_state()
+        metrics = self.servo_io.get_metrics()
+        index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
+        age = np.full(len(self.servo_ids_list), np.inf, dtype=np.float32)
+        fail_count = np.zeros(len(self.servo_ids_list), dtype=np.int32)
+        for i, sid in enumerate(self.servo_ids_list):
+            idx = index_by_servo_id.get(int(sid))
+            if idx is None:
+                continue
+            age[i] = float(state.position_age_s[idx])
+            fail_count[i] = int(state.read_fail_count[idx])
+
+        finite_age = age[np.isfinite(age)]
+        max_age = float(np.max(finite_age)) if finite_age.size else float("inf")
+        leg_mask = np.asarray(
+            [
+                any(part in name for part in ("hip", "knee", "ankle"))
+                for name in self.actuator_names
+            ],
+            dtype=bool,
+        )
+        arm_mask = np.asarray(
+            [
+                any(part in name for part in ("shoulder", "elbow"))
+                for name in self.actuator_names
+            ],
+            dtype=bool,
+        )
+        wrist_mask = np.asarray(["wrist" in name for name in self.actuator_names], dtype=bool)
+
+        def _masked_max(mask: np.ndarray) -> float:
+            vals = age[mask & np.isfinite(age)]
+            return float(np.max(vals)) if vals.size else 0.0
+
+        return {
+            "servo_read_mode": "ttl_worker",
+            "servo_read_group": state.last_read_group,
+            "servo_read_ids": [],
+            "servo_read_count": int(metrics.read_success),
+            "servo_read_fail_count": int(metrics.read_failures),
+            "servo_cache_age_max_s": max_age,
+            "servo_cache_age_leg_max_s": _masked_max(leg_mask),
+            "servo_cache_age_arm_max_s": _masked_max(arm_mask),
+            "servo_cache_age_wrist_max_s": _masked_max(wrist_mask),
+            "servo_cache_stale_joint_count": int(np.count_nonzero(age > self._cache_age_limit_s)),
+            "servo_cache_uninitialized_count": int(np.count_nonzero(~np.isfinite(age))),
+            "servo_read_fail_count_total": int(np.sum(fail_count)),
+            "servo_write_commands": int(metrics.write_commands),
+            "servo_write_failures": int(metrics.write_failures),
+            "servo_latest_write_latency_s": float(metrics.latest_write_latency_s),
+            "servo_latest_read_latency_s": float(metrics.latest_read_latency_s),
+        }
 
     def disable(self) -> None:
         self.servo_io.stop()

@@ -303,7 +303,7 @@ Non-interactive mode (optional later):
 
 ## Data Ownership and Integration Points
 
-- Calibration is runtime-specific: it lives in the runtime config and is applied in the hardware adapter layer (`HiwonderBoardActuators`).
+- Calibration is runtime-specific: it lives in the runtime config and is applied in the hardware adapter layer.
 - Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring motor_unit_direction.
 
 ## Validation Checklist (post-calibration)

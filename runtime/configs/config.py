@@ -269,16 +269,16 @@ class ServoControllerConfig:
     """Servo controller board configuration (Hiwonder-compatible).
 
     Attributes:
-        type: Controller type (e.g., "hiwonder")
-        port: Serial port for the Hiwonder board (e.g., "/dev/ttyUSB0")
-        baudrate: Serial baudrate (default: 9600)
+        type: Controller type (e.g., "hiwonder_ttl_bus")
+        port: Serial port for the USB TTL debug board.
+        baudrate: Serial baudrate (default: 115200)
         servos: Mapping from joint name to ServoConfig
         default_move_time_ms: Optional default move time for commands
     """
 
-    type: str = "hiwonder"
-    port: str = "/dev/ttyUSB0"
-    baudrate: int = 9600
+    type: str = "hiwonder_ttl_bus"
+    port: str = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    baudrate: int = 115200
     servos: Dict[str, ServoConfig] = field(default_factory=dict)
     default_move_time_ms: Optional[int] = None
 
@@ -735,9 +735,9 @@ class WrRuntimeConfig:
                 )
 
             return ServoControllerConfig(
-                type=str(block.get("type", "hiwonder")),
-                port=str(block.get("port", "/dev/ttyUSB0")),
-                baudrate=int(block.get("baudrate", 9600)),
+                type=str(block.get("type", "hiwonder_ttl_bus")),
+                port=str(block.get("port", "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")),
+                baudrate=int(block.get("baudrate", 115200)),
                 servos=servos,
                 default_move_time_ms=int(block["default_move_time_ms"]) if "default_move_time_ms" in block else None,
             )

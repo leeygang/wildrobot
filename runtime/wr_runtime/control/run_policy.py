@@ -29,7 +29,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import List, Optional, TextIO
+from typing import List, Optional, Sequence, TextIO
 
 import numpy as np
 
@@ -130,14 +130,24 @@ def _build_hardware_robot_io(
     """Construct the real hardware RobotIO from the runtime config.
 
     Imported lazily (GPIO / serial / I2C backends are Linux-only), and wires the
-    concrete hardware classes (HiwonderBoardActuators / BNO085IMU / FootSwitches)
+    concrete hardware classes (HiwonderCachedActuators / BNO085IMU / FootSwitches)
     directly — there are no ``*.from_config`` factories.
     """
     from configs import WrRuntimeConfig
-    from wr_runtime.hardware.actuators import HiwonderBoardActuators
+    from wr_runtime.hardware.actuators import HiwonderCachedActuators
     from wr_runtime.hardware.bno085 import BNO085IMU
     from wr_runtime.hardware.foot_switches import FootSwitches
+    from wr_runtime.hardware.hiwonder_ttl_bus import (
+        RawServoBus,
+        RawServoBusConfig,
+        SerialTransport,
+        SerialTransportConfig,
+    )
     from wr_runtime.hardware.robot_io import HardwareRobotIO
+    from wr_runtime.hardware.servo_io_worker import (
+        ServoIOWorker,
+        ServoIOWorkerConfig,
+    )
 
     cfg = WrRuntimeConfig.load(runtime_config_path)
     sc = cfg.servo_controller
@@ -166,18 +176,48 @@ def _build_hardware_robot_io(
     read_schedule_groups = getattr(read_schedule, "groups", [])
     read_schedule_max_cache_age_s = getattr(read_schedule, "max_cache_age_s", {})
 
-    actuators = HiwonderBoardActuators(
+    controller_type = str(getattr(sc, "type", "hiwonder_ttl_bus")).lower()
+    if controller_type in {"hiwonder", "hiwonder_board", "lsc"}:
+        raise SystemExit(
+            "servo_controller.type='hiwonder' uses the deprecated LSC "
+            "controller-board protocol. Use servo_controller.type='hiwonder_ttl_bus' "
+            "with the USB TTL debug-board /dev/serial/by-id port."
+        )
+    if controller_type not in {"hiwonder_ttl_bus", "hiwonder_ttl_debug_board"}:
+        raise SystemExit(
+            f"Unsupported servo_controller.type={sc.type!r}. "
+            "Use 'hiwonder_ttl_bus' for the USB TTL debug board."
+        )
+    read_groups, read_group_schedule = _build_ttl_servo_read_schedule(
         actuator_names=actuator_names,
         servo_ids=sc.servo_ids,
-        port=sc.port,
-        baudrate=sc.baudrate,
+        read_schedule_groups=read_schedule_groups,
+        max_cache_age_s=read_schedule_max_cache_age_s,
+    )
+    transport = SerialTransport(
+        SerialTransportConfig(port=sc.port, baudrate=int(sc.baudrate))
+    )
+    raw_bus = RawServoBus(transport, RawServoBusConfig())
+    servo_io = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            servo_ids=tuple(int(sc.servo_ids[name]) for name in actuator_names),
+            read_groups=tuple(read_groups),
+            read_group_schedule=tuple(read_group_schedule),
+        ),
+    )
+    servo_io.start()
+    actuators = HiwonderCachedActuators(
+        actuator_names=actuator_names,
+        servo_ids=sc.servo_ids,
         default_move_time_ms=default_move_time_ms,
         joint_servo_offset_units=sc.joint_servo_offset_units,
         joint_motor_unit_directions=sc.joint_motor_unit_directions,
         joint_angle_at_zero_unit_deg=sc.joint_angle_at_zero_unit_deg,
-        read_schedule_mode=read_schedule_mode,
-        read_schedule_groups=read_schedule_groups,
-        read_schedule_max_cache_age_s=read_schedule_max_cache_age_s,
+        servo_io=servo_io,
+        cache_age_limits_s=read_schedule_max_cache_age_s,
+        port=sc.port,
+        baudrate=sc.baudrate,
     )
     imu = BNO085IMU(
         i2c_address=cfg.bno085.i2c_address,
@@ -201,6 +241,60 @@ def _build_hardware_robot_io(
         imu=imu,
         foot_switches=foot_switches,
     )
+
+
+def _build_ttl_servo_read_schedule(
+    *,
+    actuator_names: Sequence[str],
+    servo_ids: dict[str, int],
+    read_schedule_groups: Sequence[Sequence[str]],
+    max_cache_age_s: dict[str, float],
+):
+    from wr_runtime.hardware.servo_io_worker import ServoReadGroup
+
+    groups = list(read_schedule_groups) or [list(actuator_names)]
+    unique_groups: dict[str, ServoReadGroup] = {}
+    schedule: list[str] = []
+    for group_idx, names in enumerate(groups):
+        label = _infer_servo_read_group_label(group_idx, names)
+        ids = tuple(int(servo_ids[name]) for name in names)
+        if label not in unique_groups:
+            unique_groups[label] = ServoReadGroup(
+                name=label,
+                servo_ids=ids,
+                max_cache_age_s=_group_cache_age_limit_s(
+                    names, max_cache_age_s=max_cache_age_s
+                ),
+            )
+        schedule.append(label)
+    return list(unique_groups.values()), schedule
+
+
+def _infer_servo_read_group_label(group_idx: int, names: Sequence[str]) -> str:
+    names_set = set(names)
+    if names_set and all(name.startswith("left_") for name in names_set):
+        if any(part in name for name in names_set for part in ("hip", "knee", "ankle")):
+            return "left_leg"
+    if names_set and all(name.startswith("right_") for name in names_set):
+        if any(part in name for name in names_set for part in ("hip", "knee", "ankle")):
+            return "right_leg"
+    if any("wrist" in name or "shoulder" in name or "elbow" in name for name in names_set):
+        return "torso_arms"
+    return f"group_{group_idx}"
+
+
+def _group_cache_age_limit_s(
+    names: Sequence[str], *, max_cache_age_s: dict[str, float]
+) -> float:
+    if any(part in name for name in names for part in ("hip", "knee", "ankle")):
+        key = "leg"
+    elif any("wrist" in name for name in names):
+        key = "wrist"
+    elif any(part in name for name in names for part in ("shoulder", "elbow")):
+        key = "arm"
+    else:
+        key = "default"
+    return float(max_cache_age_s.get(key, max_cache_age_s.get("default", 0.25)))
 
 
 def _actuator_indices(
@@ -498,10 +592,13 @@ def _preflight_servos(
             warnings.append(f"servo board voltage read failed: {exc!r}")
 
     voltage_text = "unknown" if voltage is None else f"{float(voltage):.2f}V"
-    print(
-        f"  Servo board: port={port} baud={baudrate} voltage={voltage_text}",
-        flush=True,
-    )
+    print(f"  Servo bus: port={port} baud={baudrate} voltage={voltage_text}", flush=True)
+
+    wait_for_cache = getattr(actuators, "wait_for_initial_cache", None)
+    if callable(wait_for_cache) and not wait_for_cache(timeout_s=3.0):
+        last_error = getattr(actuators, "_last_error", None)
+        suffix = f": {last_error!r}" if last_error is not None else ""
+        errors.append(f"servo cache initialization failed{suffix}")
 
     try:
         positions = actuators.get_positions_rad()

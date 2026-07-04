@@ -7,9 +7,9 @@
   "velocity_cmd": 0.0,
   "yaw_rate_cmd": 0.0,
   "servo_controller": {
-    "type": "hiwonder",
-    "port": "/dev/ttyUSB0",
-    "baudrate": 9600,
+    "type": "hiwonder_ttl_bus",
+    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+    "baudrate": 115200,
     "servos": {
       "left_hip_pitch": {
         "id": 1,
@@ -137,6 +137,58 @@
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       }
+    }
+  },
+  "servo_read_schedule": {
+    "mode": "staggered",
+    "groups": [
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "waist_yaw",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_elbow_pitch",
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_elbow_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch"
+      ]
+    ],
+    "max_cache_age_s": {
+      "leg": 0.12,
+      "arm": 0.25,
+      "wrist": 0.5,
+      "default": 0.25
     }
   },
   "bno085": {

@@ -679,8 +679,8 @@ path still needs to change.
 
 1. Should writes use individual raw servo commands or a controller-level
    multi-servo move path if available?
-2. Should the runtime support both the old LSC controller and raw TTL debug-board
-   path behind one interface, or should walking only use the raw TTL path?
+2. Walking runtime uses only the raw TTL debug-board path; the old LSC
+   controller path is legacy diagnostics only.
 3. What are the first cache-age limits for legs, arms, and wrists?
 4. Should wrist joints be write-only/cached-lower-rate if the bus is still tight?
 5. Do we need direct current/load/voltage reads for safety, or only position?
