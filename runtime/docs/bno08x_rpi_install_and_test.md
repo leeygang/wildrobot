@@ -1,8 +1,8 @@
 # BNO08X (GY-BNO08X) on Raspberry Pi 4B: Install, Wire, Test, Troubleshoot
 
-This runbook targets the purple `GY-BNO08X` breakout (pins labeled `VCC_3V3`, `GND`, `SCL/SCK/RX`, `SDA/MISO/TX`, `ADDR/MOSI`, `CS`, `INT`, `RST`, `PS0`, `PS1`) wired to a Raspberry Pi 4B over **I2C**.
+This runbook targets the purple `GY-BNO08X` breakout (pins labeled `VCC_3V3`, `GND`, `SCL/SCK/RX`, `SDA/MISO/TX`, `ADDR/MOSI`, `CS`, `INT`, `RST`, `PS0`, `PS1`) wired to a Raspberry Pi 4B over **I2C** or **SPI**.
 
-The WildRobot runtime IMU driver is `runtime/wr_runtime/hardware/bno085.py` (it uses the Adafruit `adafruit_bno08x` library over I2C).
+The WildRobot runtime IMU driver is `runtime/wr_runtime/hardware/bno085.py` (currently using the Adafruit `adafruit_bno08x` library over I2C). The SPI wiring below is for the planned SPI migration after I2C freshness issues.
 
 ## 1) Wiring (I2C mode)
 
@@ -34,6 +34,27 @@ You’ll confirm the address with `i2cdetect` (below).
 `PS0`/`PS1` select the sensor’s interface at boot (I2C vs UART vs SPI). Many GY-BNO08X boards are pre-strapped for I2C.
 
 If `i2cdetect` shows **no device**, the board may be strapped to a non-I2C mode; see Troubleshooting.
+
+### SPI wiring
+
+**Use 3.3V only.** Power down the Pi and IMU before changing the `PS0`/`PS1` straps; those mode-select pins are sampled at sensor boot.
+
+Wire:
+
+| Your Board Label | SPI Alternate Name | Raspberry Pi 4 Pin | Pin Function |
+| --- | --- | --- | --- |
+| `VCC` / `3V3` / `VIN` | Power | Pin 1 or 17 (3.3V) | 3.3V Power |
+| `GND` | Ground | Pin 6, 9, or 14 (GND) | Ground |
+| `SCL` | `SCK` | Pin 23 (GPIO 11) | SPI Clock |
+| `SDA` | `MOSI` | Pin 19 (GPIO 10) | Master Out Slave In |
+| `AD0` | `MISO` | Pin 21 (GPIO 9) | Master In Slave Out |
+| `CS` | `CS` | Pin 24 (GPIO 8) | Chip Select (CE0) |
+| `INT` | `INT` / `IRQ` | Pin 11 (GPIO 17) | Host Interrupt |
+| `RST` | Reset | Pin 13 (GPIO 27) | Hardware Reset |
+| `PS0` | Protocol Select 0 | Connect to GND | Sets mode to SPI |
+| `PS1` | Protocol Select 1 | Connect to GND | Sets mode to SPI |
+
+Board silkscreens vary. Follow the SPI alternate function printed on your board, not just the short I2C label. For example, on boards labeled `SCL/SCK/RX`, `SDA/MISO/TX`, and `ADDR/MOSI`, wire `SCK` to pin 23, `MISO` to pin 21, and `MOSI` to pin 19. Confirm against the board schematic before applying power.
 
 ## 2) Enable I2C on Raspberry Pi (Ubuntu / Raspberry Pi OS)
 
