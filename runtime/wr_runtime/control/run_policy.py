@@ -409,6 +409,8 @@ def _format_step_timing(timing_s: dict) -> str:
         f"write_ms={_format_ms(timing_s.get('write'))} "
         f"servo_read_ms={_format_ms(timing_s.get('io_actuator_read'))} "
         f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))} "
+        f"worker_write_ms={_format_ms(timing_s.get('io_servo_latest_write_latency_s'))} "
+        f"worker_read_ms={_format_ms(timing_s.get('io_servo_latest_read_latency_s'))} "
         f"servo_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_max_s'))}]"
     )
 
@@ -421,10 +423,13 @@ def _format_servo_step_metrics(metrics: dict | None) -> str:
     age_s = metrics.get("servo_cache_age_max_s")
     stale = metrics.get("servo_cache_stale_joint_count")
     uninit = metrics.get("servo_cache_uninitialized_count")
+    write_commands = metrics.get("servo_write_commands")
+    write_skipped = metrics.get("servo_write_commands_skipped")
     return (
         "servo_cache="
         f"[group={group} ids={ids} age_ms={_format_ms(age_s)} "
-        f"stale={stale} uninit={uninit}]"
+        f"stale={stale} uninit={uninit} "
+        f"writes={write_commands} skipped={write_skipped}]"
     )
 
 
@@ -514,7 +519,12 @@ def _print_timing_summary(
             f"stale_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_stale_joint_count')} "
             f"uninitialized_joint_count_max={_timing_max(timing_samples, 'io_servo_cache_uninitialized_count')} "
             f"last_group={last_metrics.get('servo_read_group')} "
-            f"last_ids={last_metrics.get('servo_read_ids')}",
+            f"last_ids={last_metrics.get('servo_read_ids')} "
+            f"write_commands={last_metrics.get('servo_write_commands')} "
+            f"write_skipped={last_metrics.get('servo_write_commands_skipped')} "
+            f"write_failures={last_metrics.get('servo_write_failures')} "
+            f"write_targets={last_metrics.get('servo_write_targets_submitted')} "
+            f"write_replaced={last_metrics.get('servo_write_targets_replaced')}",
             flush=True,
         )
 

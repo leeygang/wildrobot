@@ -244,8 +244,8 @@ Suggested initial limits:
 
 ```text
 leg joint max cache age:       0.12 s
-waist/arm max cache age:       0.25 s
-wrist max cache age:           0.50 s
+waist/arm max cache age:       0.75 s
+wrist max cache age:           1.00 s
 read failure warning streak:   1 group failure
 read failure abort threshold:  cache age limit exceeded
 ```
@@ -277,6 +277,8 @@ servo_cache_age_leg_max_ms
 servo_cache_age_arm_max_ms
 servo_cache_stale_joint_count
 servo_cache_uninitialized_count
+servo_write_commands
+servo_write_commands_skipped
 ```
 
 Existing metrics to keep:

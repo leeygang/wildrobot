@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from logging import Logger
 from typing import Optional, Sequence
 
@@ -51,6 +51,7 @@ class ServoIOMetrics:
     write_targets_submitted: int = 0
     write_targets_replaced: int = 0
     write_commands: int = 0
+    write_commands_skipped: int = 0
     write_failures: int = 0
     read_success: int = 0
     read_failures: int = 0
@@ -107,6 +108,7 @@ class ServoIOWorker:
         self._last_read_group: str | None = None
         self._last_read_servo_id: int | None = None
         self._last_error: str | None = None
+        self._last_written_target_by_servo: dict[int, tuple[int, int]] = {}
         self._metrics = ServoIOMetrics()
 
     @staticmethod
@@ -179,16 +181,10 @@ class ServoIOWorker:
         with self._lock:
             replaced = self._pending_target is not None
             self._pending_target = (target, int(move_time_ms), time.monotonic())
-            self._metrics = ServoIOMetrics(
+            self._metrics = replace(
+                self._metrics,
                 write_targets_submitted=self._metrics.write_targets_submitted + 1,
                 write_targets_replaced=self._metrics.write_targets_replaced + (1 if replaced else 0),
-                write_commands=self._metrics.write_commands,
-                write_failures=self._metrics.write_failures,
-                read_success=self._metrics.read_success,
-                read_failures=self._metrics.read_failures,
-                stale_cache_errors=self._metrics.stale_cache_errors,
-                latest_write_latency_s=self._metrics.latest_write_latency_s,
-                latest_read_latency_s=self._metrics.latest_read_latency_s,
             )
         self._wake.set()
 
@@ -252,8 +248,13 @@ class ServoIOWorker:
         positions_by_servo_id, move_time_ms, _submitted_s = target
         start_s = time.monotonic()
         write_commands = 0
+        write_commands_skipped = 0
         write_failures = 0
         for servo_id, position in positions_by_servo_id.items():
+            target_key = (int(position), int(move_time_ms))
+            if self._last_written_target_by_servo.get(int(servo_id)) == target_key:
+                write_commands_skipped += 1
+                continue
             ok = False
             last_error: Exception | None = None
             for attempt in range(max(1, int(self.config.max_write_attempts))):
@@ -261,6 +262,7 @@ class ServoIOWorker:
                     self.raw_bus.move_time_write(int(servo_id), int(position), int(move_time_ms))
                     ok = True
                     write_commands += 1
+                    self._last_written_target_by_servo[int(servo_id)] = target_key
                     break
                 except Exception as exc:
                     last_error = exc
@@ -277,16 +279,12 @@ class ServoIOWorker:
 
         latency_s = time.monotonic() - start_s
         with self._lock:
-            self._metrics = ServoIOMetrics(
-                write_targets_submitted=self._metrics.write_targets_submitted,
-                write_targets_replaced=self._metrics.write_targets_replaced,
+            self._metrics = replace(
+                self._metrics,
                 write_commands=self._metrics.write_commands + write_commands,
+                write_commands_skipped=self._metrics.write_commands_skipped + write_commands_skipped,
                 write_failures=self._metrics.write_failures + write_failures,
-                read_success=self._metrics.read_success,
-                read_failures=self._metrics.read_failures,
-                stale_cache_errors=self._metrics.stale_cache_errors,
                 latest_write_latency_s=latency_s,
-                latest_read_latency_s=self._metrics.latest_read_latency_s,
             )
 
     def _next_servo_to_read(self) -> tuple[int | None, str | None]:
@@ -340,15 +338,9 @@ class ServoIOWorker:
             self._last_read_group = group_name
             self._last_read_servo_id = int(servo_id)
             self._last_error = None
-            self._metrics = ServoIOMetrics(
-                write_targets_submitted=self._metrics.write_targets_submitted,
-                write_targets_replaced=self._metrics.write_targets_replaced,
-                write_commands=self._metrics.write_commands,
-                write_failures=self._metrics.write_failures,
+            self._metrics = replace(
+                self._metrics,
                 read_success=self._metrics.read_success + 1,
-                read_failures=self._metrics.read_failures,
-                stale_cache_errors=self._metrics.stale_cache_errors,
-                latest_write_latency_s=self._metrics.latest_write_latency_s,
                 latest_read_latency_s=now - start_s,
             )
 
@@ -387,16 +379,10 @@ class ServoIOWorker:
             stale_errors = self._metrics.stale_cache_errors
             if not math.isfinite(age_s) or age_s >= max_cache_age_s:
                 stale_errors += 1
-            self._metrics = ServoIOMetrics(
-                write_targets_submitted=self._metrics.write_targets_submitted,
-                write_targets_replaced=self._metrics.write_targets_replaced,
-                write_commands=self._metrics.write_commands,
-                write_failures=self._metrics.write_failures,
-                read_success=self._metrics.read_success,
+            self._metrics = replace(
+                self._metrics,
                 read_failures=self._metrics.read_failures + 1,
                 stale_cache_errors=stale_errors,
-                latest_write_latency_s=self._metrics.latest_write_latency_s,
-                latest_read_latency_s=self._metrics.latest_read_latency_s,
             )
 
         if not math.isfinite(age_s) or age_s >= max_cache_age_s:

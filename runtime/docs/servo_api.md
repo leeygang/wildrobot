@@ -314,6 +314,12 @@ if a newer target arrives before the worker writes the previous target:
 
 This prevents stale commands from being replayed after the loop is already late.
 
+After a successful write, the worker should suppress exact duplicate per-servo
+commands. If the rounded target unit and move time for a servo are unchanged
+from the last successful command, skip that servo command and count it in
+`write_commands_skipped`. This keeps static policy output from starving feedback
+reads.
+
 Configuration ownership:
 
 ```python
@@ -419,6 +425,7 @@ Recommended metrics:
 write_attempt_count
 write_retry_count
 write_failure_count
+write_commands_skipped
 write_target_replaced_count
 write_latency_ms avg/p50/p95/max
 write_deadline_miss_count
@@ -607,6 +614,7 @@ class CachedServoState:
     read_fail_count: np.ndarray
     last_update_time_s: np.ndarray
     last_read_group: str | None
+    last_read_servo_id: int | None
     last_error: str | None
 ```
 
@@ -663,6 +671,7 @@ Minimum metrics to print in policy summary:
 ```text
 servo_worker_hz
 servo_write_count
+servo_write_skipped_count
 servo_write_latency_ms avg/p50/p95/max
 servo_read_count
 servo_read_latency_ms avg/p50/p95/max
