@@ -1703,6 +1703,7 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         "spi_cs_pin": config.bno085.spi_cs_pin,
         "spi_int_pin": config.bno085.spi_int_pin,
         "spi_reset_pin": config.bno085.spi_reset_pin,
+        "spi_wake_pin": config.bno085.spi_wake_pin,
         "init_retries": config.bno085.init_retries,
         "enable_rotation_vector": True,
     }
@@ -1719,6 +1720,7 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
             "spi_cs_pin",
             "spi_int_pin",
             "spi_reset_pin",
+            "spi_wake_pin",
         ):
             kwargs.pop(key, None)
         kwargs.pop("enable_rotation_vector", None)

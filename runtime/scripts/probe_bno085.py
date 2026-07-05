@@ -251,6 +251,12 @@ def main() -> int:
         default=None,
         help="Override SPI reset Blinka pin from config, e.g. D27.",
     )
+    parser.add_argument(
+        "--spi-wake-pin",
+        type=str,
+        default=None,
+        help="Override SPI wake/PS0 Blinka pin from config, e.g. D25.",
+    )
     parser.add_argument("--samples", type=int, default=120, help="Number of samples to print.")
     parser.add_argument(
         "--seconds",
@@ -361,6 +367,7 @@ def main() -> int:
     spi_cs_pin = str(args.spi_cs_pin or cfg.bno085.spi_cs_pin)
     spi_int_pin = str(args.spi_int_pin or cfg.bno085.spi_int_pin)
     spi_reset_pin = str(args.spi_reset_pin or cfg.bno085.spi_reset_pin)
+    spi_wake_pin = str(args.spi_wake_pin or cfg.bno085.spi_wake_pin)
     dt_s = float(args.dt) if args.dt is not None else 0.05
     total = (
         max(1, int(round(float(args.seconds) / max(1e-6, dt_s))))
@@ -378,7 +385,8 @@ def main() -> int:
         f"config={args.config} transport={transport} address=0x{address:02X} "
         f"spi_baudrate={spi_baudrate} spi_read_skip_bytes={spi_read_skip_bytes} "
         f"spi_cs={spi_cs_pin} spi_int={spi_int_pin} "
-        f"spi_reset={spi_reset_pin} upside_down={cfg.bno085.upside_down} "
+        f"spi_reset={spi_reset_pin} spi_wake={spi_wake_pin} "
+        f"upside_down={cfg.bno085.upside_down} "
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
         f"samples={total} dt={dt_s:.3f} hold_home={hold_home_requested} "
@@ -412,6 +420,7 @@ def main() -> int:
                 spi_cs_pin=spi_cs_pin,
                 spi_int_pin=spi_int_pin,
                 spi_reset_pin=spi_reset_pin,
+                spi_wake_pin=spi_wake_pin,
                 init_retries=cfg.bno085.init_retries,
                 polling_mode=polling_mode,
                 enable_rotation_vector=enable_rotation_vector,

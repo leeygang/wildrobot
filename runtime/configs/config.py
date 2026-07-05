@@ -378,6 +378,7 @@ class BNO085Config:
     spi_cs_pin: str = "D8"
     spi_int_pin: str = "D17"
     spi_reset_pin: str = "D27"
+    spi_wake_pin: str = "D25"
     init_retries: int = 3
     sampling_hz: Optional[int] = None
     enable_rotation_vector: bool = True
@@ -903,6 +904,7 @@ class WrRuntimeConfig:
             spi_cs_pin=str(bno.get("spi_cs_pin", "D8")),
             spi_int_pin=str(bno.get("spi_int_pin", "D17")),
             spi_reset_pin=str(bno.get("spi_reset_pin", "D27")),
+            spi_wake_pin=str(bno.get("spi_wake_pin", "D25")),
             init_retries=int(bno.get("init_retries", 3)),
             sampling_hz=(
                 int(bno["sampling_hz"]) if bno.get("sampling_hz") is not None else None
@@ -979,6 +981,7 @@ class WrRuntimeConfig:
                 "spi_cs_pin": self.bno085.spi_cs_pin,
                 "spi_int_pin": self.bno085.spi_int_pin,
                 "spi_reset_pin": self.bno085.spi_reset_pin,
+                "spi_wake_pin": self.bno085.spi_wake_pin,
                 "init_retries": int(self.bno085.init_retries),
                 **(
                     {"sampling_hz": int(self.bno085.sampling_hz)}

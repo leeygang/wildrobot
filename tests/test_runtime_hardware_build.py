@@ -85,6 +85,7 @@ def _fake_runtime_config() -> SimpleNamespace:
         spi_cs_pin="D8",
         spi_int_pin="D17",
         spi_reset_pin="D27",
+        spi_wake_pin="D25",
         init_retries=3,
         sampling_hz=None,
         enable_rotation_vector=True,
@@ -191,6 +192,7 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert captured["imu"]["spi_cs_pin"] == "D8"
     assert captured["imu"]["spi_int_pin"] == "D17"
     assert captured["imu"]["spi_reset_pin"] == "D27"
+    assert captured["imu"]["spi_wake_pin"] == "D25"
     assert captured["imu"]["sampling_hz"] == 50  # round(1/0.02)
     assert captured["imu"]["enable_rotation_vector"] is True
     assert captured["foot"]["pins"]["left_toe"] == "D5"

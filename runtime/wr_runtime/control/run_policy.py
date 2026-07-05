@@ -236,6 +236,7 @@ def _build_hardware_robot_io(
         spi_cs_pin=cfg.bno085.spi_cs_pin,
         spi_int_pin=cfg.bno085.spi_int_pin,
         spi_reset_pin=cfg.bno085.spi_reset_pin,
+        spi_wake_pin=cfg.bno085.spi_wake_pin,
         init_retries=cfg.bno085.init_retries,
         enable_rotation_vector=cfg.bno085.enable_rotation_vector,
     )

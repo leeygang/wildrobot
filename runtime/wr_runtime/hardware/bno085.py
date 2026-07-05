@@ -3,10 +3,12 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 import time
 import traceback
 from dataclasses import replace
 from queue import Queue
+from struct import pack_into, unpack_from
 from threading import Thread
 from typing import Optional
 
@@ -17,6 +19,7 @@ from .imu import Imu, ImuSample
 _INPUT_SENSOR_REPORT_CHANNEL = 3
 _IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS = {0x00, 0x7B, 0x80}
 _MAX_GYRO_INTEGRATION_DT_S = 0.25
+_SPI_WAKE_SETTLE_S = 0.002
 
 
 def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
@@ -96,10 +99,15 @@ def _input_report_sequence(imu) -> Optional[int]:
 
 
 def _is_ignorable_unknown_sensor_report(exc: BaseException) -> bool:
+    report_id = None
+    if isinstance(exc, KeyError) and len(getattr(exc, "args", ())) == 1:
+        report_id = exc.args[0]
     return (
-        isinstance(exc, KeyError)
-        and len(getattr(exc, "args", ())) == 1
-        and exc.args[0] in _IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS
+        isinstance(report_id, int)
+        and (
+            report_id in _IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS
+            or 0x80 <= report_id <= 0xEF
+        )
     )
 
 
@@ -130,6 +138,16 @@ def _resolve_board_pin(board_module, pin_name: str):
         raise ValueError(f"Unknown Blinka board pin for BNO085 SPI: {pin_name!r}") from exc
 
 
+def _import_system_pi_module(module_name: str):
+    try:
+        return __import__(module_name, fromlist=["*"])
+    except ModuleNotFoundError:
+        system_dist = "/usr/lib/python3/dist-packages"
+        if system_dist not in sys.path:
+            sys.path.append(system_dist)
+        return __import__(module_name, fromlist=["*"])
+
+
 def _format_init_failure_detail(
     *,
     transport: str,
@@ -140,13 +158,14 @@ def _format_init_failure_detail(
     spi_cs_pin: str,
     spi_int_pin: str,
     spi_reset_pin: str,
+    spi_wake_pin: str,
     last_exc: BaseException | None,
 ) -> str:
     if transport == "spi":
         detail = (
             f"spi_baudrate={spi_baudrate} "
             f"spi_read_skip_bytes={spi_read_skip_bytes} cs={spi_cs_pin} "
-            f"int={spi_int_pin} reset={spi_reset_pin}"
+            f"int={spi_int_pin} reset={spi_reset_pin} wake={spi_wake_pin}"
         )
         if isinstance(last_exc, IndexError):
             detail += (
@@ -394,6 +413,378 @@ def _make_bno08x_spi_read_skip_class(base_cls):
     return _BNO08XSPIReadSkip
 
 
+class _BNO08XSPIPacketDriver:
+    def __init__(
+        self,
+        *,
+        baudrate: int,
+        read_skip_bytes: int,
+        debug: bool,
+        cs_pin: str,
+        int_pin: str,
+        reset_pin: str,
+        wake_pin: str,
+    ) -> None:
+        self.baudrate = max(1, int(baudrate))
+        self.read_skip_bytes = max(0, int(read_skip_bytes))
+        self.debug = bool(debug)
+        self.cs_pin = str(cs_pin)
+        self.int_pin = str(int_pin)
+        self.reset_pin = str(reset_pin)
+        self.wake_pin = str(wake_pin)
+
+        from adafruit_bno08x import (
+            BNO_REPORT_GAME_ROTATION_VECTOR,
+            BNO_REPORT_GYROSCOPE,
+            BNO_REPORT_ROTATION_VECTOR,
+            _GET_FEATURE_RESPONSE,
+            _SHTP_REPORT_PRODUCT_ID_REQUEST,
+            _SHTP_REPORT_PRODUCT_ID_RESPONSE,
+        )
+
+        self._rid_game = int(BNO_REPORT_GAME_ROTATION_VECTOR)
+        self._rid_gyro = int(BNO_REPORT_GYROSCOPE)
+        self._rid_rot = int(BNO_REPORT_ROTATION_VECTOR)
+        self._rid_get_feature_response = int(_GET_FEATURE_RESPONSE)
+        self._rid_product_id_request = int(_SHTP_REPORT_PRODUCT_ID_REQUEST)
+        self._rid_product_id_response = int(_SHTP_REPORT_PRODUCT_ID_RESPONSE)
+
+        self._gpio = None
+        self._spi = None
+        self._sequence_number = [0, 0, 0, 0, 0, 0]
+        self._feature_responses: dict[int, tuple[int, ...]] = {}
+        self._readings: dict[int, tuple[float, ...]] = {}
+        self._pending_packets: list[tuple[int, int, bytes]] = []
+
+    def open(self) -> "_BNO08XSPIPacketDriver":
+        GPIO = _import_system_pi_module("RPi.GPIO")
+        spidev = _import_system_pi_module("spidev")
+
+        bus_index, device_index = self._spi_bus_device_for_cs_pin(self.cs_pin)
+        gpio = GPIO
+        gpio.setwarnings(False)
+        gpio.setmode(gpio.BCM)
+        gpio.setup(self._gpio_bcm(self.cs_pin), gpio.OUT, initial=gpio.HIGH)
+        gpio.setup(self._gpio_bcm(self.int_pin), gpio.IN, pull_up_down=gpio.PUD_UP)
+        gpio.setup(self._gpio_bcm(self.reset_pin), gpio.OUT, initial=gpio.HIGH)
+        gpio.setup(self._gpio_bcm(self.wake_pin), gpio.OUT, initial=gpio.HIGH)
+
+        spi = spidev.SpiDev()
+        spi.open(bus_index, device_index)
+        spi.max_speed_hz = self.baudrate
+        spi.mode = 0b11
+        spi.no_cs = True
+
+        self._gpio = gpio
+        self._spi = spi
+        self._initialize()
+        return self
+
+    def close(self) -> None:
+        try:
+            if self._spi is not None:
+                self._spi.close()
+        except Exception:
+            pass
+        try:
+            if self._gpio is not None:
+                self._gpio.cleanup(
+                    [
+                        self._gpio_bcm(self.cs_pin),
+                        self._gpio_bcm(self.int_pin),
+                        self._gpio_bcm(self.reset_pin),
+                        self._gpio_bcm(self.wake_pin),
+                    ]
+                )
+        except Exception:
+            pass
+
+    @property
+    def _data_ready(self) -> bool:
+        return bool(self._pending_packets) or self._int_is_low()
+
+    @property
+    def quaternion(self) -> tuple[float, float, float, float]:
+        self._process_available_packets()
+        try:
+            return self._readings[self._rid_rot]
+        except KeyError:
+            raise RuntimeError("No quaternion report found, is it enabled?") from None
+
+    @property
+    def game_quaternion(self) -> tuple[float, float, float, float]:
+        self._process_available_packets()
+        try:
+            return self._readings[self._rid_game]
+        except KeyError:
+            raise RuntimeError("No game quaternion report found, is it enabled?") from None
+
+    @property
+    def gyro(self) -> tuple[float, float, float]:
+        self._process_available_packets()
+        try:
+            return self._readings[self._rid_gyro]
+        except KeyError:
+            raise RuntimeError("No gyro report found, is it enabled?") from None
+
+    def enable_feature(
+        self,
+        feature_id: int,
+        report_interval: int = 50_000,
+        report_interval_us: int | None = None,
+        report_interval_ms: int | None = None,
+    ) -> None:
+        if report_interval_us is not None:
+            interval_us = int(report_interval_us)
+        elif report_interval_ms is not None:
+            interval_us = int(report_interval_ms) * 1000
+        else:
+            interval_us = int(report_interval)
+
+        payload = bytearray(17)
+        payload[0] = 0xFD
+        payload[1] = int(feature_id) & 0xFF
+        pack_into("<I", payload, 5, max(0, interval_us))
+
+        self._feature_responses.pop(int(feature_id), None)
+        self._send_packet(2, payload)
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            self._process_available_packets(max_packets=20)
+            if int(feature_id) in self._feature_responses:
+                return
+            time.sleep(0.005)
+        raise RuntimeError("Was not able to enable feature", feature_id)
+
+    def _initialize(self) -> None:
+        self._hard_reset()
+
+        first = self._collect_packet(timeout_s=1.0)
+        if first is None:
+            raise RuntimeError("Missing BNO08x startup advertisement packet")
+        self._handle_packet(*first)
+
+        second = self._collect_packet(timeout_s=1.0)
+        if second is None:
+            raise RuntimeError("Missing BNO08x unsolicited init packet")
+        self._handle_packet(*second)
+
+        self._send_packet(2, bytes([self._rid_product_id_request, 0x00]))
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            packet = self._collect_packet(timeout_s=0.5)
+            if packet is None:
+                continue
+            self._handle_packet(*packet)
+            channel, _seq, payload = packet
+            if channel == 2 and payload and payload[0] == self._rid_product_id_response:
+                return
+        raise RuntimeError("Missing BNO08x product ID response")
+
+    def _hard_reset(self) -> None:
+        self._write_gpio(self.wake_pin, True)
+        self._write_gpio(self.cs_pin, True)
+        self._write_gpio(self.reset_pin, True)
+        time.sleep(0.01)
+        self._write_gpio(self.reset_pin, False)
+        time.sleep(0.02)
+        self._write_gpio(self.reset_pin, True)
+
+    def _process_available_packets(self, max_packets: int | None = None) -> None:
+        processed = 0
+        while self._data_ready:
+            if max_packets is not None and processed >= int(max_packets):
+                return
+            packet = self._collect_packet(timeout_s=0.05)
+            if packet is None:
+                return
+            self._handle_packet(*packet)
+            processed += 1
+
+    def _collect_packet(self, *, timeout_s: float) -> tuple[int, int, bytes] | None:
+        if self._pending_packets:
+            return self._pending_packets.pop(0)
+        if not self._wait_for_int_low(timeout_s):
+            return None
+        return self._read_packet()
+
+    def _read_packet(self) -> tuple[int, int, bytes]:
+        assert self._spi is not None
+        self._write_gpio(self.cs_pin, False)
+        try:
+            raw_header = bytes(self._spi.xfer2([0] * max(4, self.read_skip_bytes + 4)))
+            packet = self._extract_packet(raw_header)
+            if packet is None:
+                raise RuntimeError(f"Invalid BNO08x SPI header: {raw_header.hex(' ')}")
+            channel, seq, payload, total_len, prefetched_payload_len = packet
+            remaining = max(0, total_len - 4 - prefetched_payload_len)
+            if remaining > 0:
+                payload = payload + bytes(self._spi.xfer2([0] * remaining))
+            return channel, seq, payload
+        finally:
+            self._write_gpio(self.cs_pin, True)
+
+    def _send_packet(self, channel: int, payload: bytes) -> None:
+        assert self._spi is not None
+        total_len = len(payload) + 4
+        tx = bytearray(total_len)
+        pack_into("<H", tx, 0, total_len)
+        tx[2] = int(channel) & 0xFF
+        tx[3] = self._sequence_number[int(channel)] & 0xFF
+        tx[4:] = payload
+
+        self._write_gpio(self.wake_pin, False)
+        time.sleep(_SPI_WAKE_SETTLE_S)
+        self._wait_for_int_low(0.5)
+        self._write_gpio(self.cs_pin, False)
+        try:
+            rx_header = bytes(self._spi.xfer2(list(tx[:4])))
+            self._write_gpio(self.wake_pin, True)
+            rx_body = bytes(self._spi.xfer2(list(tx[4:]))) if len(tx) > 4 else b""
+            raw_rx = rx_header + rx_body
+
+            packet = self._extract_packet(raw_rx)
+            if packet is not None:
+                _channel, _seq, _payload, packet_total_len, _prefetched_payload_len = packet
+                extra_len = max(0, packet_total_len - len(raw_rx))
+                if extra_len > 0:
+                    raw_rx += bytes(self._spi.xfer2([0] * extra_len))
+                self._pending_packets.extend(self._parse_packets_from_wire(raw_rx))
+        finally:
+            self._write_gpio(self.cs_pin, True)
+            self._write_gpio(self.wake_pin, True)
+        self._sequence_number[int(channel)] = (self._sequence_number[int(channel)] + 1) % 256
+
+    def _handle_packet(self, channel: int, seq: int, payload: bytes) -> None:
+        if len(self._sequence_number) > int(channel):
+            self._sequence_number[int(channel)] = int(seq)
+
+        if not payload:
+            return
+        if channel == 2:
+            self._handle_control_packet(payload)
+            return
+        if channel != 3:
+            return
+
+        idx = 5 if payload[0] in {0xFB, 0xFA} and len(payload) >= 5 else 0
+        while idx < len(payload):
+            report_id = int(payload[idx])
+            report_len = self._report_length(report_id)
+            if report_len is None or idx + report_len > len(payload):
+                return
+            self._handle_sensor_report(payload[idx : idx + report_len])
+            idx += report_len
+
+    def _handle_control_packet(self, payload: bytes) -> None:
+        report_id = int(payload[0])
+        if report_id == self._rid_get_feature_response and len(payload) >= 17:
+            values = unpack_from("<BBBHIII", payload)
+            self._feature_responses[int(values[1])] = tuple(int(v) for v in values)
+
+    def _handle_sensor_report(self, report: bytes) -> None:
+        report_id = int(report[0])
+        if report_id == self._rid_gyro and len(report) >= 10:
+            self._readings[report_id] = self._parse_fixed_q_report(report, scalar=2.0 ** -9, count=3)
+            return
+        if report_id in {self._rid_rot, self._rid_game} and len(report) >= 12:
+            self._readings[report_id] = self._parse_fixed_q_report(report, scalar=2.0 ** -14, count=4)
+
+    @staticmethod
+    def _parse_fixed_q_report(report: bytes, *, scalar: float, count: int) -> tuple[float, ...]:
+        values = []
+        for idx in range(int(count)):
+            raw = unpack_from("<h", report, offset=4 + (2 * idx))[0]
+            values.append(float(raw) * float(scalar))
+        return tuple(values)
+
+    @staticmethod
+    def _report_length(report_id: int) -> int | None:
+        if report_id == 0x02:
+            return 10
+        if report_id == 0x05:
+            return 14
+        if report_id == 0x08:
+            return 12
+        return None
+
+    def _extract_packet(
+        self,
+        raw_bytes: bytes,
+    ) -> tuple[int, int, bytes, int, int] | None:
+        max_offset = min(self.read_skip_bytes, max(0, len(raw_bytes) - 4))
+        for offset in range(max_offset + 1):
+            parsed = _parse_shtp_header_from_bytes(
+                raw_bytes[offset : offset + 4],
+                max_packet_len=512,
+                max_channel=len(self._sequence_number),
+            )
+            if parsed is None:
+                continue
+            total_len, channel, seq = parsed
+            payload_prefix = raw_bytes[offset + 4 :]
+            payload_len = min(len(payload_prefix), max(0, total_len - 4))
+            return channel, seq, payload_prefix[:payload_len], total_len, payload_len
+        return None
+
+    def _parse_packets_from_wire(self, raw_bytes: bytes) -> list[tuple[int, int, bytes]]:
+        packets: list[tuple[int, int, bytes]] = []
+        scan_idx = 0
+        while scan_idx <= len(raw_bytes) - 4:
+            parsed = _parse_shtp_header_from_bytes(
+                raw_bytes[scan_idx : scan_idx + 4],
+                max_packet_len=512,
+                max_channel=len(self._sequence_number),
+            )
+            if parsed is None:
+                scan_idx += 1
+                continue
+            total_len, channel, seq = parsed
+            end_idx = scan_idx + total_len
+            if end_idx > len(raw_bytes):
+                break
+            packets.append((channel, seq, bytes(raw_bytes[scan_idx + 4 : end_idx])))
+            scan_idx = end_idx
+        return packets
+
+    def _wait_for_int_low(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._int_is_low():
+                return True
+            time.sleep(0.0005)
+        return False
+
+    def _int_is_low(self) -> bool:
+        assert self._gpio is not None
+        return bool(self._gpio.input(self._gpio_bcm(self.int_pin)) == self._gpio.LOW)
+
+    def _write_gpio(self, pin_name: str, value: bool) -> None:
+        assert self._gpio is not None
+        self._gpio.output(self._gpio_bcm(pin_name), self._gpio.HIGH if value else self._gpio.LOW)
+
+    @staticmethod
+    def _spi_bus_device_for_cs_pin(pin_name: str) -> tuple[int, int]:
+        normalized = str(pin_name).strip().upper().removeprefix("BOARD.")
+        if normalized in {"D8", "CE0", "GPIO8"}:
+            return 0, 0
+        if normalized in {"D7", "CE1", "GPIO7"}:
+            return 0, 1
+        raise ValueError(
+            f"Unsupported BNO085 SPI chip-select pin {pin_name!r}; expected D8/CE0 or D7/CE1 for spidev."
+        )
+
+    @staticmethod
+    def _gpio_bcm(pin_name: str) -> int:
+        normalized = str(pin_name).strip().upper().removeprefix("BOARD.")
+        if normalized.startswith("GPIO") and normalized[4:].isdigit():
+            return int(normalized[4:])
+        if normalized.startswith("D") and normalized[1:].isdigit():
+            return int(normalized[1:])
+        raise ValueError(f"Unsupported BCM GPIO pin name for BNO085 SPI backend: {pin_name!r}")
+
+
 class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
@@ -422,6 +813,7 @@ class BNO085IMU(Imu):
         spi_cs_pin: str = "D8",
         spi_int_pin: str = "D17",
         spi_reset_pin: str = "D27",
+        spi_wake_pin: str = "D25",
         init_retries: int = 3,
         polling_mode: bool = False,
         enable_rotation_vector: bool = True,
@@ -440,6 +832,7 @@ class BNO085IMU(Imu):
         self.spi_cs_pin = str(spi_cs_pin)
         self.spi_int_pin = str(spi_int_pin)
         self.spi_reset_pin = str(spi_reset_pin)
+        self.spi_wake_pin = str(spi_wake_pin)
         self.init_retries = int(init_retries)
         self.polling_mode = bool(polling_mode)
         self.enable_rotation_vector = bool(enable_rotation_vector)
@@ -447,8 +840,6 @@ class BNO085IMU(Imu):
         self._r_bs = _axis_map_to_r_bs(self._axis_map) if self._axis_map is not None else None
 
         # Lazy imports so this module can be imported on non-RPi machines.
-        import board
-        import busio
         import time
         from adafruit_bno08x import BNO_REPORT_GYROSCOPE, BNO_REPORT_ROTATION_VECTOR
         from adafruit_bno08x.i2c import BNO08X_I2C
@@ -495,33 +886,20 @@ class BNO085IMU(Imu):
             try:
                 with self._maybe_silence_debug_output():
                     if self.transport == "spi":
-                        import digitalio
-                        from adafruit_bno08x.spi import BNO08X_SPI
-
-                        bus = busio.SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
-                        cs = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_cs_pin))
-                        int_pin = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_int_pin))
-                        reset = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_reset_pin))
-                        digital_pins = (cs, int_pin, reset)
-                        spi_cls = (
-                            _make_bno08x_spi_read_skip_class(BNO08X_SPI)
-                            if self.spi_read_skip_bytes > 0
-                            else BNO08X_SPI
-                        )
-                        kwargs = {
-                            "baudrate": self.spi_baudrate,
-                            "debug": not self.suppress_debug,
-                        }
-                        if self.spi_read_skip_bytes > 0:
-                            kwargs["read_skip_bytes"] = self.spi_read_skip_bytes
-                        imu = spi_cls(
-                            bus,
-                            cs,
-                            int_pin,
-                            reset,
-                            **kwargs,
-                        )
+                        imu = _BNO08XSPIPacketDriver(
+                            baudrate=self.spi_baudrate,
+                            read_skip_bytes=self.spi_read_skip_bytes,
+                            debug=not self.suppress_debug,
+                            cs_pin=self.spi_cs_pin,
+                            int_pin=self.spi_int_pin,
+                            reset_pin=self.spi_reset_pin,
+                            wake_pin=self.spi_wake_pin,
+                        ).open()
+                        bus = imu
                     else:
+                        import board
+                        import busio
+
                         bus = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
                         imu = BNO08X_I2C(bus, address=self.i2c_address)
                     game_quat_enabled = False
@@ -553,6 +931,7 @@ class BNO085IMU(Imu):
                 spi_cs_pin=self.spi_cs_pin,
                 spi_int_pin=self.spi_int_pin,
                 spi_reset_pin=self.spi_reset_pin,
+                spi_wake_pin=self.spi_wake_pin,
                 last_exc=last_exc,
             )
             raise RuntimeError(
@@ -623,7 +1002,10 @@ class BNO085IMU(Imu):
                 pass
         try:
             if bus is not None:
-                bus.deinit()
+                if hasattr(bus, "close"):
+                    bus.close()
+                elif hasattr(bus, "deinit"):
+                    bus.deinit()
         except Exception:
             pass
 
@@ -841,7 +1223,7 @@ class BNO085IMU(Imu):
     def _loop(self) -> None:
         import time
 
-        period = 1.0 / max(1, self.sampling_hz)
+        period = 1.0 / max(1, self.sampling_hz * 2)
         while self._running:
             try:
                 sample = self._read_sample_once()
