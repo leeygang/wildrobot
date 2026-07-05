@@ -15,7 +15,7 @@ from .imu import Imu, ImuSample
 
 
 _INPUT_SENSOR_REPORT_CHANNEL = 3
-_IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS = {0x7B}
+_IGNORABLE_UNKNOWN_SENSOR_REPORT_IDS = {0x00, 0x7B, 0x80}
 _MAX_GYRO_INTEGRATION_DT_S = 0.25
 
 
@@ -157,6 +157,24 @@ def _format_init_failure_detail(
     return f"address=0x{i2c_address:02X} freq={i2c_frequency_hz}Hz"
 
 
+def _parse_shtp_header_from_bytes(
+    header_bytes: bytes | bytearray,
+    *,
+    max_packet_len: int,
+    max_channel: int,
+) -> tuple[int, int, int] | None:
+    if len(header_bytes) < 4:
+        return None
+    packet_byte_count = (((int(header_bytes[1]) << 8) | int(header_bytes[0])) & 0x7FFF)
+    channel_number = int(header_bytes[2])
+    sequence_number = int(header_bytes[3])
+    if packet_byte_count < 6 or packet_byte_count > int(max_packet_len):
+        return None
+    if channel_number < 0 or channel_number >= int(max_channel):
+        return None
+    return packet_byte_count, channel_number, sequence_number
+
+
 def _make_bno08x_spi_read_skip_class(base_cls):
     packet_cls = base_cls._read_packet.__globals__["Packet"]
     packet_error_cls = base_cls._read_packet.__globals__["PacketError"]
@@ -167,6 +185,32 @@ def _make_bno08x_spi_read_skip_class(base_cls):
         def __init__(self, *args, read_skip_bytes: int = 0, **kwargs):
             self._wr_spi_read_skip_bytes = max(0, int(read_skip_bytes))
             super().__init__(*args, **kwargs)
+
+        def initialize(self) -> None:
+            last_exc = None
+            for _ in range(3):
+                try:
+                    self.hard_reset()
+                    idle_deadline = time.monotonic() + 0.05
+                    drain_deadline = time.monotonic() + 0.5
+                    while time.monotonic() < drain_deadline:
+                        if not self._data_ready:
+                            if time.monotonic() >= idle_deadline:
+                                break
+                            time.sleep(0.005)
+                            continue
+                        idle_deadline = time.monotonic() + 0.05
+                        try:
+                            self._read_available_packet()
+                        except Exception:
+                            time.sleep(0.005)
+                    self._id_read = True
+                    return
+                except Exception as exc:  # pragma: no cover - exercised on hardware
+                    last_exc = exc
+                    time.sleep(0.2)
+            if last_exc is not None:
+                raise last_exc
 
         def _wait_for_int(self, timeout_s: float = 3.0):
             start_time = time.monotonic()
@@ -214,41 +258,48 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                 raise packet_error_cls("Timed out waiting for BNO08x INT")
 
             with self._spi as spi:
-                self._readinto_after_skip(spi, self._data_buffer, start=0, end=4, write_value=0x00)
+                self._read_available_packet(spi=spi, return_packet=False)
             self._dbg("")
             self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
 
-        def _read_available_packet(self):
+        def _read_available_packet(self, *, spi=None, return_packet: bool = True):
             skip = int(self._wr_spi_read_skip_bytes)
-            with self._spi as spi:
-                raw_header = bytearray(skip + 4)
-                spi.readinto(raw_header, end=len(raw_header), write_value=0x00)
-                self._data_buffer[0:4] = raw_header[skip:]
+
+            def _read_one_packet(spi_dev):
+                raw_prefix = bytearray(skip + 4)
+                spi_dev.readinto(raw_prefix, end=len(raw_prefix), write_value=0x00)
+
+                matched_offset = None
+                parsed_header = None
+                for offset in range(skip + 1):
+                    candidate = _parse_shtp_header_from_bytes(
+                        raw_prefix[offset : offset + 4],
+                        max_packet_len=max_packet_len,
+                        max_channel=len(self._sequence_number),
+                    )
+                    if candidate is not None:
+                        matched_offset = offset
+                        parsed_header = candidate
+                        break
+
+                if matched_offset is None or parsed_header is None:
+                    fallback_header = packet_cls.header_from_buffer(raw_prefix[:4])
+                    raise packet_error_cls(
+                        "Invalid packet header: "
+                        f"length={fallback_header.packet_byte_count} "
+                        f"channel={fallback_header.channel_number} "
+                        f"seq={fallback_header.sequence_number} "
+                        f"raw={[hex(x) for x in raw_prefix]}"
+                    )
+
+                packet_byte_count, channel_number, sequence_number = parsed_header
+                self._data_buffer[0:4] = raw_prefix[matched_offset : matched_offset + 4]
                 self._dbg("")
                 self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
                 if self._debug:
                     print([hex(x) for x in self._data_buffer[0:4]])
 
-                halfpacket = bool(self._data_buffer[1] & 0x80)
-                header = packet_cls.header_from_buffer(self._data_buffer)
-                packet_byte_count = header.packet_byte_count
-                channel_number = header.channel_number
-                sequence_number = header.sequence_number
-
-                if packet_byte_count == 0:
-                    raise packet_error_cls("No packet available")
-                if (
-                    packet_byte_count < 6
-                    or packet_byte_count > max_packet_len
-                    or channel_number >= len(self._sequence_number)
-                ):
-                    raise packet_error_cls(
-                        "Invalid packet header: "
-                        f"length={packet_byte_count} channel={channel_number} seq={sequence_number}"
-                    )
-
                 self._sequence_number[channel_number] = sequence_number
-
                 self._dbg("channel %d has %d bytes available" % (channel_number, packet_byte_count - 4))
 
                 if packet_byte_count > len(self._data_buffer):
@@ -256,21 +307,31 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                     self._data_buffer = bytearray(packet_byte_count)
                     self._data_buffer[0:4] = header_bytes
 
-                if packet_byte_count > 4:
-                    spi.readinto(
+                prefetched_payload = raw_prefix[matched_offset + 4 :]
+                prefetched_len = min(len(prefetched_payload), max(0, packet_byte_count - 4))
+                if prefetched_len > 0:
+                    self._data_buffer[4 : 4 + prefetched_len] = prefetched_payload[:prefetched_len]
+
+                if packet_byte_count > 4 + prefetched_len:
+                    spi_dev.readinto(
                         self._data_buffer,
-                        start=4,
+                        start=4 + prefetched_len,
                         end=packet_byte_count,
                         write_value=0x00,
                     )
 
-            if halfpacket:
-                raise packet_error_cls("read partial packet")
-            new_packet = packet_cls(self._data_buffer)
-            if self._debug:
-                print(new_packet)
-            self._update_sequence_number(new_packet)
-            return new_packet
+                if not return_packet:
+                    return None
+                new_packet = packet_cls(self._data_buffer)
+                if self._debug:
+                    print(new_packet)
+                self._update_sequence_number(new_packet)
+                return new_packet
+
+            if spi is not None:
+                return _read_one_packet(spi)
+            with self._spi as spi_dev:
+                return _read_one_packet(spi_dev)
 
         def _read_packet(self):
             if not self._wait_for_int():
@@ -299,10 +360,7 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             while True:
                 try:
                     packet = self._read_available_packet()
-                    if (
-                        packet.channel_number == 1
-                        and packet.header.packet_byte_count == 20
-                    ):
+                    if packet.header.packet_byte_count >= 6:
                         return
                     if time.monotonic() >= deadline_s:
                         raise packet_error_cls(
@@ -466,9 +524,14 @@ class BNO085IMU(Imu):
                     else:
                         bus = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
                         imu = BNO08X_I2C(bus, address=self.i2c_address)
+                    game_quat_enabled = False
                     if _GAME_QUAT_REPORT is not None:
-                        _enable_feature_best_effort(imu, _GAME_QUAT_REPORT)
-                    if self.enable_rotation_vector or _GAME_QUAT_REPORT is None:
+                        try:
+                            _enable_feature_best_effort(imu, _GAME_QUAT_REPORT)
+                            game_quat_enabled = True
+                        except Exception:
+                            self._use_game_quat = False
+                    if self.enable_rotation_vector or not game_quat_enabled:
                         _enable_feature_best_effort(imu, BNO_REPORT_ROTATION_VECTOR)
                     _enable_feature_best_effort(imu, BNO_REPORT_GYROSCOPE)
                 self._bus = bus
