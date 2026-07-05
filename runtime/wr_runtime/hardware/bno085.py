@@ -160,6 +160,7 @@ def _format_init_failure_detail(
 def _make_bno08x_spi_read_skip_class(base_cls):
     packet_cls = base_cls._read_packet.__globals__["Packet"]
     packet_error_cls = base_cls._read_packet.__globals__["PacketError"]
+    max_packet_len = int(base_cls._read_packet.__globals__.get("DATA_BUFFER_SIZE", 512))
 
     # Some Pi/BNO08x breakout combinations return a fixed leading preamble before SHTP bytes.
     class _BNO08XSPIReadSkip(base_cls):
@@ -236,7 +237,11 @@ def _make_bno08x_spi_read_skip_class(base_cls):
 
                 if packet_byte_count == 0:
                     raise packet_error_cls("No packet available")
-                if packet_byte_count < 4 or channel_number >= len(self._sequence_number):
+                if (
+                    packet_byte_count < 4
+                    or packet_byte_count > max_packet_len
+                    or channel_number >= len(self._sequence_number)
+                ):
                     raise packet_error_cls(
                         "Invalid packet header: "
                         f"length={packet_byte_count} channel={channel_number} seq={sequence_number}"
