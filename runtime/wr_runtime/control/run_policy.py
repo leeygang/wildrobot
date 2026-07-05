@@ -232,6 +232,7 @@ def _build_hardware_robot_io(
         suppress_debug=cfg.bno085.suppress_debug,
         i2c_frequency_hz=cfg.bno085.i2c_frequency_hz,
         spi_baudrate=cfg.bno085.spi_baudrate,
+        spi_read_skip_bytes=cfg.bno085.spi_read_skip_bytes,
         spi_cs_pin=cfg.bno085.spi_cs_pin,
         spi_int_pin=cfg.bno085.spi_int_pin,
         spi_reset_pin=cfg.bno085.spi_reset_pin,

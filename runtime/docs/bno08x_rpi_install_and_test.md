@@ -173,10 +173,17 @@ Set your runtime JSON accordingly:
 
 For SPI runtime, set your runtime JSON accordingly:
 - `bno085.transport: "spi"`
-- `bno085.spi_baudrate: 1000000`
+- `bno085.spi_baudrate: 50000`
+- `bno085.spi_read_skip_bytes: 2`
 - `bno085.spi_cs_pin: "D8"`
 - `bno085.spi_int_pin: "D17"`
 - `bno085.spi_reset_pin: "D27"`
+
+The 50 kHz / 2-byte read-skip profile matches the WR Raspberry Pi 4 + BNO08x
+breakout measured with `scripts/probe_bno085_spi_raw.py`: SPI mode 3 returns a
+valid startup SHTP packet after two leading zero bytes. Adafruit's BNO08x SPI
+driver and SparkFun's BNO080 library both use SPI mode 3; this setting only
+accounts for the observed leading-byte preamble on this board path.
 
 ## 5) Smoke test via the runtime IMU driver
 
@@ -190,7 +197,8 @@ from runtime.wr_runtime.hardware.bno085 import BNO085IMU
 
 imu = BNO085IMU(
     transport="spi",
-    spi_baudrate=1000000,
+    spi_baudrate=50000,
+    spi_read_skip_bytes=2,
     spi_cs_pin="D8",
     spi_int_pin="D17",
     spi_reset_pin="D27",

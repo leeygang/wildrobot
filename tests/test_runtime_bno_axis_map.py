@@ -132,6 +132,7 @@ def test_spi_init_failure_detail_mentions_corrupt_header() -> None:
         i2c_address=0x4B,
         i2c_frequency_hz=100_000,
         spi_baudrate=1_000_000,
+        spi_read_skip_bytes=2,
         spi_cs_pin="D8",
         spi_int_pin="D17",
         spi_reset_pin="D27",
@@ -139,6 +140,7 @@ def test_spi_init_failure_detail_mentions_corrupt_header() -> None:
     )
 
     assert "corrupt SHTP header" in detail
+    assert "spi_read_skip_bytes=2" in detail
     assert "MISO/MOSI" in detail
     assert "PS0/PS1" in detail
 

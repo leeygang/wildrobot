@@ -81,6 +81,7 @@ def _fake_runtime_config() -> SimpleNamespace:
         suppress_debug=True,
         i2c_frequency_hz=100_000,
         spi_baudrate=1_000_000,
+        spi_read_skip_bytes=2,
         spi_cs_pin="D8",
         spi_int_pin="D17",
         spi_reset_pin="D27",
@@ -186,6 +187,7 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert captured["imu"]["transport"] == "spi"
     assert captured["imu"]["i2c_address"] == 0x4B
     assert captured["imu"]["spi_baudrate"] == 1_000_000
+    assert captured["imu"]["spi_read_skip_bytes"] == 2
     assert captured["imu"]["spi_cs_pin"] == "D8"
     assert captured["imu"]["spi_int_pin"] == "D17"
     assert captured["imu"]["spi_reset_pin"] == "D27"

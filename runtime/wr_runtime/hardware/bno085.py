@@ -135,6 +135,7 @@ def _format_init_failure_detail(
     i2c_address: int,
     i2c_frequency_hz: int,
     spi_baudrate: int,
+    spi_read_skip_bytes: int,
     spi_cs_pin: str,
     spi_int_pin: str,
     spi_reset_pin: str,
@@ -142,7 +143,8 @@ def _format_init_failure_detail(
 ) -> str:
     if transport == "spi":
         detail = (
-            f"spi_baudrate={spi_baudrate} cs={spi_cs_pin} "
+            f"spi_baudrate={spi_baudrate} "
+            f"spi_read_skip_bytes={spi_read_skip_bytes} cs={spi_cs_pin} "
             f"int={spi_int_pin} reset={spi_reset_pin}"
         )
         if isinstance(last_exc, IndexError):
@@ -152,6 +154,71 @@ def _format_init_failure_detail(
             )
         return detail
     return f"address=0x{i2c_address:02X} freq={i2c_frequency_hz}Hz"
+
+
+def _make_bno08x_spi_read_skip_class(base_cls):
+    # Some Pi/BNO08x breakout combinations return a fixed leading preamble before SHTP bytes.
+    class _BNO08XSPIReadSkip(base_cls):
+        def __init__(self, *args, read_skip_bytes: int = 0, **kwargs):
+            self._wr_spi_read_skip_bytes = max(0, int(read_skip_bytes))
+            super().__init__(*args, **kwargs)
+
+        def _readinto_after_skip(
+            self,
+            spi,
+            buf,
+            *,
+            start: int = 0,
+            end=None,
+            write_value: int = 0x00,
+        ) -> None:
+            if end is None:
+                end = len(buf)
+            start = int(start)
+            end = int(end)
+            read_len = max(0, end - start)
+            skip = int(self._wr_spi_read_skip_bytes)
+            if skip <= 0:
+                spi.readinto(buf, start=start, end=end, write_value=write_value)
+                return
+
+            raw = bytearray(skip + read_len)
+            spi.readinto(raw, end=len(raw), write_value=write_value)
+            buf[start:end] = raw[skip:]
+
+        def _read_into(self, buf, start=0, end=None):
+            self._wait_for_int()
+
+            with self._spi as spi:
+                self._readinto_after_skip(spi, buf, start=start, end=end, write_value=0x00)
+
+        def _read_header(self):
+            self._wait_for_int()
+
+            with self._spi as spi:
+                self._readinto_after_skip(spi, self._data_buffer, start=0, end=4, write_value=0x00)
+            self._dbg("")
+            self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
+
+        def _read(self, requested_read_length):
+            self._dbg("trying to read", requested_read_length, "bytes")
+            unread_bytes = 0
+            total_read_length = requested_read_length + 4
+            if total_read_length > len(self._data_buffer):
+                unread_bytes = total_read_length - len(self._data_buffer)
+                total_read_length = len(self._data_buffer)
+
+            with self._spi as spi:
+                self._readinto_after_skip(
+                    spi,
+                    self._data_buffer,
+                    start=0,
+                    end=total_read_length,
+                    write_value=0x00,
+                )
+            return unread_bytes > 0
+
+    return _BNO08XSPIReadSkip
 
 
 class BNO085IMU(Imu):
@@ -178,6 +245,7 @@ class BNO085IMU(Imu):
         max_quat_norm_deviation: float = 0.1,
         i2c_frequency_hz: int = 100000,
         spi_baudrate: int = 1_000_000,
+        spi_read_skip_bytes: int = 0,
         spi_cs_pin: str = "D8",
         spi_int_pin: str = "D17",
         spi_reset_pin: str = "D27",
@@ -195,6 +263,7 @@ class BNO085IMU(Imu):
         self.suppress_debug = bool(suppress_debug)
         self.i2c_frequency_hz = int(i2c_frequency_hz)
         self.spi_baudrate = int(spi_baudrate)
+        self.spi_read_skip_bytes = max(0, int(spi_read_skip_bytes))
         self.spi_cs_pin = str(spi_cs_pin)
         self.spi_int_pin = str(spi_int_pin)
         self.spi_reset_pin = str(spi_reset_pin)
@@ -261,13 +330,23 @@ class BNO085IMU(Imu):
                         int_pin = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_int_pin))
                         reset = digitalio.DigitalInOut(_resolve_board_pin(board, self.spi_reset_pin))
                         digital_pins = (cs, int_pin, reset)
-                        imu = BNO08X_SPI(
+                        spi_cls = (
+                            _make_bno08x_spi_read_skip_class(BNO08X_SPI)
+                            if self.spi_read_skip_bytes > 0
+                            else BNO08X_SPI
+                        )
+                        kwargs = {
+                            "baudrate": self.spi_baudrate,
+                            "debug": not self.suppress_debug,
+                        }
+                        if self.spi_read_skip_bytes > 0:
+                            kwargs["read_skip_bytes"] = self.spi_read_skip_bytes
+                        imu = spi_cls(
                             bus,
                             cs,
                             int_pin,
                             reset,
-                            baudrate=self.spi_baudrate,
-                            debug=not self.suppress_debug,
+                            **kwargs,
                         )
                     else:
                         bus = busio.I2C(board.SCL, board.SDA, frequency=self.i2c_frequency_hz)
@@ -292,6 +371,7 @@ class BNO085IMU(Imu):
                 i2c_address=self.i2c_address,
                 i2c_frequency_hz=self.i2c_frequency_hz,
                 spi_baudrate=self.spi_baudrate,
+                spi_read_skip_bytes=self.spi_read_skip_bytes,
                 spi_cs_pin=self.spi_cs_pin,
                 spi_int_pin=self.spi_int_pin,
                 spi_reset_pin=self.spi_reset_pin,

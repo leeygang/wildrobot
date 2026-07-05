@@ -228,6 +228,12 @@ def main() -> int:
         help="Override SPI baudrate from config, e.g. 1000000.",
     )
     parser.add_argument(
+        "--spi-read-skip-bytes",
+        type=int,
+        default=None,
+        help="Skip this many leading bytes on each SPI read before parsing BNO08x SHTP data.",
+    )
+    parser.add_argument(
         "--spi-cs-pin",
         type=str,
         default=None,
@@ -347,6 +353,11 @@ def main() -> int:
     )
     i2c_frequency_hz = int(args.i2c_frequency_hz or cfg.bno085.i2c_frequency_hz)
     spi_baudrate = int(args.spi_baudrate or cfg.bno085.spi_baudrate)
+    spi_read_skip_bytes = int(
+        args.spi_read_skip_bytes
+        if args.spi_read_skip_bytes is not None
+        else cfg.bno085.spi_read_skip_bytes
+    )
     spi_cs_pin = str(args.spi_cs_pin or cfg.bno085.spi_cs_pin)
     spi_int_pin = str(args.spi_int_pin or cfg.bno085.spi_int_pin)
     spi_reset_pin = str(args.spi_reset_pin or cfg.bno085.spi_reset_pin)
@@ -365,7 +376,8 @@ def main() -> int:
     print(
         "BNO085/BNO08x probe: "
         f"config={args.config} transport={transport} address=0x{address:02X} "
-        f"spi_baudrate={spi_baudrate} spi_cs={spi_cs_pin} spi_int={spi_int_pin} "
+        f"spi_baudrate={spi_baudrate} spi_read_skip_bytes={spi_read_skip_bytes} "
+        f"spi_cs={spi_cs_pin} spi_int={spi_int_pin} "
         f"spi_reset={spi_reset_pin} upside_down={cfg.bno085.upside_down} "
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
@@ -396,6 +408,7 @@ def main() -> int:
                 suppress_debug=not bool(args.debug),
                 i2c_frequency_hz=i2c_frequency_hz,
                 spi_baudrate=spi_baudrate,
+                spi_read_skip_bytes=spi_read_skip_bytes,
                 spi_cs_pin=spi_cs_pin,
                 spi_int_pin=spi_int_pin,
                 spi_reset_pin=spi_reset_pin,

@@ -1699,6 +1699,7 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         "suppress_debug": config.bno085.suppress_debug,
         "i2c_frequency_hz": config.bno085.i2c_frequency_hz,
         "spi_baudrate": config.bno085.spi_baudrate,
+        "spi_read_skip_bytes": config.bno085.spi_read_skip_bytes,
         "spi_cs_pin": config.bno085.spi_cs_pin,
         "spi_int_pin": config.bno085.spi_int_pin,
         "spi_reset_pin": config.bno085.spi_reset_pin,
@@ -1711,7 +1712,14 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         # Back-compat for target images with an older local BNO085IMU wrapper.
         if "unexpected" not in str(exc):
             raise
-        for key in ("transport", "spi_baudrate", "spi_cs_pin", "spi_int_pin", "spi_reset_pin"):
+        for key in (
+            "transport",
+            "spi_baudrate",
+            "spi_read_skip_bytes",
+            "spi_cs_pin",
+            "spi_int_pin",
+            "spi_reset_pin",
+        ):
             kwargs.pop(key, None)
         kwargs.pop("enable_rotation_vector", None)
         return BNO085IMU(**kwargs)

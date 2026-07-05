@@ -374,6 +374,7 @@ class BNO085Config:
     axis_map: Optional[list[str]] = None
     i2c_frequency_hz: int = 100_000
     spi_baudrate: int = 1_000_000
+    spi_read_skip_bytes: int = 0
     spi_cs_pin: str = "D8"
     spi_int_pin: str = "D17"
     spi_reset_pin: str = "D27"
@@ -898,6 +899,7 @@ class WrRuntimeConfig:
             axis_map=axis_map,
             i2c_frequency_hz=int(bno.get("i2c_frequency_hz", 100_000)),
             spi_baudrate=int(bno.get("spi_baudrate", 1_000_000)),
+            spi_read_skip_bytes=int(bno.get("spi_read_skip_bytes", 0)),
             spi_cs_pin=str(bno.get("spi_cs_pin", "D8")),
             spi_int_pin=str(bno.get("spi_int_pin", "D17")),
             spi_reset_pin=str(bno.get("spi_reset_pin", "D27")),
@@ -973,6 +975,7 @@ class WrRuntimeConfig:
                 "suppress_debug": self.bno085.suppress_debug,
                 "i2c_frequency_hz": int(self.bno085.i2c_frequency_hz),
                 "spi_baudrate": int(self.bno085.spi_baudrate),
+                "spi_read_skip_bytes": int(self.bno085.spi_read_skip_bytes),
                 "spi_cs_pin": self.bno085.spi_cs_pin,
                 "spi_int_pin": self.bno085.spi_int_pin,
                 "spi_reset_pin": self.bno085.spi_reset_pin,
