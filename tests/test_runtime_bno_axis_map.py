@@ -170,14 +170,11 @@ def test_spi_read_skip_reads_packet_in_one_transaction(monkeypatch) -> None:
             self._data_buffer = bytearray(64)
             self._sequence_number = [0] * 6
             self._debug = False
+            self._int = SimpleNamespace(value=False)
             self.updated_packet = None
-            self.wait_count = 0
 
         def _read_packet(self):
             raise NotImplementedError
-
-        def _wait_for_int(self):
-            self.wait_count += 1
 
         def _dbg(self, *args):
             pass
@@ -221,7 +218,6 @@ def test_spi_read_skip_reads_packet_in_one_transaction(monkeypatch) -> None:
     assert imu._sequence_number[1] == 0
     assert imu.updated_packet is packet
     assert fake_spi.reads == [(0, 6, 0), (4, 20, 0)]
-    assert imu.wait_count == 1
 
 
 def test_spi_read_skip_rejects_invalid_channel_as_packet_error(monkeypatch) -> None:
@@ -244,6 +240,7 @@ def test_spi_read_skip_rejects_invalid_channel_as_packet_error(monkeypatch) -> N
             self._data_buffer = bytearray(64)
             self._sequence_number = [0] * 6
             self._debug = False
+            self._int = SimpleNamespace(value=False)
 
         def _read_packet(self):
             raise NotImplementedError
@@ -275,6 +272,33 @@ def test_spi_read_skip_rejects_invalid_channel_as_packet_error(monkeypatch) -> N
 
     with pytest.raises(FakePacketError, match="channel=128"):
         imu._read_packet()
+
+
+def test_spi_read_skip_data_ready_follows_int_pin(monkeypatch) -> None:
+    from runtime.wr_runtime.hardware.bno085 import _make_bno08x_spi_read_skip_class
+
+    class FakePacketError(Exception):
+        pass
+
+    class FakePacket:
+        pass
+
+    class FakeBase:
+        def __init__(self, *args, **kwargs):
+            self._int = SimpleNamespace(value=True)
+
+        def _read_packet(self):
+            raise NotImplementedError
+
+    monkeypatch.setitem(globals(), "Packet", FakePacket)
+    monkeypatch.setitem(globals(), "PacketError", FakePacketError)
+
+    spi_cls = _make_bno08x_spi_read_skip_class(FakeBase)
+    imu = spi_cls(read_skip_bytes=2)
+
+    assert imu._data_ready is False
+    imu._int.value = False
+    assert imu._data_ready is True
 
 
 def test_bno_read_rejects_bad_quaternion_norm() -> None:

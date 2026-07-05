@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import time
 import traceback
 from dataclasses import replace
 from queue import Queue
@@ -166,6 +167,17 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             self._wr_spi_read_skip_bytes = max(0, int(read_skip_bytes))
             super().__init__(*args, **kwargs)
 
+        def _wait_for_int(self):
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < 3.0:
+                if not self._int.value:
+                    return True
+            return False
+
+        @property
+        def _data_ready(self):
+            return not bool(self._int.value)
+
         def _readinto_after_skip(
             self,
             spi,
@@ -190,13 +202,15 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             buf[start:end] = raw[skip:]
 
         def _read_into(self, buf, start=0, end=None):
-            self._wait_for_int()
+            if not self._wait_for_int():
+                raise packet_error_cls("Timed out waiting for BNO08x INT")
 
             with self._spi as spi:
                 self._readinto_after_skip(spi, buf, start=start, end=end, write_value=0x00)
 
         def _read_header(self):
-            self._wait_for_int()
+            if not self._wait_for_int():
+                raise packet_error_cls("Timed out waiting for BNO08x INT")
 
             with self._spi as spi:
                 self._readinto_after_skip(spi, self._data_buffer, start=0, end=4, write_value=0x00)
@@ -204,7 +218,8 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
 
         def _read_packet(self):
-            self._wait_for_int()
+            if not self._wait_for_int():
+                raise packet_error_cls("Timed out waiting for BNO08x INT")
 
             skip = int(self._wr_spi_read_skip_bytes)
             with self._spi as spi:
