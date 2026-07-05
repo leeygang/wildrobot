@@ -124,6 +124,25 @@ def test_resolve_board_pin_accepts_blinka_and_gpio_names() -> None:
         _resolve_board_pin(FakeBoard, "NOPE")
 
 
+def test_spi_init_failure_detail_mentions_corrupt_header() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _format_init_failure_detail
+
+    detail = _format_init_failure_detail(
+        transport="spi",
+        i2c_address=0x4B,
+        i2c_frequency_hz=100_000,
+        spi_baudrate=1_000_000,
+        spi_cs_pin="D8",
+        spi_int_pin="D17",
+        spi_reset_pin="D27",
+        last_exc=IndexError("list assignment index out of range"),
+    )
+
+    assert "corrupt SHTP header" in detail
+    assert "MISO/MOSI" in detail
+    assert "PS0/PS1" in detail
+
+
 def test_bno_read_rejects_bad_quaternion_norm() -> None:
     from runtime.wr_runtime.hardware.bno085 import BNO085IMU
     from runtime.wr_runtime.hardware.imu import ImuSample

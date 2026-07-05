@@ -54,7 +54,15 @@ Wire:
 | `PS0` | Protocol Select 0 | Connect to GND | Sets mode to SPI |
 | `PS1` | Protocol Select 1 | Connect to GND | Sets mode to SPI |
 
-Board silkscreens vary. Follow the SPI alternate function printed on your board, not just the short I2C label. For example, on boards labeled `SCL/SCK/RX`, `SDA/MISO/TX`, and `ADDR/MOSI`, wire `SCK` to pin 23, `MISO` to pin 21, and `MOSI` to pin 19. Confirm against the board schematic before applying power.
+For the purple board labels listed at the top of this guide, wire the SPI alternate labels this way:
+
+| Purple Board Pin Label | Raspberry Pi 4 Pin |
+| --- | --- |
+| `SCL/SCK/RX` | Pin 23 (GPIO 11 / SCK) |
+| `SDA/MISO/TX` | Pin 21 (GPIO 9 / MISO) |
+| `ADDR/MOSI` | Pin 19 (GPIO 10 / MOSI) |
+
+Board silkscreens vary. Follow the SPI alternate function printed on your board, not just the short I2C label, and confirm against the board schematic before applying power. A swapped `MISO`/`MOSI` wire commonly produces corrupt SPI packet headers during BNO08X reset.
 
 ## 2) Enable the Raspberry Pi bus (Ubuntu / Raspberry Pi OS)
 

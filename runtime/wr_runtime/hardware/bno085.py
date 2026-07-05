@@ -129,6 +129,31 @@ def _resolve_board_pin(board_module, pin_name: str):
         raise ValueError(f"Unknown Blinka board pin for BNO085 SPI: {pin_name!r}") from exc
 
 
+def _format_init_failure_detail(
+    *,
+    transport: str,
+    i2c_address: int,
+    i2c_frequency_hz: int,
+    spi_baudrate: int,
+    spi_cs_pin: str,
+    spi_int_pin: str,
+    spi_reset_pin: str,
+    last_exc: BaseException | None,
+) -> str:
+    if transport == "spi":
+        detail = (
+            f"spi_baudrate={spi_baudrate} cs={spi_cs_pin} "
+            f"int={spi_int_pin} reset={spi_reset_pin}"
+        )
+        if isinstance(last_exc, IndexError):
+            detail += (
+                "; SPI reset read returned a corrupt SHTP header "
+                "(check MISO/MOSI, CS, INT, RST, PS0/PS1, and common ground)"
+            )
+        return detail
+    return f"address=0x{i2c_address:02X} freq={i2c_frequency_hz}Hz"
+
+
 class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
@@ -262,13 +287,16 @@ class BNO085IMU(Imu):
                 self._deinit_transport(bus, digital_pins)
                 time.sleep(0.2 * (attempt + 1))
         if self._imu is None:
-            if self.transport == "spi":
-                detail = (
-                    f"spi_baudrate={self.spi_baudrate} cs={self.spi_cs_pin} "
-                    f"int={self.spi_int_pin} reset={self.spi_reset_pin}"
-                )
-            else:
-                detail = f"address=0x{self.i2c_address:02X} freq={self.i2c_frequency_hz}Hz"
+            detail = _format_init_failure_detail(
+                transport=self.transport,
+                i2c_address=self.i2c_address,
+                i2c_frequency_hz=self.i2c_frequency_hz,
+                spi_baudrate=self.spi_baudrate,
+                spi_cs_pin=self.spi_cs_pin,
+                spi_int_pin=self.spi_int_pin,
+                spi_reset_pin=self.spi_reset_pin,
+                last_exc=last_exc,
+            )
             raise RuntimeError(
                 "Failed to initialize BNO085 IMU (enable_feature failed). "
                 "Check IMU power, wiring, protocol-select pins, and runtime transport config. "
