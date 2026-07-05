@@ -238,7 +238,7 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                 if packet_byte_count == 0:
                     raise packet_error_cls("No packet available")
                 if (
-                    packet_byte_count < 4
+                    packet_byte_count < 6
                     or packet_byte_count > max_packet_len
                     or channel_number >= len(self._sequence_number)
                 ):
@@ -298,8 +298,13 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             deadline_s = time.monotonic() + 0.75
             while True:
                 try:
-                    self._read_available_packet()
-                    return
+                    packet = self._read_available_packet()
+                    if packet.channel_number == 1:
+                        return
+                    if time.monotonic() >= deadline_s:
+                        raise packet_error_cls(
+                            "Timed out waiting for BNO08x reset EXE packet"
+                        )
                 except packet_error_cls:
                     if time.monotonic() >= deadline_s:
                         raise

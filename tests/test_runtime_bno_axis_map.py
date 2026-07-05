@@ -156,6 +156,11 @@ def test_spi_read_skip_reads_packet_in_one_transaction(monkeypatch) -> None:
     class FakePacket:
         def __init__(self, buf):
             self.data = bytes(buf[:20])
+            self.header = self.header_from_buffer(buf)
+
+        @property
+        def channel_number(self):
+            return self.header.channel_number
 
         @staticmethod
         def header_from_buffer(buf):
@@ -237,6 +242,11 @@ def test_spi_read_skip_hard_reset_retries_empty_startup_packet(monkeypatch) -> N
     class FakePacket:
         def __init__(self, buf):
             self.data = bytes(buf[:20])
+            self.header = self.header_from_buffer(buf)
+
+        @property
+        def channel_number(self):
+            return self.header.channel_number
 
         @staticmethod
         def header_from_buffer(buf):
@@ -271,6 +281,8 @@ def test_spi_read_skip_hard_reset_retries_empty_startup_packet(monkeypatch) -> N
         def __init__(self):
             self.chunks = [
                 bytes([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]),
+                bytes([0x00, 0x00, 0x0A, 0x00, 0x00, 0x80]),
+                bytes([0x00, 0x01, 0x04, 0x00, 0x00, 0x00]),
                 bytes([0x00, 0x00, 0x14, 0x00, 0x01, 0x00]),
                 bytes([0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x80, 0x06,
                        0x31, 0x2E, 0x30, 0x2E, 0x30, 0x00, 0x02, 0x02]),
@@ -307,7 +319,7 @@ def test_spi_read_skip_hard_reset_retries_empty_startup_packet(monkeypatch) -> N
     assert imu._int.direction == FakeDirection.INPUT
     assert imu._int.pull == FakePull.UP
     assert imu.updated_packet.data[:4] == bytes([0x14, 0x00, 0x01, 0x00])
-    assert fake_spi.reads == [(0, 6, 0), (0, 6, 0), (4, 20, 0)]
+    assert fake_spi.reads == [(0, 6, 0), (0, 6, 0), (4, 10, 0), (0, 6, 0), (4, 20, 0)]
 
 
 def test_spi_read_skip_rejects_invalid_channel_as_packet_error(monkeypatch) -> None:
@@ -413,6 +425,57 @@ def test_spi_read_skip_rejects_oversized_packet_as_packet_error(monkeypatch) -> 
     imu._spi = FakeSpi()
 
     with pytest.raises(FakePacketError, match="length=1280"):
+        imu._read_packet()
+
+
+def test_spi_read_skip_rejects_too_short_packet_as_packet_error(monkeypatch) -> None:
+    from runtime.wr_runtime.hardware.bno085 import _make_bno08x_spi_read_skip_class
+
+    class FakePacketError(Exception):
+        pass
+
+    class FakePacket:
+        @staticmethod
+        def header_from_buffer(buf):
+            return SimpleNamespace(
+                packet_byte_count=((int(buf[1]) << 8) | int(buf[0])) & 0x7FFF,
+                channel_number=int(buf[2]),
+                sequence_number=int(buf[3]),
+            )
+
+    class FakeBase:
+        def __init__(self, *args, **kwargs):
+            self._data_buffer = bytearray(64)
+            self._sequence_number = [0] * 6
+            self._debug = False
+            self._int = SimpleNamespace(value=False)
+
+        def _read_packet(self):
+            raise NotImplementedError
+
+        def _dbg(self, *args):
+            pass
+
+    class FakeSpi:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readinto(self, buf, start=0, end=None, write_value=0):
+            if end is None:
+                end = len(buf)
+            buf[start:end] = bytes([0x00, 0x00, 0x05, 0x00, 0x00, 0x40])[: end - start]
+
+    monkeypatch.setitem(globals(), "Packet", FakePacket)
+    monkeypatch.setitem(globals(), "PacketError", FakePacketError)
+
+    spi_cls = _make_bno08x_spi_read_skip_class(FakeBase)
+    imu = spi_cls(read_skip_bytes=2)
+    imu._spi = FakeSpi()
+
+    with pytest.raises(FakePacketError, match="length=5"):
         imu._read_packet()
 
 
