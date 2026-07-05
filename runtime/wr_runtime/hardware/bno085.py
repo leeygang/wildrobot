@@ -167,9 +167,9 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             self._wr_spi_read_skip_bytes = max(0, int(read_skip_bytes))
             super().__init__(*args, **kwargs)
 
-        def _wait_for_int(self):
+        def _wait_for_int(self, timeout_s: float = 3.0):
             start_time = time.monotonic()
-            while time.monotonic() - start_time < 3.0:
+            while time.monotonic() - start_time < float(timeout_s):
                 if not self._int.value:
                     return True
             return False
@@ -217,10 +217,7 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             self._dbg("")
             self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
 
-        def _read_packet(self):
-            if not self._wait_for_int():
-                raise packet_error_cls("Timed out waiting for BNO08x INT")
-
+        def _read_available_packet(self):
             skip = int(self._wr_spi_read_skip_bytes)
             with self._spi as spi:
                 raw_header = bytearray(skip + 4)
@@ -269,6 +266,41 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                 print(new_packet)
             self._update_sequence_number(new_packet)
             return new_packet
+
+        def _read_packet(self):
+            if not self._wait_for_int():
+                raise packet_error_cls("Timed out waiting for BNO08x INT")
+            return self._read_available_packet()
+
+        def hard_reset(self):
+            direction_cls = base_cls.hard_reset.__globals__["Direction"]
+            pull_cls = base_cls.hard_reset.__globals__["Pull"]
+
+            self._reset.direction = direction_cls.OUTPUT
+            self._int.direction = direction_cls.INPUT
+            self._int.pull = pull_cls.UP
+
+            print("Hard resetting...")
+            self._reset.value = True
+            time.sleep(0.01)
+            self._reset.value = False
+            time.sleep(0.01)
+            self._reset.value = True
+            if not self._wait_for_int():
+                raise packet_error_cls("Timed out waiting for BNO08x INT after reset")
+            print("Done!")
+
+            deadline_s = time.monotonic() + 0.75
+            while True:
+                try:
+                    self._read_available_packet()
+                    return
+                except packet_error_cls:
+                    if time.monotonic() >= deadline_s:
+                        raise
+                    time.sleep(0.02)
+                    if not self._data_ready:
+                        self._wait_for_int(timeout_s=0.05)
 
         def _read(self, requested_read_length):
             self._dbg("trying to read", requested_read_length, "bytes")
