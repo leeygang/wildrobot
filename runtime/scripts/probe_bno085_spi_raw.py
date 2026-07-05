@@ -55,6 +55,20 @@ def _header_summary(data: bytes | bytearray, *, offset: int) -> str:
     )
 
 
+def _sane_headers(data: bytes | bytearray) -> list[str]:
+    headers: list[str] = []
+    for offset in range(max(0, len(data) - 3)):
+        b0, b1, channel, seq = [int(x) for x in data[offset : offset + 4]]
+        length = ((b1 << 8) | b0) & 0x7FFF
+        continuation = bool(b1 & 0x80)
+        if 4 <= length <= 512 and 0 <= channel <= 5:
+            headers.append(
+                f"offset={offset} length={length} channel={channel} "
+                f"seq={seq} continued={int(continuation)}"
+            )
+    return headers
+
+
 def _wait_for_int_low(int_pin, *, timeout_s: float) -> float | None:
     start = time.monotonic()
     while time.monotonic() - start < timeout_s:
@@ -114,6 +128,7 @@ def main() -> int:
     parser.add_argument("--spi-reset-pin", default="D27")
     parser.add_argument("--baudrates", type=_parse_csv_ints, default=[100000, 400000, 1000000])
     parser.add_argument("--modes", type=_parse_csv_ints, default=[3])
+    parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--read-len", type=int, default=12)
     parser.add_argument("--write-value", type=lambda v: int(v, 0), default=0x00)
     parser.add_argument("--reset-low-s", type=float, default=0.01)
@@ -151,39 +166,50 @@ def main() -> int:
     )
 
     try:
-        for baudrate in args.baudrates:
-            for mode in args.modes:
-                polarity = 1 if mode in (2, 3) else 0
-                phase = 1 if mode in (1, 3) else 0
-                print("-" * 60)
-                print(f"baudrate={baudrate} mode={mode} polarity={polarity} phase={phase}")
-                print(f"INT before reset: {'LOW' if not int_pin.value else 'HIGH'}")
-                _pulse_reset(
-                    reset_pin,
-                    reset_low_s=max(0.0, float(args.reset_low_s)),
-                    post_reset_s=max(0.0, float(args.post_reset_s)),
-                )
-                print(f"INT after reset pulse: {'LOW' if not int_pin.value else 'HIGH'}")
-                wait_s = _wait_for_int_low(int_pin, timeout_s=max(0.0, float(args.int_timeout_s)))
-                if wait_s is None:
-                    print(f"INT did not go LOW within {args.int_timeout_s:.3f}s; skipping SPI read")
-                    continue
-                print(f"INT low after {wait_s * 1000.0:.1f} ms")
-                if args.int_settle_s > 0.0:
-                    time.sleep(args.int_settle_s)
-                raw = _read_spi_raw(
-                    bus,
-                    cs_pin,
-                    baudrate=baudrate,
-                    polarity=polarity,
-                    phase=phase,
-                    read_len=max(4, int(args.read_len)),
-                    write_value=int(args.write_value),
-                    cs_setup_s=max(0.0, float(args.cs_setup_s)),
-                )
-                print(f"RX: {_fmt_bytes(raw)}")
-                print(_header_summary(raw, offset=0))
-                print(_header_summary(raw, offset=1))
+        for cycle in range(max(1, int(args.cycles))):
+            for baudrate in args.baudrates:
+                for mode in args.modes:
+                    polarity = 1 if mode in (2, 3) else 0
+                    phase = 1 if mode in (1, 3) else 0
+                    print("-" * 60)
+                    print(
+                        f"cycle={cycle + 1} baudrate={baudrate} mode={mode} "
+                        f"polarity={polarity} phase={phase}"
+                    )
+                    print(f"INT before reset: {'LOW' if not int_pin.value else 'HIGH'}")
+                    _pulse_reset(
+                        reset_pin,
+                        reset_low_s=max(0.0, float(args.reset_low_s)),
+                        post_reset_s=max(0.0, float(args.post_reset_s)),
+                    )
+                    print(f"INT after reset pulse: {'LOW' if not int_pin.value else 'HIGH'}")
+                    wait_s = _wait_for_int_low(int_pin, timeout_s=max(0.0, float(args.int_timeout_s)))
+                    if wait_s is None:
+                        print(f"INT did not go LOW within {args.int_timeout_s:.3f}s; skipping SPI read")
+                        continue
+                    print(f"INT low after {wait_s * 1000.0:.1f} ms")
+                    if args.int_settle_s > 0.0:
+                        time.sleep(args.int_settle_s)
+                    raw = _read_spi_raw(
+                        bus,
+                        cs_pin,
+                        baudrate=baudrate,
+                        polarity=polarity,
+                        phase=phase,
+                        read_len=max(4, int(args.read_len)),
+                        write_value=int(args.write_value),
+                        cs_setup_s=max(0.0, float(args.cs_setup_s)),
+                    )
+                    print(f"RX: {_fmt_bytes(raw)}")
+                    print(_header_summary(raw, offset=0))
+                    print(_header_summary(raw, offset=1))
+                    sane_headers = _sane_headers(raw)
+                    if sane_headers:
+                        print("sane_headers:")
+                        for header in sane_headers:
+                            print(f"  {header}")
+                    else:
+                        print("sane_headers: none")
     finally:
         cs_pin.deinit()
         int_pin.deinit()
