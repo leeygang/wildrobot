@@ -157,6 +157,9 @@ def _format_init_failure_detail(
 
 
 def _make_bno08x_spi_read_skip_class(base_cls):
+    packet_cls = base_cls._read_packet.__globals__["Packet"]
+    packet_error_cls = base_cls._read_packet.__globals__["PacketError"]
+
     # Some Pi/BNO08x breakout combinations return a fixed leading preamble before SHTP bytes.
     class _BNO08XSPIReadSkip(base_cls):
         def __init__(self, *args, read_skip_bytes: int = 0, **kwargs):
@@ -199,6 +202,52 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                 self._readinto_after_skip(spi, self._data_buffer, start=0, end=4, write_value=0x00)
             self._dbg("")
             self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
+
+        def _read_packet(self):
+            self._wait_for_int()
+
+            skip = int(self._wr_spi_read_skip_bytes)
+            with self._spi as spi:
+                raw_header = bytearray(skip + 4)
+                spi.readinto(raw_header, end=len(raw_header), write_value=0x00)
+                self._data_buffer[0:4] = raw_header[skip:]
+                self._dbg("")
+                self._dbg("SHTP READ packet header: ", [hex(x) for x in self._data_buffer[0:4]])
+                if self._debug:
+                    print([hex(x) for x in self._data_buffer[0:4]])
+
+                halfpacket = bool(self._data_buffer[1] & 0x80)
+                header = packet_cls.header_from_buffer(self._data_buffer)
+                packet_byte_count = header.packet_byte_count
+                channel_number = header.channel_number
+                sequence_number = header.sequence_number
+
+                self._sequence_number[channel_number] = sequence_number
+                if packet_byte_count == 0:
+                    raise packet_error_cls("No packet available")
+
+                self._dbg("channel %d has %d bytes available" % (channel_number, packet_byte_count - 4))
+
+                if packet_byte_count > len(self._data_buffer):
+                    header_bytes = bytes(self._data_buffer[0:4])
+                    self._data_buffer = bytearray(packet_byte_count)
+                    self._data_buffer[0:4] = header_bytes
+
+                if packet_byte_count > 4:
+                    spi.readinto(
+                        self._data_buffer,
+                        start=4,
+                        end=packet_byte_count,
+                        write_value=0x00,
+                    )
+
+            if halfpacket:
+                raise packet_error_cls("read partial packet")
+            new_packet = packet_cls(self._data_buffer)
+            if self._debug:
+                print(new_packet)
+            self._update_sequence_number(new_packet)
+            return new_packet
 
         def _read(self, requested_read_length):
             self._dbg("trying to read", requested_read_length, "bytes")

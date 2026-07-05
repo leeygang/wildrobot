@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -143,6 +145,83 @@ def test_spi_init_failure_detail_mentions_corrupt_header() -> None:
     assert "spi_read_skip_bytes=2" in detail
     assert "MISO/MOSI" in detail
     assert "PS0/PS1" in detail
+
+
+def test_spi_read_skip_reads_packet_in_one_transaction(monkeypatch) -> None:
+    from runtime.wr_runtime.hardware.bno085 import _make_bno08x_spi_read_skip_class
+
+    class FakePacketError(Exception):
+        pass
+
+    class FakePacket:
+        def __init__(self, buf):
+            self.data = bytes(buf[:20])
+
+        @staticmethod
+        def header_from_buffer(buf):
+            return SimpleNamespace(
+                packet_byte_count=((int(buf[1]) << 8) | int(buf[0])) & 0x7FFF,
+                channel_number=int(buf[2]),
+                sequence_number=int(buf[3]),
+            )
+
+    class FakeBase:
+        def __init__(self, *args, **kwargs):
+            self._data_buffer = bytearray(64)
+            self._sequence_number = [0] * 6
+            self._debug = False
+            self.updated_packet = None
+            self.wait_count = 0
+
+        def _read_packet(self):
+            raise NotImplementedError
+
+        def _wait_for_int(self):
+            self.wait_count += 1
+
+        def _dbg(self, *args):
+            pass
+
+        def _update_sequence_number(self, packet):
+            self.updated_packet = packet
+
+    class FakeSpi:
+        def __init__(self):
+            self.chunks = [
+                bytes([0x00, 0x00, 0x14, 0x00, 0x01, 0x00]),
+                bytes([0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x80, 0x06,
+                       0x31, 0x2E, 0x30, 0x2E, 0x30, 0x00, 0x02, 0x02]),
+            ]
+            self.reads = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def readinto(self, buf, start=0, end=None, write_value=0):
+            if end is None:
+                end = len(buf)
+            self.reads.append((int(start), int(end), int(write_value)))
+            data = self.chunks.pop(0)
+            buf[start:end] = data[: end - start]
+
+    monkeypatch.setitem(globals(), "Packet", FakePacket)
+    monkeypatch.setitem(globals(), "PacketError", FakePacketError)
+
+    spi_cls = _make_bno08x_spi_read_skip_class(FakeBase)
+    imu = spi_cls(read_skip_bytes=2)
+    fake_spi = FakeSpi()
+    imu._spi = fake_spi
+
+    packet = imu._read_packet()
+
+    assert packet.data[:4] == bytes([0x14, 0x00, 0x01, 0x00])
+    assert imu._sequence_number[1] == 0
+    assert imu.updated_packet is packet
+    assert fake_spi.reads == [(0, 6, 0), (4, 20, 0)]
+    assert imu.wait_count == 1
 
 
 def test_bno_read_rejects_bad_quaternion_norm() -> None:
