@@ -230,8 +230,9 @@
     "spi_cs_pin": "D8",
     "spi_int_pin": "D17",
     "spi_reset_pin": "D27",
+    "spi_wake_pin": "D25",
     "init_retries": 3,
-    "sampling_hz": 20,
+    "sampling_hz": 50,
     "enable_rotation_vector": false,
     "axis_map": [
       "+X",
