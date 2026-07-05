@@ -466,7 +466,9 @@ def main() -> int:
     gyro_changes = 0
     timestamp_changes = 0
     max_gyro_norm = 0.0
+    max_gyro_sample: dict[str, object] | None = None
     max_quat_angle_from_first = 0.0
+    max_quat_angle_sample: dict[str, object] | None = None
     max_read_s = 0.0
     slow_read_count = 0
     very_slow_read_count = 0
@@ -508,8 +510,28 @@ def main() -> int:
                 timestamp_changes += 1
             if first_q is None:
                 first_q = q.copy()
-            max_gyro_norm = max(max_gyro_norm, float(np.linalg.norm(g)))
-            max_quat_angle_from_first = max(max_quat_angle_from_first, _quat_angle_delta_rad(first_q, q))
+            gyro_norm = float(np.linalg.norm(g))
+            if gyro_norm > max_gyro_norm:
+                max_gyro_norm = gyro_norm
+                max_gyro_sample = {
+                    "idx": i,
+                    "ts": ts,
+                    "valid": sample_valid,
+                    "fresh": sample_fresh,
+                    "gyro": g.copy(),
+                    "diag": dict(diag),
+                }
+            quat_angle = _quat_angle_delta_rad(first_q, q)
+            if quat_angle > max_quat_angle_from_first:
+                max_quat_angle_from_first = quat_angle
+                max_quat_angle_sample = {
+                    "idx": i,
+                    "ts": ts,
+                    "valid": sample_valid,
+                    "fresh": sample_fresh,
+                    "quat": q.copy(),
+                    "diag": dict(diag),
+                }
             max_read_s = max(max_read_s, read_s)
             if read_s > 0.2:
                 slow_read_count += 1
@@ -554,7 +576,25 @@ def main() -> int:
     print(f"  quat_payload_changes: {quat_changes}", flush=True)
     print(f"  gyro_payload_changes: {gyro_changes}", flush=True)
     print(f"  max_gyro_norm_rad_s: {max_gyro_norm:.6f}", flush=True)
+    if max_gyro_sample is not None:
+        print(
+            "  max_gyro_sample: "
+            f"idx={max_gyro_sample['idx']} ts={max_gyro_sample['ts']} "
+            f"valid={max_gyro_sample['valid']} fresh={max_gyro_sample['fresh']} "
+            f"gyro={_fmt_vec(max_gyro_sample['gyro'], digits=5)} "
+            f"diag={max_gyro_sample['diag']}",
+            flush=True,
+        )
     print(f"  max_quat_angle_from_first_rad: {max_quat_angle_from_first:.6f}", flush=True)
+    if max_quat_angle_sample is not None:
+        print(
+            "  max_quat_angle_sample: "
+            f"idx={max_quat_angle_sample['idx']} ts={max_quat_angle_sample['ts']} "
+            f"valid={max_quat_angle_sample['valid']} fresh={max_quat_angle_sample['fresh']} "
+            f"quat={_fmt_vec(max_quat_angle_sample['quat'], digits=5)} "
+            f"diag={max_quat_angle_sample['diag']}",
+            flush=True,
+        )
     print(f"  max_read_s: {max_read_s:.6f}", flush=True)
     print(f"  slow_reads_over_0.2s: {slow_read_count}/{total}", flush=True)
     print(f"  very_slow_reads_over_1.0s: {very_slow_read_count}/{total}", flush=True)
