@@ -222,9 +222,15 @@ def _make_bno08x_spi_read_skip_class(base_cls):
                 channel_number = header.channel_number
                 sequence_number = header.sequence_number
 
-                self._sequence_number[channel_number] = sequence_number
                 if packet_byte_count == 0:
                     raise packet_error_cls("No packet available")
+                if packet_byte_count < 4 or channel_number >= len(self._sequence_number):
+                    raise packet_error_cls(
+                        "Invalid packet header: "
+                        f"length={packet_byte_count} channel={channel_number} seq={sequence_number}"
+                    )
+
+                self._sequence_number[channel_number] = sequence_number
 
                 self._dbg("channel %d has %d bytes available" % (channel_number, packet_byte_count - 4))
 
