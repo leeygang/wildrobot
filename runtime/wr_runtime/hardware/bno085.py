@@ -299,7 +299,10 @@ def _make_bno08x_spi_read_skip_class(base_cls):
             while True:
                 try:
                     packet = self._read_available_packet()
-                    if packet.channel_number == 1:
+                    if (
+                        packet.channel_number == 1
+                        and packet.header.packet_byte_count == 20
+                    ):
                         return
                     if time.monotonic() >= deadline_s:
                         raise packet_error_cls(
