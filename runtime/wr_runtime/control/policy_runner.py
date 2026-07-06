@@ -151,6 +151,10 @@ class RuntimePolicyRunner:
         return self._home_q_rad.copy()
 
     @property
+    def spec(self) -> PolicySpec:
+        return self._spec
+
+    @property
     def residual_scale_per_actuator(self) -> np.ndarray:
         return self._residual_scale.copy()
 
@@ -188,6 +192,11 @@ class RuntimePolicyRunner:
         phase = self._phase_service.phase_sin_cos(
             bin_idx=bin_idx, step_idx=self._state.step_idx
         )
+        obs_debug = {
+            "velocity_cmd": cmd.copy(),
+            "reference_bin_idx": int(bin_idx),
+            "phase_sin_cos": phase.copy(),
+        }
         policy_state = PolicyState(
             prev_action=np.asarray(self._state.last_applied_action, dtype=np.float32)
         )
@@ -202,6 +211,7 @@ class RuntimePolicyRunner:
         )
         # Promote AFTER reading proprio_history (env 1-iteration lag).
         self._state.proprio_history = self._state.pending_history
+        self._last_obs_debug = obs_debug
         return obs
 
     def compose_and_apply(self, raw_action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -335,6 +345,7 @@ class RuntimePolicyRunner:
             "signals": signals,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
+            "obs_debug": dict(getattr(self, "_last_obs_debug", {})),
         }
 
 

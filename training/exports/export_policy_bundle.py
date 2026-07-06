@@ -46,7 +46,11 @@ def export_policy_bundle(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     onnx_path = output_dir / "policy.onnx"
-    export_checkpoint_to_onnx(checkpoint_path=checkpoint_path, output_path=onnx_path)
+    export_checkpoint_to_onnx(
+        checkpoint_path=checkpoint_path,
+        output_path=onnx_path,
+        activation=_actor_activation_from_config(config_path),
+    )
     checkpoint_snapshot_path = _export_checkpoint_snapshot(
         checkpoint_path=checkpoint_path, output_dir=output_dir
     )
@@ -485,6 +489,18 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"YAML did not parse to dict: {path}")
     return data
+
+
+def _actor_activation_from_config(config_path: Path) -> str:
+    config = _load_yaml(config_path)
+    networks = config.get("networks")
+    if not isinstance(networks, dict):
+        return "elu"
+    actor = networks.get("actor")
+    if not isinstance(actor, dict):
+        return "elu"
+    activation = actor.get("activation")
+    return str(activation) if activation else "elu"
 
 
 def _require_dict(data: Dict[str, Any], key: str, *, context: str) -> Dict[str, Any]:

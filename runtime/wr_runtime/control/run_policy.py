@@ -33,6 +33,7 @@ from typing import List, Optional, Sequence, TextIO
 
 import numpy as np
 
+from policy_contract.calib import NumpyCalibOps
 from policy_contract.spec import PolicyBundle, validate_spec
 
 from wr_runtime.inference.onnx_policy import OnnxPolicy
@@ -345,6 +346,92 @@ def _format_foot_switches(info: dict) -> str:
         return ""
     values = [int(round(float(v))) for v in switches]
     return f"fs=[LT={values[0]},LH={values[1]},RT={values[2]},RH={values[3]}]"
+
+
+def _format_policy_diagnostics(
+    *,
+    info: dict,
+    actuator_names: Optional[List[str]],
+    leg_indices: List[int],
+    spec,
+) -> str:
+    raw = np.asarray(info.get("raw_action", []), dtype=np.float32).reshape(-1)
+    applied = np.asarray(info.get("applied_action", []), dtype=np.float32).reshape(-1)
+    if raw.size == 0:
+        return ""
+
+    parts = [f"|raw|max={float(np.max(np.abs(raw))):.3f}"]
+    if leg_indices:
+        parts.append(f"leg|raw|max={float(np.max(np.abs(raw[leg_indices]))):.3f}")
+        parts.append(_format_lr_action_delta("raw_lr", raw, actuator_names))
+        if applied.size == raw.size:
+            parts.append(_format_lr_action_delta("applied_lr", applied, actuator_names))
+
+    obs_debug = info.get("obs_debug")
+    if isinstance(obs_debug, dict):
+        cmd = np.asarray(obs_debug.get("velocity_cmd", []), dtype=np.float32).reshape(-1)
+        phase = np.asarray(
+            obs_debug.get("phase_sin_cos", []), dtype=np.float32
+        ).reshape(-1)
+        bin_idx = obs_debug.get("reference_bin_idx")
+        if cmd.size:
+            parts.append(f"obs_cmd={np.round(cmd, 3).tolist()}")
+        if bin_idx is not None:
+            parts.append(f"ref_bin={bin_idx}")
+        if phase.size == 2:
+            parts.append(f"phase={np.round(phase, 3).tolist()}")
+
+    signals = info.get("signals")
+    if signals is not None and actuator_names:
+        try:
+            joint_vel_norm = np.asarray(
+                NumpyCalibOps.normalize_joint_vel(
+                    spec=spec,
+                    joint_vel_rad_s=signals.joint_vel_rad_s,
+                ),
+                dtype=np.float32,
+            ).reshape(-1)
+        except Exception:
+            joint_vel_norm = np.asarray([], dtype=np.float32)
+        if joint_vel_norm.size:
+            parts.append(f"jvel_norm|max={float(np.max(np.abs(joint_vel_norm))):.3f}")
+            if leg_indices:
+                parts.append(
+                    f"leg_jvel_norm|max="
+                    f"{float(np.max(np.abs(joint_vel_norm[leg_indices]))):.3f}"
+                )
+        gyro = np.asarray(signals.gyro_rad_s, dtype=np.float32).reshape(-1)
+        if gyro.size == 3:
+            parts.append(f"gyro={np.round(gyro, 4).tolist()}")
+
+    return "diag[" + " ".join(p for p in parts if p) + "]"
+
+
+def _format_lr_action_delta(
+    label: str,
+    action: np.ndarray,
+    actuator_names: Optional[List[str]],
+) -> str:
+    if not actuator_names:
+        return ""
+    by_name = {name: idx for idx, name in enumerate(actuator_names)}
+    pairs = (
+        ("HP", "left_hip_pitch", "right_hip_pitch"),
+        ("HR", "left_hip_roll", "right_hip_roll"),
+        ("K", "left_knee_pitch", "right_knee_pitch"),
+        ("AP", "left_ankle_pitch", "right_ankle_pitch"),
+        ("AR", "left_ankle_roll", "right_ankle_roll"),
+    )
+    parts = []
+    for short, left_name, right_name in pairs:
+        li = by_name.get(left_name)
+        ri = by_name.get(right_name)
+        if li is None or ri is None or li >= action.size or ri >= action.size:
+            continue
+        parts.append(f"{short}={float(action[li] - action[ri]):+.3f}")
+    if not parts:
+        return ""
+    return f"{label}=[" + " ".join(parts) + "]"
 
 
 def _format_rad_deg(value_rad: float) -> str:
@@ -778,6 +865,7 @@ def run_policy_loop(
     ctrl_dt: float,
     realtime: bool,
     actuator_names: Optional[List[str]] = None,
+    diagnostic_log_policy: bool = False,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -834,6 +922,15 @@ def run_policy_loop(
                     )
                 if foot_summary:
                     extra_parts.append(foot_summary)
+                if diagnostic_log_policy:
+                    diag = _format_policy_diagnostics(
+                        info=info,
+                        actuator_names=actuator_names,
+                        leg_indices=leg_indices,
+                        spec=runner.spec,
+                    )
+                    if diag:
+                        extra_parts.append(diag)
                 servo_summary = _format_servo_step_metrics(servo_metrics)
                 if servo_summary:
                     extra_parts.append(servo_summary)
@@ -924,6 +1021,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--skip-hardware-preflight",
         action="store_true",
         help="Skip hardware preflight checks before the policy loop.",
+    )
+    parser.add_argument(
+        "--diagnostic-log-policy",
+        action="store_true",
+        help=(
+            "Append raw-action, left/right leg action deltas, selected reference "
+            "bin, phase, command, gyro, and normalized joint-velocity summaries "
+            "to each normal step log line."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -1076,6 +1182,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             ctrl_dt=ctrl_dt,
             realtime=realtime,
             actuator_names=actuator_names,
+            diagnostic_log_policy=bool(args.diagnostic_log_policy),
         )
     finally:
         try:

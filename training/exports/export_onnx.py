@@ -108,7 +108,54 @@ def get_checkpoint_dims(checkpoint_path: Path) -> tuple[int, int]:
     return obs_dim, action_dim
 
 
-def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
+def _checkpoint_actor_activation(ckpt: Dict[str, Any]) -> str | None:
+    config = ckpt.get("config")
+    if not isinstance(config, dict):
+        return None
+
+    networks = config.get("networks")
+    if isinstance(networks, dict):
+        actor = networks.get("actor")
+        if isinstance(actor, dict) and actor.get("activation"):
+            return str(actor["activation"])
+
+    for key in ("actor_activation", "network_activation", "activation"):
+        value = config.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _add_activation_nodes(nodes, helper, *, activation: str, input_name: str, output_name: str) -> str:
+    act = activation.strip().lower().replace("_", "")
+    if act in {"silu", "swish"}:
+        sig = f"{output_name}_sig"
+        nodes.append(helper.make_node("Sigmoid", inputs=[input_name], outputs=[sig]))
+        nodes.append(helper.make_node("Mul", inputs=[input_name, sig], outputs=[output_name]))
+        return output_name
+    if act == "elu":
+        nodes.append(helper.make_node("Elu", inputs=[input_name], outputs=[output_name], alpha=1.0))
+        return output_name
+    if act == "relu":
+        nodes.append(helper.make_node("Relu", inputs=[input_name], outputs=[output_name]))
+        return output_name
+    if act == "tanh":
+        nodes.append(helper.make_node("Tanh", inputs=[input_name], outputs=[output_name]))
+        return output_name
+    if act in {"linear", "identity", "none"}:
+        return input_name
+    raise ValueError(
+        f"Unsupported actor activation for ONNX export: {activation!r}. "
+        "Supported: elu, silu/swish, relu, tanh, linear."
+    )
+
+
+def export_checkpoint_to_onnx(
+    checkpoint_path: Path,
+    output_path: Path,
+    *,
+    activation: str | None = None,
+) -> None:
     try:
         import onnx
         from onnx import TensorProto, helper
@@ -127,6 +174,7 @@ def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
         raise ValueError("Expected checkpoint['policy_params'] to be a dict.")
 
     layers = _extract_mlp_layers(policy_params)
+    hidden_activation = activation or _checkpoint_actor_activation(ckpt) or "silu"
 
     obs_dim = int(layers[0][0].shape[0])
     logits_dim = int(layers[-1][1].shape[0])
@@ -156,7 +204,7 @@ def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
             )
         )
 
-    # MLP: (MatMul+Add) + SiLU for hidden layers
+    # MLP: (MatMul+Add) + training actor activation for hidden layers.
     for i, (w, b) in enumerate(layers):
         w_name = f"W{i}"
         b_name = f"b{i}"
@@ -170,12 +218,14 @@ def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
 
         is_last = i == (len(layers) - 1)
         if not is_last:
-            # SiLU(x) = x * sigmoid(x)
-            sig = f"sig{i}"
             act = f"act{i}"
-            nodes.append(helper.make_node("Sigmoid", inputs=[lin], outputs=[sig]))
-            nodes.append(helper.make_node("Mul", inputs=[lin, sig], outputs=[act]))
-            prev = act
+            prev = _add_activation_nodes(
+                nodes,
+                helper,
+                activation=hidden_activation,
+                input_name=lin,
+                output_name=act,
+            )
         else:
             prev = lin  # logits
 
@@ -242,12 +292,22 @@ def export_checkpoint_to_onnx(checkpoint_path: Path, output_path: Path) -> None:
     print(f"  output:     {output_path}")
     print(f"  obs_dim:    {obs_dim}")
     print(f"  action_dim: {action_dim}")
+    print(f"  activation: {hidden_activation}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export training PPO checkpoint to deterministic ONNX")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint .pkl")
     parser.add_argument("--output", type=str, default=None, help="Output .onnx path (default: рядом с checkpoint)")
+    parser.add_argument(
+        "--activation",
+        type=str,
+        default=None,
+        help=(
+            "Actor hidden activation override. Defaults to checkpoint metadata "
+            "when available, otherwise silu for backward compatibility."
+        ),
+    )
     args = parser.parse_args()
 
     checkpoint_path = Path(args.checkpoint)
@@ -259,7 +319,11 @@ def main() -> None:
     else:
         output_path = Path(args.output)
 
-    export_checkpoint_to_onnx(checkpoint_path=checkpoint_path, output_path=output_path)
+    export_checkpoint_to_onnx(
+        checkpoint_path=checkpoint_path,
+        output_path=output_path,
+        activation=args.activation,
+    )
 
 
 if __name__ == "__main__":
