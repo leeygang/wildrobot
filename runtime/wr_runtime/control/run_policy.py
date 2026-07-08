@@ -56,6 +56,8 @@ _LEG_LOG_JOINTS = (
 )
 
 _FOOT_SWITCH_LABELS = ("left_toe", "left_heel", "right_toe", "right_heel")
+_ANSI_YELLOW = "\033[33m"
+_ANSI_RESET = "\033[0m"
 
 
 class _LogStream:
@@ -661,10 +663,11 @@ def _run_hardware_preflight(
         robot_io=robot_io,
         require_all_footswitches=require_all_footswitches,
         errors=errors,
+        warnings=warnings,
     )
 
     for warning in warnings:
-        print(f"  WARNING: {warning}", flush=True)
+        print(f"  {_ANSI_YELLOW}WARNING: {warning}{_ANSI_RESET}", flush=True)
     if errors:
         print("Hardware preflight FAILED:", flush=True)
         for error in errors:
@@ -827,6 +830,7 @@ def _preflight_footswitches(
     robot_io,
     require_all_footswitches: bool,
     errors: List[str],
+    warnings: List[str],
 ) -> None:
     try:
         sample = robot_io.foot_switches.read()
@@ -846,14 +850,19 @@ def _preflight_footswitches(
         f"{name}={value}" for name, value in zip(_FOOT_SWITCH_LABELS, values)
     )
     print(f"  Footswitches: {states} (1=pressed, 0=open)", flush=True)
-    if require_all_footswitches:
-        open_names = [
-            name for name, value in zip(_FOOT_SWITCH_LABELS, values) if value == 0
-        ]
-        if open_names:
+    open_names = [
+        name for name, value in zip(_FOOT_SWITCH_LABELS, values) if value == 0
+    ]
+    if open_names:
+        if require_all_footswitches:
             errors.append(
                 "footswitches open at walk start: "
                 f"{open_names}; use --allow-unpressed-footswitch for suspended tests"
+            )
+        else:
+            warnings.append(
+                "initial footswitches open at walk start: "
+                f"{open_names}; continuing because unpressed footswitches are allowed"
             )
 
 
@@ -1007,10 +1016,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=3.0,
         help="Hardware only: wait this long for the first valid IMU sample before starting control.",
     )
-    parser.add_argument(
+    footswitch_group = parser.add_mutually_exclusive_group()
+    footswitch_group.add_argument(
         "--allow-unpressed-footswitch",
+        dest="allow_unpressed_footswitch",
         action="store_true",
-        help="Hardware preflight only: do not fail if one or more footswitches are open.",
+        default=True,
+        help=(
+            "Hardware preflight only: do not fail if one or more footswitches are "
+            "open (default)."
+        ),
+    )
+    footswitch_group.add_argument(
+        "--require-pressed-footswitch",
+        dest="allow_unpressed_footswitch",
+        action="store_false",
+        help="Hardware preflight only: fail if one or more footswitches are open.",
     )
     parser.add_argument(
         "--preflight-home-tolerance-deg",
