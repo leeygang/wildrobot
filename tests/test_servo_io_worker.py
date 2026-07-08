@@ -190,8 +190,32 @@ def test_worker_reads_between_continuous_target_writes():
         worker.stop()
 
     metrics = worker.get_metrics()
-    assert metrics.forced_read_after_write >= 1
+    assert metrics.forced_read_after_write >= 2
     assert metrics.latest_write_queue_latency_s >= 0.0
+
+
+def test_worker_reads_minimum_count_after_write_before_next_target():
+    raw_bus = FakeRawBus({1: 501, 2: 502, 3: 503})
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            read_groups=(ServoReadGroup(name="legs", servo_ids=(1, 2, 3)),),
+            min_reads_after_write=2,
+            idle_sleep_s=0.0001,
+        ),
+    )
+
+    worker.submit_targets_units({1: 520}, move_time_ms=20)
+    worker.start()
+    try:
+        assert _wait_until(lambda: worker.get_metrics().write_commands >= 1)
+        assert _wait_until(lambda: worker.get_metrics().forced_read_after_write >= 2)
+    finally:
+        worker.stop()
+
+    metrics = worker.get_metrics()
+    assert metrics.forced_read_after_write >= 2
+    assert len(raw_bus.reads) >= 2
 
 
 def test_worker_close_closes_transport():

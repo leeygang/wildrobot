@@ -30,6 +30,7 @@ class ServoIOWorkerConfig:
     max_read_attempts: int = 2
     retry_cache_age_s: float = 0.08
     max_cache_age_s: float = 0.25
+    min_reads_after_write: int = 2
     idle_sleep_s: float = 0.0005
     stale_log_period_s: float = 1.0
 
@@ -228,11 +229,11 @@ class ServoIOWorker:
             pass
 
     def _run(self) -> None:
-        force_read_after_write = False
+        reads_after_write_remaining = 0
         while not self._stop.is_set():
-            if force_read_after_write:
-                force_read_after_write = False
+            if reads_after_write_remaining > 0:
                 if self._read_next_available():
+                    reads_after_write_remaining -= 1
                     with self._lock:
                         self._metrics = replace(
                             self._metrics,
@@ -241,6 +242,7 @@ class ServoIOWorker:
                             ),
                         )
                     continue
+                reads_after_write_remaining = 0
                 with self._lock:
                     self._metrics = replace(
                         self._metrics,
@@ -252,7 +254,9 @@ class ServoIOWorker:
             target = self._pop_pending_target()
             if target is not None:
                 self._write_target(target)
-                force_read_after_write = True
+                reads_after_write_remaining = max(
+                    0, int(self.config.min_reads_after_write)
+                )
                 continue
 
             if self._read_next_available():
