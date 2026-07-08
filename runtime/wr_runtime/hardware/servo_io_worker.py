@@ -55,6 +55,7 @@ class ServoIOMetrics:
     write_commands: int = 0
     write_commands_skipped: int = 0
     write_failures: int = 0
+    cache_deadline_reads: int = 0
     forced_read_after_write: int = 0
     forced_read_after_write_missed: int = 0
     read_success: int = 0
@@ -71,6 +72,8 @@ class ServoIOWorker:
     The worker accepts latest-wins target writes and otherwise polls one servo
     position at a time into a full cache.
     """
+
+    _CACHE_DEADLINE_READ_FRACTION = 0.70
 
     def __init__(
         self,
@@ -95,6 +98,9 @@ class ServoIOWorker:
         self.servo_ids = tuple(servo_ids)
         self._id_to_index = {sid: i for i, sid in enumerate(self.servo_ids)}
         self._group_for_servo = self._build_group_for_servo(self._read_groups)
+        self._max_cache_age_by_servo = self._build_max_cache_age_by_servo(
+            self.servo_ids, self._read_groups, config
+        )
 
         n = len(self.servo_ids)
         self._position_units = np.full(n, np.nan, dtype=np.float32)
@@ -161,6 +167,21 @@ class ServoIOWorker:
             for sid in group.servo_ids:
                 group_for_servo.setdefault(int(sid), group)
         return group_for_servo
+
+    @staticmethod
+    def _build_max_cache_age_by_servo(
+        servo_ids: Sequence[int],
+        read_groups: Sequence[ServoReadGroup],
+        config: ServoIOWorkerConfig,
+    ) -> dict[int, float]:
+        max_age_by_servo = {int(sid): float(config.max_cache_age_s) for sid in servo_ids}
+        for group in read_groups:
+            if group.max_cache_age_s is None:
+                continue
+            max_age_s = float(group.max_cache_age_s)
+            for sid in group.servo_ids:
+                max_age_by_servo[int(sid)] = max_age_s
+        return max_age_by_servo
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -332,6 +353,18 @@ class ServoIOWorker:
 
     def _next_servo_to_read(self) -> tuple[int | None, str | None]:
         with self._lock:
+            deadline_servo_id = self._next_deadline_servo_to_read_locked(time.monotonic())
+            if deadline_servo_id is not None:
+                self._retry_queue = [
+                    sid for sid in self._retry_queue if int(sid) != int(deadline_servo_id)
+                ]
+                group = self._group_for_servo.get(deadline_servo_id)
+                self._advance_group_offset_after_servo(deadline_servo_id, group)
+                self._metrics = replace(
+                    self._metrics,
+                    cache_deadline_reads=self._metrics.cache_deadline_reads + 1,
+                )
+                return deadline_servo_id, group.name if group else None
             if self._retry_queue:
                 servo_id = self._retry_queue.pop(0)
                 group = self._group_for_servo.get(servo_id)
@@ -350,6 +383,34 @@ class ServoIOWorker:
             self._group_offsets[group.name] = offset + 1
             return int(group.servo_ids[offset]), group.name
         return None, None
+
+    def _next_deadline_servo_to_read_locked(self, now_s: float) -> int | None:
+        best_servo_id: int | None = None
+        best_score = 0.0
+        threshold = float(self._CACHE_DEADLINE_READ_FRACTION)
+        for servo_id, idx in self._id_to_index.items():
+            last_update_s = float(self._last_update_time_s[idx])
+            if not math.isfinite(last_update_s):
+                continue
+            max_age_s = float(self._max_cache_age_by_servo.get(int(servo_id), self.config.max_cache_age_s))
+            if max_age_s <= 0.0:
+                continue
+            score = max(0.0, (float(now_s) - last_update_s) / max_age_s)
+            if score >= threshold and score > best_score:
+                best_score = score
+                best_servo_id = int(servo_id)
+        return best_servo_id
+
+    def _advance_group_offset_after_servo(
+        self, servo_id: int, group: ServoReadGroup | None
+    ) -> None:
+        if group is None or not group.servo_ids:
+            return
+        try:
+            idx = tuple(int(sid) for sid in group.servo_ids).index(int(servo_id))
+        except ValueError:
+            return
+        self._group_offsets[group.name] = idx + 1
 
     def _read_one(self, servo_id: int, group_name: str | None) -> None:
         start_s = time.monotonic()

@@ -676,6 +676,7 @@ def _print_timing_summary(
                 "  Servo worker sampled delta: "
                 f"reads={_metric_delta(first_metrics, last_metrics, 'servo_read_count')} "
                 f"read_fail={_metric_delta(first_metrics, last_metrics, 'servo_read_fail_count')} "
+                f"deadline_reads={_metric_delta(first_metrics, last_metrics, 'servo_cache_deadline_reads')} "
                 f"forced_reads={_metric_delta(first_metrics, last_metrics, 'servo_forced_read_after_write')} "
                 f"forced_missed={_metric_delta(first_metrics, last_metrics, 'servo_forced_read_after_write_missed')} "
                 f"targets={_metric_delta(first_metrics, last_metrics, 'servo_write_targets_submitted')} "

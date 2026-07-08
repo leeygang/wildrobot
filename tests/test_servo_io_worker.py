@@ -218,6 +218,30 @@ def test_worker_reads_minimum_count_after_write_before_next_target():
     assert len(raw_bus.reads) >= 2
 
 
+def test_worker_prioritizes_servo_near_cache_deadline():
+    raw_bus = FakeRawBus({1: 501, 2: 502, 21: 521})
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            read_groups=(
+                ServoReadGroup(name="leg", servo_ids=(1, 2), max_cache_age_s=0.16),
+                ServoReadGroup(name="arm", servo_ids=(21,), max_cache_age_s=1.25),
+            ),
+            read_group_schedule=("arm", "leg"),
+        ),
+    )
+    now = time.monotonic()
+    worker._last_update_time_s[worker._id_to_index[1]] = now - 0.13
+    worker._last_update_time_s[worker._id_to_index[2]] = now - 0.01
+    worker._last_update_time_s[worker._id_to_index[21]] = now - 0.01
+
+    servo_id, group_name = worker._next_servo_to_read()
+
+    assert servo_id == 1
+    assert group_name == "leg"
+    assert worker.get_metrics().cache_deadline_reads == 1
+
+
 def test_worker_close_closes_transport():
     raw_bus = FakeRawBus({3: 501})
     worker = ServoIOWorker(

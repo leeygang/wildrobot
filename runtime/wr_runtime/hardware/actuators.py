@@ -181,7 +181,7 @@ class HiwonderBoardActuators(Actuators):
         return f"group_{group_idx}"
 
     def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
-        defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
+        defaults = {"leg": 0.12, "arm": 1.25, "wrist": 1.25, "default": 1.25}
         merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
         age_limits = []
         for name in self.actuator_names:
@@ -773,6 +773,7 @@ class HiwonderCachedActuators(Actuators):
             "servo_write_commands_skipped": int(metrics.write_commands_skipped),
             "servo_write_deadband_units": write_deadband_units,
             "servo_write_failures": int(metrics.write_failures),
+            "servo_cache_deadline_reads": int(metrics.cache_deadline_reads),
             "servo_forced_read_after_write": int(metrics.forced_read_after_write),
             "servo_forced_read_after_write_missed": int(
                 metrics.forced_read_after_write_missed
