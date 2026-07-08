@@ -505,7 +505,8 @@ def _format_step_timing(timing_s: dict) -> str:
         f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))} "
         f"worker_write_ms={_format_ms(timing_s.get('io_servo_latest_write_latency_s'))} "
         f"worker_read_ms={_format_ms(timing_s.get('io_servo_latest_read_latency_s'))} "
-        f"servo_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_max_s'))}]"
+        f"servo_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_max_s'))} "
+        f"leg_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_leg_max_s'))}]"
     )
 
 

@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 
 from runtime.wr_runtime.hardware.servo_io_worker import (
@@ -17,17 +18,20 @@ class FakeTransport:
 
 
 class FakeRawBus:
-    def __init__(self, positions):
+    def __init__(self, positions, *, write_sleep_s=0.0):
         self.positions = dict(positions)
         self.writes = []
         self.reads = []
         self.transport = FakeTransport()
+        self.write_sleep_s = float(write_sleep_s)
 
     def read_position(self, servo_id: int):
         self.reads.append(int(servo_id))
         return self.positions.get(int(servo_id))
 
     def move_time_write(self, servo_id: int, position: int, time_ms: int):
+        if self.write_sleep_s > 0.0:
+            time.sleep(self.write_sleep_s)
         self.writes.append((int(servo_id), int(position), int(time_ms)))
 
 
@@ -150,6 +154,40 @@ def test_worker_skips_target_within_write_deadband():
     assert metrics.write_targets_submitted == 3
     assert metrics.write_commands == 2
     assert metrics.write_commands_skipped == 1
+
+
+def test_worker_reads_between_continuous_target_writes():
+    raw_bus = FakeRawBus({1: 501, 2: 502}, write_sleep_s=0.002)
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            read_groups=(ServoReadGroup(name="legs", servo_ids=(1, 2)),),
+            idle_sleep_s=0.0001,
+        ),
+    )
+    stop_spam = threading.Event()
+
+    def spam_targets():
+        i = 0
+        while not stop_spam.is_set():
+            worker.submit_targets_units(
+                {1: 520 + (i % 20), 2: 620 + (i % 20)},
+                move_time_ms=20,
+            )
+            i += 1
+            time.sleep(0.0001)
+
+    worker.submit_targets_units({1: 520, 2: 620}, move_time_ms=20)
+    spam_thread = threading.Thread(target=spam_targets)
+    spam_thread.start()
+    worker.start()
+    try:
+        assert _wait_until(lambda: worker.get_metrics().write_commands >= 4)
+        assert _wait_until(lambda: worker.get_metrics().read_success >= 1)
+    finally:
+        stop_spam.set()
+        spam_thread.join(timeout=0.5)
+        worker.stop()
 
 
 def test_worker_close_closes_transport():

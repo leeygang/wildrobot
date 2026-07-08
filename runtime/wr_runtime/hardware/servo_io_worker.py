@@ -225,19 +225,31 @@ class ServoIOWorker:
             pass
 
     def _run(self) -> None:
+        force_read_after_write = False
         while not self._stop.is_set():
+            if force_read_after_write:
+                force_read_after_write = False
+                if self._read_next_available():
+                    continue
+
             target = self._pop_pending_target()
             if target is not None:
                 self._write_target(target)
+                force_read_after_write = True
                 continue
 
-            servo_id, group_name = self._next_servo_to_read()
-            if servo_id is not None:
-                self._read_one(servo_id, group_name)
+            if self._read_next_available():
                 continue
 
             self._wake.wait(timeout=max(0.0, float(self.config.idle_sleep_s)))
             self._wake.clear()
+
+    def _read_next_available(self) -> bool:
+        servo_id, group_name = self._next_servo_to_read()
+        if servo_id is None:
+            return False
+        self._read_one(servo_id, group_name)
+        return True
 
     def _pop_pending_target(self) -> tuple[dict[int, int], int, float] | None:
         with self._lock:
