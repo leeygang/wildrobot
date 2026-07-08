@@ -363,6 +363,9 @@ def _format_policy_diagnostics(
         return ""
 
     parts = [f"|raw|max={float(np.max(np.abs(raw))):.3f}"]
+    control_mode = info.get("control_mode")
+    if control_mode:
+        parts.append(f"mode={control_mode}")
     if leg_indices:
         parts.append(f"leg|raw|max={float(np.max(np.abs(raw[leg_indices]))):.3f}")
         parts.append(_format_lr_action_delta("raw_lr", raw, actuator_names))
@@ -1117,6 +1120,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             "to each normal step log line."
         ),
     )
+    parser.add_argument(
+        "--zero-cmd-hold-home-deadzone",
+        type=float,
+        default=1e-6,
+        help=(
+            "Hold the bundled home pose instead of running the walking policy when "
+            "all velocity command components are within this absolute value "
+            "(default: 1e-6)."
+        ),
+    )
+    parser.add_argument(
+        "--disable-zero-cmd-hold-home",
+        action="store_true",
+        help=(
+            "Run the walking policy even for a zero velocity command. Use this only "
+            "for policy debugging; the default matches the safe stand behavior."
+        ),
+    )
     args = parser.parse_args(argv)
 
     log_path = args.log if args.log is not None else args.log_only
@@ -1250,13 +1271,19 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         runtime_config=runtime_config,
         policy=policy,
         robot_io=robot_io,
+        zero_cmd_hold_home_deadzone=(
+            None
+            if bool(args.disable_zero_cmd_hold_home)
+            else max(0.0, float(args.zero_cmd_hold_home_deadzone))
+        ),
     )
 
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
         f"| residual_base={runtime_config.loc_ref_residual_base} "
         f"| control_hz={runtime_config.control_hz:.1f} "
-        f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run}",
+        f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
+        f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)}",
         flush=True,
     )
     try:

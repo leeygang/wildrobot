@@ -66,6 +66,7 @@ class RuntimePolicyRunner:
         runtime_config: RuntimePolicyConfig,
         policy,
         robot_io,
+        zero_cmd_hold_home_deadzone: float | None = None,
     ) -> None:
         layout = spec.observation.layout_id
         if layout != _SUPPORTED_LAYOUT:
@@ -85,6 +86,7 @@ class RuntimePolicyRunner:
         self._cfg = runtime_config
         self._policy = policy
         self._robot_io = robot_io
+        self._zero_cmd_hold_home_deadzone = zero_cmd_hold_home_deadzone
         self._action_dim = int(spec.model.action_dim)
         self._bundle_size = 3 + 4 + 3 * self._action_dim
 
@@ -253,6 +255,16 @@ class RuntimePolicyRunner:
         self._state.last_applied_action = applied
         return target_q, applied
 
+    def hold_home_step(self) -> tuple[np.ndarray, np.ndarray]:
+        """Advance runtime state while commanding the policy home pose."""
+        zeros = np.zeros(self._action_dim, dtype=np.float32)
+        self._state.step_idx = min(
+            self._state.step_idx + 1, self._phase_service.n_steps - 1
+        )
+        self._state.pending_action = zeros.copy()
+        self._state.last_applied_action = zeros.copy()
+        return self._home_q_rad.copy(), zeros
+
     def roll_history(self, signals: Signals) -> None:
         """Build the per-step proprio bundle from POST-physics signals and the
         action APPLIED this step, then roll it into ``pending_history``.
@@ -306,11 +318,19 @@ class RuntimePolicyRunner:
         obs_s = time.monotonic() - obs_t0
 
         policy_t0 = time.monotonic()
-        raw = np.asarray(self._policy.predict(obs), dtype=np.float32).reshape(-1)
+        if self._should_hold_home_for_cmd(velocity_cmd):
+            raw = np.zeros(self._action_dim, dtype=np.float32)
+            control_mode = "zero_cmd_hold_home"
+        else:
+            raw = np.asarray(self._policy.predict(obs), dtype=np.float32).reshape(-1)
+            control_mode = "policy"
         policy_s = time.monotonic() - policy_t0
 
         compose_t0 = time.monotonic()
-        target_q, applied = self.compose_and_apply(raw)
+        if control_mode == "zero_cmd_hold_home":
+            target_q, applied = self.hold_home_step()
+        else:
+            target_q, applied = self.compose_and_apply(raw)
         compose_s = time.monotonic() - compose_t0
 
         write_t0 = time.monotonic()
@@ -343,10 +363,18 @@ class RuntimePolicyRunner:
             "applied_action": applied,
             "target_q_rad": target_q,
             "signals": signals,
+            "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
             "obs_debug": dict(getattr(self, "_last_obs_debug", {})),
         }
+
+    def _should_hold_home_for_cmd(self, velocity_cmd: np.ndarray) -> bool:
+        threshold = self._zero_cmd_hold_home_deadzone
+        if threshold is None:
+            return False
+        cmd = _as_three_vec(velocity_cmd)
+        return bool(float(np.max(np.abs(cmd))) <= float(threshold))
 
 
 def _as_three_vec(velocity_cmd: np.ndarray) -> np.ndarray:

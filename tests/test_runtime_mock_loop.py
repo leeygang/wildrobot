@@ -44,6 +44,21 @@ class _FailsAfterFirstPolicy:
         return np.zeros(self._n, dtype=np.float32)
 
 
+class _CountingPolicy:
+    def __init__(self, action_dim: int) -> None:
+        self._n = action_dim
+        self.calls = 0
+
+    def predict(self, obs):
+        self.calls += 1
+        return np.full(self._n, 0.1, dtype=np.float32)
+
+
+class _PolicyMustNotRun:
+    def predict(self, obs):
+        raise AssertionError("zero command should hold home without policy predict")
+
+
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
     action_dim = v8_spec.model.action_dim
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
@@ -184,6 +199,57 @@ def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):
     assert set(["read", "obs", "policy", "compose", "write", "step"]).issubset(
         info["timing_s"]
     )
+
+
+def test_zero_command_holds_home_without_policy_predict(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_PolicyMustNotRun(),
+        robot_io=robot_io,
+        zero_cmd_hold_home_deadzone=1e-6,
+    )
+
+    info = runner.step(np.array([0.0, 0.0, 0.0], dtype=np.float32))
+
+    assert info["control_mode"] == "zero_cmd_hold_home"
+    np.testing.assert_allclose(info["raw_action"], 0.0, atol=1e-6)
+    np.testing.assert_allclose(info["applied_action"], 0.0, atol=1e-6)
+    np.testing.assert_allclose(info["target_q_rad"], runner.home_q_rad, atol=1e-6)
+    np.testing.assert_allclose(robot_io.written[-1], runner.home_q_rad, atol=1e-6)
+
+
+def test_nonzero_command_uses_policy_with_zero_hold_enabled(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+        zero_cmd_hold_home_deadzone=1e-6,
+    )
+
+    info = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
+
+    assert info["control_mode"] == "policy"
+    assert policy.calls == 1
+    np.testing.assert_allclose(info["raw_action"], 0.1, atol=1e-6)
 
 
 class _BadShapePolicy:
