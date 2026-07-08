@@ -132,19 +132,37 @@ def test_timing_summary_prints_servo_cache_metrics(capsys):
                 "io_servo_read_fail_count": 1,
                 "io_servo_cache_stale_joint_count": 0,
                 "io_servo_cache_uninitialized_count": 0,
+                "io_servo_latest_write_queue_latency_s": 0.001,
+                "io_servo_latest_write_latency_s": 0.002,
+                "io_servo_latest_read_latency_s": 0.003,
             }
         ],
         ctrl_dt=0.02,
         realtime=True,
         servo_metric_samples=[
-            {"servo_read_group": "left_leg", "servo_read_ids": [1, 2, 3, 4, 9]}
+            {
+                "servo_read_group": "left_leg",
+                "servo_read_ids": [1, 2, 3, 4, 9],
+                "servo_read_count": 5,
+                "servo_read_fail_count": 1,
+                "servo_forced_read_after_write": 2,
+                "servo_forced_read_after_write_missed": 0,
+                "servo_write_targets_submitted": 4,
+                "servo_write_targets_replaced": 1,
+                "servo_write_commands": 3,
+                "servo_write_commands_skipped": 2,
+                "servo_write_failures": 0,
+            }
         ],
     )
 
     out = capsys.readouterr().out
+    assert "IO bottleneck p95/max ms" in out
     assert "Servo cache avg/p95/max ms" in out
     assert "Servo read/cache summary" in out
+    assert "Servo worker sampled delta" in out
     assert "last_group=left_leg" in out
+    assert "queue_ms_avg/p95/max" in out
 
 
 def test_mock_loop_first_ctrl_is_home(v8_spec, runtime_policy_config):

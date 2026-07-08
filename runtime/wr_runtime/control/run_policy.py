@@ -505,6 +505,7 @@ def _format_step_timing(timing_s: dict) -> str:
         f"write_ms={_format_ms(timing_s.get('write'))} "
         f"servo_read_ms={_format_ms(timing_s.get('io_actuator_read'))} "
         f"servo_write_ms={_format_ms(timing_s.get('io_write_ctrl'))} "
+        f"worker_queue_ms={_format_ms(timing_s.get('io_servo_latest_write_queue_latency_s'))} "
         f"worker_write_ms={_format_ms(timing_s.get('io_servo_latest_write_latency_s'))} "
         f"worker_read_ms={_format_ms(timing_s.get('io_servo_latest_read_latency_s'))} "
         f"servo_cache_age_ms={_format_ms(timing_s.get('io_servo_cache_age_max_s'))} "
@@ -528,6 +529,48 @@ def _format_servo_step_metrics(metrics: dict | None) -> str:
         f"[group={group} ids={ids} age_ms={_format_ms(age_s)} "
         f"stale={stale} uninit={uninit} "
         f"writes={write_commands} skipped={write_skipped} deadband={write_deadband}]"
+    )
+
+
+def _metric_delta(first: dict, last: dict, key: str) -> int | None:
+    try:
+        return int(last.get(key, 0)) - int(first.get(key, 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _print_io_bottleneck_summary(timing_samples: List[dict]) -> None:
+    components = [
+        ("imu", "io_imu_read"),
+        ("servo_read", "io_actuator_read"),
+        ("footswitch", "io_footswitch_read"),
+        ("signal_build", "io_signal_build"),
+        ("servo_write", "io_write_ctrl"),
+        ("worker_queue", "io_servo_latest_write_queue_latency_s"),
+        ("worker_write", "io_servo_latest_write_latency_s"),
+        ("worker_read", "io_servo_latest_read_latency_s"),
+        ("read_total", "io_read_total"),
+    ]
+    ranked: list[tuple[float, str, float | None, float | None]] = []
+    for label, key in components:
+        p95_s = _timing_percentile(timing_samples, key, 95.0)
+        max_s = _timing_max(timing_samples, key)
+        if p95_s is None and max_s is None:
+            continue
+        score = max_s if max_s is not None and np.isfinite(max_s) else p95_s
+        if score is None or not np.isfinite(score):
+            continue
+        ranked.append((float(score), label, p95_s, max_s))
+    if not ranked:
+        return
+    ranked.sort(reverse=True)
+    fields = [
+        f"{label}={_format_ms(p95_s)}/{_format_ms(max_s)}"
+        for _, label, p95_s, max_s in ranked[:5]
+    ]
+    print(
+        "  IO bottleneck p95/max ms: " + " ".join(fields),
+        flush=True,
     )
 
 
@@ -594,9 +637,11 @@ def _print_timing_summary(
         f"{_format_ms(_timing_max(timing_samples, 'io_write_ctrl'))}",
         flush=True,
     )
+    _print_io_bottleneck_summary(timing_samples)
     servo_metric_samples = servo_metric_samples or []
     if servo_metric_samples or _timing_values(timing_samples, "io_servo_cache_age_max_s"):
         last_metrics = servo_metric_samples[-1] if servo_metric_samples else {}
+        first_metrics = servo_metric_samples[0] if servo_metric_samples else {}
         print(
             "  Servo cache avg/p95/max ms: "
             f"all={_format_ms(_timing_avg(timing_samples, 'io_servo_cache_age_max_s'))}/"
@@ -626,6 +671,24 @@ def _print_timing_summary(
             f"write_replaced={last_metrics.get('servo_write_targets_replaced')}",
             flush=True,
         )
+        if servo_metric_samples:
+            print(
+                "  Servo worker sampled delta: "
+                f"reads={_metric_delta(first_metrics, last_metrics, 'servo_read_count')} "
+                f"read_fail={_metric_delta(first_metrics, last_metrics, 'servo_read_fail_count')} "
+                f"forced_reads={_metric_delta(first_metrics, last_metrics, 'servo_forced_read_after_write')} "
+                f"forced_missed={_metric_delta(first_metrics, last_metrics, 'servo_forced_read_after_write_missed')} "
+                f"targets={_metric_delta(first_metrics, last_metrics, 'servo_write_targets_submitted')} "
+                f"replaced={_metric_delta(first_metrics, last_metrics, 'servo_write_targets_replaced')} "
+                f"write_cmd={_metric_delta(first_metrics, last_metrics, 'servo_write_commands')} "
+                f"write_skipped={_metric_delta(first_metrics, last_metrics, 'servo_write_commands_skipped')} "
+                f"write_fail={_metric_delta(first_metrics, last_metrics, 'servo_write_failures')} "
+                f"queue_ms_avg/p95/max="
+                f"{_format_ms(_timing_avg(timing_samples, 'io_servo_latest_write_queue_latency_s'))}/"
+                f"{_format_ms(_timing_percentile(timing_samples, 'io_servo_latest_write_queue_latency_s', 95.0))}/"
+                f"{_format_ms(_timing_max(timing_samples, 'io_servo_latest_write_queue_latency_s'))}",
+                flush=True,
+            )
 
 
 def _run_hardware_preflight(

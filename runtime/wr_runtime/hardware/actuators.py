@@ -773,6 +773,13 @@ class HiwonderCachedActuators(Actuators):
             "servo_write_commands_skipped": int(metrics.write_commands_skipped),
             "servo_write_deadband_units": write_deadband_units,
             "servo_write_failures": int(metrics.write_failures),
+            "servo_forced_read_after_write": int(metrics.forced_read_after_write),
+            "servo_forced_read_after_write_missed": int(
+                metrics.forced_read_after_write_missed
+            ),
+            "servo_latest_write_queue_latency_s": float(
+                metrics.latest_write_queue_latency_s
+            ),
             "servo_latest_write_latency_s": float(metrics.latest_write_latency_s),
             "servo_latest_read_latency_s": float(metrics.latest_read_latency_s),
         }

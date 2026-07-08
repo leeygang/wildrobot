@@ -54,9 +54,12 @@ class ServoIOMetrics:
     write_commands: int = 0
     write_commands_skipped: int = 0
     write_failures: int = 0
+    forced_read_after_write: int = 0
+    forced_read_after_write_missed: int = 0
     read_success: int = 0
     read_failures: int = 0
     stale_cache_errors: int = 0
+    latest_write_queue_latency_s: float = 0.0
     latest_write_latency_s: float = 0.0
     latest_read_latency_s: float = 0.0
 
@@ -230,7 +233,21 @@ class ServoIOWorker:
             if force_read_after_write:
                 force_read_after_write = False
                 if self._read_next_available():
+                    with self._lock:
+                        self._metrics = replace(
+                            self._metrics,
+                            forced_read_after_write=(
+                                self._metrics.forced_read_after_write + 1
+                            ),
+                        )
                     continue
+                with self._lock:
+                    self._metrics = replace(
+                        self._metrics,
+                        forced_read_after_write_missed=(
+                            self._metrics.forced_read_after_write_missed + 1
+                        ),
+                    )
 
             target = self._pop_pending_target()
             if target is not None:
@@ -258,8 +275,9 @@ class ServoIOWorker:
             return target
 
     def _write_target(self, target: tuple[dict[int, int], int, float]) -> None:
-        positions_by_servo_id, move_time_ms, _submitted_s = target
+        positions_by_servo_id, move_time_ms, submitted_s = target
         start_s = time.monotonic()
+        queue_latency_s = max(0.0, start_s - float(submitted_s))
         write_commands = 0
         write_commands_skipped = 0
         write_failures = 0
@@ -304,6 +322,7 @@ class ServoIOWorker:
                 write_commands=self._metrics.write_commands + write_commands,
                 write_commands_skipped=self._metrics.write_commands_skipped + write_commands_skipped,
                 write_failures=self._metrics.write_failures + write_failures,
+                latest_write_queue_latency_s=queue_latency_s,
                 latest_write_latency_s=latency_s,
             )
 

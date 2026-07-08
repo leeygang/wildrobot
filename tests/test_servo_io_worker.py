@@ -189,6 +189,10 @@ def test_worker_reads_between_continuous_target_writes():
         spam_thread.join(timeout=0.5)
         worker.stop()
 
+    metrics = worker.get_metrics()
+    assert metrics.forced_read_after_write >= 1
+    assert metrics.latest_write_queue_latency_s >= 0.0
+
 
 def test_worker_close_closes_transport():
     raw_bus = FakeRawBus({3: 501})
