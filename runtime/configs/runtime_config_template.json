@@ -214,9 +214,9 @@
     ],
     "max_cache_age_s": {
       "leg": 0.16,
-      "arm": 0.75,
-      "wrist": 1.0,
-      "default": 0.75
+      "arm": 1.25,
+      "wrist": 1.25,
+      "default": 1.25
     }
   },
   "bno085": {

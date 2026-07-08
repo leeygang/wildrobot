@@ -304,7 +304,7 @@ def _group_cache_age_limit_s(
         key = "arm"
     else:
         key = "default"
-    defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
+    defaults = {"leg": 0.12, "arm": 1.25, "wrist": 1.25, "default": 1.25}
     return float(max_cache_age_s.get(key, max_cache_age_s.get("default", defaults[key])))
 
 

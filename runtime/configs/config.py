@@ -431,9 +431,9 @@ class ServoReadScheduleConfig:
     max_cache_age_s: Dict[str, float] = field(
         default_factory=lambda: {
             "leg": 0.12,
-            "arm": 0.75,
-            "wrist": 1.00,
-            "default": 0.75,
+            "arm": 1.25,
+            "wrist": 1.25,
+            "default": 1.25,
         }
     )
 
