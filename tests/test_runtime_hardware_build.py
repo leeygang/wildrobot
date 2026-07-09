@@ -677,3 +677,59 @@ def test_hardware_preflight_warns_on_open_footswitch_when_allowed(capsys) -> Non
     assert "right_toe=0" in out
     assert "\033[33mWARNING: initial footswitches open at walk start" in out
     assert "Hardware preflight OK." in out
+
+
+def test_hardware_preflight_warns_on_initial_servo_out_of_range(capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    sample = ImuSample(
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeActuators:
+        port = "/dev/ttyUSB0"
+        baudrate = 9600
+        servo_ids_list = [2]
+        controller = SimpleNamespace(get_battery_voltage=lambda: None)
+
+        def get_positions_rad(self):
+            return np.array([1.2], dtype=np.float32)
+
+    class _FakeFootSwitches:
+        def read(self):
+            return SimpleNamespace(switches=[True, True, True, True])
+
+    class _FakeRobotIO:
+        actuators = _FakeActuators()
+        imu = SimpleNamespace(
+            read=lambda: sample,
+            error_count=0,
+            last_error=None,
+            diag={},
+        )
+        foot_switches = _FakeFootSwitches()
+        _last_fresh_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_fresh_imu_sample = sample
+
+    run_policy._run_hardware_preflight(
+        robot_io=_FakeRobotIO(),
+        actuator_names=["left_hip_roll"],
+        home_q_rad=np.array([0.0], dtype=np.float32),
+        joint_min_rad=np.array([-1.0], dtype=np.float32),
+        joint_max_rad=np.array([1.0], dtype=np.float32),
+        imu_startup_timeout_s=0.1,
+        require_all_footswitches=True,
+        home_tolerance_deg=25.0,
+    )
+
+    out = capsys.readouterr().out
+    assert "left_hip_roll" in out
+    assert "WARN" in out
+    assert "\033[33mWARNING: left_hip_roll servo id=2 readback" in out
+    assert "is outside policy range" in out
+    assert "Hardware preflight OK." in out

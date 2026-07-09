@@ -819,8 +819,8 @@ def _preflight_servos(
             status = "ERROR"
             errors.append(f"{name} servo id={sid_text} readback is non-finite")
         elif q < qmin - limit_tol or q > qmax + limit_tol:
-            status = "ERROR"
-            errors.append(
+            status = "WARN"
+            warnings.append(
                 f"{name} servo id={sid_text} readback {_format_rad_deg(q)}deg "
                 f"is outside policy range [{_format_rad_deg(qmin)}, {_format_rad_deg(qmax)}]deg"
             )
