@@ -216,7 +216,9 @@ class RuntimePolicyRunner:
         self._last_obs_debug = obs_debug
         return obs
 
-    def compose_and_apply(self, raw_action: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def compose_and_apply(
+        self, raw_action: np.ndarray, *, action_scale: float = 1.0
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Filter, delay, advance step_idx, compose home-base residual target.
 
         Returns ``(target_q_rad, applied_action)`` in actuator order.
@@ -230,10 +232,11 @@ class RuntimePolicyRunner:
                 f"raw_action has {raw.shape[0]} elements, expected "
                 f"{self._action_dim} (action_dim)"
             )
+        scaled_raw = raw * np.float32(_sanitize_action_scale(action_scale))
         filtered, _ = postprocess_action(
             spec=self._spec,
             state=PolicyState(prev_action=self._state.pending_action),
-            action_raw=raw,
+            action_raw=scaled_raw,
         )
         filtered = np.asarray(filtered, dtype=np.float32)
 
@@ -297,6 +300,7 @@ class RuntimePolicyRunner:
         *,
         force_home_hold: bool = False,
         home_hold_mode: str = "home_hold",
+        action_scale: float = 1.0,
     ) -> dict:
         """Run one control iteration against ``robot_io``.
 
@@ -339,7 +343,9 @@ class RuntimePolicyRunner:
         if force_home_hold or control_mode == "zero_cmd_hold_home":
             target_q, applied = self.hold_home_step()
         else:
-            target_q, applied = self.compose_and_apply(raw)
+            target_q, applied = self.compose_and_apply(
+                raw, action_scale=action_scale
+            )
         compose_s = time.monotonic() - compose_t0
 
         write_t0 = time.monotonic()
@@ -376,6 +382,7 @@ class RuntimePolicyRunner:
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
             "obs_debug": dict(getattr(self, "_last_obs_debug", {})),
+            "action_scale": _sanitize_action_scale(action_scale),
         }
 
     def _should_hold_home_for_cmd(self, velocity_cmd: np.ndarray) -> bool:
@@ -395,3 +402,13 @@ def _as_three_vec(velocity_cmd: np.ndarray) -> np.ndarray:
     raise ValueError(
         f"velocity_cmd must be scalar or length-3 (vx, vy, wz); got size {cmd.size}"
     )
+
+
+def _sanitize_action_scale(value: float) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if not np.isfinite(scale):
+        return 1.0
+    return min(1.0, max(0.0, scale))

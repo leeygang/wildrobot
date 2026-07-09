@@ -293,6 +293,125 @@ def test_startup_home_hold_runs_before_policy_and_resets_state(
     assert "resetting policy state before command" in out
 
 
+def test_startup_command_ramp_reaches_policy_observation(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    requested_cmd = np.array([0.13, 0.0, 0.0], dtype=np.float32)
+    logs = run_policy_loop(
+        runner=runner,
+        max_steps=4,
+        velocity_cmd=requested_cmd,
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        startup_command_ramp_steps=4,
+    )
+
+    assert policy.calls == 4
+    np.testing.assert_allclose(
+        [log["command_ramp_scale"] for log in logs],
+        [0.25, 0.5, 0.75, 1.0],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        [log["obs_debug"]["velocity_cmd"] for log in logs],
+        [
+            requested_cmd * 0.25,
+            requested_cmd * 0.5,
+            requested_cmd * 0.75,
+            requested_cmd,
+        ],
+        atol=1e-6,
+    )
+
+
+def test_startup_action_ramp_scales_delayed_applied_action(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    logs = run_policy_loop(
+        runner=runner,
+        max_steps=4,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        startup_action_ramp_steps=4,
+    )
+
+    assert policy.calls == 4
+    np.testing.assert_allclose(
+        [log["action_ramp_scale"] for log in logs],
+        [0.25, 0.5, 0.75, 1.0],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(logs[0]["applied_action"], 0.0, atol=1e-6)
+    np.testing.assert_allclose(logs[1]["applied_action"], 0.025, atol=1e-6)
+    np.testing.assert_allclose(logs[2]["applied_action"], 0.05, atol=1e-6)
+    np.testing.assert_allclose(logs[3]["applied_action"], 0.075, atol=1e-6)
+
+
+def test_diagnostic_log_includes_base_orientation(
+    v8_spec, runtime_policy_config, capsys
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_SmallPolicy(v8_spec.model.action_dim),
+        robot_io=robot_io,
+    )
+
+    run_policy_loop(
+        runner=runner,
+        max_steps=1,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        diagnostic_log_policy=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "rpy_deg=[" in out
+    assert "tilt_deg=0.0" in out
+
+
 class _BadShapePolicy:
     """Stub policy that returns a length-1 action (the review repro)."""
 

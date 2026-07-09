@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import math
 import sys
 import time
 import traceback
@@ -350,6 +351,71 @@ def _format_foot_switches(info: dict) -> str:
     return f"fs=[LT={values[0]},LH={values[1]},RT={values[2]},RH={values[3]}]"
 
 
+def _quat_xyzw_to_rpy_rad(quat_xyzw: np.ndarray) -> tuple[float, float, float] | None:
+    quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+    if quat.size != 4 or not np.all(np.isfinite(quat)):
+        return None
+    norm = float(np.linalg.norm(quat))
+    if norm <= 1e-9:
+        return None
+    x, y, z, w = (quat / norm).tolist()
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    pitch = math.asin(max(-1.0, min(1.0, sinp)))
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
+def _quat_xyzw_tilt_rad(quat_xyzw: np.ndarray) -> float | None:
+    quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+    if quat.size != 4 or not np.all(np.isfinite(quat)):
+        return None
+    norm = float(np.linalg.norm(quat))
+    if norm <= 1e-9:
+        return None
+    x, y, _, _ = (quat / norm).tolist()
+    body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
+    return math.acos(max(-1.0, min(1.0, body_z_world_z)))
+
+
+def _format_base_orientation(signals) -> str:
+    rpy = _quat_xyzw_to_rpy_rad(getattr(signals, "quat_xyzw", []))
+    tilt = _quat_xyzw_tilt_rad(getattr(signals, "quat_xyzw", []))
+    if rpy is None or tilt is None:
+        return ""
+    rpy_deg = [float(math.degrees(v)) for v in rpy]
+    return (
+        "rpy_deg="
+        f"{np.round(np.asarray(rpy_deg, dtype=np.float32), 1).tolist()} "
+        f"tilt_deg={float(math.degrees(tilt)):.1f}"
+    )
+
+
+def _ramped_velocity_cmd(
+    velocity_cmd: np.ndarray,
+    *,
+    step: int,
+    ramp_steps: int,
+) -> tuple[np.ndarray, float]:
+    cmd = np.asarray(velocity_cmd, dtype=np.float32).reshape(3)
+    scale = _ramp_scale(step=step, ramp_steps=ramp_steps)
+    return (cmd * np.float32(scale)).astype(np.float32), scale
+
+
+def _ramp_scale(*, step: int, ramp_steps: int) -> float:
+    steps = int(ramp_steps)
+    if steps <= 1:
+        return 1.0
+    return min(1.0, max(0.0, float(step + 1) / float(steps)))
+
+
 def _format_policy_diagnostics(
     *,
     info: dict,
@@ -387,27 +453,31 @@ def _format_policy_diagnostics(
             parts.append(f"phase={np.round(phase, 3).tolist()}")
 
     signals = info.get("signals")
-    if signals is not None and actuator_names:
-        try:
-            joint_vel_norm = np.asarray(
-                NumpyCalibOps.normalize_joint_vel(
-                    spec=spec,
-                    joint_vel_rad_s=signals.joint_vel_rad_s,
-                ),
-                dtype=np.float32,
-            ).reshape(-1)
-        except Exception:
-            joint_vel_norm = np.asarray([], dtype=np.float32)
-        if joint_vel_norm.size:
-            parts.append(f"jvel_norm|max={float(np.max(np.abs(joint_vel_norm))):.3f}")
-            if leg_indices:
-                parts.append(
-                    f"leg_jvel_norm|max="
-                    f"{float(np.max(np.abs(joint_vel_norm[leg_indices]))):.3f}"
-                )
+    if signals is not None:
+        if actuator_names:
+            try:
+                joint_vel_norm = np.asarray(
+                    NumpyCalibOps.normalize_joint_vel(
+                        spec=spec,
+                        joint_vel_rad_s=signals.joint_vel_rad_s,
+                    ),
+                    dtype=np.float32,
+                ).reshape(-1)
+            except Exception:
+                joint_vel_norm = np.asarray([], dtype=np.float32)
+            if joint_vel_norm.size:
+                parts.append(f"jvel_norm|max={float(np.max(np.abs(joint_vel_norm))):.3f}")
+                if leg_indices:
+                    parts.append(
+                        f"leg_jvel_norm|max="
+                        f"{float(np.max(np.abs(joint_vel_norm[leg_indices]))):.3f}"
+                    )
         gyro = np.asarray(signals.gyro_rad_s, dtype=np.float32).reshape(-1)
         if gyro.size == 3:
             parts.append(f"gyro={np.round(gyro, 4).tolist()}")
+        orientation = _format_base_orientation(signals)
+        if orientation:
+            parts.append(orientation)
 
     return "diag[" + " ".join(p for p in parts if p) + "]"
 
@@ -1028,6 +1098,8 @@ def run_policy_loop(
     actuator_names: Optional[List[str]] = None,
     diagnostic_log_policy: bool = False,
     startup_home_hold_steps: int = 0,
+    startup_command_ramp_steps: int = 0,
+    startup_action_ramp_steps: int = 0,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -1054,7 +1126,24 @@ def run_policy_loop(
                 None if last_loop_start_s is None else loop_start_s - last_loop_start_s
             )
             last_loop_start_s = loop_start_s
-            info = runner.step(velocity_cmd)
+            step_velocity_cmd, command_ramp_scale = _ramped_velocity_cmd(
+                velocity_cmd,
+                step=step,
+                ramp_steps=startup_command_ramp_steps,
+            )
+            action_ramp_scale = _ramp_scale(
+                step=step,
+                ramp_steps=startup_action_ramp_steps,
+            )
+            info = runner.step(step_velocity_cmd, action_scale=action_ramp_scale)
+            if int(startup_command_ramp_steps) > 0:
+                info["requested_velocity_cmd"] = np.asarray(
+                    velocity_cmd, dtype=np.float32
+                ).reshape(3)
+                info["commanded_velocity_cmd"] = step_velocity_cmd.copy()
+                info["command_ramp_scale"] = float(command_ramp_scale)
+            if int(startup_action_ramp_steps) > 0:
+                info["action_ramp_scale"] = float(action_ramp_scale)
             work_s = time.monotonic() - loop_start_s
             timing_s = dict(info.get("timing_s", {}))
             timing_s["work"] = work_s
@@ -1087,6 +1176,14 @@ def run_policy_loop(
                     extra_parts.append(f"leg_err|max_deg={leg_err_max_deg:.1f}")
                 if foot_summary:
                     extra_parts.append(foot_summary)
+                if int(startup_command_ramp_steps) > 0:
+                    extra_parts.append(
+                        f"cmd_scale={float(info.get('command_ramp_scale', 1.0)):.3f}"
+                    )
+                if int(startup_action_ramp_steps) > 0:
+                    extra_parts.append(
+                        f"action_scale={float(info.get('action_ramp_scale', 1.0)):.3f}"
+                    )
                 if diagnostic_log_policy:
                     diag = _format_policy_diagnostics(
                         info=info,
@@ -1205,6 +1302,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--startup-command-ramp-s",
+        type=float,
+        default=0.0,
+        help=(
+            "For nonzero velocity commands, linearly ramp the command from zero "
+            "to the requested value over this many seconds after any startup "
+            "home hold (default: 0.0, disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--startup-action-ramp-s",
+        type=float,
+        default=0.0,
+        help=(
+            "For nonzero velocity commands, linearly ramp policy residual actions "
+            "from zero to full scale over this many seconds after any startup "
+            "home hold (default: 0.0, disabled)."
+        ),
+    )
+    parser.add_argument(
         "--skip-hardware-preflight",
         action="store_true",
         help="Skip hardware preflight checks before the policy loop.",
@@ -1214,8 +1331,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help=(
             "Append raw-action, left/right leg action deltas, selected reference "
-            "bin, phase, command, gyro, and normalized joint-velocity summaries "
-            "to each normal step log line."
+            "bin, phase, command, gyro, base roll/pitch/yaw, tilt, and "
+            "normalized joint-velocity summaries to each normal step log line."
         ),
     )
     parser.add_argument(
@@ -1390,6 +1507,18 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             1,
             int(round(float(args.startup_home_hold_s) / max(float(ctrl_dt), 1e-9))),
         )
+    startup_command_ramp_steps = 0
+    if cmd_norm > startup_deadzone and float(args.startup_command_ramp_s) > 0.0:
+        startup_command_ramp_steps = max(
+            1,
+            int(round(float(args.startup_command_ramp_s) / max(float(ctrl_dt), 1e-9))),
+        )
+    startup_action_ramp_steps = 0
+    if cmd_norm > startup_deadzone and float(args.startup_action_ramp_s) > 0.0:
+        startup_action_ramp_steps = max(
+            1,
+            int(round(float(args.startup_action_ramp_s) / max(float(ctrl_dt), 1e-9))),
+        )
 
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
@@ -1397,7 +1526,9 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| control_hz={runtime_config.control_hz:.1f} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
         f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
-        f"| startup_home_hold_steps={startup_home_hold_steps}",
+        f"| startup_home_hold_steps={startup_home_hold_steps} "
+        f"| startup_command_ramp_steps={startup_command_ramp_steps} "
+        f"| startup_action_ramp_steps={startup_action_ramp_steps}",
         flush=True,
     )
     try:
@@ -1411,6 +1542,8 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             actuator_names=actuator_names,
             diagnostic_log_policy=bool(args.diagnostic_log_policy),
             startup_home_hold_steps=startup_home_hold_steps,
+            startup_command_ramp_steps=startup_command_ramp_steps,
+            startup_action_ramp_steps=startup_action_ramp_steps,
         )
     finally:
         try:
