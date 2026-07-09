@@ -33,6 +33,9 @@ SMOKE12B_CFG = (
 SMOKE1_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0210_smoke1_lateral_yaw.yaml"
 )
+SMOKE6_CFG = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0210_smoke6_home_rsi.yaml"
+)
 SMOKE14_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke14.yaml"
 )
@@ -62,6 +65,15 @@ def test_visualizer_rejects_out_of_range_fixed_velocity() -> None:
         _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.min_velocity) - 1e-3)
     with pytest.raises(ValueError, match="outside configured range"):
         _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.max_velocity) + 1e-3)
+
+
+def test_visualizer_allows_exact_zero_when_config_has_zero_branch() -> None:
+    cfg = load_training_config(str(SMOKE6_CFG))
+    assert float(cfg.env.cmd_zero_chance) > 0.0
+
+    out = _validate_user_fixed_velocity_cmd(cfg, [0.0, 0.0, 0.0])
+
+    assert tuple(out) == pytest.approx((0.0, 0.0, 0.0))
 
 
 def test_visualizer_relaxed_termination_ignores_pitch_roll() -> None:
@@ -247,4 +259,3 @@ def test_visualize_sampler_stays_scalar_vx_for_smoke14() -> None:
         f"wz must be exactly zero under legacy scalar-vx sampler; got "
         f"max |wz| = {float(np.abs(cmds[:, 2]).max()):.6e}"
     )
-

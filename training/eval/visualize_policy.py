@@ -231,11 +231,20 @@ def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd) -> np.ndarray:
     env_cfg = training_cfg.env
     min_velocity = float(env_cfg.min_velocity)
     max_velocity = float(env_cfg.max_velocity)
-    if not (min_velocity <= vx <= max_velocity):
+    is_exact_zero_cmd = (
+        abs(vx) <= 1e-9 and abs(vy) <= 1e-9 and abs(wz) <= 1e-9
+    )
+    zero_cmd_allowed = float(getattr(env_cfg, "cmd_zero_chance", 0.0)) > 0.0
+    if not is_exact_zero_cmd and not (min_velocity <= vx <= max_velocity):
         raise ValueError(
             "Fixed velocity command "
             f"{vx:.6f} is outside configured range "
             f"[{min_velocity:.6f}, {max_velocity:.6f}]"
+        )
+    if is_exact_zero_cmd and not zero_cmd_allowed:
+        raise ValueError(
+            "Fixed velocity command is exact zero, but this config has no "
+            "zero-command branch (cmd_zero_chance <= 0)."
         )
     # vy / wz bounds only enforced when the cfg actually carries them
     # (older YAMLs predate the 3D command range).  Missing fields are
