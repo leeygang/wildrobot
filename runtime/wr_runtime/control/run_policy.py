@@ -412,6 +412,20 @@ def _format_policy_diagnostics(
     return "diag[" + " ".join(p for p in parts if p) + "]"
 
 
+def _leg_error_max_deg(info: dict, leg_indices: List[int]) -> float | None:
+    if not leg_indices:
+        return None
+    target = np.asarray(info.get("target_q_rad", []), dtype=np.float32).reshape(-1)
+    signals = info.get("signals")
+    if target.size == 0 or signals is None:
+        return None
+    observed = np.asarray(signals.joint_pos_rad, dtype=np.float32).reshape(-1)
+    if observed.size < target.size:
+        return None
+    err_rad = float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
+    return float(np.rad2deg(err_rad))
+
+
 def _format_lr_action_delta(
     label: str,
     action: np.ndarray,
@@ -933,6 +947,76 @@ def _preflight_footswitches(
             )
 
 
+def _run_startup_home_hold(
+    *,
+    runner: RuntimePolicyRunner,
+    velocity_cmd: np.ndarray,
+    steps: int,
+    log_steps: int,
+    ctrl_dt: float,
+    realtime: bool,
+    leg_indices: List[int],
+) -> None:
+    """Command home before policy walking, then reset policy episode state."""
+    hold_steps = max(0, int(steps))
+    if hold_steps <= 0:
+        return
+
+    print(
+        "Startup home hold: "
+        f"steps={hold_steps} duration_s={hold_steps * float(ctrl_dt):.2f} "
+        "mode=startup_home_hold",
+        flush=True,
+    )
+    last_info: dict | None = None
+    for step in range(hold_steps):
+        loop_start_s = time.monotonic()
+        info = runner.step(
+            velocity_cmd,
+            force_home_hold=True,
+            home_hold_mode="startup_home_hold",
+        )
+        work_s = time.monotonic() - loop_start_s
+        timing_s = dict(info.get("timing_s", {}))
+        timing_s["work"] = work_s
+        info["timing_s"] = timing_s
+        last_info = info
+
+        should_log = (
+            step == 0
+            or step == hold_steps - 1
+            or (log_steps > 0 and step % log_steps == 0)
+        )
+        if should_log:
+            leg_err_deg = _leg_error_max_deg(info, leg_indices)
+            err_text = (
+                "n/a" if leg_err_deg is None else f"{float(leg_err_deg):.1f}"
+            )
+            foot_summary = _format_foot_switches(info)
+            foot_text = f" {foot_summary}" if foot_summary else ""
+            print(
+                f"[startup_home {step + 1:4d}/{hold_steps:4d}] "
+                f"leg_err|max_deg={err_text}{foot_text} "
+                f"{_format_step_timing(timing_s)}",
+                flush=True,
+            )
+
+        if realtime:
+            elapsed = time.monotonic() - loop_start_s
+            remaining = ctrl_dt - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+
+    final_err = _leg_error_max_deg(last_info or {}, leg_indices)
+    final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
+    print(
+        f"Startup home hold complete: leg_err|max_deg={final_err_text}; "
+        "resetting policy state before command.",
+        flush=True,
+    )
+    runner.reset()
+
+
 def run_policy_loop(
     *,
     runner: RuntimePolicyRunner,
@@ -943,11 +1027,21 @@ def run_policy_loop(
     realtime: bool,
     actuator_names: Optional[List[str]] = None,
     diagnostic_log_policy: bool = False,
+    startup_home_hold_steps: int = 0,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
     leg_indices = _actuator_indices(
         actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
+    )
+    _run_startup_home_hold(
+        runner=runner,
+        velocity_cmd=velocity_cmd,
+        steps=startup_home_hold_steps,
+        log_steps=log_steps,
+        ctrl_dt=ctrl_dt,
+        realtime=realtime,
+        leg_indices=leg_indices,
     )
     timing_samples: List[dict] = []
     servo_metric_samples: List[dict] = []
@@ -980,11 +1074,7 @@ def run_policy_loop(
                 leg_summary = _format_leg_targets_deg(target, actuator_names)
                 observed = np.asarray(info["signals"].joint_pos_rad, dtype=np.float32)
                 observed_leg_summary = _format_leg_values_deg(observed, actuator_names)
-                leg_err_max = (
-                    float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
-                    if leg_indices and observed.size >= target.size
-                    else None
-                )
+                leg_err_max_deg = _leg_error_max_deg(info, leg_indices)
                 foot_summary = _format_foot_switches(info)
                 extra_parts = []
                 if leg_applied_max is not None:
@@ -993,10 +1083,8 @@ def run_policy_loop(
                     extra_parts.append(f"leg_deg={leg_summary}")
                 if observed_leg_summary:
                     extra_parts.append(f"obs_leg_deg={observed_leg_summary}")
-                if leg_err_max is not None:
-                    extra_parts.append(
-                        f"leg_err|max_deg={float(np.rad2deg(leg_err_max)):.1f}"
-                    )
+                if leg_err_max_deg is not None:
+                    extra_parts.append(f"leg_err|max_deg={leg_err_max_deg:.1f}")
                 if foot_summary:
                     extra_parts.append(foot_summary)
                 if diagnostic_log_policy:
@@ -1105,6 +1193,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=float,
         default=25.0,
         help="Warn when any servo starts this many degrees away from policy home.",
+    )
+    parser.add_argument(
+        "--startup-home-hold-s",
+        type=float,
+        default=1.0,
+        help=(
+            "Hardware only: for nonzero velocity commands, hold the bundled home "
+            "pose for this many seconds before starting the policy, then reset "
+            "policy state (default: 1.0; set 0 to disable)."
+        ),
     )
     parser.add_argument(
         "--skip-hardware-preflight",
@@ -1266,24 +1364,40 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             robot_io.wait_for_valid_imu_sample(timeout_s=float(args.imu_startup_timeout_s))
         realtime = not args.no_realtime
 
+    zero_cmd_hold_home_deadzone = (
+        None
+        if bool(args.disable_zero_cmd_hold_home)
+        else max(0.0, float(args.zero_cmd_hold_home_deadzone))
+    )
     runner = RuntimePolicyRunner(
         spec=bundle.spec,
         runtime_config=runtime_config,
         policy=policy,
         robot_io=robot_io,
-        zero_cmd_hold_home_deadzone=(
-            None
-            if bool(args.disable_zero_cmd_hold_home)
-            else max(0.0, float(args.zero_cmd_hold_home_deadzone))
-        ),
+        zero_cmd_hold_home_deadzone=zero_cmd_hold_home_deadzone,
     )
+    cmd_norm = float(np.max(np.abs(velocity_cmd)))
+    startup_deadzone = 0.0 if zero_cmd_hold_home_deadzone is None else float(
+        zero_cmd_hold_home_deadzone
+    )
+    startup_home_hold_steps = 0
+    if (
+        not bool(args.dry_run)
+        and cmd_norm > startup_deadzone
+        and float(args.startup_home_hold_s) > 0.0
+    ):
+        startup_home_hold_steps = max(
+            1,
+            int(round(float(args.startup_home_hold_s) / max(float(ctrl_dt), 1e-9))),
+        )
 
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
         f"| residual_base={runtime_config.loc_ref_residual_base} "
         f"| control_hz={runtime_config.control_hz:.1f} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
-        f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)}",
+        f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
+        f"| startup_home_hold_steps={startup_home_hold_steps}",
         flush=True,
     )
     try:
@@ -1296,6 +1410,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             realtime=realtime,
             actuator_names=actuator_names,
             diagnostic_log_policy=bool(args.diagnostic_log_policy),
+            startup_home_hold_steps=startup_home_hold_steps,
         )
     finally:
         try:

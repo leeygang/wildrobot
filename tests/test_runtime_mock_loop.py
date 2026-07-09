@@ -252,6 +252,47 @@ def test_nonzero_command_uses_policy_with_zero_hold_enabled(
     np.testing.assert_allclose(info["raw_action"], 0.1, atol=1e-6)
 
 
+def test_startup_home_hold_runs_before_policy_and_resets_state(
+    v8_spec, runtime_policy_config, capsys
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    logs = run_policy_loop(
+        runner=runner,
+        max_steps=2,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        startup_home_hold_steps=3,
+    )
+
+    assert policy.calls == 2
+    assert len(robot_io.written) == 5
+    for ctrl in robot_io.written[:3]:
+        np.testing.assert_allclose(ctrl, home, atol=1e-6)
+    assert logs[0]["step_idx"] == 1
+    assert runner.step_idx == 2
+
+    out = capsys.readouterr().out
+    assert "Startup home hold: steps=3" in out
+    assert "mode=startup_home_hold" in out
+    assert "resetting policy state before command" in out
+
+
 class _BadShapePolicy:
     """Stub policy that returns a length-1 action (the review repro)."""
 

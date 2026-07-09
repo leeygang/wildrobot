@@ -291,7 +291,13 @@ class RuntimePolicyRunner:
             [self._state.proprio_history[1:], bundle[None, :]], axis=0
         ).astype(np.float32)
 
-    def step(self, velocity_cmd: np.ndarray) -> dict:
+    def step(
+        self,
+        velocity_cmd: np.ndarray,
+        *,
+        force_home_hold: bool = False,
+        home_hold_mode: str = "home_hold",
+    ) -> dict:
         """Run one control iteration against ``robot_io``.
 
         Order (reproduces the env proprio-history lag exactly — see module
@@ -318,7 +324,10 @@ class RuntimePolicyRunner:
         obs_s = time.monotonic() - obs_t0
 
         policy_t0 = time.monotonic()
-        if self._should_hold_home_for_cmd(velocity_cmd):
+        if force_home_hold:
+            raw = np.zeros(self._action_dim, dtype=np.float32)
+            control_mode = str(home_hold_mode)
+        elif self._should_hold_home_for_cmd(velocity_cmd):
             raw = np.zeros(self._action_dim, dtype=np.float32)
             control_mode = "zero_cmd_hold_home"
         else:
@@ -327,7 +336,7 @@ class RuntimePolicyRunner:
         policy_s = time.monotonic() - policy_t0
 
         compose_t0 = time.monotonic()
-        if control_mode == "zero_cmd_hold_home":
+        if force_home_hold or control_mode == "zero_cmd_hold_home":
             target_q, applied = self.hold_home_step()
         else:
             target_q, applied = self.compose_and_apply(raw)
