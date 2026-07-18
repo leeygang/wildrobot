@@ -753,14 +753,14 @@ This ensures conversion logic is shared between:
 
 | Implementation | Hardware | Notes |
 |----------------|----------|-------|
-| `HiwonderActuators` | Hiwonder HTD-45H bus servos | Uses `HiwonderBoardController` for serial protocol |
+| `HiwonderCachedActuators` | Hiwonder HTD-45H bus servos | Uses `ServoIOWorker` with the raw TTL servo bus |
 | `DynamixelActuators` | Dynamixel servos | Future: Protocol v2 |
 | `SimActuators` | MuJoCo (testing) | For hardware-in-the-loop testing without real servos |
 
 #### Naming/structure note (Hiwonder actuator implementation)
 
-This doc uses `HiwonderActuators` / `HiwonderBoardActuators` as placeholders for the concrete implementation that talks to the
-Hiwonder servo controller board. The important design point is:
+This doc uses `HiwonderCachedActuators` for the concrete implementation that talks to the
+Hiwonder TTL servo bus. The important design point is:
 - `HardwareRobotIO` depends on the `Actuators` protocol (not a specific class name),
 - the Hiwonder implementation owns the retry policy, timing (`time_ms`), and unit conversion.
 
@@ -956,8 +956,8 @@ wildrobot/
 │     ├─ hardware/                         # sensor/actuator drivers
 │     │  ├─ __init__.py
 │     │  ├─ robot_io.py                    # HardwareRobotIO: implements RobotIO protocol
-│     │  ├─ actuators.py                   # Actuators protocol + HiwonderActuators implementation
-│     │  ├─ hiwonder_board_controller.py   # low-level servo bus serial protocol
+│     │  ├─ actuators.py                   # Actuators protocol + cached Hiwonder TTL implementation
+│     │  ├─ hiwonder_ttl_bus.py            # low-level raw TTL servo protocol
 │     │  ├─ bno085.py                      # BNO085 IMU driver (I2C)
 │     │  └─ foot_switches.py               # GPIO foot switch driver
 │     ├─ io/                               # (optional) deprecated stubs; prefer `hardware/robot_io.py`

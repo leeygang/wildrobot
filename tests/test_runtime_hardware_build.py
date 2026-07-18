@@ -102,7 +102,7 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
 
 
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
-    import runtime.scripts.calibrate as calibrate_mod
+    from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 
     class _FakeTransport:
         def __init__(self):
@@ -127,7 +127,7 @@ def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
             self.unloads.append(int(servo_id))
 
     raw_bus = _FakeRawBus()
-    controller = calibrate_mod.TtlCalibrationController(raw_bus)
+    controller = TtlServoController(raw_bus)
 
     assert controller.move_servos([(1, 410), (8, 582)], 1500)
     assert raw_bus.moves == [(1, 410, 1500), (8, 582, 1500)]
@@ -136,6 +136,19 @@ def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     assert raw_bus.unloads == [1, 8]
     controller.close()
     assert raw_bus.transport.closed
+
+
+def test_ttl_servo_controller_rejects_deprecated_board_type() -> None:
+    from wr_runtime.hardware.ttl_servo_controller import build_ttl_servo_controller
+
+    cfg = SimpleNamespace(
+        type="hiwonder",
+        port="/dev/ttyUSB0",
+        baudrate=9600,
+    )
+
+    with pytest.raises(ValueError, match="hiwonder_ttl_bus"):
+        build_ttl_servo_controller(cfg)
 
 
 def test_hardware_protocols_have_no_from_config() -> None:

@@ -34,27 +34,14 @@ silkscreen explicitly indicates that its `RXD`/`TXD` header expects 5V TTL.
 
 ## Runtime Config
 
-After the FT232 is plugged into the Pi, it usually appears as `/dev/ttyUSB0`.
-Legacy LSC controller-board diagnostics use:
-
-```json
-"servo_controller": {
-  "type": "hiwonder",
-  "port": "/dev/ttyUSB0",
-  "baudrate": 9600
-}
-```
-
-Do not use this config for `wildrobot-run-policy`.
+This legacy LSC controller-board path is not part of the current runtime config.
+Do not use it for `wildrobot-run-policy`.
 
 ## Test
 
-From the Pi:
-
-```bash
-cd ~/wildrobot/runtime
-uv run python scripts/test_hiwonder_board.py --port /dev/ttyUSB0 --baudrate 9600 --servo-ids 1,2,3
-```
+Use the raw TTL runtime tools instead of the legacy LSC board diagnostic. For
+example, `scripts/calibrate.py --go-home` uses the same TTL servo path as policy
+runtime.
 
 If this fails:
 

@@ -27,14 +27,14 @@ Legacy synchronous code paths:
 
 - `runtime/wr_runtime/control/policy_runner.py`: policy step order.
 - `runtime/wr_runtime/hardware/robot_io.py`: reads IMU, all actuators, footswitches.
-- `runtime/wr_runtime/hardware/actuators.py`: `HiwonderBoardActuators.get_positions_rad()`
-  reads every policy actuator every step.
-- `runtime/wr_runtime/hardware/actuators.py`: `set_targets_rad()` writes targets
-  independently from reads.
+- `runtime/wr_runtime/hardware/actuators.py`: `HiwonderCachedActuators.get_positions_rad()`
+  reads the latest worker cache every step.
+- `runtime/wr_runtime/hardware/servo_io_worker.py`: owns raw TTL reads/writes and
+  schedules physical servo IO.
 
 Current policy runtime uses `HiwonderCachedActuators` with `ServoIOWorker` and
-the raw TTL bus backend. The old `HiwonderBoardActuators` LSC-controller path is
-deprecated and not accepted by `wildrobot-run-policy`.
+the raw TTL bus backend. The old LSC-controller path is not accepted by
+`wildrobot-run-policy`.
 
 The current walking bundle expects:
 

@@ -27,6 +27,7 @@ if _RUNTIME_ROOT.exists() and str(_RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(_RUNTIME_ROOT))
 
 from configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
+from wr_runtime.hardware.ttl_servo_controller import build_ttl_servo_controller  # noqa: E402
 
 # Calibration constants (use ServoConfig constants for conversion)
 DEFAULT_MOVE_MS = 300
@@ -569,62 +570,8 @@ def yes_no(prompt: str, default: bool = False) -> bool:
     return resp.startswith("y")
 
 
-class TtlCalibrationController:
-    """Compatibility shim for calibrate.py using the raw TTL servo protocol."""
-
-    def __init__(self, raw_bus) -> None:
-        self.raw_bus = raw_bus
-
-    def move_servos(self, servo_commands: List[Tuple[int, int]], time_ms: int) -> bool:
-        for servo_id, position in servo_commands:
-            self.raw_bus.move_time_write(int(servo_id), int(position), int(time_ms))
-        return True
-
-    def read_servo_positions(self, servo_ids: List[int]) -> Optional[List[Tuple[int, int]]]:
-        positions = self.raw_bus.read_positions([int(servo_id) for servo_id in servo_ids])
-        if not positions:
-            return None
-        return [(int(servo_id), int(positions[int(servo_id)])) for servo_id in servo_ids if int(servo_id) in positions]
-
-    def unload_servos(self, servo_ids: List[int]) -> bool:
-        for servo_id in servo_ids:
-            self.raw_bus.unload(int(servo_id))
-        return True
-
-    def get_battery_voltage(self) -> Optional[float]:
-        return None
-
-    def close(self) -> None:
-        self.raw_bus.transport.close()
-
-
 def build_calibration_controller(servo_controller_config):
-    controller_type = str(getattr(servo_controller_config, "type", "hiwonder_ttl_bus")).lower()
-    if controller_type in {"hiwonder_ttl_bus", "hiwonder_ttl_debug_board"}:
-        from wr_runtime.hardware.hiwonder_ttl_bus import (
-            RawServoBus,
-            RawServoBusConfig,
-            SerialTransport,
-            SerialTransportConfig,
-        )
-
-        transport = SerialTransport(
-            SerialTransportConfig(
-                port=str(servo_controller_config.port),
-                baudrate=int(servo_controller_config.baudrate),
-            )
-        )
-        return TtlCalibrationController(RawServoBus(transport, RawServoBusConfig()))
-
-    if controller_type in {"hiwonder", "hiwonder_board", "lsc"}:
-        from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
-
-        return HiwonderBoardController(servo_controller_config)
-
-    raise ValueError(
-        f"Unsupported servo_controller.type={getattr(servo_controller_config, 'type', None)!r}. "
-        "Use 'hiwonder_ttl_bus' for the USB TTL debug board."
-    )
+    return build_ttl_servo_controller(servo_controller_config)
 
 
 @contextlib.contextmanager
@@ -1701,7 +1648,7 @@ def write_config(
 ) -> None:
     # Canonical block
     servo_block = base_data.setdefault("servo_controller", {})
-    servo_block.setdefault("type", "hiwonder")
+    servo_block.setdefault("type", "hiwonder_ttl_bus")
     servos = servo_block.setdefault("servos", {})
     for joint, state in updates.items():
         if joint not in servos:

@@ -21,7 +21,10 @@ if str(_RUNTIME_ROOT) not in sys.path:
 
 from configs.config import WrRuntimeConfig  # noqa: E402
 from wr_runtime.hardware.bno085 import BNO085IMU  # noqa: E402
-from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController  # noqa: E402
+from wr_runtime.hardware.ttl_servo_controller import (  # noqa: E402
+    TtlServoController,
+    build_ttl_servo_controller,
+)
 
 
 def _parse_i2c_address(value: str) -> int:
@@ -102,7 +105,7 @@ def _home_servo_commands(cfg: WrRuntimeConfig, bundle_dir: Path) -> list[tuple[i
 
 
 def _start_home_command_thread(
-    controller: HiwonderBoardController,
+    controller: TtlServoController,
     commands: list[tuple[int, int]],
     *,
     start_s: float,
@@ -436,7 +439,7 @@ def main() -> int:
     init_done.set()
     print(f"BNO085 init complete in {time.monotonic() - init_start_s:.2f}s", flush=True)
 
-    home_controller: HiwonderBoardController | None = None
+    home_controller: TtlServoController | None = None
     home_commands: list[tuple[int, int]] = []
     home_stop_event: threading.Event | None = None
     home_thread: threading.Thread | None = None
@@ -445,7 +448,7 @@ def main() -> int:
         try:
             assert bundle_dir is not None
             home_commands = _home_servo_commands(cfg, bundle_dir)
-            home_controller = HiwonderBoardController(cfg.servo_controller)
+            home_controller = build_ttl_servo_controller(cfg.servo_controller)
         except Exception:
             imu.close()
             raise

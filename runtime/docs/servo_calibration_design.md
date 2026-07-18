@@ -281,7 +281,7 @@ Preferred (packaged) location:
 Alternative (repo-local tooling, not packaged):
 - same as above; run via `uv run python runtime/scripts/calibrate.py ...`
 
-Design preference for now: keep it repo-local and directly depend on `configs` + `wr_runtime.hardware.hiwonder_board_controller`.
+Design preference for now: keep it repo-local and directly depend on `configs` + `wr_runtime.hardware.ttl_servo_controller`.
 We can add a console entrypoint later if desired.
 
 ## CLI Sketch

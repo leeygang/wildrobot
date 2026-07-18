@@ -29,9 +29,9 @@ def _base_config() -> dict:
 def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     cfg_dict = _base_config() | {
         "servo_controller": {
-            "type": "hiwonder",
+            "type": "hiwonder_ttl_bus",
             "port": "/dev/ttyUSB0",
-            "baudrate": 9600,
+            "baudrate": 115200,
             "default_move_time_ms": 900,
             "servos": {
                 "left_hip_pitch": {"id": 1, "servo_offset_unit": 10, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0},
@@ -41,9 +41,9 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     }
     cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
-    assert cfg.servo_controller.type == "hiwonder"
+    assert cfg.servo_controller.type == "hiwonder_ttl_bus"
     assert cfg.servo_controller.port == "/dev/ttyUSB0"
-    assert cfg.servo_controller.baudrate == 9600
+    assert cfg.servo_controller.baudrate == 115200
     assert cfg.servo_controller.default_move_time_ms == 900
     assert cfg.servo_controller.servo_ids == {"left_hip_pitch": 1, "right_hip_pitch": 2}
     assert cfg.servo_controller.joint_servo_offset_units["left_hip_pitch"] == 10
@@ -221,7 +221,7 @@ def test_servo_read_schedule_rejects_empty_staggered_groups(tmp_path: Path) -> N
 
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
     canonical = ServoControllerConfig(
-        type="hiwonder",
+        type="hiwonder_ttl_bus",
         port="/dev/ttyUSB0",
         baudrate=9600,
         servos={
