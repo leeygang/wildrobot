@@ -101,6 +101,73 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
     assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
 
 
+def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "policy_spec.json").write_text(
+        json.dumps(
+            {
+                "robot": {
+                    "actuator_names": ["waist_yaw"],
+                    "home_ctrl_rad": [0.0],
+                }
+            }
+        )
+    )
+
+    class _FakeController:
+        def __init__(self):
+            self.moves = []
+            self.unloaded = False
+
+        def move_servos(self, cmds, move_ms):
+            self.moves.append((list(cmds), int(move_ms)))
+
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_id), 500) for servo_id in servo_ids]
+
+        def unload_servos(self, servo_ids):
+            self.unloaded = True
+
+        def close(self):
+            pass
+
+    controller = _FakeController()
+    prompts: list[str] = []
+    responses = iter(["q"])
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(calibrate_mod, "build_calibration_controller", lambda config: controller)
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_V2_CONFIG),
+            "--bundle",
+            str(bundle_dir),
+            "--calibrate-home",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    assert controller.moves
+    assert controller.unloaded
+    assert any("Select servo # to adjust home pose" in prompt for prompt in prompts)
+    assert not any("Select servo #" in prompt and "save+quit" in prompt for prompt in prompts)
+
+
 def test_calibrate_zero_pose_commands_can_ignore_or_apply_offset() -> None:
     import runtime.scripts.calibrate as calibrate_mod
     from configs.config import WrRuntimeConfig

@@ -1933,7 +1933,7 @@ def calibrate_home_pose(
                     readback_units=pos_by_id.get(int(servo.id)),
                 )
             )
-        print("\n  q = back to calibration main menu")
+        print("\n  q = exit calibrate_home mode")
 
         raw = input("Select servo # to adjust home pose (or q): ").strip().lower()
         if raw == "q" or raw == PANIC_KEY:
@@ -3773,7 +3773,10 @@ Examples (copy/paste):
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --record-pos
 
-  # Interactive calibration mode (main menu: h=calibrate_home_pose; per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
+  # Adjust the deployed bundle policy_spec.json home_ctrl_rad interactively
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --bundle runtime/bundles/walking_v0210_smoke6_ckpt1650 --calibrate-home
+
+  # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
 
   # Test range of motion for joints interactively
@@ -3806,6 +3809,12 @@ Examples (copy/paste):
             "Interactive calibration mode: select a joint, then use submenu "
             "p(print state)/q(target deg)/a(policy action)/d(direction)/m(motor units)/r(range test)/o(offset)/s(save)."
         ),
+    )
+    parser.add_argument(
+        "--calibrate-home",
+        dest="calibrate_home",
+        action="store_true",
+        help="Interactive deployed home-pose calibration: edit bundle policy_spec.json robot.home_ctrl_rad",
     )
     parser.add_argument(
         "--calibrate-imu",
@@ -3866,6 +3875,7 @@ Examples (copy/paste):
 
     if not (
         args.calibrate
+        or args.calibrate_home
         or args.calibrate_imu
         or args.calibrate_footswitch
         or args.range
@@ -3874,7 +3884,7 @@ Examples (copy/paste):
         or args.dry_run
     ):
         parser.error(
-            "Must specify a mode: --calibrate, --calibrate-imu, --calibrate-footswitch, --range, --go-home, or --record-pos"
+            "Must specify a mode: --calibrate, --calibrate-home, --calibrate-imu, --calibrate-footswitch, --range, --go-home, or --record-pos"
         )
 
     if args.calibrate_imu:
@@ -3993,6 +4003,27 @@ Examples (copy/paste):
                     offset=state.offset,
                 )
                 print(f"  {joint}: rad={rad:+.4f} -> servo_id={servo.id} units={units}")
+        if args.calibrate_home:
+            bundle_dir_for_home = resolve_bundle_dir(args, config)
+            if bundle_dir_for_home is None:
+                print("Calibrate home pose: bundle not resolved; pass --bundle.")
+            else:
+                _, _, bundle_names, bundle_home = load_bundle_spec_data(bundle_dir_for_home)
+                home_by_joint = dict(zip(bundle_names, bundle_home, strict=True))
+                print(f"Calibrate home pose (dry run): policy_spec={bundle_dir_for_home / 'policy_spec.json'}")
+                missing = [joint for joint in joint_names if joint not in home_by_joint]
+                if missing:
+                    print(f"  Missing home joints: {missing}")
+                else:
+                    for joint in joint_names:
+                        servo = servo_cfgs[joint]
+                        state = states[joint]
+                        rad = float(home_by_joint[joint])
+                        units = _home_pose_units(servo, state, rad)
+                        print(
+                            f"  #{int(servo.id):2d}: {joint}: home={float(np.rad2deg(rad)):+.2f}deg "
+                            f"rad={rad:+.4f} raw={int(units)}"
+                        )
         if args.calibrate:
             print("Calibration mode (dry run):")
             print(f"  Axis metadata: robot_config={robot_config_path}, robot_xml={robot_xml_path}")
@@ -4163,7 +4194,7 @@ Examples (copy/paste):
                     continue
                 print("Unknown input; use p, c, or q.")
 
-        if args.go_home and not args.calibrate and not args.record_pos:
+        if args.go_home and not args.calibrate and not args.calibrate_home and not args.record_pos:
             wait_until_unload(
                 controller,
                 servo_ids,
@@ -4172,6 +4203,21 @@ Examples (copy/paste):
                     f"Press '{PANIC_KEY}' then Enter to unload and exit (Ctrl+C also unloads)."
                 ),
             )
+
+        if args.calibrate_home:
+            bundle_dir_for_home = resolve_bundle_dir(args, config)
+            if bundle_dir_for_home is None:
+                raise ValueError("calibrate_home requires --bundle or a config policy path next to policy_spec.json.")
+            calibrate_home_pose(
+                controller,
+                bundle_dir=bundle_dir_for_home,
+                joint_names=joint_names,
+                servo_cfgs=servo_cfgs,
+                states=states,
+                move_ms=int(args.move_ms),
+                pause_s=float(args.pause_s),
+            )
+            return
 
         if args.calibrate:
             # Unified calibration mode
@@ -4184,8 +4230,7 @@ Examples (copy/paste):
                 "Per-joint submenu:\n"
                 "  p=print state, q=target deg evaluator, a=policy action evaluator,\n"
                 "  d=calibrate servo_unit_direction, r=single-joint range test (20 deg/s),\n"
-                "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload\n"
-                "Main menu: h=calibrate_home_pose"
+                "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
             )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
@@ -4256,32 +4301,15 @@ Examples (copy/paste):
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
-                print("  h = calibrate_home_pose")
 
                 # Step 2: User selects joint
-                raw = input("\nSelect servo # (or 'h' home pose, 'q' quit, 's' save+quit): ").strip().lower()
+                raw = input("\nSelect servo # (or 'q' quit, 's' save+quit): ").strip().lower()
                 if raw == "q" or raw == PANIC_KEY:
                     save_on_exit = False
                     break
                 if raw == "s":
                     save_on_exit = True
                     break
-                if raw == "h":
-                    bundle_dir_for_home = resolve_bundle_dir(args, config)
-                    if bundle_dir_for_home is None:
-                        print("calibrate_home_pose requires --bundle or a config policy path next to policy_spec.json.")
-                        continue
-                    calibrate_home_pose(
-                        controller,
-                        bundle_dir=bundle_dir_for_home,
-                        joint_names=joint_names,
-                        servo_cfgs=servo_cfgs,
-                        states=states,
-                        move_ms=int(args.move_ms),
-                        pause_s=float(args.pause_s),
-                    )
-                    policy_setup = load_policy_action_setup(args=args, config=config, joint_names=joint_names)
-                    continue
 
                 try:
                     servo_id = int(raw.lstrip("#"))
