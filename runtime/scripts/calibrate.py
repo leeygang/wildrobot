@@ -1304,6 +1304,48 @@ def _group_move_ms_20deg_per_s(
     return int(max_move_ms)
 
 
+def print_target_readback_summary(
+    controller,
+    *,
+    label: str,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+    target_rad_by_joint: Dict[str, float],
+) -> None:
+    errors: List[Tuple[float, str, float, float]] = []
+    missing: List[str] = []
+    for joint in joint_names:
+        servo = servo_cfgs[joint]
+        units = read_position(controller, int(servo.id), retries=2, retry_delay_s=0.02)
+        if units is None:
+            missing.append(joint)
+            continue
+        state = states[joint]
+        actual_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+            units,
+            motor_sign=state.motor_sign,
+            offset=state.offset,
+        )
+        target_rad = float(target_rad_by_joint[joint])
+        err_deg = float(abs(np.rad2deg(actual_rad - target_rad)))
+        errors.append((err_deg, joint, float(np.rad2deg(actual_rad)), float(np.rad2deg(target_rad))))
+
+    if not errors:
+        print(f"{label} readback failed for all joints.")
+        return
+
+    errors.sort(reverse=True)
+    max_err_deg = float(errors[0][0])
+    print(f"{label} readback: max_err={max_err_deg:.1f}deg")
+    for err_deg, joint, actual_deg, target_deg in errors[:5]:
+        print(f"  {joint}: actual={actual_deg:+.1f}deg target={target_deg:+.1f}deg err={err_deg:.1f}deg")
+    if missing:
+        print(f"  Missing readback: {missing}")
+    if max_err_deg > 5.0:
+        print(f"  WARNING: {label} did not settle near target; check servo power/load or increase --move-ms.")
+
+
 def print_joint_calibration_state(
     controller,
     *,
@@ -3683,6 +3725,14 @@ Examples (copy/paste):
                 )
                 controller.move_servos(cmds, max(args.move_ms, 800))
                 time.sleep(max(args.move_ms, 800) / 1000.0 + 0.2)
+                print_target_readback_summary(
+                    controller,
+                    label="Home pose",
+                    joint_names=joint_names,
+                    servo_cfgs=servo_cfgs,
+                    states=states,
+                    target_rad_by_joint=dict(zip(joint_names, home_ctrl, strict=True)),
+                )
 
         if args.range:
             # Range test mode: reset to center, then interactively test joints

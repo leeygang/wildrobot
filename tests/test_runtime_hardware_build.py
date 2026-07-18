@@ -67,6 +67,9 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
         def move_servos(self, cmds, move_ms):
             pass
 
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_id), 500) for servo_id in servo_ids]
+
         def unload_servos(self, servo_ids):
             pass
 
