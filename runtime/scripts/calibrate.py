@@ -590,6 +590,27 @@ def prompt_zero_centering_mode(*, default: str = "o") -> str:
     return default
 
 
+def prompt_offset_reference_mode(*, servo: ServoConfig, default: str = "z") -> str:
+    default = str(default).strip().lower()
+    if default not in {"z", "r", "q"}:
+        default = "z"
+    center_deg = float(np.rad2deg(float(servo.center_rad)))
+    print(
+        "Offset calibration reference pose:\n"
+        "  z = MuJoCo joint_pos_deg 0 (useful when physical zero is easy to align)\n"
+        f"  r = raw center/reference angle ({center_deg:+.1f} deg; old behavior)\n"
+        "  q = quit this joint without saving"
+    )
+    resp = input(f"[z/r/q, default {default}]: ").strip().lower()
+    if not resp:
+        return default
+    first = resp[0]
+    if first in {"z", "r", "q"}:
+        return first
+    print(f"Unknown choice '{resp}', using default '{default}'.")
+    return default
+
+
 def build_zero_pose_commands(
     *,
     joint_names: List[str],
@@ -609,6 +630,21 @@ def build_zero_pose_commands(
         )
         cmds.append((servo.id, units))
     return cmds
+
+
+def offset_from_reference_pose_units(
+    servo: ServoConfig,
+    units: int,
+    *,
+    motor_sign: int,
+    target_rad: float,
+) -> int:
+    """Compute servo_offset_unit when ``units`` is the reference pose readback."""
+    delta_rad = float(target_rad) - float(servo.center_rad)
+    offset_units = float(units) - float(ServoConfig.UNITS_CENTER) - int(motor_sign) * (
+        delta_rad * float(ServoConfig.UNITS_PER_RAD)
+    )
+    return int(round(offset_units))
 
 
 def build_calibration_controller(servo_controller_config):
@@ -1119,17 +1155,32 @@ def calibrate_offset(
     all_joint_names: List[str],
     all_servo_cfgs: Dict[str, ServoConfig],
     all_states: Dict[str, JointState],
-) -> Tuple[Optional[int], bool, bool]:
+) -> Tuple[Optional[int], bool, bool, Optional[float], str]:
     """Calibrate offset for a joint.
 
     Returns:
-      (new_offset, save_requested, quit_joint_without_save)
+      (new_offset, save_requested, quit_joint_without_save, verify_target_rad, verify_label)
     """
     print(f"\n-- Offset calibration for {joint} (servo {servo.id}) --")
-    # Offset calibration should not depend on any existing offset value.
-    target_units = ServoConfig.UNITS_CENTER
+    reference_mode = prompt_offset_reference_mode(servo=servo, default="z")
+    if reference_mode == "q":
+        print(f"Aborted offset calibration for {joint}; quitting joint without saving.")
+        return None, False, True, None, ""
+    if reference_mode == "r":
+        reference_target_rad = float(servo.center_rad)
+        reference_label = "raw center/reference angle"
+        # Raw-center calibration should not depend on any existing offset value.
+        target_units = int(ServoConfig.UNITS_CENTER)
+    else:
+        reference_target_rad = 0.0
+        reference_label = "MuJoCo joint_pos_deg 0"
+        target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+            reference_target_rad,
+            motor_sign=state.motor_sign,
+            offset=state.offset,
+        )
     announce_and_pause(
-        f"Step: move {joint} to raw center units ({target_units})",
+        f"Step: move {joint} to {reference_label} -> units {target_units}",
         pause_s,
     )
     _move_servo_units_20deg_per_s(
@@ -1140,7 +1191,7 @@ def calibrate_offset(
         min_ms=1000,
     )
     commands_msg = (
-        "Jog the joint until it matches your neutral pose. Commands:"
+        f"Jog the joint until it matches {reference_label}. Commands:"
         "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm;"
         "\n  s = save config now; q = quit joint (without save);"
         "\n  m = enter offset manually (units);"
@@ -1167,10 +1218,15 @@ def calibrate_offset(
                     "If this persists, check servo ID/wiring or use 'm' to enter offset manually."
                 )
             return None
-        offset_units = int(pos) - int(ServoConfig.UNITS_CENTER)
+        offset_units = offset_from_reference_pose_units(
+            servo,
+            int(pos),
+            motor_sign=state.motor_sign,
+            target_rad=reference_target_rad,
+        )
         print(
             f"Captured offset {offset_units} (units), raw position {pos} "
-            f"(offset = current_pos - {int(ServoConfig.UNITS_CENTER)})"
+            f"using {reference_label}"
         )
         return offset_units
 
@@ -1180,27 +1236,25 @@ def calibrate_offset(
             offset_units = _capture_offset_from_current_pos()
             if offset_units is None:
                 continue
-            return offset_units, False, False
+            return offset_units, False, False, reference_target_rad, reference_label
         if cmd.lower() == "m":
-            raw = input(
-                f"Enter offset in servo units (offset = current_pos - {int(ServoConfig.UNITS_CENTER)}): "
-            ).strip()
+            raw = input("Enter servo_offset_unit manually: ").strip()
             try:
                 offset_units = int(raw)
             except ValueError:
                 print("Invalid integer offset.")
                 continue
             print(f"Using manual offset {offset_units} (units).")
-            return offset_units, False, False
+            return offset_units, False, False, reference_target_rad, reference_label
         if cmd.lower() == "q":
             print(f"Aborted offset calibration for {joint}; quitting joint without saving.")
-            return None, False, True
+            return None, False, True, None, ""
         if cmd.lower() == "s":
             offset_units = _capture_offset_from_current_pos()
             if offset_units is None:
                 continue
             print(f"Save requested from offset calibration for {joint}.")
-            return offset_units, True, False
+            return offset_units, True, False, reference_target_rad, reference_label
         if record_pos and cmd.lower() == "p":
             print_all_joint_positions(
                 controller,
@@ -1235,7 +1289,16 @@ def calibrate_offset(
                 motor_sign=state.motor_sign,
                 offset=0,
             )
-            print(f"Moved to {pos} units (~{pos_rad:.3f} rad, offset assumed 0).")
+            candidate_offset = offset_from_reference_pose_units(
+                servo,
+                int(pos),
+                motor_sign=state.motor_sign,
+                target_rad=reference_target_rad,
+            )
+            print(
+                f"Moved to {pos} units (~{pos_rad:.3f} rad with offset 0; "
+                f"confirm would capture offset {candidate_offset:+d})."
+            )
 
 
 def verify_zero(
@@ -1245,15 +1308,18 @@ def verify_zero(
     state: JointState,
     move_ms: int,
     pause_s: float,
+    *,
+    target_rad: Optional[float] = None,
+    target_label: str = "center_rad",
 ) -> None:
-    center_target_rad = float(servo.center_rad)
+    center_target_rad = float(servo.center_rad) if target_rad is None else float(target_rad)
     target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
         center_target_rad,
         motor_sign=state.motor_sign,
         offset=state.offset,
     )
     announce_and_pause(
-        f"Step: verify {joint} at center_rad={center_target_rad:+.4f} -> units {target_units}",
+        f"Step: verify {joint} at {target_label}={center_target_rad:+.4f} rad -> units {target_units}",
         pause_s,
     )
     move_and_wait(controller, servo.id, target_units, move_ms)
@@ -1269,8 +1335,8 @@ def verify_zero(
     center_err = float(pos_rad) - center_target_rad
     status = "OK" if abs(center_err) <= VERIFY_TOL_RAD else "drift"
     print(
-        f"Verify center: {pos} units => {pos_rad:.4f} rad "
-        f"(center_err={center_err:+.4f} rad, {status})"
+        f"Verify {target_label}: {pos} units => {pos_rad:.4f} rad "
+        f"(err={center_err:+.4f} rad, {status})"
     )
 
 
@@ -4191,7 +4257,13 @@ Examples (copy/paste):
                             offset=int(states[joint].offset),
                             motor_sign=int(states[joint].motor_sign),
                         )
-                        new_offset, save_requested, quit_joint_without_save = calibrate_offset(
+                        (
+                            new_offset,
+                            save_requested,
+                            quit_joint_without_save,
+                            verify_target_rad,
+                            verify_label,
+                        ) = calibrate_offset(
                             controller,
                             servo,
                             joint,
@@ -4218,6 +4290,8 @@ Examples (copy/paste):
                                 states[joint],
                                 move_ms=args.move_ms,
                                 pause_s=float(args.pause_s),
+                                target_rad=verify_target_rad,
+                                target_label=verify_label or "center_rad",
                             )
                         calibrated[joint] = states[joint]
                         if save_requested:

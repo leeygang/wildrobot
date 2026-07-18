@@ -167,6 +167,57 @@ def test_calibrate_zero_centering_prompt(monkeypatch, raw: str, expected: str) -
     assert calibrate_mod.prompt_zero_centering_mode(default="o") == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("z", "z"), ("r", "r"), ("q", "q"), ("", "z"), ("bad", "z")],
+)
+def test_calibrate_offset_reference_prompt(monkeypatch, raw: str, expected: str) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": raw)
+
+    assert calibrate_mod.prompt_offset_reference_mode(servo=ServoConfig(id=1), default="z") == expected
+
+
+def test_calibrate_offset_from_zero_degree_reference_handles_shoulder_center() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    servo = ServoConfig(
+        id=21,
+        motor_unit_direction=-1.0,
+        joint_angle_at_zero_unit_deg=90.0,
+    )
+    offset = 14
+    zero_deg_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        0.0,
+        motor_sign=-1,
+        offset=offset,
+    )
+    raw_center_units = int(ServoConfig.UNITS_CENTER) + offset
+
+    assert zero_deg_units != raw_center_units
+    assert (
+        calibrate_mod.offset_from_reference_pose_units(
+            servo,
+            zero_deg_units,
+            motor_sign=-1,
+            target_rad=0.0,
+        )
+        == offset
+    )
+    assert (
+        calibrate_mod.offset_from_reference_pose_units(
+            servo,
+            raw_center_units,
+            motor_sign=-1,
+            target_rad=servo.center_rad,
+        )
+        == offset
+    )
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 
