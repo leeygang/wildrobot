@@ -59,6 +59,11 @@ _LEG_LOG_JOINTS = (
 _FOOT_SWITCH_LABELS = ("left_toe", "left_heel", "right_toe", "right_heel")
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
+_STARTUP_STABILITY_WINDOW_S = 0.4
+_STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO = 0.9
+_STARTUP_STABILITY_MAX_TILT_DEG = 12.0
+_STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
+_STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 
 
 class _LogStream:
@@ -351,6 +356,16 @@ def _format_foot_switches(info: dict) -> str:
     return f"fs=[LT={values[0]},LH={values[1]},RT={values[2]},RH={values[3]}]"
 
 
+def _footswitch_values(info: dict) -> list[int] | None:
+    signals = info.get("signals")
+    if signals is None:
+        return None
+    switches = np.asarray(signals.foot_switches, dtype=np.float32).reshape(-1)
+    if switches.size != len(_FOOT_SWITCH_LABELS) or not np.all(np.isfinite(switches)):
+        return None
+    return [int(round(float(v))) for v in switches]
+
+
 def _quat_xyzw_to_rpy_rad(quat_xyzw: np.ndarray) -> tuple[float, float, float] | None:
     quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
     if quat.size != 4 or not np.all(np.isfinite(quat)):
@@ -383,6 +398,26 @@ def _quat_xyzw_tilt_rad(quat_xyzw: np.ndarray) -> float | None:
     x, y, _, _ = (quat / norm).tolist()
     body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
     return math.acos(max(-1.0, min(1.0, body_z_world_z)))
+
+
+def _info_tilt_deg(info: dict) -> float | None:
+    signals = info.get("signals")
+    if signals is None:
+        return None
+    tilt = _quat_xyzw_tilt_rad(getattr(signals, "quat_xyzw", []))
+    if tilt is None:
+        return None
+    return float(math.degrees(tilt))
+
+
+def _info_gyro_norm_rad_s(info: dict) -> float | None:
+    signals = info.get("signals")
+    if signals is None:
+        return None
+    gyro = np.asarray(getattr(signals, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
+    if gyro.size != 3 or not np.all(np.isfinite(gyro)):
+        return None
+    return float(np.linalg.norm(gyro))
 
 
 def _format_base_orientation(signals) -> str:
@@ -494,6 +529,119 @@ def _leg_error_max_deg(info: dict, leg_indices: List[int]) -> float | None:
         return None
     err_rad = float(np.max(np.abs(target[leg_indices] - observed[leg_indices])))
     return float(np.rad2deg(err_rad))
+
+
+def _startup_home_stability_errors(
+    *,
+    infos: List[dict],
+    ctrl_dt: float,
+    leg_indices: List[int],
+    window_s: float,
+    min_footswitch_pressed_ratio: float,
+    max_tilt_deg: float,
+    max_gyro_rad_s: float,
+    max_leg_error_deg: float,
+) -> tuple[List[str], List[str]]:
+    if not infos:
+        return ["no startup home samples were collected"], []
+
+    window_steps = max(
+        1,
+        min(
+            len(infos),
+            int(round(float(window_s) / max(float(ctrl_dt), 1e-9))),
+        ),
+    )
+    window = infos[-window_steps:]
+    errors: List[str] = []
+    summary: List[str] = [f"window_steps={window_steps}"]
+
+    foot_rows = [
+        values
+        for info in window
+        if (values := _footswitch_values(info)) is not None
+    ]
+    if not foot_rows:
+        errors.append("footswitch samples unavailable during final startup home window")
+    else:
+        foot_matrix = np.asarray(foot_rows, dtype=np.float32)
+        pressed_ratio = np.mean(foot_matrix >= 0.5, axis=0)
+        final_values = [int(v) for v in foot_matrix[-1].tolist()]
+        open_final = [
+            name
+            for name, value in zip(_FOOT_SWITCH_LABELS, final_values)
+            if int(value) == 0
+        ]
+        low_ratio = [
+            f"{name}={float(ratio):.2f}"
+            for name, ratio in zip(_FOOT_SWITCH_LABELS, pressed_ratio.tolist())
+            if float(ratio) < float(min_footswitch_pressed_ratio)
+        ]
+        summary.append(
+            "final_fs="
+            f"[LT={final_values[0]},LH={final_values[1]},"
+            f"RT={final_values[2]},RH={final_values[3]}]"
+        )
+        summary.append(
+            "fs_pressed_ratio="
+            + str(
+                {
+                    name: round(float(ratio), 2)
+                    for name, ratio in zip(_FOOT_SWITCH_LABELS, pressed_ratio.tolist())
+                }
+            )
+        )
+        if open_final:
+            errors.append(f"final footswitches open: {open_final}")
+        if low_ratio:
+            errors.append(
+                "footswitch pressed ratio below "
+                f"{float(min_footswitch_pressed_ratio):.2f}: {low_ratio}"
+            )
+
+    tilt_values = [
+        value for info in window if (value := _info_tilt_deg(info)) is not None
+    ]
+    if not tilt_values:
+        errors.append("IMU tilt unavailable during final startup home window")
+    else:
+        max_tilt = max(float(v) for v in tilt_values)
+        summary.append(f"max_tilt_deg={max_tilt:.1f}")
+        if max_tilt > float(max_tilt_deg):
+            errors.append(
+                f"max tilt {max_tilt:.1f}deg > {float(max_tilt_deg):.1f}deg"
+            )
+
+    gyro_values = [
+        value for info in window if (value := _info_gyro_norm_rad_s(info)) is not None
+    ]
+    if not gyro_values:
+        errors.append("IMU gyro unavailable during final startup home window")
+    else:
+        max_gyro = max(float(v) for v in gyro_values)
+        summary.append(f"max_gyro_rad_s={max_gyro:.3f}")
+        if max_gyro > float(max_gyro_rad_s):
+            errors.append(
+                f"max gyro {max_gyro:.3f}rad/s > {float(max_gyro_rad_s):.3f}rad/s"
+            )
+
+    leg_errors = [
+        value
+        for info in window
+        if (value := _leg_error_max_deg(info, leg_indices)) is not None
+    ]
+    if leg_indices and not leg_errors:
+        errors.append("leg pose error unavailable during final startup home window")
+    elif leg_errors:
+        max_leg_error = max(float(v) for v in leg_errors)
+        summary.append(f"max_leg_err_deg={max_leg_error:.1f}")
+        if max_leg_error > float(max_leg_error_deg):
+            errors.append(
+                "max leg home error "
+                f"{max_leg_error:.1f}deg > {float(max_leg_error_deg):.1f}deg"
+            )
+
+    return errors, summary
 
 
 def _format_lr_action_delta(
@@ -1026,6 +1174,14 @@ def _run_startup_home_hold(
     ctrl_dt: float,
     realtime: bool,
     leg_indices: List[int],
+    stability_check: bool,
+    stability_window_s: float = _STARTUP_STABILITY_WINDOW_S,
+    stability_min_footswitch_pressed_ratio: float = (
+        _STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO
+    ),
+    stability_max_tilt_deg: float = _STARTUP_STABILITY_MAX_TILT_DEG,
+    stability_max_gyro_rad_s: float = _STARTUP_STABILITY_MAX_GYRO_RAD_S,
+    stability_max_leg_error_deg: float = _STARTUP_STABILITY_MAX_LEG_ERROR_DEG,
 ) -> None:
     """Command home before policy walking, then reset policy episode state."""
     hold_steps = max(0, int(steps))
@@ -1039,6 +1195,7 @@ def _run_startup_home_hold(
         flush=True,
     )
     last_info: dict | None = None
+    hold_infos: List[dict] = []
     for step in range(hold_steps):
         loop_start_s = time.monotonic()
         info = runner.step(
@@ -1051,6 +1208,7 @@ def _run_startup_home_hold(
         timing_s["work"] = work_s
         info["timing_s"] = timing_s
         last_info = info
+        hold_infos.append(info)
 
         should_log = (
             step == 0
@@ -1081,9 +1239,36 @@ def _run_startup_home_hold(
     final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
     print(
         f"Startup home hold complete: leg_err|max_deg={final_err_text}; "
-        "resetting policy state before command.",
+        "checking stability before command.",
         flush=True,
     )
+    if stability_check:
+        errors, summary = _startup_home_stability_errors(
+            infos=hold_infos,
+            ctrl_dt=ctrl_dt,
+            leg_indices=leg_indices,
+            window_s=stability_window_s,
+            min_footswitch_pressed_ratio=stability_min_footswitch_pressed_ratio,
+            max_tilt_deg=stability_max_tilt_deg,
+            max_gyro_rad_s=stability_max_gyro_rad_s,
+            max_leg_error_deg=stability_max_leg_error_deg,
+        )
+        summary_text = " ".join(summary)
+        if errors:
+            print(f"Startup home stability FAILED: {summary_text}", flush=True)
+            for error in errors:
+                print(f"  ERROR: {error}", flush=True)
+            error_lines = "\n".join(f"  - {error}" for error in errors)
+            raise SystemExit(
+                "Startup home stability failed; refusing to start policy walking. "
+                "Robot remains at the commanded home pose.\n"
+                f"{error_lines}"
+            )
+        print(f"Startup home stability OK: {summary_text}", flush=True)
+    else:
+        print("Startup home stability check disabled.", flush=True)
+
+    print("resetting policy state before command.", flush=True)
     runner.reset()
 
 
@@ -1100,6 +1285,7 @@ def run_policy_loop(
     startup_home_hold_steps: int = 0,
     startup_command_ramp_steps: int = 0,
     startup_action_ramp_steps: int = 0,
+    startup_stability_check: bool = True,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -1114,6 +1300,7 @@ def run_policy_loop(
         ctrl_dt=ctrl_dt,
         realtime=realtime,
         leg_indices=leg_indices,
+        stability_check=bool(startup_stability_check),
     )
     timing_samples: List[dict] = []
     servo_metric_samples: List[dict] = []
@@ -1294,11 +1481,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--startup-home-hold-s",
         type=float,
-        default=1.0,
+        default=2.0,
         help=(
             "Hardware only: for nonzero velocity commands, hold the bundled home "
             "pose for this many seconds before starting the policy, then reset "
-            "policy state (default: 1.0; set 0 to disable)."
+            "policy state (default: 2.0; set 0 to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--disable-startup-stability-check",
+        action="store_true",
+        help=(
+            "Do not fail after startup home hold when footswitch/body stability "
+            "checks fail. Use only for suspended diagnostics."
         ),
     )
     parser.add_argument(
@@ -1527,6 +1722,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
         f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
+        f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "
         f"| startup_command_ramp_steps={startup_command_ramp_steps} "
         f"| startup_action_ramp_steps={startup_action_ramp_steps}",
         flush=True,
@@ -1544,6 +1740,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_home_hold_steps=startup_home_hold_steps,
             startup_command_ramp_steps=startup_command_ramp_steps,
             startup_action_ramp_steps=startup_action_ramp_steps,
+            startup_stability_check=not bool(args.disable_startup_stability_check),
         )
     finally:
         try:

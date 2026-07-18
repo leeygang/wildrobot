@@ -6,6 +6,7 @@ for a finite number of steps, with no servos/IMU attached.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import sys
 
 import numpy as np
@@ -57,6 +58,15 @@ class _CountingPolicy:
 class _PolicyMustNotRun:
     def predict(self, obs):
         raise AssertionError("zero command should hold home without policy predict")
+
+
+class _OpenRightFootRobotIO(MockRobotIO):
+    def read(self):
+        signals = super().read()
+        return replace(
+            signals,
+            foot_switches=np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        )
 
 
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
@@ -290,7 +300,46 @@ def test_startup_home_hold_runs_before_policy_and_resets_state(
     out = capsys.readouterr().out
     assert "Startup home hold: steps=3" in out
     assert "mode=startup_home_hold" in out
+    assert "Startup home stability OK" in out
     assert "resetting policy state before command" in out
+
+
+def test_startup_home_hold_blocks_policy_when_final_footswitches_open(
+    v8_spec, runtime_policy_config, capsys
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = _OpenRightFootRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(SystemExit, match="Startup home stability failed"):
+        run_policy_loop(
+            runner=runner,
+            max_steps=2,
+            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+            log_steps=1,
+            ctrl_dt=runtime_policy_config.ctrl_dt,
+            realtime=False,
+            actuator_names=list(v8_spec.robot.actuator_names),
+            startup_home_hold_steps=3,
+        )
+
+    assert policy.calls == 0
+    assert len(robot_io.written) == 3
+    out = capsys.readouterr().out
+    assert "Startup home stability FAILED" in out
+    assert "final footswitches open" in out
+    assert "right_toe" in out
+    assert "right_heel" in out
 
 
 def test_startup_command_ramp_reaches_policy_observation(
