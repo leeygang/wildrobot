@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import select
 import signal
@@ -1815,6 +1816,64 @@ def _clamp_rad_to_range(rad: float, rad_range: Tuple[float, float]) -> float:
     return float(np.clip(float(rad), float(rad_range[0]), float(rad_range[1])))
 
 
+def _quat_xyzw_to_rpy_rad(quat_xyzw: Iterable[float]) -> Optional[Tuple[float, float, float]]:
+    quat = np.asarray(list(quat_xyzw), dtype=np.float64).reshape(-1)
+    if quat.size != 4 or not np.all(np.isfinite(quat)):
+        return None
+    norm = float(np.linalg.norm(quat))
+    if norm <= 1e-9:
+        return None
+    x, y, z, w = (quat / norm).tolist()
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    pitch = math.asin(max(-1.0, min(1.0, sinp)))
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
+def _quat_xyzw_tilt_rad(quat_xyzw: Iterable[float]) -> Optional[float]:
+    quat = np.asarray(list(quat_xyzw), dtype=np.float64).reshape(-1)
+    if quat.size != 4 or not np.all(np.isfinite(quat)):
+        return None
+    norm = float(np.linalg.norm(quat))
+    if norm <= 1e-9:
+        return None
+    x, y, _, _ = (quat / norm).tolist()
+    body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
+    return math.acos(max(-1.0, min(1.0, body_z_world_z)))
+
+
+def _format_calibrate_home_imu_status(sample) -> str:
+    valid = getattr(sample, "valid", None)
+    fresh = getattr(sample, "fresh", None)
+    timestamp_s = getattr(sample, "timestamp_s", None)
+    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float64).reshape(-1)
+    rpy = _quat_xyzw_to_rpy_rad(quat)
+    tilt = _quat_xyzw_tilt_rad(quat)
+    if rpy is None or tilt is None:
+        return (
+            "  IMU body_angle: unavailable "
+            f"valid={valid} fresh={fresh} timestamp_s={timestamp_s}"
+        )
+
+    rpy_deg = [float(math.degrees(v)) for v in rpy]
+    gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float64).reshape(-1)
+    gyro_norm = float(np.linalg.norm(gyro)) if gyro.size == 3 and np.all(np.isfinite(gyro)) else None
+    gyro_part = f" gyro_norm_rad_s={gyro_norm:.3f}" if gyro_norm is not None else ""
+    return (
+        f"  IMU body_angle: valid={valid} fresh={fresh} "
+        f"rpy_deg=[{rpy_deg[0]:+.1f}, {rpy_deg[1]:+.1f}, {rpy_deg[2]:+.1f}] "
+        f"tilt_deg={float(math.degrees(tilt)):.1f}{gyro_part} timestamp_s={timestamp_s}"
+    )
+
+
 def _format_home_pose_line(
     *,
     joint: str,
@@ -1897,6 +1956,7 @@ def calibrate_home_pose(
     states: Dict[str, JointState],
     move_ms: int,
     pause_s: float,
+    imu=None,
 ) -> None:
     spec_path, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
     home_by_joint = dict(zip(actuator_names, home_ctrl_rad, strict=True))
@@ -1934,6 +1994,13 @@ def calibrate_home_pose(
 
         print("\n-- Calibrate Home Pose --")
         print(f"Policy spec: {spec_path}")
+        if imu is None:
+            print("  IMU body_angle: unavailable (IMU not initialized)")
+        else:
+            try:
+                print(_format_calibrate_home_imu_status(imu.read()))
+            except Exception as exc:
+                print(f"  IMU body_angle: read_failed {type(exc).__name__}: {exc}")
         for joint in joint_names:
             servo = servo_cfgs[joint]
             print(
@@ -4235,15 +4302,41 @@ Examples (copy/paste):
             bundle_dir_for_home = resolve_bundle_dir(args, config)
             if bundle_dir_for_home is None:
                 raise ValueError("calibrate_home requires --bundle or a config policy path next to policy_spec.json.")
-            calibrate_home_pose(
-                controller,
-                bundle_dir=bundle_dir_for_home,
-                joint_names=joint_names,
-                servo_cfgs=servo_cfgs,
-                states=states,
-                move_ms=int(args.move_ms),
-                pause_s=float(args.pause_s),
-            )
+            imu = None
+            try:
+                from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+
+                with _alarm_timeout(
+                    10,
+                    message=(
+                        "Timed out initializing BNO085 IMU for calibrate_home body-angle status. "
+                        "Continuing without IMU body angle."
+                    ),
+                ):
+                    imu = _init_calibration_bno085(
+                        BNO085IMU,
+                        config=config,
+                        upside_down=bool(getattr(config.bno085, "upside_down", False)),
+                    )
+                time.sleep(0.2)
+            except Exception as exc:
+                print(f"Warning: IMU body angle unavailable in calibrate_home: {exc}")
+                imu = None
+            try:
+                calibrate_home_pose(
+                    controller,
+                    bundle_dir=bundle_dir_for_home,
+                    joint_names=joint_names,
+                    servo_cfgs=servo_cfgs,
+                    states=states,
+                    move_ms=int(args.move_ms),
+                    pause_s=float(args.pause_s),
+                    imu=imu,
+                )
+            finally:
+                if imu is not None:
+                    with contextlib.suppress(Exception):
+                        imu.close()
             return
 
         if args.calibrate:

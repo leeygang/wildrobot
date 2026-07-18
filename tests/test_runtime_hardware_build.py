@@ -358,6 +358,25 @@ def test_home_pose_status_line_prints_current_requested_and_config() -> None:
     assert "home_raw=" in line
 
 
+def test_calibrate_home_imu_status_prints_body_angle() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    sample = SimpleNamespace(
+        valid=True,
+        fresh=True,
+        timestamp_s=12.5,
+        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        gyro_rad_s=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+    )
+
+    line = calibrate_mod._format_calibrate_home_imu_status(sample)
+
+    assert "IMU body_angle: valid=True fresh=True" in line
+    assert "rpy_deg=[+0.0, +0.0, +0.0]" in line
+    assert "tilt_deg=0.0" in line
+    assert "gyro_norm_rad_s=0.000" in line
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 
