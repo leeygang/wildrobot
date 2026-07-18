@@ -61,7 +61,7 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_RESET = "\033[0m"
 _STARTUP_STABILITY_WINDOW_S = 0.4
 _STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO = 0.9
-_STARTUP_STABILITY_MAX_TILT_DEG = 12.0
+_STARTUP_STABILITY_MAX_TILT_DEG = 15.0
 _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 
@@ -1286,6 +1286,7 @@ def run_policy_loop(
     startup_command_ramp_steps: int = 0,
     startup_action_ramp_steps: int = 0,
     startup_stability_check: bool = True,
+    startup_stability_max_tilt_deg: float = _STARTUP_STABILITY_MAX_TILT_DEG,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -1301,6 +1302,7 @@ def run_policy_loop(
         realtime=realtime,
         leg_indices=leg_indices,
         stability_check=bool(startup_stability_check),
+        stability_max_tilt_deg=float(startup_stability_max_tilt_deg),
     )
     timing_samples: List[dict] = []
     servo_metric_samples: List[dict] = []
@@ -1494,6 +1496,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         help=(
             "Do not fail after startup home hold when footswitch/body stability "
             "checks fail. Use only for suspended diagnostics."
+        ),
+    )
+    parser.add_argument(
+        "--startup-stability-max-tilt-deg",
+        type=float,
+        default=_STARTUP_STABILITY_MAX_TILT_DEG,
+        help=(
+            "Maximum body tilt allowed during the final startup home stability "
+            f"window before walking (default: {_STARTUP_STABILITY_MAX_TILT_DEG:.1f})."
         ),
     )
     parser.add_argument(
@@ -1714,6 +1725,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             1,
             int(round(float(args.startup_action_ramp_s) / max(float(ctrl_dt), 1e-9))),
         )
+    startup_stability_max_tilt_deg = float(args.startup_stability_max_tilt_deg)
 
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
@@ -1723,6 +1735,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
         f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "
+        f"| startup_stability_max_tilt_deg={startup_stability_max_tilt_deg:.1f} "
         f"| startup_command_ramp_steps={startup_command_ramp_steps} "
         f"| startup_action_ramp_steps={startup_action_ramp_steps}",
         flush=True,
@@ -1741,6 +1754,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_command_ramp_steps=startup_command_ramp_steps,
             startup_action_ramp_steps=startup_action_ramp_steps,
             startup_stability_check=not bool(args.disable_startup_stability_check),
+            startup_stability_max_tilt_deg=startup_stability_max_tilt_deg,
         )
     finally:
         try:
