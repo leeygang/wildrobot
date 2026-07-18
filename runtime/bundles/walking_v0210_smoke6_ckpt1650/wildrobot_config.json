@@ -13,7 +13,7 @@
     "servos": {
       "left_hip_pitch": {
         "id": 1,
-        "servo_offset_unit": -17,
+        "servo_offset_unit": -34,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
@@ -43,7 +43,7 @@
       },
       "right_hip_pitch": {
         "id": 5,
-        "servo_offset_unit": -7,
+        "servo_offset_unit": 19,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
