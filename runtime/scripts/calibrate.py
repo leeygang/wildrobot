@@ -570,6 +570,47 @@ def yes_no(prompt: str, default: bool = False) -> bool:
     return resp.startswith("y")
 
 
+def prompt_zero_centering_mode(*, default: str = "o") -> str:
+    default = str(default).strip().lower()
+    if default not in {"a", "o", "n"}:
+        default = "o"
+    print(
+        "Move all joints to MuJoCo joint_pos_deg 0 before continuing?\n"
+        "  a = absolute joint 0 deg (ignore servo_offset_unit)\n"
+        "  o = calibrated joint 0 deg (apply servo_offset_unit)\n"
+        "  n = no move"
+    )
+    resp = input(f"[a/o/n, default {default}]: ").strip().lower()
+    if not resp:
+        return default
+    first = resp[0]
+    if first in {"a", "o", "n"}:
+        return first
+    print(f"Unknown choice '{resp}', using default '{default}'.")
+    return default
+
+
+def build_zero_pose_commands(
+    *,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+    use_offset: bool,
+) -> List[Tuple[int, int]]:
+    cmds: List[Tuple[int, int]] = []
+    for joint in joint_names:
+        servo = servo_cfgs[joint]
+        state = states[joint]
+        offset = int(state.offset) if use_offset else 0
+        units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+            0.0,
+            motor_sign=state.motor_sign,
+            offset=offset,
+        )
+        cmds.append((servo.id, units))
+    return cmds
+
+
 def build_calibration_controller(servo_controller_config):
     return build_ttl_servo_controller(servo_controller_config)
 
@@ -3740,17 +3781,15 @@ Examples (copy/paste):
         if args.range:
             # Range test mode: reset to center, then interactively test joints
             print("\n-- Range Test Mode --")
-            if yes_no("Reset all servos to MuJoCo joint_pos_deg 0 (0.0 rad) before testing?", default=True):
-                cmds = []
-                for joint in joint_names:
-                    servo = servo_cfgs[joint]
-                    state = states[joint]
-                    units = servo.joint_target_rad_to_elect_unit_for_calibrate(
-                        0.0,
-                        motor_sign=state.motor_sign,
-                        offset=state.offset,
-                    )
-                    cmds.append((servo.id, units))
+            zero_mode = prompt_zero_centering_mode(default="o")
+            if zero_mode != "n":
+                use_offset = zero_mode == "o"
+                cmds = build_zero_pose_commands(
+                    joint_names=joint_names,
+                    servo_cfgs=servo_cfgs,
+                    states=states,
+                    use_offset=use_offset,
+                )
                 servo_cfg_by_id = {int(servo_cfgs[j].id): servo_cfgs[j] for j in joint_names}
                 center_move_ms = _group_move_ms_20deg_per_s(
                     controller,
@@ -3759,8 +3798,9 @@ Examples (copy/paste):
                     fallback_ms=max(int(args.move_ms), 1000),
                     min_ms=1000,
                 )
+                mode_label = "calibrated zero with offset" if use_offset else "absolute zero without offset"
                 announce_and_pause(
-                    f"Step: move all joints to MuJoCo joint_pos_deg 0 (0.0 rad, duration {center_move_ms} ms)",
+                    f"Step: move all joints to {mode_label} (duration {center_move_ms} ms)",
                     float(args.pause_s),
                 )
                 controller.move_servos(cmds, int(center_move_ms))
@@ -3847,6 +3887,8 @@ Examples (copy/paste):
             )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
+            cmds: List[Tuple[int, int]] = []
+            use_offset = True
             if args.go_home:
                 if home_pose_commanded:
                     print("Skipping MuJoCo-zero centering because the home pose was already commanded.")
@@ -3855,17 +3897,17 @@ Examples (copy/paste):
                         "Skipping MuJoCo-zero centering because --go-home was requested. "
                         "Run without --go-home to start calibration from MuJoCo zero."
                     )
-            elif yes_no("Move all joints to MuJoCo joint_pos_deg 0 (0.0 rad) before calibrating?", default=True):
-                cmds = []
-                for joint in joint_names:
-                    servo = servo_cfgs[joint]
-                    state = states[joint]
-                    units = servo.joint_target_rad_to_elect_unit_for_calibrate(
-                        0.0,
-                        motor_sign=state.motor_sign,
-                        offset=state.offset,
+            else:
+                zero_mode = prompt_zero_centering_mode(default="o")
+                use_offset = zero_mode == "o"
+                if zero_mode != "n":
+                    cmds = build_zero_pose_commands(
+                        joint_names=joint_names,
+                        servo_cfgs=servo_cfgs,
+                        states=states,
+                        use_offset=use_offset,
                     )
-                    cmds.append((servo.id, units))
+            if cmds:
                 servo_cfg_by_id = {int(servo_cfgs[j].id): servo_cfgs[j] for j in joint_names}
                 center_move_ms = _group_move_ms_20deg_per_s(
                     controller,
@@ -3874,8 +3916,9 @@ Examples (copy/paste):
                     fallback_ms=max(int(args.move_ms), 1000),
                     min_ms=1000,
                 )
+                mode_label = "calibrated zero with offset" if use_offset else "absolute zero without offset"
                 announce_and_pause(
-                    f"Step: move all joints to MuJoCo joint_pos_deg 0 (duration {center_move_ms} ms, 20 deg/s, min 1s)",
+                    f"Step: move all joints to {mode_label} (duration {center_move_ms} ms, 20 deg/s, min 1s)",
                     float(args.pause_s),
                 )
                 controller.move_servos(cmds, int(center_move_ms))

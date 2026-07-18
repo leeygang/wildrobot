@@ -101,6 +101,72 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
     assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
 
 
+def test_calibrate_zero_pose_commands_can_ignore_or_apply_offset() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import WrRuntimeConfig
+
+    cfg = WrRuntimeConfig.load(_V2_CONFIG)
+    joint = next(
+        name
+        for name, servo in cfg.hiwonder_controller.servos.items()
+        if int(servo.offset) != 0
+    )
+    servo = cfg.hiwonder_controller.servos[joint]
+    states = {
+        joint: calibrate_mod.normalize_joint_state(
+            offset=servo.offset,
+            motor_sign=servo.motor_sign,
+        )
+    }
+
+    absolute = calibrate_mod.build_zero_pose_commands(
+        joint_names=[joint],
+        servo_cfgs=cfg.hiwonder_controller.servos,
+        states=states,
+        use_offset=False,
+    )
+    with_offset = calibrate_mod.build_zero_pose_commands(
+        joint_names=[joint],
+        servo_cfgs=cfg.hiwonder_controller.servos,
+        states=states,
+        use_offset=True,
+    )
+
+    assert absolute == [
+        (
+            servo.id,
+            servo.joint_target_rad_to_elect_unit_for_calibrate(
+                0.0,
+                motor_sign=states[joint].motor_sign,
+                offset=0,
+            ),
+        )
+    ]
+    assert with_offset == [
+        (
+            servo.id,
+            servo.joint_target_rad_to_elect_unit_for_calibrate(
+                0.0,
+                motor_sign=states[joint].motor_sign,
+                offset=states[joint].offset,
+            ),
+        )
+    ]
+    assert absolute != with_offset
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("a", "a"), ("o", "o"), ("n", "n"), ("", "o"), ("bad", "o")],
+)
+def test_calibrate_zero_centering_prompt(monkeypatch, raw: str, expected: str) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": raw)
+
+    assert calibrate_mod.prompt_zero_centering_mode(default="o") == expected
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 
