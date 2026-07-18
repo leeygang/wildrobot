@@ -683,6 +683,24 @@ def _alarm_timeout(seconds: float, *, message: str):
 
 
 def load_bundle_spec(bundle_dir: Path) -> tuple[List[str], List[float]]:
+    _, _, actuator_names, home = load_bundle_spec_data(bundle_dir)
+    return actuator_names, home
+
+
+def resolve_bundle_dir(args: argparse.Namespace, config: WrRuntimeConfig) -> Optional[Path]:
+    bundle_arg = getattr(args, "bundle", None)
+    if bundle_arg:
+        return Path(bundle_arg)
+    try:
+        candidate = config.policy_resolved_path.parent
+        if (candidate / "policy_spec.json").exists():
+            return candidate
+    except Exception:
+        pass
+    return None
+
+
+def load_bundle_spec_data(bundle_dir: Path) -> Tuple[Path, dict, List[str], List[float]]:
     spec_path = bundle_dir / "policy_spec.json"
     if not spec_path.exists():
         raise FileNotFoundError(f"policy_spec.json not found in bundle {bundle_dir}")
@@ -696,7 +714,19 @@ def load_bundle_spec(bundle_dir: Path) -> tuple[List[str], List[float]]:
         raise ValueError("bundle policy_spec.json missing robot.home_ctrl_rad")
     if len(home) != len(actuator_names):
         raise ValueError("bundle policy_spec.json actuator_names/home_ctrl_rad length mismatch")
-    return [str(name) for name in actuator_names], [float(x) for x in home]
+    return spec_path, data, [str(name) for name in actuator_names], [float(x) for x in home]
+
+
+def write_bundle_home_ctrl_rad(bundle_dir: Path, home_ctrl_rad: List[float]) -> Path:
+    spec_path, data, actuator_names, _ = load_bundle_spec_data(bundle_dir)
+    if len(home_ctrl_rad) != len(actuator_names):
+        raise ValueError(
+            f"home_ctrl_rad length {len(home_ctrl_rad)} != actuator count {len(actuator_names)}"
+        )
+    robot = data.setdefault("robot", {})
+    robot["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
+    _write_json_with_retries(spec_path, data)
+    return spec_path
 
 
 def resolve_robot_config_path(
@@ -1767,6 +1797,211 @@ def write_config(
         servo_block["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
 
     _write_json_with_retries(output_path, base_data)
+
+
+def _home_pose_units(
+    servo: ServoConfig,
+    state: JointState,
+    rad: float,
+) -> int:
+    return servo.joint_target_rad_to_elect_unit_for_calibrate(
+        float(rad),
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
+    )
+
+
+def _clamp_rad_to_range(rad: float, rad_range: Tuple[float, float]) -> float:
+    return float(np.clip(float(rad), float(rad_range[0]), float(rad_range[1])))
+
+
+def _format_home_pose_line(
+    *,
+    joint: str,
+    servo: ServoConfig,
+    state: JointState,
+    home_rad: float,
+    readback_units: Optional[int],
+) -> str:
+    home_deg = float(np.rad2deg(float(home_rad)))
+    home_units = _home_pose_units(servo, state, home_rad)
+    if readback_units is None:
+        return (
+            f"  #{int(servo.id):2d}: {joint:22s} current=? "
+            f"home={home_deg:+6.2f}deg raw={home_units:4d}"
+        )
+    current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+        int(readback_units),
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
+    )
+    current_deg = float(np.rad2deg(float(current_rad)))
+    return (
+        f"  #{int(servo.id):2d}: {joint:22s} current={current_deg:+6.2f}deg "
+        f"raw={int(readback_units):4d} home={home_deg:+6.2f}deg home_raw={home_units:4d}"
+    )
+
+
+def _print_home_pose_joint_target(
+    *,
+    joint: str,
+    servo: ServoConfig,
+    state: JointState,
+    home_rad: float,
+) -> None:
+    home_deg = float(np.rad2deg(float(home_rad)))
+    home_units = _home_pose_units(servo, state, home_rad)
+    print(f"  {joint} home_joint_rad={float(home_rad):+.6f}")
+    print(f"  {joint} home_joint_deg={home_deg:+.3f}")
+    print(f"  {joint} home_raw_servo_unit={int(home_units)}")
+
+
+def _move_joint_home_candidate(
+    controller,
+    *,
+    joint: str,
+    servo: ServoConfig,
+    state: JointState,
+    target_rad: float,
+    move_ms: int,
+) -> None:
+    target_units = _home_pose_units(servo, state, target_rad)
+    move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+    pos = read_position(controller, int(servo.id))
+    if pos is None:
+        print("Moved. Readback failed.")
+        return
+    actual_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+        int(pos),
+        motor_sign=int(state.motor_sign),
+        offset=int(state.offset),
+    )
+    print(
+        f"Moved {joint}: target={float(np.rad2deg(target_rad)):+.3f}deg raw={int(target_units)}; "
+        f"readback={float(np.rad2deg(actual_rad)):+.3f}deg raw={int(pos)}"
+    )
+
+
+def calibrate_home_pose(
+    controller,
+    *,
+    bundle_dir: Path,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+    move_ms: int,
+    pause_s: float,
+) -> None:
+    spec_path, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
+    home_by_joint = dict(zip(actuator_names, home_ctrl_rad, strict=True))
+    missing = [joint for joint in joint_names if joint not in home_by_joint]
+    if missing:
+        raise ValueError(f"policy_spec.json missing home pose joints: {missing}")
+
+    cmds = [
+        (
+            int(servo_cfgs[joint].id),
+            _home_pose_units(servo_cfgs[joint], states[joint], float(home_by_joint[joint])),
+        )
+        for joint in joint_names
+    ]
+    home_move_ms = max(int(move_ms), 800)
+    announce_and_pause(
+        f"Step: move all joints to policy home pose (duration {home_move_ms} ms)",
+        pause_s,
+    )
+    controller.move_servos(cmds, int(home_move_ms))
+    time.sleep(float(home_move_ms) / 1000.0 + 0.2)
+
+    servo_id_to_joint = {int(servo_cfgs[joint].id): joint for joint in joint_names}
+    while True:
+        _, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
+        home_by_joint = dict(zip(actuator_names, home_ctrl_rad, strict=True))
+        positions = controller.read_servo_positions([int(servo_cfgs[joint].id) for joint in joint_names])
+        pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions} if positions else {}
+
+        print("\n-- Calibrate Home Pose --")
+        print(f"Policy spec: {spec_path}")
+        for joint in joint_names:
+            servo = servo_cfgs[joint]
+            print(
+                _format_home_pose_line(
+                    joint=joint,
+                    servo=servo,
+                    state=states[joint],
+                    home_rad=float(home_by_joint[joint]),
+                    readback_units=pos_by_id.get(int(servo.id)),
+                )
+            )
+        print("\n  q = back to calibration main menu")
+
+        raw = input("Select servo # to adjust home pose (or q): ").strip().lower()
+        if raw == "q" or raw == PANIC_KEY:
+            return
+        try:
+            servo_id = int(raw.lstrip("#"))
+        except ValueError:
+            print("Invalid input. Enter a servo number or q.")
+            continue
+        joint = servo_id_to_joint.get(servo_id)
+        if joint is None:
+            valid_servo_ids = ", ".join(str(servo_cfgs[j].id) for j in joint_names)
+            print(f"Invalid servo ID. Enter one of: {valid_servo_ids}.")
+            continue
+
+        servo = servo_cfgs[joint]
+        state = states[joint]
+        current_rad = _clamp_rad_to_range(float(home_by_joint[joint]), servo.rad_range)
+
+        while True:
+            print(f"\nAdjust home pose for {joint} (servo #{int(servo.id)})")
+            _print_home_pose_joint_target(
+                joint=joint,
+                servo=servo,
+                state=state,
+                home_rad=current_rad,
+            )
+            print("  a = add +1 deg and move")
+            print("  d = reduce -1 deg and move")
+            print("  s = save this joint home angle and return to joint list")
+            print("  q = return to joint list without saving this joint")
+            cmd = input("(a/d/s/q) > ").strip().lower()
+            if cmd == "q" or cmd == PANIC_KEY:
+                break
+            if cmd == "s":
+                spec_path, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
+                idx = actuator_names.index(joint)
+                home_ctrl_rad[idx] = float(current_rad)
+                written_path = write_bundle_home_ctrl_rad(bundle_dir, home_ctrl_rad)
+                print(f"Saved {joint} home pose to {written_path}")
+                _print_home_pose_joint_target(
+                    joint=joint,
+                    servo=servo,
+                    state=state,
+                    home_rad=current_rad,
+                )
+                break
+            if cmd not in {"a", "d"}:
+                print("Unknown command; use a, d, s, or q.")
+                continue
+            delta_deg = 1.0 if cmd == "a" else -1.0
+            candidate_rad = _clamp_rad_to_range(
+                float(current_rad) + float(np.deg2rad(delta_deg)),
+                servo.rad_range,
+            )
+            if abs(candidate_rad - current_rad) <= 1e-12:
+                print("Home angle is already at this joint's configured range limit.")
+                continue
+            current_rad = candidate_rad
+            _move_joint_home_candidate(
+                controller,
+                joint=joint,
+                servo=servo,
+                state=state,
+                target_rad=current_rad,
+                move_ms=max(int(move_ms), 300),
+            )
+
 
 def write_bno_config(
     base_data: dict,
@@ -3538,7 +3773,7 @@ Examples (copy/paste):
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --record-pos
 
-        # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
+  # Interactive calibration mode (main menu: h=calibrate_home_pose; per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
 
   # Test range of motion for joints interactively
@@ -3949,7 +4184,8 @@ Examples (copy/paste):
                 "Per-joint submenu:\n"
                 "  p=print state, q=target deg evaluator, a=policy action evaluator,\n"
                 "  d=calibrate servo_unit_direction, r=single-joint range test (20 deg/s),\n"
-                "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
+                "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload\n"
+                "Main menu: h=calibrate_home_pose"
             )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
@@ -4020,15 +4256,32 @@ Examples (copy/paste):
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
+                print("  h = calibrate_home_pose")
 
                 # Step 2: User selects joint
-                raw = input("\nSelect servo # (or 'q' to quit, 's' to save+quit): ").strip().lower()
+                raw = input("\nSelect servo # (or 'h' home pose, 'q' quit, 's' save+quit): ").strip().lower()
                 if raw == "q" or raw == PANIC_KEY:
                     save_on_exit = False
                     break
                 if raw == "s":
                     save_on_exit = True
                     break
+                if raw == "h":
+                    bundle_dir_for_home = resolve_bundle_dir(args, config)
+                    if bundle_dir_for_home is None:
+                        print("calibrate_home_pose requires --bundle or a config policy path next to policy_spec.json.")
+                        continue
+                    calibrate_home_pose(
+                        controller,
+                        bundle_dir=bundle_dir_for_home,
+                        joint_names=joint_names,
+                        servo_cfgs=servo_cfgs,
+                        states=states,
+                        move_ms=int(args.move_ms),
+                        pause_s=float(args.pause_s),
+                    )
+                    policy_setup = load_policy_action_setup(args=args, config=config, joint_names=joint_names)
+                    continue
 
                 try:
                     servo_id = int(raw.lstrip("#"))

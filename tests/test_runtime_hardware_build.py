@@ -218,6 +218,49 @@ def test_calibrate_offset_from_zero_degree_reference_handles_shoulder_center() -
     )
 
 
+def test_write_bundle_home_ctrl_rad_updates_policy_spec(tmp_path) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    spec_path = bundle_dir / "policy_spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "robot": {
+                    "actuator_names": ["j1", "j2"],
+                    "home_ctrl_rad": [0.1, 0.2],
+                }
+            }
+        )
+    )
+
+    written_path = calibrate_mod.write_bundle_home_ctrl_rad(bundle_dir, [0.1, 0.35])
+
+    assert written_path == spec_path
+    data = json.loads(spec_path.read_text())
+    assert data["robot"]["home_ctrl_rad"] == [0.1, 0.35]
+
+
+def test_home_pose_units_uses_current_servo_calibration() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    servo = ServoConfig(
+        id=32,
+        servo_offset_unit=-38,
+        motor_unit_direction=-1.0,
+        joint_angle_at_zero_unit_deg=85.0,
+    )
+    state = calibrate_mod.JointState(offset=-38, motor_sign=-1)
+
+    assert calibrate_mod._home_pose_units(servo, state, 0.0) == servo.joint_target_rad_to_elect_unit_for_calibrate(
+        0.0,
+        motor_sign=-1,
+        offset=-38,
+    )
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 
