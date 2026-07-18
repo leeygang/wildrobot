@@ -79,13 +79,13 @@
       },
       "left_shoulder_pitch": {
         "id": 21,
-        "servo_offset_unit": 14,
+        "servo_offset_unit": 22,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 90
       },
       "left_shoulder_roll": {
         "id": 22,
-        "servo_offset_unit": -4,
+        "servo_offset_unit": 18,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": -85
       },
@@ -109,13 +109,13 @@
       },
       "right_shoulder_pitch": {
         "id": 31,
-        "servo_offset_unit": 32,
+        "servo_offset_unit": 3,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": -90
       },
       "right_shoulder_roll": {
         "id": 32,
-        "servo_offset_unit": -38,
+        "servo_offset_unit": -75,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 85
       },
