@@ -13,25 +13,25 @@
     "servos": {
       "left_hip_pitch": {
         "id": 1,
-        "servo_offset_unit": -38,
+        "servo_offset_unit": -17,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_hip_roll": {
         "id": 2,
-        "servo_offset_unit": 20,
+        "servo_offset_unit": 24,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_knee_pitch": {
         "id": 3,
-        "servo_offset_unit": 18,
+        "servo_offset_unit": 37,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_ankle_pitch": {
         "id": 4,
-        "servo_offset_unit": 26,
+        "servo_offset_unit": 38,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
@@ -43,7 +43,7 @@
       },
       "right_hip_pitch": {
         "id": 5,
-        "servo_offset_unit": 0,
+        "servo_offset_unit": -7,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
@@ -55,19 +55,19 @@
       },
       "right_knee_pitch": {
         "id": 7,
-        "servo_offset_unit": -14,
+        "servo_offset_unit": -9,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "right_ankle_pitch": {
         "id": 8,
-        "servo_offset_unit": 23,
+        "servo_offset_unit": 27,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "right_ankle_roll": {
         "id": 10,
-        "servo_offset_unit": -28,
+        "servo_offset_unit": -21,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
