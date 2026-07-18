@@ -328,6 +328,36 @@ def test_home_pose_units_uses_current_servo_calibration() -> None:
     )
 
 
+def test_home_pose_status_line_prints_current_requested_and_config() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    servo = ServoConfig(id=1, motor_unit_direction=1.0, joint_angle_at_zero_unit_deg=0.0)
+    state = calibrate_mod.JointState(offset=10, motor_sign=1)
+    requested_rad = float(np.deg2rad(5.0))
+    home_rad = float(np.deg2rad(3.0))
+    readback_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+        float(np.deg2rad(4.0)),
+        motor_sign=1,
+        offset=10,
+    )
+
+    line = calibrate_mod._format_home_pose_line(
+        joint="j",
+        servo=servo,
+        state=state,
+        requested_rad=requested_rad,
+        home_rad=home_rad,
+        readback_units=readback_units,
+    )
+
+    assert "current= +4.08deg" in line
+    assert "requested= +5.00deg" in line
+    assert "requested_raw=" in line
+    assert "home= +3.00deg" in line
+    assert "home_raw=" in line
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 

@@ -1820,15 +1820,19 @@ def _format_home_pose_line(
     joint: str,
     servo: ServoConfig,
     state: JointState,
+    requested_rad: float,
     home_rad: float,
     readback_units: Optional[int],
 ) -> str:
-    home_deg = float(np.rad2deg(float(home_rad)))
-    home_units = _home_pose_units(servo, state, home_rad)
+    requested_deg = float(np.rad2deg(float(requested_rad)))
+    requested_units = _home_pose_units(servo, state, requested_rad)
+    home_config_deg = float(np.rad2deg(float(home_rad)))
+    home_config_units = _home_pose_units(servo, state, home_rad)
     if readback_units is None:
         return (
             f"  #{int(servo.id):2d}: {joint:22s} current=? "
-            f"home={home_deg:+6.2f}deg raw={home_units:4d}"
+            f"requested={requested_deg:+6.2f}deg requested_raw={requested_units:4d} "
+            f"home={home_config_deg:+6.2f}deg home_raw={home_config_units:4d}"
         )
     current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
         int(readback_units),
@@ -1838,7 +1842,9 @@ def _format_home_pose_line(
     current_deg = float(np.rad2deg(float(current_rad)))
     return (
         f"  #{int(servo.id):2d}: {joint:22s} current={current_deg:+6.2f}deg "
-        f"raw={int(readback_units):4d} home={home_deg:+6.2f}deg home_raw={home_units:4d}"
+        f"raw={int(readback_units):4d} requested={requested_deg:+6.2f}deg "
+        f"requested_raw={requested_units:4d} home={home_config_deg:+6.2f}deg "
+        f"home_raw={home_config_units:4d}"
     )
 
 
@@ -1897,6 +1903,10 @@ def calibrate_home_pose(
     missing = [joint for joint in joint_names if joint not in home_by_joint]
     if missing:
         raise ValueError(f"policy_spec.json missing home pose joints: {missing}")
+    requested_rad_by_joint = {
+        joint: float(home_by_joint[joint])
+        for joint in joint_names
+    }
 
     cmds = [
         (
@@ -1914,9 +1924,11 @@ def calibrate_home_pose(
     time.sleep(float(home_move_ms) / 1000.0 + 0.2)
 
     servo_id_to_joint = {int(servo_cfgs[joint].id): joint for joint in joint_names}
-    while True:
+    def _print_calibrate_home_status() -> Dict[str, float]:
         _, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
         home_by_joint = dict(zip(actuator_names, home_ctrl_rad, strict=True))
+        for joint in joint_names:
+            requested_rad_by_joint.setdefault(joint, float(home_by_joint[joint]))
         positions = controller.read_servo_positions([int(servo_cfgs[joint].id) for joint in joint_names])
         pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions} if positions else {}
 
@@ -1929,19 +1941,28 @@ def calibrate_home_pose(
                     joint=joint,
                     servo=servo,
                     state=states[joint],
+                    requested_rad=float(requested_rad_by_joint[joint]),
                     home_rad=float(home_by_joint[joint]),
                     readback_units=pos_by_id.get(int(servo.id)),
                 )
             )
-        print("\n  q = exit calibrate_home mode")
+        return home_by_joint
 
-        raw = input("Select servo # to adjust home pose (or q): ").strip().lower()
+    while True:
+        home_by_joint = _print_calibrate_home_status()
+        print("\n  p = print current/requested/home status")
+        print("  q = exit calibrate_home mode")
+
+        raw = input("Select servo # to adjust home pose (or p/q): ").strip().lower()
         if raw == "q" or raw == PANIC_KEY:
             return
+        if raw == "p":
+            _print_calibrate_home_status()
+            continue
         try:
             servo_id = int(raw.lstrip("#"))
         except ValueError:
-            print("Invalid input. Enter a servo number or q.")
+            print("Invalid input. Enter a servo number, p, or q.")
             continue
         joint = servo_id_to_joint.get(servo_id)
         if joint is None:
@@ -1951,7 +1972,7 @@ def calibrate_home_pose(
 
         servo = servo_cfgs[joint]
         state = states[joint]
-        current_rad = _clamp_rad_to_range(float(home_by_joint[joint]), servo.rad_range)
+        current_rad = _clamp_rad_to_range(float(requested_rad_by_joint[joint]), servo.rad_range)
 
         while True:
             print(f"\nAdjust home pose for {joint} (servo #{int(servo.id)})")
@@ -1963,15 +1984,20 @@ def calibrate_home_pose(
             )
             print("  a = add +1 deg and move")
             print("  d = reduce -1 deg and move")
+            print("  p = print current/requested/home status")
             print("  s = save this joint home angle and return to joint list")
             print("  q = return to joint list without saving this joint")
-            cmd = input("(a/d/s/q) > ").strip().lower()
+            cmd = input("(a/d/p/s/q) > ").strip().lower()
             if cmd == "q" or cmd == PANIC_KEY:
                 break
+            if cmd == "p":
+                _print_calibrate_home_status()
+                continue
             if cmd == "s":
                 spec_path, _, actuator_names, home_ctrl_rad = load_bundle_spec_data(bundle_dir)
                 idx = actuator_names.index(joint)
                 home_ctrl_rad[idx] = float(current_rad)
+                requested_rad_by_joint[joint] = float(current_rad)
                 written_path = write_bundle_home_ctrl_rad(bundle_dir, home_ctrl_rad)
                 print(f"Saved {joint} home pose to {written_path}")
                 _print_home_pose_joint_target(
@@ -1982,7 +2008,7 @@ def calibrate_home_pose(
                 )
                 break
             if cmd not in {"a", "d"}:
-                print("Unknown command; use a, d, s, or q.")
+                print("Unknown command; use a, d, p, s, or q.")
                 continue
             delta_deg = 1.0 if cmd == "a" else -1.0
             candidate_rad = _clamp_rad_to_range(
@@ -1993,6 +2019,7 @@ def calibrate_home_pose(
                 print("Home angle is already at this joint's configured range limit.")
                 continue
             current_rad = candidate_rad
+            requested_rad_by_joint[joint] = float(current_rad)
             _move_joint_home_candidate(
                 controller,
                 joint=joint,
