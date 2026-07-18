@@ -569,6 +569,64 @@ def yes_no(prompt: str, default: bool = False) -> bool:
     return resp.startswith("y")
 
 
+class TtlCalibrationController:
+    """Compatibility shim for calibrate.py using the raw TTL servo protocol."""
+
+    def __init__(self, raw_bus) -> None:
+        self.raw_bus = raw_bus
+
+    def move_servos(self, servo_commands: List[Tuple[int, int]], time_ms: int) -> bool:
+        for servo_id, position in servo_commands:
+            self.raw_bus.move_time_write(int(servo_id), int(position), int(time_ms))
+        return True
+
+    def read_servo_positions(self, servo_ids: List[int]) -> Optional[List[Tuple[int, int]]]:
+        positions = self.raw_bus.read_positions([int(servo_id) for servo_id in servo_ids])
+        if not positions:
+            return None
+        return [(int(servo_id), int(positions[int(servo_id)])) for servo_id in servo_ids if int(servo_id) in positions]
+
+    def unload_servos(self, servo_ids: List[int]) -> bool:
+        for servo_id in servo_ids:
+            self.raw_bus.unload(int(servo_id))
+        return True
+
+    def get_battery_voltage(self) -> Optional[float]:
+        return None
+
+    def close(self) -> None:
+        self.raw_bus.transport.close()
+
+
+def build_calibration_controller(servo_controller_config):
+    controller_type = str(getattr(servo_controller_config, "type", "hiwonder_ttl_bus")).lower()
+    if controller_type in {"hiwonder_ttl_bus", "hiwonder_ttl_debug_board"}:
+        from wr_runtime.hardware.hiwonder_ttl_bus import (
+            RawServoBus,
+            RawServoBusConfig,
+            SerialTransport,
+            SerialTransportConfig,
+        )
+
+        transport = SerialTransport(
+            SerialTransportConfig(
+                port=str(servo_controller_config.port),
+                baudrate=int(servo_controller_config.baudrate),
+            )
+        )
+        return TtlCalibrationController(RawServoBus(transport, RawServoBusConfig()))
+
+    if controller_type in {"hiwonder", "hiwonder_board", "lsc"}:
+        from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
+
+        return HiwonderBoardController(servo_controller_config)
+
+    raise ValueError(
+        f"Unsupported servo_controller.type={getattr(servo_controller_config, 'type', None)!r}. "
+        "Use 'hiwonder_ttl_bus' for the USB TTL debug board."
+    )
+
+
 @contextlib.contextmanager
 def _alarm_timeout(seconds: float, *, message: str):
     """Best-effort timeout for operations that can hang (Linux only).
@@ -3698,9 +3756,7 @@ Examples (copy/paste):
             print(f"  Range test duration: {RANGE_TEST_MS}ms per segment (min->max->min->center)")
         return
 
-    from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
-
-    controller = HiwonderBoardController(config.hiwonder_controller)
+    controller = build_calibration_controller(config.hiwonder_controller)
     home_pose_commanded = False
     try:
         if args.go_home:

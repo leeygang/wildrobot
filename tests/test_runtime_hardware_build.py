@@ -58,12 +58,8 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
     to immediately move every joint away to MuJoCo zero."""
     import builtins
     import runtime.scripts.calibrate as calibrate_mod
-    import wr_runtime.hardware.hiwonder_board_controller as hw_mod
 
     class _FakeController:
-        def __init__(self, config):
-            self.config = config
-
         def move_servos(self, cmds, move_ms):
             pass
 
@@ -83,7 +79,7 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
         prompts.append(prompt)
         return next(responses)
 
-    monkeypatch.setattr(hw_mod, "HiwonderBoardController", _FakeController)
+    monkeypatch.setattr(calibrate_mod, "build_calibration_controller", lambda config: _FakeController())
     monkeypatch.setattr(builtins, "input", _input)
     monkeypatch.setattr(
         sys,
@@ -103,6 +99,43 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
 
     assert any("Move all servos to home pose now?" in prompt for prompt in prompts)
     assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
+
+
+def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeTransport:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _FakeRawBus:
+        def __init__(self):
+            self.transport = _FakeTransport()
+            self.moves = []
+            self.unloads = []
+
+        def move_time_write(self, servo_id, position, time_ms):
+            self.moves.append((int(servo_id), int(position), int(time_ms)))
+
+        def read_positions(self, servo_ids):
+            return {int(servo_id): 500 + int(servo_id) for servo_id in servo_ids}
+
+        def unload(self, servo_id):
+            self.unloads.append(int(servo_id))
+
+    raw_bus = _FakeRawBus()
+    controller = calibrate_mod.TtlCalibrationController(raw_bus)
+
+    assert controller.move_servos([(1, 410), (8, 582)], 1500)
+    assert raw_bus.moves == [(1, 410, 1500), (8, 582, 1500)]
+    assert controller.read_servo_positions([1, 8]) == [(1, 501), (8, 508)]
+    assert controller.unload_servos([1, 8])
+    assert raw_bus.unloads == [1, 8]
+    controller.close()
+    assert raw_bus.transport.closed
 
 
 def test_hardware_protocols_have_no_from_config() -> None:
