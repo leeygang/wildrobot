@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import runpy
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +51,55 @@ def test_calibrate_default_config_path_is_repo_root_relative(monkeypatch, tmp_pa
     ns = runpy.run_path(str(_CALIBRATE))
     config_path = ns["resolve_config_path"](SimpleNamespace(config=None, bundle=None))
     assert config_path == _V2_CONFIG
+
+
+def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
+    """With --go-home, calibration should preserve home pose instead of asking
+    to immediately move every joint away to MuJoCo zero."""
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+    import wr_runtime.hardware.hiwonder_board_controller as hw_mod
+
+    class _FakeController:
+        def __init__(self, config):
+            self.config = config
+
+        def move_servos(self, cmds, move_ms):
+            pass
+
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    prompts: list[str] = []
+    responses = iter(["y", "q"])
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(hw_mod, "HiwonderBoardController", _FakeController)
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_V2_CONFIG),
+            "--calibrate",
+            "--go-home",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    assert any("Move all servos to home pose now?" in prompt for prompt in prompts)
+    assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
 
 
 def test_hardware_protocols_have_no_from_config() -> None:

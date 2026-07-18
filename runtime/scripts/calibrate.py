@@ -3659,12 +3659,14 @@ Examples (copy/paste):
     from wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
 
     controller = HiwonderBoardController(config.hiwonder_controller)
+    home_pose_commanded = False
     try:
         if args.go_home:
             home_ctrl = resolve_home_ctrl(args, joint_names)
             if len(home_ctrl) != len(joint_names):
                 raise ValueError("home_ctrl_rad length mismatch with joints")
             if yes_no("Move all servos to home pose now?", default=True):
+                home_pose_commanded = True
                 cmds = []
                 for joint, rad in zip(joint_names, home_ctrl):
                     servo = servo_cfgs[joint]
@@ -3780,7 +3782,10 @@ Examples (copy/paste):
         if args.calibrate:
             # Unified calibration mode
             print("\n-- Calibration Mode --")
-            print("Flow: center all joints → select joint → choose action → calibrate → repeat")
+            if args.go_home:
+                print("Flow: keep home pose → select joint → choose action → calibrate → repeat")
+            else:
+                print("Flow: center all joints → select joint → choose action → calibrate → repeat")
             print(
                 "Per-joint submenu:\n"
                 "  p=print state, q=target deg evaluator, a=policy action evaluator,\n"
@@ -3789,7 +3794,15 @@ Examples (copy/paste):
             )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
-            if yes_no("Move all joints to MuJoCo joint_pos_deg 0 (0.0 rad) before calibrating?", default=True):
+            if args.go_home:
+                if home_pose_commanded:
+                    print("Skipping MuJoCo-zero centering because the home pose was already commanded.")
+                else:
+                    print(
+                        "Skipping MuJoCo-zero centering because --go-home was requested. "
+                        "Run without --go-home to start calibration from MuJoCo zero."
+                    )
+            elif yes_no("Move all joints to MuJoCo joint_pos_deg 0 (0.0 rad) before calibrating?", default=True):
                 cmds = []
                 for joint in joint_names:
                     servo = servo_cfgs[joint]
