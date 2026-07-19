@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import faulthandler
 import math
+import signal
 import sys
 import time
 import traceback
@@ -118,6 +120,16 @@ def _output_log_context(log_path: Optional[str], *, mirror_console: bool):
         stderr = _LogStream(sys.stderr, log_stream, mirror_console=mirror_console)
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             yield
+
+
+def _install_stack_dump_signal() -> None:
+    sigusr1 = getattr(signal, "SIGUSR1", None)
+    if sigusr1 is None:
+        return
+    try:
+        faulthandler.register(sigusr1, file=sys.stderr, all_threads=True)
+    except Exception:
+        pass
 
 
 def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray:
@@ -1232,12 +1244,14 @@ def _run_startup_home_hold(
                 flush=True,
             )
 
-        if realtime:
+        if realtime and not (confirm_before_walk and step == hold_steps - 1):
             elapsed = time.monotonic() - loop_start_s
             remaining = ctrl_dt - elapsed
             if remaining > 0:
                 time.sleep(remaining)
 
+    if confirm_before_walk:
+        print("Startup home hold loop complete; entering manual start gate.", flush=True)
     final_err = _leg_error_max_deg(last_info or {}, leg_indices)
     final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
     print(f"Startup home hold complete: leg_err|max_deg={final_err_text}.", flush=True)
@@ -1483,6 +1497,7 @@ def run_policy_loop(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    _install_stack_dump_signal()
     parser = argparse.ArgumentParser(
         description="Run a WildRobot policy bundle (latest v8 home-residual contract)."
     )

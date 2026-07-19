@@ -390,6 +390,7 @@ def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
         np.testing.assert_allclose(ctrl, home, atol=1e-6)
     out = capsys.readouterr().out
     assert "Manual start gate: home hold is complete" in out
+    assert "Startup home hold loop complete; entering manual start gate" in out
     assert "Start policy walking now? [y/N]:" in out
     assert "Manual start confirmed" in out
     assert "Re-priming IMU after manual pause" in out
