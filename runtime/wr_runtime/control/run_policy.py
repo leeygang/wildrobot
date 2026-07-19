@@ -1241,13 +1241,18 @@ def _run_startup_home_hold(
     final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
     print(f"Startup home hold complete: leg_err|max_deg={final_err_text}.", flush=True)
     if confirm_before_walk:
+        print(
+            "Manual start gate: home hold is complete. Settle the robot now.",
+            flush=True,
+        )
+        print(
+            "Type 'y' then Enter to start policy walking; press Enter or 'n' to stop.",
+            flush=True,
+        )
         try:
             prompt_input = input if input_fn is None else input_fn
             answer = str(
-                prompt_input(
-                    "Manually settle the robot at home pose, then start "
-                    "policy walking? [y/N]: "
-                )
+                prompt_input("Start policy walking now? [y/N]: ")
             ).strip().lower()
         except EOFError:
             answer = ""

@@ -378,6 +378,7 @@ def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
     for ctrl in robot_io.written[:-2]:
         np.testing.assert_allclose(ctrl, home, atol=1e-6)
     out = capsys.readouterr().out
+    assert "Manual start gate: home hold is complete" in out
     assert "Manual start confirmed" in out
     assert "Startup home confirm complete" in out
     assert "Startup home stability OK" in out
