@@ -80,10 +80,16 @@ def export_policy_bundle(
     if robot_config_path.exists():
         robot_snapshot_path.write_text(robot_config_path.read_text())
 
+    mjcf_actuator_order = list(spec.robot.actuator_names)
+    fixed_home = spec.provenance.get("runtime_fixed_home")
+    if isinstance(fixed_home, dict) and fixed_home.get("full_actuator_names"):
+        mjcf_actuator_order = [
+            str(name) for name in fixed_home["full_actuator_names"]
+        ]
     mjcf_snapshot_path = _export_mjcf_snapshot(
         output_dir=output_dir,
         config_path=config_path,
-        actuator_names=spec.robot.actuator_names,
+        actuator_names=mjcf_actuator_order,
     )
 
     # Fail-fast: ensure the bundle is self-consistent for the hardware runtime.
@@ -314,28 +320,92 @@ def _build_policy_spec(
     action_filter_alpha = float(env.get("action_filter_alpha", 0.0))
 
     joints = _build_joints(robot_cfg)
-    actuator_names = list(joints.keys())
-    home_ctrl_rad = _get_home_ctrl_from_mjcf(config_path, actuator_names=actuator_names)
-    home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
+    full_actuator_names = list(joints.keys())
+    full_home_ctrl_rad = _get_home_ctrl_from_mjcf(
+        config_path, actuator_names=full_actuator_names
+    )
+    full_home_ctrl_rad = _clamp_home_ctrl(
+        full_home_ctrl_rad, joints, full_actuator_names
+    )
 
     actuated_joint_specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
         raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
+    excluded = _policy_excluded_actuator_names(env)
+    known = {str(item["name"]) for item in actuated_joint_specs}
+    unknown = sorted(set(excluded) - known)
+    if unknown:
+        raise ValueError(
+            "env.policy_excluded_actuator_names contains unknown actuators: "
+            f"{unknown}"
+        )
+    active_joint_specs = [
+        item for item in actuated_joint_specs if str(item["name"]) not in set(excluded)
+    ]
+    if not active_joint_specs:
+        raise ValueError("env.policy_excluded_actuator_names excludes every actuator")
+    active_names = [str(item["name"]) for item in active_joint_specs]
+    full_home_by_name = dict(zip(full_actuator_names, full_home_ctrl_rad))
+    home_ctrl_rad = [float(full_home_by_name[name]) for name in active_names]
+    provenance = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "training_config": str(config_path),
+        "source_checkpoint": {"format": "pkl", "path": str(checkpoint_path)},
+        "robot_config": str(robot_config_path),
+    }
+    fixed_metadata = _runtime_fixed_home_metadata_for_export(
+        excluded=excluded,
+        full_actuator_names=full_actuator_names,
+        full_home_by_name=full_home_by_name,
+        joints=joints,
+    )
+    if fixed_metadata is not None:
+        provenance["runtime_fixed_home"] = fixed_metadata
 
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
-        actuated_joint_specs=actuated_joint_specs,
+        actuated_joint_specs=active_joint_specs,
         action_filter_alpha=action_filter_alpha,
         layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         home_ctrl_rad=home_ctrl_rad,
-        provenance={
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "training_config": str(config_path),
-            "source_checkpoint": {"format": "pkl", "path": str(checkpoint_path)},
-            "robot_config": str(robot_config_path),
-        },
+        provenance=provenance,
     )
+
+
+def _policy_excluded_actuator_names(env: Dict[str, Any]) -> list[str]:
+    names = env.get("policy_excluded_actuator_names") or []
+    if not isinstance(names, list):
+        raise ValueError("env.policy_excluded_actuator_names must be a list")
+    return [str(name) for name in names]
+
+
+def _runtime_fixed_home_metadata_for_export(
+    *,
+    excluded: list[str],
+    full_actuator_names: list[str],
+    full_home_by_name: dict[str, float],
+    joints: Dict[str, JointSpec],
+) -> Dict[str, Any] | None:
+    excluded_set = set(excluded)
+    if not excluded_set:
+        return None
+    fixed_names = [name for name in full_actuator_names if name in excluded_set]
+    active_names = [name for name in full_actuator_names if name not in excluded_set]
+    return {
+        "full_actuator_names": full_actuator_names,
+        "active_actuator_names": active_names,
+        "fixed_actuator_names": fixed_names,
+        "fixed_home_ctrl_rad": [float(full_home_by_name[name]) for name in fixed_names],
+        "fixed_joint_ranges_rad": {
+            name: [
+                float(joints[name].range_min_rad),
+                float(joints[name].range_max_rad),
+            ]
+            for name in fixed_names
+        },
+        "source": "env.policy_excluded_actuator_names",
+    }
 
 
 def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> list[float]:

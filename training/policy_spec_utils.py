@@ -90,6 +90,69 @@ def clamp_home_ctrl(
     return clipped
 
 
+def policy_excluded_actuator_names(training_cfg: Any) -> List[str]:
+    names = getattr(training_cfg.env, "policy_excluded_actuator_names", ()) or ()
+    return [str(name) for name in names]
+
+
+def _policy_actuated_joint_specs(*, training_cfg: Any, robot_cfg: Any) -> List[Dict[str, Any]]:
+    excluded = set(policy_excluded_actuator_names(training_cfg))
+    specs = list(robot_cfg.actuated_joints)
+    if not excluded:
+        return specs
+    known = {str(item["name"]) for item in specs}
+    unknown = sorted(excluded - known)
+    if unknown:
+        raise ValueError(
+            "env.policy_excluded_actuator_names contains unknown actuators: "
+            f"{unknown}"
+        )
+    active = [item for item in specs if str(item["name"]) not in excluded]
+    if not active:
+        raise ValueError("env.policy_excluded_actuator_names excludes every actuator")
+    return active
+
+
+def _runtime_fixed_home_metadata(
+    *,
+    training_cfg: Any,
+    robot_cfg: Any,
+) -> Optional[Dict[str, Any]]:
+    excluded = set(policy_excluded_actuator_names(training_cfg))
+    if not excluded:
+        return None
+
+    full_specs = list(robot_cfg.actuated_joints)
+    full_names = [str(item["name"]) for item in full_specs]
+    active_names = [name for name in full_names if name not in excluded]
+    fixed_names = [name for name in full_names if name in excluded]
+    full_home = get_home_ctrl_from_model_path(
+        model_path=training_cfg.env.model_path,
+        actuator_names=full_names,
+    )
+    full_home = clamp_home_ctrl(
+        home_ctrl=full_home,
+        actuated_joint_specs=full_specs,
+        actuator_names=full_names,
+    )
+    home_by_name = dict(zip(full_names, full_home))
+    spec_by_name = {str(item["name"]): item for item in full_specs}
+    return {
+        "full_actuator_names": full_names,
+        "active_actuator_names": active_names,
+        "fixed_actuator_names": fixed_names,
+        "fixed_home_ctrl_rad": [float(home_by_name[name]) for name in fixed_names],
+        "fixed_joint_ranges_rad": {
+            name: [
+                float(spec_by_name[name]["range"][0]),
+                float(spec_by_name[name]["range"][1]),
+            ]
+            for name in fixed_names
+        },
+        "source": "env.policy_excluded_actuator_names",
+    }
+
+
 def maybe_get_home_ctrl_from_training_config(
     *,
     training_cfg: Any,
@@ -112,14 +175,18 @@ def maybe_get_home_ctrl_from_training_config(
     if mapping_id != "pos_target_home_v1" and residual_base != "home":
         return None
 
-    actuator_names = [str(item["name"]) for item in robot_cfg.actuated_joints]
+    actuated_joint_specs = _policy_actuated_joint_specs(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
+    )
+    actuator_names = [str(item["name"]) for item in actuated_joint_specs]
     home_ctrl = get_home_ctrl_from_model_path(
         model_path=training_cfg.env.model_path,
         actuator_names=actuator_names,
     )
     return clamp_home_ctrl(
         home_ctrl=home_ctrl,
-        actuated_joint_specs=robot_cfg.actuated_joints,
+        actuated_joint_specs=actuated_joint_specs,
         actuator_names=actuator_names,
     )
 
@@ -131,9 +198,21 @@ def build_policy_spec_from_training_config(
     action_filter_alpha: Optional[float] = None,
     provenance: Optional[Dict[str, Any]] = None,
 ) -> PolicySpec:
+    policy_joint_specs = _policy_actuated_joint_specs(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
+    )
+    spec_provenance = dict(provenance or {})
+    fixed_home_metadata = _runtime_fixed_home_metadata(
+        training_cfg=training_cfg,
+        robot_cfg=robot_cfg,
+    )
+    if fixed_home_metadata is not None:
+        spec_provenance["runtime_fixed_home"] = fixed_home_metadata
+
     return build_policy_spec(
         robot_name=robot_cfg.robot_name,
-        actuated_joint_specs=robot_cfg.actuated_joints,
+        actuated_joint_specs=policy_joint_specs,
         action_filter_alpha=float(
             training_cfg.env.action_filter_alpha
             if action_filter_alpha is None
@@ -145,5 +224,5 @@ def build_policy_spec_from_training_config(
             training_cfg=training_cfg,
             robot_cfg=robot_cfg,
         ),
-        provenance=provenance,
+        provenance=spec_provenance if spec_provenance else None,
     )

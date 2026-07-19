@@ -127,6 +127,10 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
+    # Optional policy action/observation mask.  Excluded actuators remain in the
+    # robot hardware model but are held at fixed home targets by runtime export
+    # metadata.
+    policy_excluded_actuator_names: Tuple[str, ...] = field(default_factory=tuple)
     # Reference implementation selector.  v0.20.1 deleted v1/v2; the
     # only supported value is "v3_offline_library", which loads the
     # offline ZMP ReferenceLibrary (requires

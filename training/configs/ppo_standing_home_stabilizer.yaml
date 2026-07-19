@@ -1,0 +1,140 @@
+# =============================================================================
+# WildRobot PPO Standing Home Stabilizer
+# =============================================================================
+# 17-action standing policy: excludes four wrist servos from actor obs/control.
+# Runtime/export metadata holds excluded wrists at the MJCF home pose.
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_standing_home_stabilizer.yaml --verify
+# =============================================================================
+version: "0.22.0"
+version_name: "Standing home stabilizer, no wrist control"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  target_height: 0.46
+  min_height: 0.40
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+  min_velocity_y: 0.0
+  max_velocity_y: 0.0
+  max_yaw_rate: 0.0
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  actor_obs_layout_id: wr_obs_v1
+  action_mapping_id: pos_target_home_v1
+  action_filter_alpha: 0.6
+  policy_excluded_actuator_names:
+    - left_wrist_yaw
+    - left_wrist_pitch
+    - right_wrist_yaw
+    - right_wrist_pitch
+
+  # Keep the existing v3 reference service alive for reset/reward plumbing, but
+  # the wr_obs_v1 actor sees no reference channels.
+  loc_ref_version: v3_offline_library
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_base: home
+
+  push_enabled: true
+  push_start_step_min: 40
+  push_start_step_max: 250
+  push_duration_steps: 6
+  push_force_min: 2.0
+  push_force_max: 5.0
+  push_body: waist
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 100
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+reward_weights:
+  tracking_lin_vel: 1.0
+  lateral_velocity: -0.5
+  base_height: 3.0
+  orientation: -2.0
+  height_target: 1.0
+  height_target_sigma: 0.04
+  angular_velocity: -0.1
+
+  torque: -0.001
+  saturation: -0.1
+  action_rate: -0.01
+  joint_velocity: -0.001
+
+  slip: -0.5
+  clearance: 0.1
+  stance_width_penalty: -0.5
+  stance_width_target: 0.19
+  stance_width_sigma: 0.05
+
+  forward_velocity_scale: 4.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, standing, home-stabilizer, no-wrist-control]
+
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3

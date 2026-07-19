@@ -240,10 +240,45 @@ def validate_runtime_compat(
     validate_spec(spec)
 
     mjcf_names = list(mjcf_actuator_names)
-    if mjcf_names != list(spec.robot.actuator_names):
+    spec_names = list(spec.robot.actuator_names)
+    fixed_home = spec.provenance.get("runtime_fixed_home")
+    if isinstance(fixed_home, dict):
+        full_names = [str(name) for name in fixed_home.get("full_actuator_names", [])]
+        active_names = [
+            str(name) for name in fixed_home.get("active_actuator_names", [])
+        ]
+        fixed_names = [
+            str(name) for name in fixed_home.get("fixed_actuator_names", [])
+        ]
+        if active_names != spec_names:
+            _raise_list_mismatch(
+                "spec.provenance.runtime_fixed_home.active_actuator_names",
+                active_names,
+                "spec.robot.actuator_names",
+                spec_names,
+            )
+        if not fixed_names:
+            raise ValueError(
+                "runtime_fixed_home metadata must list at least one fixed actuator"
+            )
+        if full_names != mjcf_names:
+            _raise_list_mismatch(
+                "spec.provenance.runtime_fixed_home.full_actuator_names",
+                full_names,
+                "mjcf.actuator_names",
+                mjcf_names,
+            )
+        if [name for name in full_names if name not in fixed_names] != spec_names:
+            _raise_list_mismatch(
+                "runtime_fixed_home full actuator names excluding fixed actuators",
+                [name for name in full_names if name not in fixed_names],
+                "spec.robot.actuator_names",
+                spec_names,
+            )
+    elif mjcf_names != spec_names:
         _raise_list_mismatch(
             "spec.robot.actuator_names",
-            list(spec.robot.actuator_names),
+            spec_names,
             "mjcf.actuator_names",
             mjcf_names,
         )

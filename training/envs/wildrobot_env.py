@@ -45,8 +45,8 @@ from policy_contract.calib import JaxCalibOps
 from policy_contract.jax import frames as jax_frames
 from policy_contract.jax.action import postprocess_action
 from policy_contract.jax.obs import build_observation
+from policy_contract.jax.signals import Signals
 from policy_contract.jax.state import PolicyState
-from policy_contract.spec_builder import build_policy_spec
 
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.types import CoordinateFrame
@@ -76,7 +76,11 @@ from training.envs.env_info import (
     WR_INFO_KEY,
     WildRobotInfo,
 )
-from training.policy_spec_utils import clamp_home_ctrl, get_home_ctrl_from_mj_model
+from training.policy_spec_utils import (
+    build_policy_spec_from_training_config,
+    clamp_home_ctrl,
+    get_home_ctrl_from_mj_model,
+)
 from training.sim_adapter.mjx_signals import MjxSignalsAdapter
 from training.utils.ctrl_order import CtrlOrderMapper
 
@@ -225,6 +229,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         layout_id = str(self._config.env.actor_obs_layout_id)
         if layout_id not in (
+            # Standing-home stabilizer: no reference channels, but uses the
+            # same home-residual action path with optional active actuator mask.
+            "wr_obs_v1",
             "wr_obs_v6_offline_ref_history",
             "wr_obs_v7_phase_proprio",
             # v0.21.0 P7 (lateral+yaw prior): superset of v7 that
@@ -234,8 +241,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
-                "{'wr_obs_v6_offline_ref_history', 'wr_obs_v7_phase_proprio', "
-                "'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
+                "{'wr_obs_v1', 'wr_obs_v6_offline_ref_history', "
+                "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
                 "high-confidence prep (proprio history is now always wired); "
                 "v7 (smoke11) drops every reference-trajectory channel from "
                 "the actor obs except the 2-dim gait phase clock; v8 (v0.21.0 "
@@ -510,37 +517,54 @@ class WildRobotEnv(mjx_env.MjxEnv):
             getattr(self._config.env, "close_feet_threshold", 0.146)
         )
 
-        home_ctrl_list = clamp_home_ctrl(
+        full_actuator_names = [
+            str(item["name"]) for item in self._robot_config.actuated_joints
+        ]
+        self._full_actuator_names = full_actuator_names
+        self._full_actuator_count = len(full_actuator_names)
+        full_home_ctrl_list = clamp_home_ctrl(
             home_ctrl=get_home_ctrl_from_mj_model(
                 mj_model=self._mj_model,
-                actuator_names=[
-                    str(item["name"]) for item in self._robot_config.actuated_joints
-                ],
+                actuator_names=full_actuator_names,
             ),
             actuated_joint_specs=self._robot_config.actuated_joints,
-            actuator_names=[
-                str(item["name"]) for item in self._robot_config.actuated_joints
-            ],
+            actuator_names=full_actuator_names,
         )
-        self._policy_spec = build_policy_spec(
-            robot_name=self._robot_config.robot_name,
-            actuated_joint_specs=self._robot_config.actuated_joints,
-            action_filter_alpha=float(self._config.env.action_filter_alpha),
-            layout_id=str(self._config.env.actor_obs_layout_id),
-            mapping_id=str(self._config.env.action_mapping_id),
-            home_ctrl_rad=home_ctrl_list,
+        self._policy_spec = build_policy_spec_from_training_config(
+            training_cfg=self._config,
+            robot_cfg=self._robot_config,
+        )
+        self._default_joint_qpos = jp.asarray(
+            self._policy_spec.robot.home_ctrl_rad, dtype=jp.float32
         )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
         }
+        full_name_to_idx = {name: idx for idx, name in enumerate(full_actuator_names)}
+        self._policy_signal_indices = jp.asarray(
+            [
+                full_name_to_idx[name]
+                for name in self._policy_spec.robot.actuator_names
+            ],
+            dtype=jp.int32,
+        )
+        self._uses_actuator_subset = len(self._policy_spec.robot.actuator_names) != len(
+            full_actuator_names
+        )
 
         # Per-joint range arrays (for residual clipping).
         self._joint_range_mins = jp.asarray(
-            [float(item["range"][0]) for item in self._robot_config.actuated_joints],
+            [
+                float(self._policy_spec.robot.joints[name].range_min_rad)
+                for name in self._policy_spec.robot.actuator_names
+            ],
             dtype=jp.float32,
         )
         self._joint_range_maxs = jp.asarray(
-            [float(item["range"][1]) for item in self._robot_config.actuated_joints],
+            [
+                float(self._policy_spec.robot.joints[name].range_max_rad)
+                for name in self._policy_spec.robot.actuator_names
+            ],
             dtype=jp.float32,
         )
         self._joint_half_spans = 0.5 * (self._joint_range_maxs - self._joint_range_mins)
@@ -551,7 +575,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # clips on every step anyway, so pre-clipping makes the cached
         # value byte-equal to what gets written under zero residual.
         self._home_q_rad = jp.clip(
-            jp.asarray(self._default_joint_qpos, dtype=jp.float32),
+            jp.asarray(self._policy_spec.robot.home_ctrl_rad, dtype=jp.float32),
             self._joint_range_mins,
             self._joint_range_maxs,
         )
@@ -680,6 +704,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._mj_model, list(self._policy_spec.robot.actuator_names)
         )
         _ = self._ctrl_mapper.policy_to_mj_order_jax
+        full_ctrl_mapper = CtrlOrderMapper(self._mj_model, full_actuator_names)
+        self._full_home_ctrl_mj = jp.asarray(
+            full_ctrl_mapper.to_mj_np(
+                np.asarray(full_home_ctrl_list, dtype=np.float32)
+            ),
+            dtype=jp.float32,
+        )
 
         # Cached base values for domain-randomized model construction.
         self._base_geom_friction = self._mjx_model.geom_friction
@@ -1157,6 +1188,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._offline_vx_grid = jp.asarray(
                 [k[0] for k in cmd_keys], dtype=jp.float32
             )
+        self._offline_jax_arrays = self._slice_offline_q_ref_to_policy_order(
+            self._offline_jax_arrays
+        )
         # v0.21.0 P5 — 3D nearest-key lookup uses the full (vx, vy, wz)
         # array; legacy callers (``_lookup_offline_window`` legacy path)
         # never read this, so the array is harmless when 3D mode is off.
@@ -1168,7 +1202,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._offline_n_steps = int(n_steps_ref)
         win0 = self._offline_service.lookup_np(0)
         self._ref_init_q_rad = jp.clip(
-            jp.asarray(win0.q_ref, dtype=jp.float32),
+            self._q_ref_in_policy_order(jp.asarray(win0.q_ref, dtype=jp.float32)),
             self._joint_range_mins,
             self._joint_range_maxs,
         )
@@ -1235,7 +1269,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # ------------------------------------------------------------- ctrl write
 
     def _to_mj_ctrl(self, ctrl_policy_order: jax.Array) -> jax.Array:
-        return self._ctrl_mapper.to_mj_jax(ctrl_policy_order)
+        return self._full_home_ctrl_mj.at[
+            self._ctrl_mapper.policy_to_mj_order_jax
+        ].set(ctrl_policy_order)
+
+    def _q_ref_in_policy_order(self, q_ref: jax.Array) -> jax.Array:
+        """Return q_ref with its final axis in PolicySpec actuator order."""
+        if int(q_ref.shape[-1]) == len(self._policy_spec.robot.actuator_names):
+            return q_ref.astype(jp.float32)
+        return jp.take(q_ref, self._policy_signal_indices, axis=-1).astype(jp.float32)
+
+    def _slice_offline_q_ref_to_policy_order(
+        self, arrays: Dict[str, jax.Array]
+    ) -> Dict[str, jax.Array]:
+        if "q_ref" not in arrays:
+            return arrays
+        out = dict(arrays)
+        out["q_ref"] = self._q_ref_in_policy_order(out["q_ref"])
+        return out
 
     # ----------------------------------------------- residual action composition
 
@@ -1853,6 +1904,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         return jp.concatenate([history[1:], new_bundle[None, :]], axis=0)
 
+    def _signals_in_policy_order(self, signals: Signals) -> Signals:
+        if int(signals.joint_pos_rad.shape[0]) == len(self._policy_spec.robot.actuator_names):
+            return signals
+        return signals.replace(
+            joint_pos_rad=jp.take(
+                signals.joint_pos_rad, self._policy_signal_indices
+            ).astype(jp.float32),
+            joint_vel_rad_s=jp.take(
+                signals.joint_vel_rad_s, self._policy_signal_indices
+            ).astype(jp.float32),
+        )
+
     def _get_obs(
         self,
         data: mjx.Data,
@@ -1867,6 +1930,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         populated from the offline window."""
         if signals is None:
             signals = self._signals_adapter.read(data)
+        signals = self._signals_in_policy_order(signals)
         policy_state = PolicyState(prev_action=action)
         # Flatten the (PROPRIO_HISTORY_FRAMES, bundle) buffer for the
         # v6 layout; v5 callers pass None and the layout branch ignores it.
@@ -1987,6 +2051,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             right_stance = (phase_sin >= jp.float32(0.0)).astype(jp.float32)
             left_stance = jp.float32(1.0) - right_stance
             ref_stance = jp.stack([left_stance, right_stance]).astype(jp.float32)
+
+        if self._uses_actuator_subset:
+            motor_pos_error = jp.zeros_like(actuator_force).at[
+                self._policy_signal_indices
+            ].set(motor_pos_error)
 
         return jp.concatenate(
             [lin, ang, contacts, motor_pos_error, actuator_force, ref_stance]
@@ -3567,6 +3636,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
         # backlash applied to the policy's observed joint positions.
         # No-op when backlash is all zeros (DR disabled or range==(0,0)).
+        signals_override = self._signals_in_policy_order(signals_override)
         signals_override = signals_override.replace(
             joint_pos_rad=apply_backlash_to_joint_pos(
                 signals_override.joint_pos_rad,
@@ -4034,10 +4104,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action if self._action_delay_enabled else filtered_action
         )
 
-        applied_target_q, applied_residual_delta = self._compose_target_q_from_residual(
-            policy_action=applied_action,
-            nominal_q_ref=nominal_q_ref,
-        )
+        if self._policy_spec.observation.layout_id == "wr_obs_v1":
+            applied_target_q = JaxCalibOps.action_to_ctrl(
+                spec=self._policy_spec,
+                action=applied_action,
+            )
+            applied_residual_delta = applied_target_q - self._home_q_rad
+        else:
+            applied_target_q, applied_residual_delta = (
+                self._compose_target_q_from_residual(
+                    policy_action=applied_action,
+                    nominal_q_ref=nominal_q_ref,
+                )
+            )
         ctrl_mj = self._to_mj_ctrl(applied_target_q)
 
         # Apply push (gated by schedule + disable_pushes flag).
@@ -4074,6 +4153,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
         # backlash applied to the policy's observed joint positions.
         # No-op when wr.domain_rand_backlash is all zeros.
+        signals_override = self._signals_in_policy_order(signals_override)
         signals_override = signals_override.replace(
             joint_pos_rad=apply_backlash_to_joint_pos(
                 signals_override.joint_pos_rad,
@@ -4233,7 +4313,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         #      the rolled buffer in new_wr — that buffer becomes the
         #      "past" for the NEXT step.
         new_bundle = self._compute_proprio_bundle(
-            signals=signals_override, prev_action=applied_action
+            signals=self._signals_in_policy_order(signals_override),
+            prev_action=applied_action,
         )
         new_proprio_history = self._roll_proprio_history(wr.proprio_history, new_bundle)
 
@@ -4719,7 +4800,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     @property
     def action_size(self) -> int:
-        return self._mjx_model.nu
+        return int(self._policy_spec.model.action_dim)
 
     @property
     def mj_model(self) -> mujoco.MjModel:

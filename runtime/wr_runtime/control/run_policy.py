@@ -26,13 +26,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import faulthandler
+import json
 import math
 import signal
 import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, TextIO
+from typing import Any, Callable, List, Optional, Sequence, TextIO
 
 import numpy as np
 
@@ -43,6 +44,7 @@ from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.control.mock_robot_io import MockRobotIO
 from wr_runtime.control.policy_runner import RuntimePolicyRunner
 from wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
+from wr_runtime.control.standing_policy_runner import StandingPolicyRunner
 
 
 _LEG_LOG_JOINTS = (
@@ -66,6 +68,9 @@ _STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO = 0.9
 _STARTUP_STABILITY_MAX_TILT_DEG = 15.0
 _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
+_STANDING_LAYOUT_ID = "wr_obs_v1"
+_WALKING_LAYOUT_ID = "wr_obs_v8_cmd3d"
+_RUNTIME_FIXED_HOME_KEY = "runtime_fixed_home"
 
 
 class _LogStream:
@@ -142,6 +147,122 @@ def _parse_velocity_cmd(text: Optional[str], default: List[float]) -> np.ndarray
         return np.array([float(p) for p in parts], dtype=np.float32)
     raise SystemExit(
         f"--velocity-cmd must be 'vx' or 'vx,vy,wz'; got {text!r}"
+    )
+
+
+def _load_optional_runtime_control_dt(bundle_path: Path, *, default: float = 0.02) -> float:
+    path = bundle_path / "runtime_policy_config.json"
+    if not path.exists():
+        return float(default)
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return float(default)
+    if isinstance(data, dict):
+        if data.get("ctrl_dt") is not None:
+            return float(data["ctrl_dt"])
+        if data.get("control_hz") is not None and float(data["control_hz"]) > 0.0:
+            return 1.0 / float(data["control_hz"])
+    return float(default)
+
+
+def _default_velocity_cmd_for_layout(spec, runtime_config: RuntimePolicyConfig | None) -> list[float]:
+    if runtime_config is not None:
+        return list(runtime_config.default_velocity_cmd)
+    if spec.observation.layout_id == _STANDING_LAYOUT_ID:
+        return [0.0, 0.0, 0.0]
+    raise SystemExit(
+        "runtime_policy_config.json is required for this policy layout; "
+        f"got layout={spec.observation.layout_id!r}"
+    )
+
+
+def _standing_runtime_fixed_metadata(spec) -> dict[str, Any]:
+    provenance = spec.provenance if isinstance(spec.provenance, dict) else {}
+    metadata = provenance.get(_RUNTIME_FIXED_HOME_KEY, {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _standing_runtime_plan(spec) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+    """Return hardware actuator order and preflight arrays for a standing spec."""
+    active_names = list(spec.robot.actuator_names)
+    if spec.robot.home_ctrl_rad is None:
+        raise SystemExit("standing policy_spec.robot.home_ctrl_rad is required")
+    active_home = np.asarray(spec.robot.home_ctrl_rad, dtype=np.float32).reshape(-1)
+    if active_home.size != len(active_names):
+        raise SystemExit(
+            f"home_ctrl_rad length {active_home.size} != active actuator count "
+            f"{len(active_names)}"
+        )
+
+    metadata = _standing_runtime_fixed_metadata(spec)
+    fixed_names = [str(name) for name in metadata.get("fixed_actuator_names", [])]
+    fixed_home_values = [float(v) for v in metadata.get("fixed_home_ctrl_rad", [])]
+    fixed_ranges = metadata.get("fixed_joint_ranges_rad", {})
+    if fixed_names and len(fixed_home_values) != len(fixed_names):
+        raise SystemExit(
+            "policy_spec provenance runtime_fixed_home has mismatched "
+            "fixed_actuator_names and fixed_home_ctrl_rad lengths"
+        )
+    fixed_home = dict(zip(fixed_names, fixed_home_values))
+    if not fixed_names:
+        hardware_names = active_names
+    else:
+        hardware_names = [
+            str(name)
+            for name in metadata.get(
+                "full_actuator_names", active_names + fixed_names
+            )
+        ]
+
+    active_by_name = {name: i for i, name in enumerate(active_names)}
+    fixed_set = set(fixed_names)
+    missing_active = [name for name in active_names if name not in set(hardware_names)]
+    missing_fixed = [name for name in fixed_names if name not in set(hardware_names)]
+    if missing_active or missing_fixed:
+        raise SystemExit(
+            "standing runtime_fixed_home full_actuator_names must include all "
+            f"active and fixed actuators; missing_active={missing_active} "
+            f"missing_fixed={missing_fixed}"
+        )
+
+    home: list[float] = []
+    mins: list[float] = []
+    maxs: list[float] = []
+    for name in hardware_names:
+        if name in active_by_name:
+            idx = active_by_name[name]
+            joint = spec.robot.joints[name]
+            home.append(float(active_home[idx]))
+            mins.append(float(joint.range_min_rad))
+            maxs.append(float(joint.range_max_rad))
+            continue
+        if name in fixed_set:
+            if not isinstance(fixed_ranges, dict) or name not in fixed_ranges:
+                raise SystemExit(
+                    "standing runtime_fixed_home metadata must include "
+                    f"fixed_joint_ranges_rad for {name!r}"
+                )
+            rng = fixed_ranges[name]
+            if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+                raise SystemExit(
+                    f"fixed_joint_ranges_rad[{name!r}] must be [min_rad, max_rad]"
+                )
+            home.append(float(fixed_home[name]))
+            mins.append(float(rng[0]))
+            maxs.append(float(rng[1]))
+            continue
+        raise SystemExit(
+            "standing runtime hardware plan has actuator not covered by policy "
+            f"or fixed-home metadata: {name}"
+        )
+
+    return (
+        hardware_names,
+        np.asarray(home, dtype=np.float32),
+        np.asarray(mins, dtype=np.float32),
+        np.asarray(maxs, dtype=np.float32),
+        fixed_home,
     )
 
 
@@ -1682,11 +1803,52 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     bundle_path = Path(args.bundle)
     bundle = PolicyBundle.load(bundle_path)
     validate_spec(bundle.spec)
-    runtime_cfg_path = bundle_path / "runtime_policy_config.json"
-    runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
+    layout_id = str(bundle.spec.observation.layout_id)
+    runtime_config: RuntimePolicyConfig | None = None
+    if layout_id == _WALKING_LAYOUT_ID:
+        runtime_cfg_path = bundle_path / "runtime_policy_config.json"
+        runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
+        ctrl_dt = float(runtime_config.ctrl_dt)
+        actuator_names = list(bundle.spec.robot.actuator_names)
+        hardware_actuator_names = actuator_names
+        hardware_home = (
+            np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
+            if bundle.spec.robot.home_ctrl_rad is not None
+            else None
+        )
+        hardware_joint_min = np.asarray(
+            [
+                float(bundle.spec.robot.joints[name].range_min_rad)
+                for name in hardware_actuator_names
+            ],
+            dtype=np.float32,
+        )
+        hardware_joint_max = np.asarray(
+            [
+                float(bundle.spec.robot.joints[name].range_max_rad)
+                for name in hardware_actuator_names
+            ],
+            dtype=np.float32,
+        )
+        fixed_home_targets_rad: dict[str, float] = {}
+    elif layout_id == _STANDING_LAYOUT_ID:
+        ctrl_dt = _load_optional_runtime_control_dt(bundle_path, default=0.02)
+        actuator_names = list(bundle.spec.robot.actuator_names)
+        (
+            hardware_actuator_names,
+            hardware_home,
+            hardware_joint_min,
+            hardware_joint_max,
+            fixed_home_targets_rad,
+        ) = _standing_runtime_plan(bundle.spec)
+    else:
+        raise SystemExit(
+            f"Unsupported runtime layout={layout_id!r}; supported layouts are "
+            f"{_WALKING_LAYOUT_ID!r} and {_STANDING_LAYOUT_ID!r}."
+        )
 
     velocity_cmd = _parse_velocity_cmd(
-        args.velocity_cmd, runtime_config.default_velocity_cmd
+        args.velocity_cmd, _default_velocity_cmd_for_layout(bundle.spec, runtime_config)
     )
 
     policy = OnnxPolicy(
@@ -1713,54 +1875,33 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             f"{bundle.spec.model.action_dim}"
         )
 
-    actuator_names = list(bundle.spec.robot.actuator_names)
-    ctrl_dt = float(runtime_config.ctrl_dt)
-
     if args.dry_run:
-        home = (
-            np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
-            if bundle.spec.robot.home_ctrl_rad is not None
-            else None
-        )
         robot_io = MockRobotIO(
-            actuator_names=actuator_names, control_dt=ctrl_dt, home_q_rad=home
+            actuator_names=hardware_actuator_names,
+            control_dt=ctrl_dt,
+            home_q_rad=hardware_home,
         )
         realtime = False  # dry-run is a smoke test; never sleep
     else:
         if args.runtime_config is None:
             raise SystemExit("--runtime-config is required unless --dry-run is set.")
-        if not args.skip_hardware_preflight and bundle.spec.robot.home_ctrl_rad is None:
+        if not args.skip_hardware_preflight and hardware_home is None:
             raise SystemExit(
                 "policy_spec.robot.home_ctrl_rad is required for hardware preflight"
             )
         robot_io = _build_hardware_robot_io(
             runtime_config_path=Path(args.runtime_config),
-            actuator_names=actuator_names,
+            actuator_names=hardware_actuator_names,
             control_dt=ctrl_dt,
         )
         if not args.skip_hardware_preflight:
-            home = np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
-            joint_min = np.asarray(
-                [
-                    float(bundle.spec.robot.joints[name].range_min_rad)
-                    for name in actuator_names
-                ],
-                dtype=np.float32,
-            )
-            joint_max = np.asarray(
-                [
-                    float(bundle.spec.robot.joints[name].range_max_rad)
-                    for name in actuator_names
-                ],
-                dtype=np.float32,
-            )
             try:
                 _run_hardware_preflight(
                     robot_io=robot_io,
-                    actuator_names=actuator_names,
-                    home_q_rad=home,
-                    joint_min_rad=joint_min,
-                    joint_max_rad=joint_max,
+                    actuator_names=hardware_actuator_names,
+                    home_q_rad=hardware_home,
+                    joint_min_rad=hardware_joint_min,
+                    joint_max_rad=hardware_joint_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
                     require_all_footswitches=not bool(
                         args.allow_unpressed_footswitch
@@ -1783,16 +1924,26 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
 
     zero_cmd_hold_home_deadzone = (
         None
-        if bool(args.disable_zero_cmd_hold_home)
+        if bool(args.disable_zero_cmd_hold_home) or layout_id == _STANDING_LAYOUT_ID
         else max(0.0, float(args.zero_cmd_hold_home_deadzone))
     )
-    runner = RuntimePolicyRunner(
-        spec=bundle.spec,
-        runtime_config=runtime_config,
-        policy=policy,
-        robot_io=robot_io,
-        zero_cmd_hold_home_deadzone=zero_cmd_hold_home_deadzone,
-    )
+    if layout_id == _STANDING_LAYOUT_ID:
+        runner = StandingPolicyRunner(
+            spec=bundle.spec,
+            policy=policy,
+            robot_io=robot_io,
+            fixed_home_targets_rad=fixed_home_targets_rad,
+            zero_cmd_hold_home_deadzone=zero_cmd_hold_home_deadzone,
+        )
+    else:
+        assert runtime_config is not None
+        runner = RuntimePolicyRunner(
+            spec=bundle.spec,
+            runtime_config=runtime_config,
+            policy=policy,
+            robot_io=robot_io,
+            zero_cmd_hold_home_deadzone=zero_cmd_hold_home_deadzone,
+        )
     cmd_norm = float(np.max(np.abs(velocity_cmd)))
     startup_deadzone = 0.0 if zero_cmd_hold_home_deadzone is None else float(
         zero_cmd_hold_home_deadzone
@@ -1821,12 +1972,26 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         )
     startup_stability_max_tilt_deg = float(args.startup_stability_max_tilt_deg)
 
+    control_hz = 1.0 / float(ctrl_dt) if float(ctrl_dt) > 0.0 else float("nan")
+    runtime_mode = (
+        f"residual_base={runtime_config.loc_ref_residual_base}"
+        if runtime_config is not None
+        else "stand_contract=wr_obs_v1"
+    )
+    fixed_text = (
+        f" | fixed_home_joints={list(fixed_home_targets_rad.keys())}"
+        if fixed_home_targets_rad
+        else ""
+    )
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
-        f"| residual_base={runtime_config.loc_ref_residual_base} "
-        f"| control_hz={runtime_config.control_hz:.1f} "
+        f"| {runtime_mode} "
+        f"| control_hz={control_hz:.1f} "
+        f"| policy_actuators={len(actuator_names)} "
+        f"| hardware_actuators={len(hardware_actuator_names)}"
+        f"{fixed_text} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
-        f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
+        f"| zero_cmd_hold_home={zero_cmd_hold_home_deadzone is not None} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
         f"| confirm_before_walk={bool(args.confirm_before_walk)} "
         f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "

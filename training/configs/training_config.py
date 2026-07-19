@@ -231,6 +231,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        policy_excluded_actuator_names=tuple(
+            str(name) for name in (env.get("policy_excluded_actuator_names") or [])
+        ),
         loc_ref_version=str(env.get("loc_ref_version", "v3_offline_library")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
         # v0.20.1 smoke residual bounds / §4.1 —
