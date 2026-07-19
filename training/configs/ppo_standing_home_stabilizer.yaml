@@ -8,8 +8,8 @@
 #   uv run python training/train.py \
 #     --config training/configs/ppo_standing_home_stabilizer.yaml --verify
 # =============================================================================
-version: "0.22.0"
-version_name: "Standing home stabilizer, no wrist control"
+version: "0.22.1"
+version_name: "Standing home stabilizer active reward, no wrist control"
 
 seed: 42
 
@@ -25,6 +25,12 @@ env:
   max_height: 0.70
   max_pitch: 0.8
   max_roll: 0.8
+  torso_pitch_soft_min_rad: -0.15
+  torso_pitch_soft_max_rad: 0.15
+  torso_roll_soft_min_rad: -0.10
+  torso_roll_soft_max_rad: 0.10
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
 
   min_velocity: 0.0
   max_velocity: 0.0
@@ -49,6 +55,22 @@ env:
   loc_ref_version: v3_offline_library
   loc_ref_residual_mode: absolute
   loc_ref_residual_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: false
+  close_feet_threshold: 0.146
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
 
   push_enabled: true
   push_start_step_min: 40
@@ -90,26 +112,28 @@ networks:
     activation: elu
 
 reward_weights:
-  tracking_lin_vel: 1.0
-  lateral_velocity: -0.5
-  base_height: 3.0
-  orientation: -2.0
-  height_target: 1.0
-  height_target_sigma: 0.04
-  angular_velocity: -0.1
+  # Current WildRobotEnv reward terms. Legacy standing keys such as
+  # base_height/orientation/height_target parse but are not consumed by the
+  # v0.20+ aggregate reward path.
+  alive: 1.0
+  ref_body_quat_track: 2.5
+  torso_pos_xy: 1.0
+  torso_pos_xy_alpha: 50.0
+  ang_vel_xy: 1.0
+  torso_pitch_soft: 1.0
+  torso_roll_soft: 1.0
+
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  penalty_feet_ori: 5.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
 
   torque: -0.001
-  saturation: -0.1
   action_rate: -0.01
   joint_velocity: -0.001
-
   slip: -0.5
-  clearance: 0.1
-  stance_width_penalty: -0.5
-  stance_width_target: 0.19
-  stance_width_sigma: 0.05
-
-  forward_velocity_scale: 4.0
 
 reward:
   task_weight: 1.0

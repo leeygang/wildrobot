@@ -103,6 +103,26 @@ def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
     assert set(metadata["fixed_joint_ranges_rad"]) == wrists
 
 
+def test_standing_home_stabilizer_uses_active_reward_terms() -> None:
+    from training.configs.training_config import load_training_config
+
+    training_cfg = load_training_config(
+        "training/configs/ppo_standing_home_stabilizer.yaml"
+    )
+    weights = training_cfg.reward_weights
+
+    assert weights.alive > 0.0
+    assert weights.ref_body_quat_track > 0.0
+    assert weights.torso_pos_xy > 0.0
+    assert weights.ang_vel_xy > 0.0
+    assert weights.torso_pitch_soft > 0.0
+    assert weights.torso_roll_soft > 0.0
+    assert weights.penalty_pose < 0.0
+    assert weights.penalty_feet_ori > 0.0
+    assert weights.feet_phase > 0.0
+    assert weights.cmd_forward_velocity_track == 0.0
+
+
 def test_runtime_compat_accepts_declared_fixed_home_subset() -> None:
     from policy_contract.spec import validate_runtime_compat
     from policy_contract.spec_builder import build_policy_spec
