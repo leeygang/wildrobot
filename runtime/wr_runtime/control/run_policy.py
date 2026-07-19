@@ -30,7 +30,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import List, Optional, Sequence, TextIO
+from typing import Callable, List, Optional, Sequence, TextIO
 
 import numpy as np
 
@@ -1182,6 +1182,8 @@ def _run_startup_home_hold(
     stability_max_tilt_deg: float = _STARTUP_STABILITY_MAX_TILT_DEG,
     stability_max_gyro_rad_s: float = _STARTUP_STABILITY_MAX_GYRO_RAD_S,
     stability_max_leg_error_deg: float = _STARTUP_STABILITY_MAX_LEG_ERROR_DEG,
+    confirm_before_walk: bool = False,
+    input_fn: Callable[[str], str] | None = None,
 ) -> None:
     """Command home before policy walking, then reset policy episode state."""
     hold_steps = max(0, int(steps))
@@ -1237,11 +1239,55 @@ def _run_startup_home_hold(
 
     final_err = _leg_error_max_deg(last_info or {}, leg_indices)
     final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
-    print(
-        f"Startup home hold complete: leg_err|max_deg={final_err_text}; "
-        "checking stability before command.",
-        flush=True,
-    )
+    print(f"Startup home hold complete: leg_err|max_deg={final_err_text}.", flush=True)
+    if confirm_before_walk:
+        try:
+            prompt_input = input if input_fn is None else input_fn
+            answer = str(
+                prompt_input(
+                    "Manually settle the robot at home pose, then start "
+                    "policy walking? [y/N]: "
+                )
+            ).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in {"y", "yes"}:
+            raise SystemExit(
+                "Startup walk cancelled by user after startup home hold. "
+                "Robot remains at the commanded home pose."
+            )
+        print(
+            "Manual start confirmed; refreshing home stability window before command.",
+            flush=True,
+        )
+        refresh_steps = max(
+            1,
+            int(round(float(stability_window_s) / max(float(ctrl_dt), 1e-9))),
+        )
+        hold_infos = []
+        last_info = None
+        for _ in range(refresh_steps):
+            loop_start_s = time.monotonic()
+            info = runner.step(
+                velocity_cmd,
+                force_home_hold=True,
+                home_hold_mode="startup_home_confirm",
+            )
+            work_s = time.monotonic() - loop_start_s
+            timing_s = dict(info.get("timing_s", {}))
+            timing_s["work"] = work_s
+            info["timing_s"] = timing_s
+            last_info = info
+            hold_infos.append(info)
+            if realtime:
+                remaining = ctrl_dt - (time.monotonic() - loop_start_s)
+                if remaining > 0:
+                    time.sleep(remaining)
+        final_err = _leg_error_max_deg(last_info or {}, leg_indices)
+        final_err_text = "n/a" if final_err is None else f"{float(final_err):.1f}"
+        print(f"Startup home confirm complete: leg_err|max_deg={final_err_text}.", flush=True)
+
+    print("Checking startup home stability before command.", flush=True)
     if stability_check:
         errors, summary = _startup_home_stability_errors(
             infos=hold_infos,
@@ -1287,6 +1333,8 @@ def run_policy_loop(
     startup_action_ramp_steps: int = 0,
     startup_stability_check: bool = True,
     startup_stability_max_tilt_deg: float = _STARTUP_STABILITY_MAX_TILT_DEG,
+    startup_confirm_before_walk: bool = False,
+    startup_confirm_input_fn: Callable[[str], str] | None = None,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -1303,6 +1351,8 @@ def run_policy_loop(
         leg_indices=leg_indices,
         stability_check=bool(startup_stability_check),
         stability_max_tilt_deg=float(startup_stability_max_tilt_deg),
+        confirm_before_walk=bool(startup_confirm_before_walk),
+        input_fn=startup_confirm_input_fn,
     )
     timing_samples: List[dict] = []
     servo_metric_samples: List[dict] = []
@@ -1488,6 +1538,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             "Hardware only: for nonzero velocity commands, hold the bundled home "
             "pose for this many seconds before starting the policy, then reset "
             "policy state (default: 2.0; set 0 to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--confirm-before-walk",
+        action="store_true",
+        help=(
+            "Hardware only: after startup home hold, prompt before starting "
+            "policy walking. Answering yes refreshes the home stability window; "
+            "answering no leaves the robot at home and exits."
         ),
     )
     parser.add_argument(
@@ -1734,6 +1793,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
         f"| zero_cmd_hold_home={not bool(args.disable_zero_cmd_hold_home)} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
+        f"| confirm_before_walk={bool(args.confirm_before_walk)} "
         f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "
         f"| startup_stability_max_tilt_deg={startup_stability_max_tilt_deg:.1f} "
         f"| startup_command_ramp_steps={startup_command_ramp_steps} "
@@ -1755,6 +1815,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_action_ramp_steps=startup_action_ramp_steps,
             startup_stability_check=not bool(args.disable_startup_stability_check),
             startup_stability_max_tilt_deg=startup_stability_max_tilt_deg,
+            startup_confirm_before_walk=bool(args.confirm_before_walk),
         )
     finally:
         try:

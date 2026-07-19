@@ -342,6 +342,84 @@ def test_startup_home_hold_blocks_policy_when_final_footswitches_open(
     assert "right_heel" in out
 
 
+def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
+    v8_spec, runtime_policy_config, capsys
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    logs = run_policy_loop(
+        runner=runner,
+        max_steps=2,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        startup_home_hold_steps=2,
+        startup_confirm_before_walk=True,
+        startup_confirm_input_fn=lambda _prompt: "y",
+    )
+
+    assert policy.calls == 2
+    assert logs[0]["step_idx"] == 1
+    assert len(robot_io.written) > 4
+    for ctrl in robot_io.written[:-2]:
+        np.testing.assert_allclose(ctrl, home, atol=1e-6)
+    out = capsys.readouterr().out
+    assert "Manual start confirmed" in out
+    assert "Startup home confirm complete" in out
+    assert "Startup home stability OK" in out
+
+
+def test_startup_home_hold_confirm_no_exits_before_policy(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(SystemExit, match="Startup walk cancelled"):
+        run_policy_loop(
+            runner=runner,
+            max_steps=2,
+            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+            log_steps=1,
+            ctrl_dt=runtime_policy_config.ctrl_dt,
+            realtime=False,
+            actuator_names=list(v8_spec.robot.actuator_names),
+            startup_home_hold_steps=2,
+            startup_confirm_before_walk=True,
+            startup_confirm_input_fn=lambda _prompt: "n",
+        )
+
+    assert policy.calls == 0
+    assert len(robot_io.written) == 2
+    for ctrl in robot_io.written:
+        np.testing.assert_allclose(ctrl, home, atol=1e-6)
+
+
 def test_startup_command_ramp_reaches_policy_observation(
     v8_spec, runtime_policy_config
 ):
