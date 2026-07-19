@@ -100,3 +100,32 @@ def test_unknown_ids_raise() -> None:
     spec = PolicySpec.from_json(json.dumps(data))
     with pytest.raises(ValueError, match="postprocess_id"):
         validate_spec(spec)
+
+
+def test_checked_in_policy_spec_is_17_action_standing_contract() -> None:
+    spec = PolicySpec.from_json("policy_contract/policy_spec.json")
+    validate_spec(spec)
+
+    names = set(spec.robot.actuator_names)
+    wrists = {
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch",
+    }
+    assert spec.contract_version == "1.1.0"
+    assert spec.model.action_dim == 17
+    assert spec.model.obs_dim == 63
+    assert wrists.isdisjoint(names)
+    assert {"left_ankle_roll", "right_ankle_roll"}.issubset(names)
+    assert spec.provenance is not None
+    assert (
+        spec.provenance["legacy_contract"]
+        == "policy_contract/policy_spec_legacy_19d.json"
+    )
+
+    legacy = PolicySpec.from_json("policy_contract/policy_spec_legacy_19d.json")
+    validate_spec(legacy)
+    assert legacy.contract_version == "1.0.0"
+    assert legacy.model.action_dim == 19
+    assert wrists.issubset(set(legacy.robot.actuator_names))
