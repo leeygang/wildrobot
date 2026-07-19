@@ -184,6 +184,74 @@ def _standing_runtime_fixed_metadata(spec) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
+def _walking_runtime_plan(
+    spec, *, externally_managed_actuator_names: Sequence[str] = ()
+) -> tuple[list[str], np.ndarray | None, np.ndarray, np.ndarray, dict[str, float]]:
+    """Build the active hardware plan for legacy 21D or native 17D walking."""
+    active_names = list(spec.robot.actuator_names)
+    active_set = set(active_names)
+    metadata = _standing_runtime_fixed_metadata(spec)
+    fixed_set = {
+        str(name) for name in metadata.get("fixed_actuator_names", [])
+    }
+    external_set = {str(name) for name in externally_managed_actuator_names}
+    unknown_external = sorted(external_set - active_set - fixed_set)
+    if unknown_external:
+        raise SystemExit(
+            "walking externally managed actuators are absent from both the "
+            f"active and runtime-fixed policy spec sets: {unknown_external}"
+        )
+
+    # Legacy 21D bundles still need synthesized home feedback for active wrists
+    # removed from the locomotion bus.  Native 17D bundles already omit those
+    # channels, so fixed/external wrists require no wrapper or bus traffic.
+    active_external = external_set & active_set
+    policy_home = (
+        np.asarray(spec.robot.home_ctrl_rad, dtype=np.float32).reshape(-1)
+        if spec.robot.home_ctrl_rad is not None
+        else None
+    )
+    if policy_home is not None and policy_home.size != len(active_names):
+        raise SystemExit(
+            f"home_ctrl_rad length {policy_home.size} != active actuator count "
+            f"{len(active_names)}"
+        )
+    if active_external and policy_home is None:
+        raise SystemExit(
+            "walking policy_spec.robot.home_ctrl_rad is required to synthesize "
+            "externally managed actuator feedback"
+        )
+
+    policy_index = {name: idx for idx, name in enumerate(active_names)}
+    hardware_names = [name for name in active_names if name not in active_external]
+    hardware_home = (
+        None
+        if policy_home is None
+        else np.asarray(
+            [policy_home[policy_index[name]] for name in hardware_names],
+            dtype=np.float32,
+        )
+    )
+    external_home = (
+        {}
+        if policy_home is None
+        else {
+            name: float(policy_home[policy_index[name]])
+            for name in active_names
+            if name in active_external
+        }
+    )
+    hardware_min = np.asarray(
+        [float(spec.robot.joints[name].range_min_rad) for name in hardware_names],
+        dtype=np.float32,
+    )
+    hardware_max = np.asarray(
+        [float(spec.robot.joints[name].range_max_rad) for name in hardware_names],
+        dtype=np.float32,
+    )
+    return hardware_names, hardware_home, hardware_min, hardware_max, external_home
+
+
 def _standing_runtime_plan(
     spec, *, externally_managed_actuator_names: Sequence[str] = ()
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
@@ -1850,55 +1918,15 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
         ctrl_dt = float(runtime_config.ctrl_dt)
         actuator_names = list(bundle.spec.robot.actuator_names)
-        unknown_external = sorted(
-            set(externally_managed_actuator_names) - set(actuator_names)
-        )
-        if unknown_external:
-            raise SystemExit(
-                "walking externally managed actuators are absent from the policy "
-                f"spec: {unknown_external}"
-            )
-        policy_home = (
-            np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
-            if bundle.spec.robot.home_ctrl_rad is not None
-            else None
-        )
-        if externally_managed_actuator_names and policy_home is None:
-            raise SystemExit(
-                "walking policy_spec.robot.home_ctrl_rad is required to synthesize "
-                "externally managed actuator feedback"
-            )
-        policy_index = {name: idx for idx, name in enumerate(actuator_names)}
-        external_set = set(externally_managed_actuator_names)
-        hardware_actuator_names = [
-            name for name in actuator_names if name not in external_set
-        ]
-        hardware_home = (
-            None
-            if policy_home is None
-            else np.asarray(
-                [policy_home[policy_index[name]] for name in hardware_actuator_names],
-                dtype=np.float32,
-            )
-        )
-        if policy_home is not None:
-            external_home_targets_rad = {
-                name: float(policy_home[policy_index[name]])
-                for name in externally_managed_actuator_names
-            }
-        hardware_joint_min = np.asarray(
-            [
-                float(bundle.spec.robot.joints[name].range_min_rad)
-                for name in hardware_actuator_names
-            ],
-            dtype=np.float32,
-        )
-        hardware_joint_max = np.asarray(
-            [
-                float(bundle.spec.robot.joints[name].range_max_rad)
-                for name in hardware_actuator_names
-            ],
-            dtype=np.float32,
+        (
+            hardware_actuator_names,
+            hardware_home,
+            hardware_joint_min,
+            hardware_joint_max,
+            external_home_targets_rad,
+        ) = _walking_runtime_plan(
+            bundle.spec,
+            externally_managed_actuator_names=externally_managed_actuator_names,
         )
         fixed_home_targets_rad: dict[str, float] = {}
     elif layout_id == _STANDING_LAYOUT_ID:

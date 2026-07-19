@@ -658,6 +658,15 @@ class EnvConfig(Freezable):
     # v0.17.3b: Action delay (disabled by default, 0 = no delay)
     action_delay_steps: int = 0  # 1 = apply prev_action instead of current
 
+    # Asynchronous servo-feedback cache model.  The hardware runtime reads one
+    # servo at a time and exposes the last cached position plus a finite-
+    # difference velocity.  Training can reproduce that sample-and-hold
+    # behavior with independently phased, episode-randomized refresh periods.
+    # Periods are expressed in policy control steps and are inclusive ranges.
+    joint_feedback_sample_hold_enabled: bool = False
+    joint_feedback_leg_period_steps_range: Tuple[int, int] = (1, 1)
+    joint_feedback_upper_period_steps_range: Tuple[int, int] = (1, 1)
+
     # =========================================================================
     # v0.20.1 ToddlerBot-alignment additions (walking_training.md Appendix A)
     # =========================================================================

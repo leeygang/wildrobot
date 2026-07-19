@@ -103,6 +103,22 @@ def _parse_list_to_tuple(value: Any, default: Tuple) -> Tuple[int, ...]:
     return default
 
 
+def _load_positive_int_range(
+    value: Any, *, default: Tuple[int, int], field_name: str
+) -> Tuple[int, int]:
+    """Load an inclusive positive integer range from YAML."""
+    if value is None:
+        return default
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{field_name} must be a two-element [low, high] list")
+    low, high = int(value[0]), int(value[1])
+    if low < 1 or high < low:
+        raise ValueError(
+            f"{field_name} must satisfy 1 <= low <= high; got {value!r}"
+        )
+    return (low, high)
+
+
 def _broadcast_scalar(s: float, mode: str) -> Tuple[float, float, float]:
     """Scalar -> length-3 broadcast helper for v0.21.0 three-axis fields.
 
@@ -649,6 +665,19 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         domain_rand_frictionloss_scale_range=env.get("domain_rand_frictionloss_scale_range", [0.9, 1.1]),
         domain_rand_joint_offset_rad=float(env.get("domain_rand_joint_offset_rad", 0.03)),
         action_delay_steps=int(env.get("action_delay_steps", 0)),
+        joint_feedback_sample_hold_enabled=bool(
+            env.get("joint_feedback_sample_hold_enabled", False)
+        ),
+        joint_feedback_leg_period_steps_range=_load_positive_int_range(
+            env.get("joint_feedback_leg_period_steps_range"),
+            default=(1, 1),
+            field_name="env.joint_feedback_leg_period_steps_range",
+        ),
+        joint_feedback_upper_period_steps_range=_load_positive_int_range(
+            env.get("joint_feedback_upper_period_steps_range"),
+            default=(1, 1),
+            field_name="env.joint_feedback_upper_period_steps_range",
+        ),
         # ToddlerBot-aligned additions (walking_training.md Appendix A.1/A.5).
         cmd_resample_steps=int(env.get("cmd_resample_steps", 0)),
         cmd_zero_chance=float(env.get("cmd_zero_chance", 0.0)),

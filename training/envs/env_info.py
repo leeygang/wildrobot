@@ -127,6 +127,15 @@ try:
         imu_quat_hist: jnp.ndarray         # (IMU_HIST_LEN, 4)
         imu_gyro_hist: jnp.ndarray         # (IMU_HIST_LEN, 3)
 
+        # Runtime-matched asynchronous joint-feedback cache.  The actor does
+        # not observe age/period directly; it sees the held position and the
+        # velocity computed between successful cache refreshes.
+        joint_feedback_cached_pos: jnp.ndarray    # (action_size,)
+        joint_feedback_cached_vel: jnp.ndarray    # (action_size,)
+        joint_feedback_age_steps: jnp.ndarray     # (action_size,) int32
+        joint_feedback_period_steps: jnp.ndarray  # (action_size,) int32
+        joint_feedback_phase_steps: jnp.ndarray   # (action_size,) int32
+
         # Aggregated foot state
         foot_contacts: jnp.ndarray         # (4,) [L_toe, L_heel, R_toe, R_heel]
         root_height: jnp.ndarray           # ()
@@ -250,6 +259,11 @@ except ImportError:
         prev_right_foot_pos: jnp.ndarray
         imu_quat_hist: jnp.ndarray
         imu_gyro_hist: jnp.ndarray
+        joint_feedback_cached_pos: jnp.ndarray
+        joint_feedback_cached_vel: jnp.ndarray
+        joint_feedback_age_steps: jnp.ndarray
+        joint_feedback_period_steps: jnp.ndarray
+        joint_feedback_phase_steps: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
@@ -318,6 +332,11 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_right_foot_pos": (3,),
         "imu_quat_hist": (IMU_HIST_LEN, 4),
         "imu_gyro_hist": (IMU_HIST_LEN, 3),
+        "joint_feedback_cached_pos": (action_size,),
+        "joint_feedback_cached_vel": (action_size,),
+        "joint_feedback_age_steps": (action_size,),
+        "joint_feedback_period_steps": (action_size,),
+        "joint_feedback_phase_steps": (action_size,),
         "foot_contacts": (4,),
         "root_height": (),
         "prev_left_loaded": (),
