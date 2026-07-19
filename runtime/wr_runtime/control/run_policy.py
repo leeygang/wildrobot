@@ -1251,10 +1251,13 @@ def _run_startup_home_hold(
             flush=True,
         )
         try:
-            prompt_input = input if input_fn is None else input_fn
-            answer = str(
-                prompt_input("Start policy walking now? [y/N]: ")
-            ).strip().lower()
+            prompt = "Start policy walking now? [y/N]:"
+            print(prompt, flush=True)
+            if input_fn is None:
+                answer = sys.stdin.readline()
+            else:
+                answer = input_fn(f"{prompt} ")
+            answer = str(answer).strip().lower()
         except EOFError:
             answer = ""
         if answer not in {"y", "yes"}:
