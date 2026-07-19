@@ -139,6 +139,12 @@
       }
     }
   },
+  "externally_managed_actuator_names": [
+    "left_wrist_yaw",
+    "left_wrist_pitch",
+    "right_wrist_yaw",
+    "right_wrist_pitch"
+  ],
   "servo_read_schedule": {
     "mode": "staggered",
     "groups": [

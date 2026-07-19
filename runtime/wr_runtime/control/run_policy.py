@@ -40,6 +40,7 @@ import numpy as np
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.spec import PolicyBundle, validate_spec
 
+from wr_runtime.control.external_actuator_io import ExternalActuatorRobotIO
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.control.mock_robot_io import MockRobotIO
 from wr_runtime.control.policy_runner import RuntimePolicyRunner
@@ -183,7 +184,9 @@ def _standing_runtime_fixed_metadata(spec) -> dict[str, Any]:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def _standing_runtime_plan(spec) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+def _standing_runtime_plan(
+    spec, *, externally_managed_actuator_names: Sequence[str] = ()
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
     """Return hardware actuator order and preflight arrays for a standing spec."""
     active_names = list(spec.robot.actuator_names)
     if spec.robot.home_ctrl_rad is None:
@@ -226,6 +229,20 @@ def _standing_runtime_plan(spec) -> tuple[list[str], np.ndarray, np.ndarray, np.
             f"missing_fixed={missing_fixed}"
         )
 
+    external_set = {str(name) for name in externally_managed_actuator_names}
+    unknown_external = sorted(external_set - set(hardware_names))
+    active_external = sorted(external_set & set(active_names))
+    if unknown_external or active_external:
+        raise SystemExit(
+            "standing externally managed actuators must be declared fixed-home "
+            "actuators in the policy spec; "
+            f"unknown={unknown_external} policy_active={active_external}"
+        )
+    hardware_names = [name for name in hardware_names if name not in external_set]
+    fixed_home = {
+        name: value for name, value in fixed_home.items() if name not in external_set
+    }
+
     home: list[float] = []
     mins: list[float] = []
     maxs: list[float] = []
@@ -267,7 +284,11 @@ def _standing_runtime_plan(spec) -> tuple[list[str], np.ndarray, np.ndarray, np.
 
 
 def _build_hardware_robot_io(
-    *, runtime_config_path: Path, actuator_names: List[str], control_dt: float
+    *,
+    runtime_config_path: Path,
+    actuator_names: List[str],
+    control_dt: float,
+    loaded_runtime_config=None,
 ):
     """Construct the real hardware RobotIO from the runtime config.
 
@@ -291,7 +312,7 @@ def _build_hardware_robot_io(
         ServoIOWorkerConfig,
     )
 
-    cfg = WrRuntimeConfig.load(runtime_config_path)
+    cfg = loaded_runtime_config or WrRuntimeConfig.load(runtime_config_path)
     sc = cfg.servo_controller
 
     # Fail fast with an actionable message if the runtime config does not cover
@@ -401,7 +422,12 @@ def _build_ttl_servo_read_schedule(
 ):
     from wr_runtime.hardware.servo_io_worker import ServoReadGroup
 
-    groups = list(read_schedule_groups) or [list(actuator_names)]
+    active_set = set(actuator_names)
+    groups = [
+        [str(name) for name in group if str(name) in active_set]
+        for group in read_schedule_groups
+    ]
+    groups = [group for group in groups if group] or [list(actuator_names)]
     unique_groups: dict[str, ServoReadGroup] = {}
     schedule: list[str] = []
     for group_idx, names in enumerate(groups):
@@ -1803,19 +1829,63 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     bundle_path = Path(args.bundle)
     bundle = PolicyBundle.load(bundle_path)
     validate_spec(bundle.spec)
+    loaded_hardware_config = None
+    externally_managed_actuator_names: list[str] = []
+    if args.runtime_config is not None:
+        from configs import WrRuntimeConfig
+
+        loaded_hardware_config = WrRuntimeConfig.load(Path(args.runtime_config))
+        externally_managed_actuator_names = [
+            str(name)
+            for name in getattr(
+                loaded_hardware_config, "externally_managed_actuator_names", ()
+            )
+        ]
+
     layout_id = str(bundle.spec.observation.layout_id)
     runtime_config: RuntimePolicyConfig | None = None
+    external_home_targets_rad: dict[str, float] = {}
     if layout_id == _WALKING_LAYOUT_ID:
         runtime_cfg_path = bundle_path / "runtime_policy_config.json"
         runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
         ctrl_dt = float(runtime_config.ctrl_dt)
         actuator_names = list(bundle.spec.robot.actuator_names)
-        hardware_actuator_names = actuator_names
-        hardware_home = (
+        unknown_external = sorted(
+            set(externally_managed_actuator_names) - set(actuator_names)
+        )
+        if unknown_external:
+            raise SystemExit(
+                "walking externally managed actuators are absent from the policy "
+                f"spec: {unknown_external}"
+            )
+        policy_home = (
             np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32)
             if bundle.spec.robot.home_ctrl_rad is not None
             else None
         )
+        if externally_managed_actuator_names and policy_home is None:
+            raise SystemExit(
+                "walking policy_spec.robot.home_ctrl_rad is required to synthesize "
+                "externally managed actuator feedback"
+            )
+        policy_index = {name: idx for idx, name in enumerate(actuator_names)}
+        external_set = set(externally_managed_actuator_names)
+        hardware_actuator_names = [
+            name for name in actuator_names if name not in external_set
+        ]
+        hardware_home = (
+            None
+            if policy_home is None
+            else np.asarray(
+                [policy_home[policy_index[name]] for name in hardware_actuator_names],
+                dtype=np.float32,
+            )
+        )
+        if policy_home is not None:
+            external_home_targets_rad = {
+                name: float(policy_home[policy_index[name]])
+                for name in externally_managed_actuator_names
+            }
         hardware_joint_min = np.asarray(
             [
                 float(bundle.spec.robot.joints[name].range_min_rad)
@@ -1840,7 +1910,10 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             hardware_joint_min,
             hardware_joint_max,
             fixed_home_targets_rad,
-        ) = _standing_runtime_plan(bundle.spec)
+        ) = _standing_runtime_plan(
+            bundle.spec,
+            externally_managed_actuator_names=externally_managed_actuator_names,
+        )
     else:
         raise SystemExit(
             f"Unsupported runtime layout={layout_id!r}; supported layouts are "
@@ -1893,6 +1966,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             runtime_config_path=Path(args.runtime_config),
             actuator_names=hardware_actuator_names,
             control_dt=ctrl_dt,
+            loaded_runtime_config=loaded_hardware_config,
         )
         if not args.skip_hardware_preflight:
             try:
@@ -1921,6 +1995,13 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             )
             robot_io.wait_for_valid_imu_sample(timeout_s=float(args.imu_startup_timeout_s))
         realtime = not args.no_realtime
+
+    if layout_id == _WALKING_LAYOUT_ID and external_home_targets_rad:
+        robot_io = ExternalActuatorRobotIO(
+            robot_io=robot_io,
+            policy_actuator_names=actuator_names,
+            external_home_rad=external_home_targets_rad,
+        )
 
     zero_cmd_hold_home_deadzone = (
         None
@@ -1983,13 +2064,18 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         if fixed_home_targets_rad
         else ""
     )
+    external_text = (
+        f" | externally_managed={externally_managed_actuator_names}"
+        if externally_managed_actuator_names
+        else ""
+    )
     print(
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
         f"| {runtime_mode} "
         f"| control_hz={control_hz:.1f} "
         f"| policy_actuators={len(actuator_names)} "
         f"| hardware_actuators={len(hardware_actuator_names)}"
-        f"{fixed_text} "
+        f"{fixed_text}{external_text} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
         f"| zero_cmd_hold_home={zero_cmd_hold_home_deadzone is not None} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "

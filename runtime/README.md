@@ -71,6 +71,13 @@ Minimal example:
   "velocity_cmd": 0.0,
   "yaw_rate_cmd": 0.0,
 
+  "externally_managed_actuator_names": [
+    "left_wrist_yaw",
+    "left_wrist_pitch",
+    "right_wrist_yaw",
+    "right_wrist_pitch"
+  ],
+
   "servo_controller": {
     "type": "hiwonder_ttl_bus",
     "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
@@ -115,6 +122,9 @@ Notes:
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
+- `externally_managed_actuator_names` removes those joints from the locomotion servo worker, including its writes and read schedule. Keep their servo calibration entries for calibration and for the separate wrist controller.
+- A 21-actuator walking bundle still runs with its original observation/action dimensions: externally managed wrist feedback is synthesized at `policy_spec.robot.home_ctrl_rad`, and wrist policy targets are not sent by the locomotion process. The separate wrist controller must hold that pose until walking is retrained with a 17-actuator policy.
+- The 17-actuator standing policy already excludes the wrists. With the same external-actuator setting, standing opens only the 17 active servos instead of expanding fixed wrist targets back to 21 hardware outputs.
 - Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
 - `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.

@@ -219,6 +219,44 @@ def test_servo_read_schedule_rejects_empty_staggered_groups(tmp_path: Path) -> N
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
+def test_externally_managed_actuators_parse_and_serialize(tmp_path: Path) -> None:
+    names = [
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch",
+    ]
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "externally_managed_actuator_names": names,
+    }
+
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+    assert cfg.externally_managed_actuator_names == tuple(names)
+    assert cfg.to_dict()["externally_managed_actuator_names"] == names
+
+
+@pytest.mark.parametrize(
+    "value,match",
+    [
+        ("left_wrist_yaw", "must be a list"),
+        (["left_wrist_yaw", "left_wrist_yaw"], "duplicate"),
+        ([""], "empty joint name"),
+    ],
+)
+def test_externally_managed_actuators_reject_invalid_values(
+    tmp_path: Path, value, match: str
+) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "externally_managed_actuator_names": value,
+    }
+
+    with pytest.raises(ValueError, match=match):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
 def test_legacy_blocks_round_trip_to_canonical(tmp_path: Path) -> None:
     canonical = ServoControllerConfig(
         type="hiwonder_ttl_bus",

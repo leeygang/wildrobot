@@ -607,7 +607,9 @@ def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None
     assert captured["imu"]["enable_rotation_vector"] is False
 
 
-def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None:
+def test_build_hardware_robot_io_filters_external_servos_from_read_schedule(
+    monkeypatch,
+) -> None:
     import configs
     import wr_runtime.hardware.bno085 as bno_mod
     import wr_runtime.hardware.foot_switches as fs_mod
@@ -618,7 +620,7 @@ def test_build_hardware_robot_io_passes_servo_read_schedule(monkeypatch) -> None
     cfg = _fake_runtime_config()
     cfg.servo_read_schedule = SimpleNamespace(
         mode="staggered",
-        groups=[["j"]],
+        groups=[["j", "left_wrist_yaw"], ["left_wrist_yaw"]],
         max_cache_age_s={"default": 0.25},
     )
 

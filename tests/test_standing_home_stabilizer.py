@@ -71,6 +71,7 @@ def test_standing_runner_expands_active_policy_to_fixed_home_hardware() -> None:
 
 def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
     from assets.robot_config import get_robot_config, load_robot_config
+    from runtime.wr_runtime.control.run_policy import _standing_runtime_plan
     from training.configs.training_config import load_training_config
     from training.policy_spec_utils import build_policy_spec_from_training_config
 
@@ -101,6 +102,13 @@ def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
     assert len(metadata["full_actuator_names"]) == 21
     assert len(metadata["fixed_home_ctrl_rad"]) == 4
     assert set(metadata["fixed_joint_ranges_rad"]) == wrists
+
+    hardware_names, home, mins, maxs, fixed_home = _standing_runtime_plan(
+        spec, externally_managed_actuator_names=sorted(wrists)
+    )
+    assert hardware_names == spec.robot.actuator_names
+    assert home.shape == mins.shape == maxs.shape == (17,)
+    assert fixed_home == {}
 
 
 def test_standing_home_stabilizer_uses_active_reward_terms() -> None:
