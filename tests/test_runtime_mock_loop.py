@@ -69,6 +69,15 @@ class _OpenRightFootRobotIO(MockRobotIO):
         )
 
 
+class _WaitableMockRobotIO(MockRobotIO):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.imu_wait_timeouts: list[float] = []
+
+    def wait_for_valid_imu_sample(self, *, timeout_s: float) -> None:
+        self.imu_wait_timeouts.append(float(timeout_s))
+
+
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
     action_dim = v8_spec.model.action_dim
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
@@ -346,7 +355,7 @@ def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
     v8_spec, runtime_policy_config, capsys
 ):
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
-    robot_io = MockRobotIO(
+    robot_io = _WaitableMockRobotIO(
         actuator_names=list(v8_spec.robot.actuator_names),
         control_dt=runtime_policy_config.ctrl_dt,
         home_q_rad=home,
@@ -370,9 +379,11 @@ def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
         startup_home_hold_steps=2,
         startup_confirm_before_walk=True,
         startup_confirm_input_fn=lambda _prompt: "y",
+        startup_confirm_imu_timeout_s=1.25,
     )
 
     assert policy.calls == 2
+    assert robot_io.imu_wait_timeouts == [pytest.approx(1.25)]
     assert logs[0]["step_idx"] == 1
     assert len(robot_io.written) > 4
     for ctrl in robot_io.written[:-2]:
@@ -380,6 +391,7 @@ def test_startup_home_hold_confirm_yes_refreshes_then_runs_policy(
     out = capsys.readouterr().out
     assert "Manual start gate: home hold is complete" in out
     assert "Manual start confirmed" in out
+    assert "Re-priming IMU after manual pause" in out
     assert "Startup home confirm complete" in out
     assert "Startup home stability OK" in out
 

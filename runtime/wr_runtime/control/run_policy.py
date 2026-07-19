@@ -1183,6 +1183,7 @@ def _run_startup_home_hold(
     stability_max_gyro_rad_s: float = _STARTUP_STABILITY_MAX_GYRO_RAD_S,
     stability_max_leg_error_deg: float = _STARTUP_STABILITY_MAX_LEG_ERROR_DEG,
     confirm_before_walk: bool = False,
+    confirm_imu_timeout_s: float = 3.0,
     input_fn: Callable[[str], str] | None = None,
 ) -> None:
     """Command home before policy walking, then reset policy episode state."""
@@ -1265,6 +1266,15 @@ def _run_startup_home_hold(
             "Manual start confirmed; refreshing home stability window before command.",
             flush=True,
         )
+        robot_io = getattr(runner, "_robot_io", None)
+        wait_for_imu = getattr(robot_io, "wait_for_valid_imu_sample", None)
+        if callable(wait_for_imu):
+            print(
+                "Re-priming IMU after manual pause "
+                f"(timeout {float(confirm_imu_timeout_s):.1f}s)...",
+                flush=True,
+            )
+            wait_for_imu(timeout_s=float(confirm_imu_timeout_s))
         refresh_steps = max(
             1,
             int(round(float(stability_window_s) / max(float(ctrl_dt), 1e-9))),
@@ -1340,6 +1350,7 @@ def run_policy_loop(
     startup_stability_max_tilt_deg: float = _STARTUP_STABILITY_MAX_TILT_DEG,
     startup_confirm_before_walk: bool = False,
     startup_confirm_input_fn: Callable[[str], str] | None = None,
+    startup_confirm_imu_timeout_s: float = 3.0,
 ) -> List[dict]:
     """Run the control loop for ``max_steps`` iterations; return per-log infos."""
     logs: List[dict] = []
@@ -1357,6 +1368,7 @@ def run_policy_loop(
         stability_check=bool(startup_stability_check),
         stability_max_tilt_deg=float(startup_stability_max_tilt_deg),
         confirm_before_walk=bool(startup_confirm_before_walk),
+        confirm_imu_timeout_s=float(startup_confirm_imu_timeout_s),
         input_fn=startup_confirm_input_fn,
     )
     timing_samples: List[dict] = []
@@ -1821,6 +1833,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_stability_check=not bool(args.disable_startup_stability_check),
             startup_stability_max_tilt_deg=startup_stability_max_tilt_deg,
             startup_confirm_before_walk=bool(args.confirm_before_walk),
+            startup_confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
         )
     finally:
         try:
