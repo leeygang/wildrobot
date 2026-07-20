@@ -1580,6 +1580,7 @@ def build_wandb_metrics(
         if (
             key.startswith("debug/")
             or key.startswith("tracking/")
+            or key.startswith("torque/")
             or key.startswith("term_")
             # 2026-05-18 metric-correctness sweep wiring: the train
             # aggregator emits ``soft_violation_pitch_frac`` /

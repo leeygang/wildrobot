@@ -41,9 +41,9 @@ from training.core.metrics_registry import (
     aggregate_metrics,
     METRIC_INDEX,
     METRICS_VEC_KEY,
+    truncation_from_metrics_vec,
     unpack_metrics,
 )
-from training.envs.env_info import WR_INFO_KEY
 from training.policy_spec_utils import build_policy_spec_from_training_config
 
 
@@ -1265,12 +1265,12 @@ def train(
                     deterministic=deterministic,
                 )
                 next_env_state = step_fn(env_state, action)
-                wr_info = next_env_state.info[WR_INFO_KEY]
+                metrics_vec = next_env_state.metrics[METRICS_VEC_KEY]
                 step_data = {
                     "reward": next_env_state.reward,
                     "done": next_env_state.done,
-                    "truncation": wr_info.truncated,
-                    "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                    "truncation": truncation_from_metrics_vec(metrics_vec),
+                    "metrics_vec": metrics_vec,
                 }
                 return (next_env_state, rng), step_data
 

@@ -18,6 +18,12 @@ def action_to_joint_target_rad(*, spec: PolicySpec, action: np.ndarray) -> np.nd
         corrected = action * policy_action_signs
         joint_target_rad = np.clip(homes + corrected * spans, mins, maxs)
         return joint_target_rad.astype(np.float32)
+    elif spec.action.mapping_id == "pos_target_home_025_v1":
+        homes, _, mins, maxs, policy_action_signs = _get_joint_params_home(spec)
+        action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        corrected = action * policy_action_signs
+        joint_target_rad = np.clip(homes + corrected * np.float32(0.25), mins, maxs)
+        return joint_target_rad.astype(np.float32)
     else:
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
@@ -37,13 +43,20 @@ def joint_target_rad_to_action(*, spec: PolicySpec, joint_target_rad: np.ndarray
         action = corrected * policy_action_signs
         action = np.clip(action, -1.0, 1.0)
         return action.astype(np.float32)
+    elif spec.action.mapping_id == "pos_target_home_025_v1":
+        homes, _, _, _, policy_action_signs = _get_joint_params_home(spec)
+        joint_target = np.asarray(joint_target_rad, dtype=np.float32)
+        corrected = (joint_target - homes) / np.float32(0.25)
+        action = corrected * policy_action_signs
+        action = np.clip(action, -1.0, 1.0)
+        return action.astype(np.float32)
     else:
         raise ValueError(f"Unsupported mapping_id: {spec.action.mapping_id}")
 
 
 def normalize_joint_pos(*, spec: PolicySpec, joint_pos_rad: np.ndarray) -> np.ndarray:
     """Normalize joint positions for observation building."""
-    if spec.action.mapping_id == "pos_target_home_v1":
+    if spec.action.mapping_id in ("pos_target_home_v1", "pos_target_home_025_v1"):
         homes, spans, _, _, _ = _get_joint_params_home(spec)
         normalized = (np.asarray(joint_pos_rad, dtype=np.float32) - homes) / (spans + 1e-6)
         return normalized.astype(np.float32)

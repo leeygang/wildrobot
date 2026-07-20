@@ -39,7 +39,11 @@ from training.core.checkpoint import load_checkpoint
 from training.algos.ppo.ppo_core import create_networks
 
 # Reuse the eval helpers from eval_policy.py
-from training.eval.eval_policy import _collect_eval_rollout, _compute_eval_metrics
+from training.eval.eval_policy import (
+    _collect_eval_rollout,
+    _compute_eval_metrics,
+    _network_activation_name,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +134,7 @@ def _run_single_force_level(
         action_dim=action_dim,
         policy_hidden_dims=tuple(training_cfg.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
+        activation=_network_activation_name(training_cfg),
     )
 
     checkpoint = load_checkpoint(str(checkpoint_path))
@@ -146,6 +151,8 @@ def _run_single_force_level(
         rng=rng,
         num_steps=num_steps,
         deterministic=True,
+        disable_cmd_resample=False,
+        disable_pushes=False,
     )
 
     metrics = _compute_eval_metrics(traj, num_steps)

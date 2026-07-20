@@ -131,6 +131,65 @@ def test_standing_home_stabilizer_uses_active_reward_terms() -> None:
     assert weights.cmd_forward_velocity_track == 0.0
 
 
+def test_standing_home_stabilizer_v0222_is_tb_bounded_and_randomized() -> None:
+    from assets.robot_config import get_robot_config, load_robot_config
+    from policy_contract.calib import NumpyCalibOps
+    from training.configs.training_config import load_training_config
+    from training.policy_spec_utils import build_policy_spec_from_training_config
+
+    load_robot_config("assets/v2/mujoco_robot_config.json")
+    training_cfg = load_training_config(
+        "training/configs/ppo_standing_home_stabilizer_v0222.yaml"
+    )
+    spec = build_policy_spec_from_training_config(
+        training_cfg=training_cfg,
+        robot_cfg=get_robot_config(),
+    )
+
+    assert training_cfg.version == "0.22.2"
+    assert spec.action.mapping_id == "pos_target_home_025_v1"
+    assert training_cfg.env.action_delay_steps == 1
+    assert training_cfg.env.domain_randomization_enabled
+    assert training_cfg.env.domain_rand_friction_range == [0.4, 1.0]
+    assert training_cfg.env.domain_rand_frictionloss_scale_range == [0.8, 1.2]
+    assert training_cfg.env.domain_rand_backlash_range == [0.02, 0.10]
+    assert training_cfg.ppo.entropy_coef == 5e-4
+
+    zero = np.zeros(spec.model.action_dim, dtype=np.float32)
+    positive = np.ones(spec.model.action_dim, dtype=np.float32)
+    home = np.asarray(spec.robot.home_ctrl_rad, dtype=np.float32)
+    target = NumpyCalibOps.action_to_ctrl(spec=spec, action=positive)
+    np.testing.assert_allclose(
+        NumpyCalibOps.action_to_ctrl(spec=spec, action=zero), home, atol=1e-6
+    )
+    assert np.all(target - home <= 0.25 + 1e-6)
+
+
+def test_v0222_randomization_supports_excluded_actuators() -> None:
+    import jax
+
+    from assets.robot_config import load_robot_config
+    from training.configs.training_config import load_training_config
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    training_cfg = load_training_config(
+        "training/configs/ppo_standing_home_stabilizer_v0222.yaml"
+    )
+    load_robot_config(training_cfg.env.robot_config_path)
+    training_cfg.freeze()
+    env = WildRobotEnv(training_cfg)
+    params = env._sample_domain_rand_params(jax.random.PRNGKey(0))
+    randomized_model = env._get_randomized_mjx_model(params)
+
+    policy_ids = np.asarray(env._ctrl_mapper.policy_to_mj_order, dtype=np.int32)
+    excluded_ids = np.setdiff1d(np.arange(env._mj_model.nu), policy_ids)
+    assert params["kp_scales"].shape == (env.action_size,)
+    np.testing.assert_allclose(
+        np.asarray(randomized_model.actuator_gainprm)[excluded_ids],
+        np.asarray(env._base_actuator_gainprm)[excluded_ids],
+    )
+
+
 def test_runtime_compat_accepts_declared_fixed_home_subset() -> None:
     from policy_contract.spec import validate_runtime_compat
     from policy_contract.spec_builder import build_policy_spec

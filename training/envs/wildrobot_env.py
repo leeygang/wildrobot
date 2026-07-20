@@ -56,7 +56,11 @@ from training.configs.training_config import (
     load_robot_config,
 )
 from training.core.experiment_tracking import get_initial_env_metrics_jax
-from training.core.metrics_registry import METRICS_VEC_KEY, build_metrics_vec
+from training.core.metrics_registry import (
+    METRICS_VEC_KEY,
+    TORQUE_ACTUATOR_NAMES,
+    build_metrics_vec,
+)
 from training.envs.disturbance import (
     DisturbanceSchedule,
     apply_push,
@@ -1246,14 +1250,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         mass_scales = dr_params["mass_scales"]
         kp_scales = dr_params["kp_scales"]
         frictionloss_scales = dr_params["frictionloss_scales"]
+        policy_actuator_ids = self._ctrl_mapper.policy_to_mj_order_jax
 
         geom_friction = self._base_geom_friction * friction_scale
         body_mass = self._base_body_mass * mass_scales
-        actuator_gainprm = self._base_actuator_gainprm.at[:, 0].set(
-            self._base_actuator_gainprm[:, 0] * kp_scales
+        actuator_gainprm = self._base_actuator_gainprm.at[
+            policy_actuator_ids, 0
+        ].set(
+            self._base_actuator_gainprm[policy_actuator_ids, 0] * kp_scales
         )
-        actuator_biasprm = self._base_actuator_biasprm.at[:, 1].set(
-            self._base_actuator_biasprm[:, 1] * kp_scales
+        actuator_biasprm = self._base_actuator_biasprm.at[
+            policy_actuator_ids, 1
+        ].set(
+            self._base_actuator_biasprm[policy_actuator_ids, 1] * kp_scales
         )
         dof_frictionloss = self._base_dof_frictionloss.at[self._actuator_dof_addrs].set(
             self._base_dof_frictionloss[self._actuator_dof_addrs] * frictionloss_scales
@@ -4634,6 +4643,19 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["debug/torque_sat_frac"] = jp.mean(
             (torque_ratio > jp.float32(0.95)).astype(jp.float32)
         )
+        torque_metric_names = set(TORQUE_ACTUATOR_NAMES)
+        for actuator_idx, actuator_name in enumerate(self._full_actuator_names):
+            if actuator_name not in torque_metric_names:
+                raise ValueError(
+                    "Missing per-actuator torque metric registration for "
+                    f"{actuator_name!r}"
+                )
+            terminal_metrics_dict[f"torque/{actuator_name}/abs_nm"] = torque_abs[
+                actuator_idx
+            ].astype(jp.float32)
+            terminal_metrics_dict[f"torque/{actuator_name}/sat_frac"] = (
+                torque_ratio[actuator_idx] > jp.float32(0.95)
+            ).astype(jp.float32)
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

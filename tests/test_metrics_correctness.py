@@ -34,7 +34,7 @@ Five regressions guarded:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 import jax
 import jax.numpy as jp
@@ -263,6 +263,8 @@ def test_live_debug_metrics_under_nontrivial_action() -> None:
     assert metrics["debug/torque_abs_max"] > 0.0
     # torque_sat_frac is allowed to be 0 (no joint hit 95% of limit).
     assert metrics["debug/torque_sat_frac"] >= 0.0
+    assert metrics["torque/left_knee_pitch/abs_nm"] > 0.0
+    assert metrics["torque/left_knee_pitch/sat_frac"] >= 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -496,3 +498,74 @@ def test_walking_eval_block_aggregates_drift_at_episode_terminal_not_rollout_end
         "Old _last_step_mean helper was the Bug-1 source — must not "
         "reappear in train.py post-training eval"
     )
+
+
+# -----------------------------------------------------------------------------
+# 2026-07-19 standing-result metric corrections
+# -----------------------------------------------------------------------------
+
+
+def test_truncation_is_read_from_terminal_metrics_vec() -> None:
+    from training.core.metrics_registry import (
+        METRIC_INDEX,
+        NUM_METRICS,
+        truncation_from_metrics_vec,
+    )
+
+    vec = jp.zeros((NUM_METRICS,), dtype=jp.float32)
+    vec = vec.at[METRIC_INDEX["term/truncated"]].set(1.0)
+    assert float(truncation_from_metrics_vec(vec)) == 1.0
+
+
+def test_policy_std_uses_brax_softplus_parameterization() -> None:
+    from training.eval.eval_policy import _policy_std_metrics_from_logits
+
+    target_std = jp.asarray([0.2, 0.4], dtype=jp.float32)
+    min_std = 0.001
+    scale_param = jp.log(jp.expm1(target_std - min_std))
+    logits = jp.concatenate([jp.zeros((2,)), scale_param])
+
+    metrics = _policy_std_metrics_from_logits(
+        logits,
+        action_dim=2,
+        min_std=min_std,
+    )
+
+    assert metrics["policy/std_mean"] == pytest.approx(0.3, abs=1e-6)
+    assert "policy/log_std_mean" not in metrics
+    assert metrics["policy/scale_param_mean"] == pytest.approx(
+        float(jp.mean(scale_param)), abs=1e-6
+    )
+
+
+def test_named_torque_metrics_match_robot_config() -> None:
+    import json
+
+    from training.core.metrics_registry import METRIC_INDEX, TORQUE_ACTUATOR_NAMES
+
+    robot_config = json.loads(
+        (_REPO_ROOT / "assets/v2/mujoco_robot_config.json").read_text()
+    )
+    configured_names = tuple(
+        item["name"] for item in robot_config["actuated_joint_specs"]
+    )
+    assert TORQUE_ACTUATOR_NAMES == configured_names
+    for name in configured_names:
+        assert f"torque/{name}/abs_nm" in METRIC_INDEX
+        assert f"torque/{name}/sat_frac" in METRIC_INDEX
+
+
+def test_standalone_evaluators_pass_full_rollout_contract() -> None:
+    import inspect
+
+    from training.eval import eval_ladder_v0170, force_sweep
+
+    for module in (eval_ladder_v0170, force_sweep):
+        source = (
+            inspect.getsource(module._run_single_force_level)
+            if module is force_sweep
+            else inspect.getsource(module._run_eval_suite)
+        )
+        assert "disable_cmd_resample=False" in source
+        assert "disable_pushes=False" in source
+        assert "activation=_network_activation_name(training_cfg)" in source

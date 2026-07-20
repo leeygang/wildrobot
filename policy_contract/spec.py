@@ -46,7 +46,11 @@ SUPPORTED_LAYOUT_IDS = {
 # ToddlerBot c_frame_stack.  Must stay in sync with
 # training/envs/env_info.py PROPRIO_HISTORY_FRAMES.
 PROPRIO_HISTORY_FRAMES: int = 15
-SUPPORTED_MAPPING_IDS = {"pos_target_rad_v1", "pos_target_home_v1"}
+SUPPORTED_MAPPING_IDS = {
+    "pos_target_rad_v1",
+    "pos_target_home_v1",
+    "pos_target_home_025_v1",
+}
 SUPPORTED_POSTPROCESS_IDS = {"none", "lowpass_v1"}
 
 # Joint range validation:

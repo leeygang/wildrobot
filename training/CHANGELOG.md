@@ -8,6 +8,106 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.1-standing-home-stabilizer-result] - 2026-07-19: standing learned under mild pushes; torque saturation blocks deployment
+
+### Result
+
+- **Run**: `training/wandb/offline-run-20260719_065241-idd5miko`
+- **Checkpoints**: `training/checkpoints/ppo_standing_home_stabilizer_v00221_20260719_065245-idd5miko`
+- **Evaluation candidate**: `checkpoint_70_9175040.pkl` (highest logged train reward, then verified deterministically)
+- **Training budget**: 100 iterations, 13,107,200 environment steps, 3.88 h.
+- **Verdict**: the policy learned quiet standing and passes a repaired 16-environment fixed-ladder screen, but it is **not deployable** because both shoulder-roll servos remain torque-saturated almost continuously.
+
+Logged iterations 40-100 are stable rather than still improving materially:
+
+| Metric | Iterations 40-100 mean | Final iter 100 |
+|---|---:|---:|
+| `env/episode_length` | 485.9 / 500 | 486.9 / 500 |
+| corrected horizon completion (`term_truncated_frac`) | 93.2% | 92.1% |
+| `term_height_low_frac` | 6.8% | 7.9% |
+| `term_pitch_frac` | 0.16% | 0.36% |
+| `term_roll_frac` | 0.0% | 0.0% |
+| `reward/total` | 0.2241 / step | 0.2242 / step |
+| `debug/torque_sat_frac` | **30.6%** | **32.5%** |
+| `tracking/avg_torque` | 2.02 Nm | 2.08 Nm |
+
+The reward maximum is iteration 70 (`reward/total = 0.22797`); the episode-length maximum is iteration 60 (`490.73`). Iteration 70 was chosen for deterministic evaluation because it maximizes the actual task objective while retaining `488.87 / 500` train episode length and `94.86%` horizon completion.
+
+### Deterministic evaluation of checkpoint 70
+
+Two 16-environment, 500-step, seed-42 evaluations used the run's exact config and deterministic policy mean:
+
+| Metric | Configured pushes | Pushes disabled |
+|---|---:|---:|
+| corrected 500-step completion | 16 / 16 | 16 / 16 |
+| torso orientation error | 2.73 deg | 2.76 deg |
+| torso XY error | 0.0178 m | 0.0174 m |
+| terminal world X / Y drift | -0.0077 / -0.0119 m | -0.0079 / -0.0117 m |
+| terminal yaw drift | 0.0094 rad | 0.0079 rad |
+| `debug/torque_sat_frac` | **10.03%** | **10.03%** |
+| `tracking/avg_torque` | 0.958 Nm | 0.953 Nm |
+
+The configured 2-5 N, 6-control-step pushes have no material aggregate effect in this screen. They supply 0.24-0.60 Ns once per 10 s episode. This is below the repository's fixed standing ladder (`5 N x 10`, `8 N x 10`, `10 N x 10` control steps = 1.0, 1.6, 2.0 Ns), so the result is evidence for mild-disturbance standing, not the existing medium/hard recovery gate.
+
+### Repaired fixed-ladder screen
+
+After repairing the standalone evaluator call contract and truncation metric, checkpoint 70 was evaluated at seed 42 with 16 environments per suite:
+
+| Suite | Push | Horizon completion | Episode length | Height failure | Historical gate |
+|---|---:|---:|---:|---:|---:|
+| easy | 5 N x 10 steps | 100.0% | 500.0 | 0.0% | >95% PASS |
+| medium | 8 N x 10 steps | 100.0% | 500.0 | 0.0% | >75% PASS |
+| hard | 10 N x 10 steps | 81.25% | 431.1 | 18.75% | >60% PASS |
+
+This clears the historical numeric gates in a small deterministic screen. It is not yet the standard 128-environment confidence run, and the required visual confirmation of coordinated crouch/step recovery is still missing. The torque result below blocks hardware regardless.
+
+### Per-servo torque diagnosis
+
+Named actuator metrics on the same deterministic configured-push evaluation identify the saturation source:
+
+| Actuator | Saturated above 95% limit | Mean absolute torque |
+|---|---:|---:|
+| `left_shoulder_roll` | **99.98%** | **4.000 Nm** |
+| `right_shoulder_roll` | **99.73%** | **3.996 Nm** |
+| `left_shoulder_pitch` | 5.75% | 1.153 Nm |
+| `left_hip_roll` | 3.46% | 1.921 Nm |
+| `right_hip_roll` | 1.36% | 1.435 Nm |
+
+This is primarily continuous arm loading, not knee/ankle push-recovery demand. At the deterministic reset state the full-span mapping converts modest normalized policy outputs into shoulder-roll target offsets of `+0.433 rad` (left) and `-0.383 rad` (right). `penalty_pose_weight_default=0` leaves arm pose unanchored, while the torque term contributes only about `-0.0010` reward/step across all actuators. The policy can therefore buy orientation stability with continuously stalled shoulder-roll servos at little reward cost.
+
+The v0.22.2 implementation addresses the highest-confidence mechanical cause first: a new backward-compatible `pos_target_home_025_v1` mapping caps every controlled joint at `home +/- 0.25 rad`. It does not mutate historical `pos_target_home_v1` semantics. The next run's named metrics must demonstrate that shoulder-roll saturation falls materially; the bound is not assumed sufficient before measurement.
+
+### Metric corrections required by this analysis
+
+1. `env/success_rate` is falsely 0.0 throughout the run. Auto-reset preserves terminal `term/truncated` in the metrics vector but replaces `info[WR_INFO_KEY].truncated` with reset state before rollout collection. `term_truncated_frac` is therefore the correct horizon-completion signal: 100% in both deterministic evaluations.
+2. `eval_policy.py` labels the Brax actor's softplus scale parameter as `log_std` and exponentiates it. Computed from the actual logits over this evaluation rollout, checkpoint 70's mean policy standard deviation is **0.4433** (range 0.2787-0.6757), not the printed 0.4557 (`softplus(scale_param) + min_std`, configured initial std 0.3679).
+3. `force_sweep.py` and `eval_ladder_v0170.py` do not pass the evaluator's required `disable_cmd_resample` / `disable_pushes` arguments, so the standard post-training ladder is blocked by call-site API drift.
+4. Torque logging is aggregate-only. It proves saturation exists but cannot identify the responsible servo; per-actuator magnitude and saturation metrics are required before a hardware decision.
+
+### ToddlerBot comparison and size normalization
+
+Current ToddlerBot source (`~/projects/toddlerbot/toddlerbot/locomotion/`) confirms that the active reward weights ported here are aligned: `alive=1`, `torso_quat=2.5`, `penalty_ang_vel_xy=1`, `penalty_pose=0.5`, `penalty_close_feet_xy=10`, `feet_phase=7.5`, and `penalty_feet_ori=5`. WR's `close_feet_threshold=0.146 m` is already stance-width-normalized from TB's 0.06 m.
+
+The configured push impulse is also size-appropriate for the optional TB disturbance: the current models weigh 4.13 kg (WR) and 3.77 kg (TB), so WR's push gives `delta_v = 0.058-0.145 m/s` versus TB's optional 1-3 N for 0.2 s giving `0.053-0.159 m/s`. TB's active walk config has `add_push=false`, however, and WR applies only one push per episode rather than TB's optional 2 s interval.
+
+The evaluated v0.22.1 recipe has these deployment-relevant divergences:
+
+- WR `pos_target_home_v1` maps actions over each joint's full home-to-limit span; TB uses `default_q + action * 0.25 rad`.
+- WR uses no action delay; TB uses one control step.
+- WR disables dynamics randomization; TB enables friction, damping, armature, mass, gain, torque-limit, friction-loss, and backlash families.
+- WR uses `entropy_coef=0.01`; TB uses `5e-4`.
+
+The public reference is Shi et al., **ToddlerBot: Open-Source ML-Compatible Humanoid Platform for Loco-Manipulation**, arXiv:2502.00893 (2025), plus the current public project at `github.com/hshi74/toddlerbot`. The paper emphasizes calibrated motor dynamics and a high-fidelity digital twin for zero-shot sim-to-real; the local current code remains the implementation source of truth for the comparison above.
+
+### Implemented follow-up (v0.22.2 recipe)
+
+1. Horizon completion now comes from the terminal metrics vector, the evaluator reports Brax's actual policy standard deviation, and the ladder/force-sweep call contracts are repaired.
+2. Per-actuator torque magnitude and saturation metrics now identify servo-level loading in training and evaluation.
+3. The repaired fixed ladder produced the screen above. Promotion still requires a 128-environment confidence run and visual whole-body recovery.
+4. `ppo_standing_home_stabilizer_v0222.yaml` uses the new `pos_target_home_025_v1` mapping, one-step action delay, `entropy_coef=0.0005`, and WR's implemented TB-aligned dynamics-randomization subset. Randomization applies to the 17 controlled joints while the excluded wrists remain nominal. The reward recipe is unchanged.
+
+---
+
 ## [v0.21.0-smoke6-deploy-selection] - 2026-06-07: use `checkpoint_1650_33792000.pkl` for the first forward-only hardware trial
 
 ### Smoke6 deploy-safety recheck

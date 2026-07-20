@@ -500,8 +500,9 @@ class EnvConfig(Freezable):
     ankle_pushoff_enabled: bool = False
     ankle_pushoff_phase_start: float = 0.70
     ankle_pushoff_max_rad: float = 0.15
-    # Action mapping: "pos_target_rad_v1" (legacy mid-range center) or
-    # "pos_target_home_v1" (home-centered, per-joint span)
+    # Action mapping: "pos_target_rad_v1" (legacy mid-range center),
+    # "pos_target_home_v1" (home-centered, per-joint span), or
+    # "pos_target_home_025_v1" (home-centered, fixed +/-0.25 rad).
     action_mapping_id: str = "pos_target_rad_v1"
     clock_stride_period_steps: int = 36
     clock_phase_gate_width: float = 0.20

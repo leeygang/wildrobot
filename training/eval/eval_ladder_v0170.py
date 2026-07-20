@@ -139,7 +139,11 @@ def _run_eval_suite(
     from training.envs.wildrobot_env import WildRobotEnv
     from training.core.checkpoint import load_checkpoint
     from training.algos.ppo.ppo_core import create_networks
-    from training.eval.eval_policy import _collect_eval_rollout, _compute_eval_metrics
+    from training.eval.eval_policy import (
+        _collect_eval_rollout,
+        _compute_eval_metrics,
+        _network_activation_name,
+    )
     
     # Fresh config for each suite
     training_cfg = load_training_config(config_path)
@@ -174,7 +178,7 @@ def _run_eval_suite(
     rng = jax.random.PRNGKey(seed)
     rng, reset_rng = jax.random.split(rng)
     reset_rngs = jax.random.split(reset_rng, num_envs)
-    batched_reset = jax.vmap(env.reset)
+    batched_reset = jax.vmap(env.reset_for_eval)
     env_state = batched_reset(reset_rngs)
     
     # Extract dimensions from actual state
@@ -187,6 +191,7 @@ def _run_eval_suite(
         action_dim=action_dim,
         policy_hidden_dims=tuple(training_cfg.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
+        activation=_network_activation_name(training_cfg),
     )
     
     # Load checkpoint as dict, not object - follow force_sweep.py pattern
@@ -204,6 +209,8 @@ def _run_eval_suite(
         rng=rng,
         num_steps=num_steps,
         deterministic=True,
+        disable_cmd_resample=False,
+        disable_pushes=False,
     )
     
     # Compute metrics with correct API 

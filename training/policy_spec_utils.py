@@ -161,7 +161,7 @@ def maybe_get_home_ctrl_from_training_config(
     """Populate ``policy_spec.robot.home_ctrl_rad`` when the runtime
     needs it.  Two triggers:
 
-    1. ``action_mapping_id == "pos_target_home_v1"`` — the action
+    1. ``action_mapping_id`` is a home-centered mapping — the action
        calibration ops use home_ctrl as the centering reference.
     2. ``loc_ref_residual_base == "home"`` (smoke8) — V6EvalAdapter
        needs the home pose to compose target_q under home base.  Without
@@ -172,7 +172,8 @@ def maybe_get_home_ctrl_from_training_config(
     residual_base = str(
         getattr(training_cfg.env, "loc_ref_residual_base", "q_ref")
     ).lower()
-    if mapping_id != "pos_target_home_v1" and residual_base != "home":
+    home_mapping_ids = {"pos_target_home_v1", "pos_target_home_025_v1"}
+    if mapping_id not in home_mapping_ids and residual_base != "home":
         return None
 
     actuated_joint_specs = _policy_actuated_joint_specs(

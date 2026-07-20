@@ -1,0 +1,176 @@
+# =============================================================================
+# WildRobot PPO Standing Home Stabilizer v0.22.2
+# =============================================================================
+# v0.22.1 reward recipe with ToddlerBot-aligned action authority and the
+# existing WR sim-to-real randomization subset.  The fixed +/-0.25 rad action
+# bound is intentionally NOT scaled up with WR leg length: WR's ~1.85x longer
+# leg already converts the same joint angle into more Cartesian foot motion.
+#
+# Usage:
+#   uv run python training/train.py \
+#     --config training/configs/ppo_standing_home_stabilizer_v0222.yaml --verify
+# =============================================================================
+version: "0.22.2"
+version_name: "Standing home stabilizer bounded action and sim-to-real randomization"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 500
+
+  target_height: 0.46
+  min_height: 0.40
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  torso_pitch_soft_min_rad: -0.15
+  torso_pitch_soft_max_rad: 0.15
+  torso_roll_soft_min_rad: -0.10
+  torso_roll_soft_max_rad: 0.10
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+  min_velocity_y: 0.0
+  max_velocity_y: 0.0
+  max_yaw_rate: 0.0
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  actor_obs_layout_id: wr_obs_v1
+  action_mapping_id: pos_target_home_025_v1
+  action_filter_alpha: 0.6
+  action_delay_steps: 1
+  policy_excluded_actuator_names:
+    - left_wrist_yaw
+    - left_wrist_pitch
+    - right_wrist_yaw
+    - right_wrist_pitch
+
+  # Keep the existing v3 reference service alive for reset/reward plumbing, but
+  # the wr_obs_v1 actor sees no reference channels.
+  loc_ref_version: v3_offline_library
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: false
+  close_feet_threshold: 0.146
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  push_enabled: true
+  push_start_step_min: 40
+  push_start_step_max: 250
+  push_duration_steps: 6
+  push_force_min: 2.0
+  push_force_max: 5.0
+  push_body: waist
+
+  # ToddlerBot-aligned subset implemented by WildRobotEnv.  TB also randomizes
+  # damping, armature, Kd and velocity-dependent torque limits; those families
+  # are not silently claimed here because WR does not implement them yet.
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  iterations: 100
+
+  learning_rate: 3e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+
+  clip_epsilon: 0.2
+  entropy_coef: 0.0005
+  value_loss_coef: 0.5
+
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+
+  log_interval: 10
+
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  ref_body_quat_track: 2.5
+  torso_pos_xy: 1.0
+  torso_pos_xy_alpha: 50.0
+  ang_vel_xy: 1.0
+  torso_pitch_soft: 1.0
+  torso_roll_soft: 1.0
+
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  penalty_feet_ori: 5.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+
+  torque: -0.001
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -0.5
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, standing, home-stabilizer, bounded-action, sim2real]
+
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3

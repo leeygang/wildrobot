@@ -55,6 +55,36 @@ class MetricSpec(NamedTuple):
     description: str = ""               # Documentation
 
 
+# Canonical full WildRobot actuator order.  Per-actuator torque metrics use
+# names rather than opaque indices so a saturation finding is immediately
+# actionable on hardware.  A regression test pins this list to the v2 robot
+# config.  All physical channels are reported, including fixed-home joints
+# excluded from the policy action vector.
+TORQUE_ACTUATOR_NAMES: tuple[str, ...] = (
+    "waist_yaw",
+    "left_shoulder_pitch",
+    "left_shoulder_roll",
+    "left_elbow_pitch",
+    "left_wrist_yaw",
+    "left_wrist_pitch",
+    "left_hip_pitch",
+    "left_hip_roll",
+    "left_knee_pitch",
+    "left_ankle_pitch",
+    "left_ankle_roll",
+    "right_shoulder_pitch",
+    "right_shoulder_roll",
+    "right_elbow_pitch",
+    "right_wrist_yaw",
+    "right_wrist_pitch",
+    "right_hip_pitch",
+    "right_hip_roll",
+    "right_knee_pitch",
+    "right_ankle_pitch",
+    "right_ankle_roll",
+)
+
+
 # =============================================================================
 # METRIC REGISTRY - Single source of truth
 # =============================================================================
@@ -2009,6 +2039,30 @@ METRIC_SPECS: List[MetricSpec] = [
     ),
 ]
 
+# Per-actuator torque diagnostics (append-only).  ``abs_nm`` is the rollout
+# mean absolute actuator force; ``sat_frac`` is the fraction of steps/envs at
+# or above 95% of that actuator's configured force limit.
+for _actuator_name in TORQUE_ACTUATOR_NAMES:
+    METRIC_SPECS.extend(
+        [
+            MetricSpec(
+                name=f"torque/{_actuator_name}/abs_nm",
+                reducer=Reducer.MEAN,
+                log_prefix="torque",
+                description=f"Mean absolute torque for {_actuator_name} (Nm)",
+            ),
+            MetricSpec(
+                name=f"torque/{_actuator_name}/sat_frac",
+                reducer=Reducer.MEAN,
+                log_prefix="torque",
+                description=(
+                    f"Fraction of samples where {_actuator_name} reaches "
+                    ">95% of its configured torque limit"
+                ),
+            ),
+        ]
+    )
+
 # =============================================================================
 # Derived constants
 # =============================================================================
@@ -2036,6 +2090,11 @@ METRICS_VEC_KEY: str = "wr_metrics_vec"
 # =============================================================================
 # Helper functions
 # =============================================================================
+
+def truncation_from_metrics_vec(metrics_vec: jnp.ndarray) -> jnp.ndarray:
+    """Return the terminal time-limit flag preserved across auto-reset."""
+    return metrics_vec[..., METRIC_INDEX["term/truncated"]]
+
 
 def build_metrics_vec(metrics_dict: Dict[str, jnp.ndarray]) -> jnp.ndarray:
     """Build packed metrics vector from dict.

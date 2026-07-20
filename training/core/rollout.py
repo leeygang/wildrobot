@@ -14,7 +14,10 @@ from typing import Any, Callable, NamedTuple, Tuple
 import jax
 import jax.numpy as jnp
 from training.envs.env_info import WR_INFO_KEY
-from training.core.metrics_registry import METRICS_VEC_KEY, NUM_METRICS
+from training.core.metrics_registry import (
+    METRICS_VEC_KEY,
+    truncation_from_metrics_vec,
+)
 
 from training.algos.ppo.ppo_core import compute_values, sample_actions
 
@@ -131,6 +134,7 @@ def collect_rollout(
 
         # Access typed WildRobotInfo namespace directly (fail loudly if missing)
         wr_info = next_env_state.info[WR_INFO_KEY]
+        metrics_vec = next_env_state.metrics[METRICS_VEC_KEY]
 
         # Build step data - minimal fields, metrics come from metrics[METRICS_VEC_KEY]
         step_data = {
@@ -142,10 +146,14 @@ def collect_rollout(
             "value": value,
             "task_reward": next_env_state.reward,
             "done": next_env_state.done,
-            "truncation": wr_info.truncated,  # Required field from typed namespace
+            # Auto-reset replaces info with the next episode's reset state,
+            # while the env deliberately preserves terminal metrics.  Read
+            # time-limit truncation from that terminal vector so GAE and
+            # success-rate accounting see the actual completed episode.
+            "truncation": truncation_from_metrics_vec(metrics_vec),
             "next_obs": next_env_state.obs,
             # v0.10.4: Packed metrics vector from metrics dict
-            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+            "metrics_vec": metrics_vec,
             # Algorithm-critical fields (kept explicit)
             "step_count": wr_info.step_count,
         }

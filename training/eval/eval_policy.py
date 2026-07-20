@@ -32,6 +32,7 @@ from training.core.metrics_registry import (
     METRIC_INDEX,
     METRICS_VEC_KEY,
     aggregate_metrics,
+    truncation_from_metrics_vec,
 )
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 from training.core.rollout import TrajectoryBatch
@@ -83,35 +84,42 @@ def _format_metric(value: float, fmt: str = ".3f") -> str:
     return format(float(value), fmt)
 
 
-def _extract_policy_log_std(policy_params, action_dim: int) -> Dict[str, float]:
-    """Pull policy log_std bias from the last layer of the actor network.
+def _policy_std_metrics_from_logits(
+    policy_logits: jax.Array,
+    action_dim: int,
+    *,
+    min_std: float = 0.001,
+    var_scale: float = 1.0,
+) -> Dict[str, float]:
+    """Summarize Brax's state-dependent policy scale over a rollout.
 
-    Brax MLPs lay the last Dense layer out with bias shape ``(2 *
-    action_dim,)`` for a parametric Gaussian: first ``action_dim`` are
-    the mean biases, second ``action_dim`` are the log_std biases.  A
-    policy whose mean is near zero but log_std grows during training
+    The actor's final dimension contains ``2 * action_dim`` values:
+    first the Gaussian means, then unconstrained scale parameters.  The
+    actual standard deviation is
+    ``(softplus(scale_param) + min_std) * var_scale``.  A policy whose
+    mean is near zero but standard deviation grows during training
     reduces to "rely on exploration noise" — surfacing this exposes the
     failure mode where eval-time deterministic actions go to ~0 even
     though training metrics looked alive.
     """
-    try:
-        params = policy_params["params"]
-        last_layer_key = max(
-            (k for k in params if k.startswith("hidden_")),
-            key=lambda k: int(k.split("_")[1]),
+    logits = jnp.asarray(policy_logits, dtype=jnp.float32)
+    if logits.shape[-1] != 2 * action_dim:
+        raise ValueError(
+            "Policy logits have the wrong final dimension: "
+            f"expected {2 * action_dim}, got {logits.shape[-1]}"
         )
-        bias = params[last_layer_key]["bias"]
-        if bias.shape[0] != 2 * action_dim:
-            return {}
-        log_std = bias[action_dim:]
-        return {
-            "policy/log_std_mean": float(jnp.mean(log_std)),
-            "policy/log_std_min": float(jnp.min(log_std)),
-            "policy/log_std_max": float(jnp.max(log_std)),
-            "policy/std_mean": float(jnp.mean(jnp.exp(log_std))),
-        }
-    except (KeyError, ValueError, IndexError, TypeError):
-        return {}
+    scale_param = logits[..., action_dim:]
+    std = (jax.nn.softplus(scale_param) + jnp.float32(min_std)) * jnp.float32(
+        var_scale
+    )
+    return {
+        "policy/scale_param_mean": float(jnp.mean(scale_param)),
+        "policy/scale_param_min": float(jnp.min(scale_param)),
+        "policy/scale_param_max": float(jnp.max(scale_param)),
+        "policy/std_mean": float(jnp.mean(std)),
+        "policy/std_min": float(jnp.min(std)),
+        "policy/std_max": float(jnp.max(std)),
+    }
 
 
 def _collect_eval_rollout(
@@ -148,6 +156,7 @@ def _collect_eval_rollout(
             deterministic=deterministic,
         )
         next_state = batch_step(state, actions)
+        metrics_vec = next_state.metrics[METRICS_VEC_KEY]
 
         step_data = {
             "obs": obs,
@@ -156,9 +165,9 @@ def _collect_eval_rollout(
             "value": jnp.zeros((obs.shape[0],), dtype=jnp.float32),
             "task_reward": next_state.reward,
             "done": next_state.done,
-            "truncation": next_state.info[WR_INFO_KEY].truncated,
+            "truncation": truncation_from_metrics_vec(metrics_vec),
             "next_obs": next_state.obs,
-            "metrics_vec": next_state.metrics[METRICS_VEC_KEY],
+            "metrics_vec": metrics_vec,
             "step_count": next_state.info[WR_INFO_KEY].step_count,
         }
 
@@ -418,7 +427,21 @@ def main() -> int:
     )
 
     metrics = _compute_eval_metrics(traj, training_cfg.ppo.rollout_steps)
-    metrics.update(_extract_policy_log_std(policy_params, action_dim))
+    distribution = ppo_network.parametric_action_distribution
+    policy_logits = ppo_network.policy_network.apply(
+        processor_params, policy_params, traj.obs
+    )
+    metrics.update(
+        _policy_std_metrics_from_logits(
+            policy_logits,
+            action_dim,
+            min_std=float(getattr(distribution, "_min_std", 0.001)),
+            var_scale=float(getattr(distribution, "_var_scale", 1.0)),
+        )
+    )
+    metrics["policy/configured_init_std"] = float(
+        jnp.exp(jnp.float32(training_cfg.networks.actor.log_std_init))
+    )
 
     # Layout / action-mapping / residual-base affect what the policy
     # actually does at runtime; logging them at the top makes it obvious
@@ -515,6 +538,7 @@ def main() -> int:
         "  (per-step occupancy / done; unbounded under relaxed termination)"
     )
     _print_policy_diagnostics(metrics)
+    _print_torque_dashboard(metrics)
     _print_walking_dashboard(metrics)
 
     if args.compare_metrics:
@@ -543,9 +567,9 @@ def _print_policy_diagnostics(metrics: Dict[str, float]) -> None:
     """Surface action magnitude + policy std so a policy whose mean
     head never left init is obvious without running a stochastic eval
     for comparison.  A deterministic ``debug/action_abs_mean`` of ~0.05
-    paired with ``policy/log_std_mean`` near init (-0.69 ⇒ std=0.5) or
-    higher means the trained policy is operating in the "exploration
-    noise drives all motion" regime — training metrics that show
+    paired with an actual policy standard deviation near its configured
+    initialization or higher means the trained policy is operating in the
+    "exploration noise drives all motion" regime — training metrics that show
     forward_velocity > 0 are then driven by noise, not a learned skill.
     """
     aam = metrics.get("debug/action_abs_mean")
@@ -556,14 +580,38 @@ def _print_policy_diagnostics(metrics: Dict[str, float]) -> None:
             f"abs.max={_format_metric(aax, '.4f')}  "
             "(values < ~0.05 ⇒ policy mean near init)"
         )
-    log_std_mean = metrics.get("policy/log_std_mean")
+    scale_param_mean = metrics.get("policy/scale_param_mean")
     std_mean = metrics.get("policy/std_mean")
-    if log_std_mean is not None and std_mean is not None:
-        print(
-            f"  policy: log_std_mean={_format_metric(log_std_mean, '.3f')} "
-            f"(std={_format_metric(std_mean, '.3f')})  "
-            "(init log_std=-0.693 ⇒ std=0.5; growing log_std ⇒ more exploration)"
+    init_std = metrics.get("policy/configured_init_std")
+    if scale_param_mean is not None and std_mean is not None:
+        init_text = (
+            f"; configured init std={_format_metric(init_std, '.3f')}"
+            if init_std is not None
+            else ""
         )
+        print(
+            f"  policy: scale_param_mean={_format_metric(scale_param_mean, '.3f')} "
+            f"(actual std={_format_metric(std_mean, '.3f')}{init_text})"
+        )
+
+
+def _print_torque_dashboard(metrics: Dict[str, float], limit: int = 5) -> None:
+    """Print the actuators with the largest torque-limit occupancy."""
+    rows = []
+    suffix = "/sat_frac"
+    for key, value in metrics.items():
+        if not key.startswith("torque/") or not key.endswith(suffix):
+            continue
+        actuator = key[len("torque/") : -len(suffix)]
+        abs_nm = metrics.get(f"torque/{actuator}/abs_nm", 0.0)
+        rows.append((float(value), float(abs_nm), actuator))
+    rows.sort(reverse=True)
+    active_rows = [row for row in rows if row[0] > 0.0 or row[1] > 0.0]
+    if not active_rows:
+        return
+    print("  torque saturation by actuator:")
+    for sat_frac, abs_nm, actuator in active_rows[:limit]:
+        print(f"    {actuator:<24} sat={sat_frac:6.2%}  mean_abs={abs_nm:.3f} Nm")
 
 
 def _print_walking_dashboard(metrics: Dict[str, float]) -> None:

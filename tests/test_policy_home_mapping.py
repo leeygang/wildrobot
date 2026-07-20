@@ -12,7 +12,9 @@ def test_build_policy_spec_threads_home_ctrl_from_training_config() -> None:
     )
 
     load_robot_config("assets/v2/mujoco_robot_config.json")
-    training_cfg = load_training_config("training/configs/ppo_standing_v0173a.yaml")
+    training_cfg = load_training_config(
+        "training/configs/ppo_standing_home_stabilizer.yaml"
+    )
     robot_cfg = get_robot_config()
 
     spec = build_policy_spec_from_training_config(
@@ -61,3 +63,62 @@ def test_home_mapping_zero_action_maps_to_home_ctrl() -> None:
         zero,
         atol=1e-6,
     )
+
+
+def test_home_025_mapping_bounds_numpy_and_jax_targets() -> None:
+    from policy_contract.calib import JaxCalibOps, NumpyCalibOps
+    from policy_contract.spec_builder import build_policy_spec
+
+    spec = build_policy_spec(
+        robot_name="wildrobot",
+        actuated_joint_specs=[
+            {
+                "name": "joint",
+                "range": [-0.2, 1.0],
+                "policy_action_sign": 1.0,
+                "max_velocity": 10.0,
+            }
+        ],
+        action_filter_alpha=0.0,
+        layout_id="wr_obs_v1",
+        mapping_id="pos_target_home_025_v1",
+        home_ctrl_rad=[0.3],
+    )
+
+    for action, expected in ((-1.0, 0.05), (0.0, 0.3), (1.0, 0.55)):
+        policy_action = np.array([action], dtype=np.float32)
+        expected_ctrl = np.array([expected], dtype=np.float32)
+        np.testing.assert_allclose(
+            NumpyCalibOps.action_to_ctrl(spec=spec, action=policy_action),
+            expected_ctrl,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(JaxCalibOps.action_to_ctrl(spec=spec, action=policy_action)),
+            expected_ctrl,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            NumpyCalibOps.ctrl_to_policy_action(spec=spec, ctrl_rad=expected_ctrl),
+            policy_action,
+            atol=1e-5,
+        )
+
+
+def test_home_025_mapping_clips_at_joint_limit() -> None:
+    from policy_contract.calib import NumpyCalibOps
+    from policy_contract.spec_builder import build_policy_spec
+
+    spec = build_policy_spec(
+        robot_name="wildrobot",
+        actuated_joint_specs=[
+            {"name": "joint", "range": [0.0, 0.4], "max_velocity": 10.0}
+        ],
+        action_filter_alpha=0.0,
+        mapping_id="pos_target_home_025_v1",
+        home_ctrl_rad=[0.3],
+    )
+    target = NumpyCalibOps.action_to_ctrl(
+        spec=spec, action=np.array([1.0], dtype=np.float32)
+    )
+    np.testing.assert_allclose(target, np.array([0.4], dtype=np.float32))
