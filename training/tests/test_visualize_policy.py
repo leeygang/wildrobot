@@ -12,6 +12,7 @@ from training.eval.v6_eval_adapter import V6EvalAdapter
 from training.eval.visualize_policy import (
     _Tee,
     _adapter_layout_enabled,
+    _build_mjcf_ctrl_expander,
     _build_sample_velocity_cmd,
     _is_terminated_from_pose,
     _make_tracking_camera,
@@ -39,12 +40,43 @@ SMOKE6_CFG = (
 SMOKE14_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke14.yaml"
 )
+HOME_STABILIZER_CFG = (
+    PROJECT_ROOT / "training" / "configs" / "ppo_standing_home_stabilizer.yaml"
+)
 
 
 def test_visualizer_adapter_layout_supports_v6_and_v7() -> None:
     assert _adapter_layout_enabled("wr_obs_v6_offline_ref_history") is True
     assert _adapter_layout_enabled("wr_obs_v7_phase_proprio") is True
     assert _adapter_layout_enabled("wr_obs_v4") is False
+
+
+def test_visualizer_expands_home_stabilizer_controls_to_all_mjcf_actuators() -> None:
+    cfg = load_training_config(str(HOME_STABILIZER_CFG))
+    robot_cfg_path = PROJECT_ROOT / cfg.env.robot_config_path
+    robot_cfg = load_robot_config(str(robot_cfg_path))
+    mj_model = mujoco.MjModel.from_xml_path(str(PROJECT_ROOT / cfg.env.model_path))
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=robot_cfg,
+        action_filter_alpha=float(cfg.env.action_filter_alpha),
+    )
+
+    active_ctrl = np.arange(spec.model.action_dim, dtype=np.float32)
+    full_ctrl = _build_mjcf_ctrl_expander(mj_model, spec)(active_ctrl)
+    mjcf_names = [
+        mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id)
+        for actuator_id in range(mj_model.nu)
+    ]
+
+    assert full_ctrl.shape == (mj_model.nu,)
+    for active_index, name in enumerate(spec.robot.actuator_names):
+        assert full_ctrl[mjcf_names.index(name)] == active_ctrl[active_index]
+    metadata = spec.provenance["runtime_fixed_home"]
+    for name, target in zip(
+        metadata["fixed_actuator_names"], metadata["fixed_home_ctrl_rad"]
+    ):
+        assert full_ctrl[mjcf_names.index(name)] == pytest.approx(target)
 
 
 def test_visualizer_threads_actor_activation_from_training_config() -> None:

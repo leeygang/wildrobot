@@ -198,6 +198,59 @@ def _adapter_layout_enabled(layout_id: str) -> bool:
     return str(layout_id) in ADAPTER_LAYOUT_IDS
 
 
+def _build_mjcf_ctrl_expander(mj_model, policy_spec: PolicySpec):
+    """Expand policy controls to MuJoCo actuator order.
+
+    Standing policies may omit actuators declared in ``runtime_fixed_home``.
+    The policy controls active actuators only; the omitted actuators must keep
+    their contract-provided home targets in native MuJoCo evaluation.
+    """
+    mjcf_names = [
+        mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id)
+        for actuator_id in range(mj_model.nu)
+    ]
+    if any(name is None for name in mjcf_names):
+        raise ValueError("Every MuJoCo actuator must have a name")
+    mjcf_names = [str(name) for name in mjcf_names]
+    mjcf_by_name = {name: index for index, name in enumerate(mjcf_names)}
+
+    active_names = list(policy_spec.robot.actuator_names)
+    active_indices = [mjcf_by_name[name] for name in active_names]
+    fixed_home = policy_spec.provenance.get("runtime_fixed_home", {})
+    if not isinstance(fixed_home, dict):
+        fixed_home = {}
+    fixed_names = [str(name) for name in fixed_home.get("fixed_actuator_names", [])]
+    fixed_targets = np.asarray(
+        fixed_home.get("fixed_home_ctrl_rad", []), dtype=np.float32
+    )
+    if len(fixed_names) != fixed_targets.size:
+        raise ValueError(
+            "runtime_fixed_home fixed actuator names and targets must have equal length"
+        )
+    fixed_indices = [mjcf_by_name[name] for name in fixed_names]
+
+    if set(active_indices) | set(fixed_indices) != set(range(mj_model.nu)):
+        raise ValueError(
+            "Policy-active and fixed-home actuators must cover every MuJoCo actuator"
+        )
+    if set(active_indices) & set(fixed_indices):
+        raise ValueError("Active and fixed-home actuator sets must not overlap")
+
+    def expand(active_ctrl: np.ndarray) -> np.ndarray:
+        active_ctrl = np.asarray(active_ctrl, dtype=np.float32).reshape(-1)
+        if active_ctrl.size != len(active_indices):
+            raise ValueError(
+                f"Active control size {active_ctrl.size} != policy action dimension "
+                f"{len(active_indices)}"
+            )
+        full_ctrl = np.empty(mj_model.nu, dtype=np.float32)
+        full_ctrl[active_indices] = active_ctrl
+        full_ctrl[fixed_indices] = fixed_targets
+        return full_ctrl
+
+    return expand
+
+
 def _network_activation_name(training_cfg) -> str:
     actor_activation = str(training_cfg.networks.actor.activation).lower()
     critic_activation = str(training_cfg.networks.critic.activation).lower()
@@ -794,7 +847,16 @@ def main():
     # residual contract: ``q_target = q_ref + clip(action) * scale``,
     # so prev_action = 0 means "no residual" and target_q == q_ref at
     # step 0 (matches env's _make_initial_state, see wildrobot_env.py).
-    default_ctrl = np.array(cal.get_ctrl_for_default_pose(), dtype=np.float32)
+    expand_mjcf_ctrl = _build_mjcf_ctrl_expander(mj_model, policy_spec)
+    default_ctrl = np.asarray(cal.get_ctrl_for_default_pose(), dtype=np.float32)
+    default_by_name = {
+        entry["name"]: default_ctrl[index]
+        for index, entry in enumerate(robot_cfg.actuated_joints)
+    }
+    default_ctrl = np.asarray(
+        [default_by_name[name] for name in policy_spec.robot.actuator_names],
+        dtype=np.float32,
+    )
     default_policy_action = np.array(
         NumpyCalibOps.ctrl_to_policy_action(spec=policy_spec, ctrl_rad=default_ctrl),
         dtype=np.float32,
@@ -903,7 +965,7 @@ def main():
             action_raw=action_np,
         )
         ctrl = NumpyCalibOps.action_to_ctrl(spec=policy_spec, action=filtered_action)
-        mj_data.ctrl[:] = np.array(ctrl)
+        mj_data.ctrl[:] = expand_mjcf_ctrl(ctrl)
         return filtered_action
 
     def step_physics(mj_model, mj_data, n_substeps):
