@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from runtime.configs import WildRobotRuntimeConfig, ServoConfig, ServoControllerConfig, ServoSpec
+from runtime.configs import WildRobotRuntimeConfig, ServoControllerConfig, ServoSpec
 from runtime.wr_runtime.hardware.actuators import (
     ServoModel,
     joint_target_rad_to_servo_pos_elec_units,
@@ -50,6 +50,130 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     assert cfg.servo_controller.joint_motor_unit_directions["right_hip_pitch"] == -1.0
     assert cfg.servo_controller.joint_angle_at_zero_unit_deg["right_hip_pitch"] == 90.0
     assert cfg.realism_profile_path == "assets/v2/realism_profile_v0.19.1.json"
+
+
+def test_multi_board_servo_controller_parses_and_serializes(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "type": "hiwonder_ttl_bus",
+            "baudrate": 115200,
+            "boards": [
+                {
+                    "name": "left_leg_board",
+                    "port": "/dev/ttyUSB0",
+                    "servo_ids": [1, 2],
+                },
+                {
+                    "name": "right_leg_board",
+                    "port": "/dev/ttyUSB1",
+                    "servo_ids": [5],
+                },
+                {
+                    "name": "upper_body_board",
+                    "port": "/dev/ttyUSB2",
+                    "servo_ids": [21],
+                },
+            ],
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+                "left_hip_roll": {"id": 2},
+                "right_hip_pitch": {"id": 5},
+                "left_shoulder_pitch": {"id": 21},
+            },
+        }
+    }
+
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+    assert cfg.servo_controller.port == "/dev/ttyUSB0"
+    assert [board.port for board in cfg.servo_controller.boards] == [
+        "/dev/ttyUSB0",
+        "/dev/ttyUSB1",
+        "/dev/ttyUSB2",
+    ]
+    assert [board.name for board in cfg.servo_controller.boards] == [
+        "left_leg_board",
+        "right_leg_board",
+        "upper_body_board",
+    ]
+    assert cfg.servo_controller.boards[2].servo_ids == (21,)
+    serialized = cfg.to_dict()["servo_controller"]
+    assert "port" not in serialized
+    assert serialized["boards"] == cfg_dict["servo_controller"]["boards"]
+
+
+@pytest.mark.parametrize(
+    "boards,match",
+    [
+        (
+            [
+                {
+                    "name": "left_leg_board",
+                    "port": "/dev/ttyUSB0",
+                    "servo_ids": [1],
+                }
+            ],
+            "missing configured servo IDs",
+        ),
+        (
+            [
+                {
+                    "name": "left_leg_board",
+                    "port": "/dev/ttyUSB0",
+                    "servo_ids": [1, 2],
+                },
+                {
+                    "name": "right_leg_board",
+                    "port": "/dev/ttyUSB1",
+                    "servo_ids": [2],
+                },
+            ],
+            "more than one board",
+        ),
+    ],
+)
+def test_multi_board_servo_controller_rejects_incomplete_or_duplicate_routes(
+    tmp_path: Path,
+    boards: list[dict],
+    match: str,
+) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "boards": boards,
+            "servos": {"left": {"id": 1}, "right": {"id": 2}},
+        }
+    }
+
+    with pytest.raises(ValueError, match=match):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
+def test_multi_board_servo_controller_rejects_swapped_leg_groups(
+    tmp_path: Path,
+) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "boards": [
+                {
+                    "name": "left_leg_board",
+                    "port": "/dev/ttyUSB0",
+                    "servo_ids": [5],
+                },
+                {
+                    "name": "right_leg_board",
+                    "port": "/dev/ttyUSB1",
+                    "servo_ids": [1],
+                },
+            ],
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+                "right_hip_pitch": {"id": 5},
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="joint group"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
 def test_legacy_servo_keys_still_load_and_serialize_to_new_names(tmp_path: Path) -> None:

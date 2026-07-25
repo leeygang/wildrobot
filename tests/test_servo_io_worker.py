@@ -3,6 +3,7 @@ import threading
 import time
 
 from runtime.wr_runtime.hardware.servo_io_worker import (
+    MultiBoardServoIO,
     ServoIOWorker,
     ServoIOWorkerConfig,
     ServoReadGroup,
@@ -45,6 +46,36 @@ class FakeLogger:
 
     def warning(self, message: str):
         self.warnings.append(str(message))
+
+
+class ConcurrencyProbe:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = 0
+        self.max_active = 0
+
+    def enter(self):
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+
+    def exit(self):
+        with self.lock:
+            self.active -= 1
+
+
+class ConcurrentFakeRawBus(FakeRawBus):
+    def __init__(self, positions, probe):
+        super().__init__(positions)
+        self.probe = probe
+
+    def move_time_write(self, servo_id: int, position: int, time_ms: int):
+        self.probe.enter()
+        try:
+            time.sleep(0.03)
+            super().move_time_write(servo_id, position, time_ms)
+        finally:
+            self.probe.exit()
 
 
 def _wait_until(predicate, *, timeout_s=0.5):
@@ -100,6 +131,40 @@ def test_worker_submits_target_to_raw_bus():
     metrics = worker.get_metrics()
     assert metrics.write_targets_submitted == 1
     assert metrics.write_commands == 1
+
+
+def test_multi_board_io_routes_targets_and_runs_board_writes_concurrently():
+    probe = ConcurrencyProbe()
+    left_bus = ConcurrentFakeRawBus({1: 501}, probe)
+    right_bus = ConcurrentFakeRawBus({2: 502}, probe)
+    left = ServoIOWorker(
+        left_bus,
+        ServoIOWorkerConfig(servo_ids=(1,), idle_sleep_s=0.0001),
+    )
+    right = ServoIOWorker(
+        right_bus,
+        ServoIOWorkerConfig(servo_ids=(2,), idle_sleep_s=0.0001),
+    )
+    multi = MultiBoardServoIO(
+        {"left_leg_board": left, "right_leg_board": right},
+        servo_ids=(1, 2),
+    )
+    multi.submit_targets_units({1: 510, 2: 520}, move_time_ms=20)
+
+    multi.start()
+    try:
+        assert _wait_until(lambda: left_bus.writes and right_bus.writes)
+        assert _wait_until(lambda: multi.get_metrics().read_success >= 2)
+    finally:
+        multi.close()
+
+    assert left_bus.writes == [(1, 510, 20)]
+    assert right_bus.writes == [(2, 520, 20)]
+    assert probe.max_active == 2
+    state = multi.get_cached_servo_state()
+    assert state.servo_ids == (1, 2)
+    assert state.position_units.tolist() == [501.0, 502.0]
+    assert state.last_read_group is not None
 
 
 def test_worker_skips_unchanged_successful_target():

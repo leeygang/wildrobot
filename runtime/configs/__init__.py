@@ -4,31 +4,37 @@ Provides structured configuration classes for hardware deployment.
 """
 
 from configs.config import (
+    SERVO_BOARD_NAMES,
     BNO085Config,
     ControlConfig,
     FootSwitchConfig,
-    ServoControllerConfig,
+    HiwonderControllerConfig,
+    RuntimeConfig,
+    ServoBoardConfig,
     ServoConfig,
+    ServoControllerConfig,
     ServoReadScheduleConfig,
     ServoSpec,
-    load_config,
-    RuntimeConfig,
     WildRobotRuntimeConfig,
     WrRuntimeConfig,
-    HiwonderControllerConfig,
+    load_config,
+    servo_board_name_for_joint,
 )
 
 __all__ = [
-    "WrRuntimeConfig",
-    "WildRobotRuntimeConfig",  # Legacy alias
-    "RuntimeConfig",
+    "SERVO_BOARD_NAMES",
+    "BNO085Config",
     "ControlConfig",
-    "ServoControllerConfig",
+    "FootSwitchConfig",
     "HiwonderControllerConfig",  # Legacy alias
+    "RuntimeConfig",
+    "ServoBoardConfig",
     "ServoConfig",
+    "ServoControllerConfig",
     "ServoReadScheduleConfig",
     "ServoSpec",
-    "BNO085Config",
-    "FootSwitchConfig",
+    "WildRobotRuntimeConfig",  # Legacy alias
+    "WrRuntimeConfig",
     "load_config",
+    "servo_board_name_for_joint",
 ]

@@ -33,6 +33,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, List, Optional, Sequence, TextIO
 
 import numpy as np
@@ -308,6 +309,7 @@ def _build_hardware_robot_io(
     )
     from wr_runtime.hardware.robot_io import HardwareRobotIO
     from wr_runtime.hardware.servo_io_worker import (
+        MultiBoardServoIO,
         ServoIOWorker,
         ServoIOWorkerConfig,
     )
@@ -351,25 +353,80 @@ def _build_hardware_robot_io(
             f"Unsupported servo_controller.type={sc.type!r}. "
             "Use 'hiwonder_ttl_bus' for the USB TTL debug board."
         )
-    read_groups, read_group_schedule = _build_ttl_servo_read_schedule(
-        actuator_names=actuator_names,
-        servo_ids=sc.servo_ids,
-        read_schedule_groups=read_schedule_groups,
-        max_cache_age_s=read_schedule_max_cache_age_s,
+    configured_boards = tuple(getattr(sc, "effective_boards", ()) or ())
+    if not configured_boards:
+        configured_boards = (
+            SimpleNamespace(
+                name="legacy_board",
+                port=str(sc.port),
+                servo_ids=tuple(int(sc.servo_ids[name]) for name in actuator_names),
+            ),
+        )
+    board_by_servo_id: dict[int, str] = {}
+    for board in configured_boards:
+        for servo_id in board.servo_ids:
+            sid = int(servo_id)
+            if sid in board_by_servo_id:
+                raise SystemExit(
+                    f"Servo ID {sid} is assigned to multiple servo_controller.boards"
+                )
+            board_by_servo_id[sid] = str(board.name)
+    missing_board_ids = sorted(
+        int(sc.servo_ids[name])
+        for name in actuator_names
+        if int(sc.servo_ids[name]) not in board_by_servo_id
     )
-    transport = SerialTransport(
-        SerialTransportConfig(port=sc.port, baudrate=int(sc.baudrate))
-    )
-    raw_bus = RawServoBus(transport, RawServoBusConfig())
-    servo_io = ServoIOWorker(
-        raw_bus,
-        ServoIOWorkerConfig(
+    if missing_board_ids:
+        raise SystemExit(
+            "servo_controller.boards is missing policy servo IDs: "
+            f"{missing_board_ids}. Rerun calibrate.py --calibrate-servo-board."
+        )
+
+    workers_by_board = {}
+    port_by_board = {}
+    for board in configured_boards:
+        board_id_set = {int(servo_id) for servo_id in board.servo_ids}
+        board_actuator_names = [
+            name for name in actuator_names if int(sc.servo_ids[name]) in board_id_set
+        ]
+        if not board_actuator_names:
+            continue
+        read_groups, read_group_schedule = _build_ttl_servo_read_schedule(
+            actuator_names=board_actuator_names,
+            servo_ids=sc.servo_ids,
+            read_schedule_groups=read_schedule_groups,
+            max_cache_age_s=read_schedule_max_cache_age_s,
+        )
+        transport = SerialTransport(
+            SerialTransportConfig(port=str(board.port), baudrate=int(sc.baudrate))
+        )
+        raw_bus = RawServoBus(transport, RawServoBusConfig())
+        workers_by_board[str(board.name)] = ServoIOWorker(
+            raw_bus,
+            ServoIOWorkerConfig(
+                servo_ids=tuple(
+                    int(sc.servo_ids[name]) for name in board_actuator_names
+                ),
+                read_groups=tuple(read_groups),
+                read_group_schedule=tuple(read_group_schedule),
+            ),
+            worker_name=str(board.name),
+        )
+        port_by_board[str(board.name)] = str(board.port)
+
+    if len(workers_by_board) == 1:
+        servo_io = next(iter(workers_by_board.values()))
+    else:
+        servo_io = MultiBoardServoIO(
+            workers_by_board,
             servo_ids=tuple(int(sc.servo_ids[name]) for name in actuator_names),
-            read_groups=tuple(read_groups),
-            read_group_schedule=tuple(read_group_schedule),
-        ),
-    )
-    servo_io.start()
+        )
+    if len(port_by_board) == 1:
+        port_label = next(iter(port_by_board.values()))
+    else:
+        port_label = ",".join(
+            f"{name}={port}" for name, port in port_by_board.items()
+        )
     actuators = HiwonderCachedActuators(
         actuator_names=actuator_names,
         servo_ids=sc.servo_ids,
@@ -379,7 +436,7 @@ def _build_hardware_robot_io(
         joint_angle_at_zero_unit_deg=sc.joint_angle_at_zero_unit_deg,
         servo_io=servo_io,
         cache_age_limits_s=read_schedule_max_cache_age_s,
-        port=sc.port,
+        port=port_label,
         baudrate=sc.baudrate,
     )
     imu = BNO085IMU(
@@ -404,6 +461,7 @@ def _build_hardware_robot_io(
         enable_rotation_vector=cfg.bno085.enable_rotation_vector,
     )
     foot_switches = FootSwitches(pins=cfg.foot_switches.get_all_pins())
+    servo_io.start()
     return HardwareRobotIO(
         actuator_names=actuator_names,
         control_dt=control_dt,

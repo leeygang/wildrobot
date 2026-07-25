@@ -13,8 +13,10 @@ import time
 import traceback
 import warnings
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -27,7 +29,12 @@ _RUNTIME_ROOT = _REPO_ROOT / "runtime"
 if _RUNTIME_ROOT.exists() and str(_RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(_RUNTIME_ROOT))
 
-from configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
+from configs.config import (  # noqa: E402
+    SERVO_BOARD_NAMES,
+    ServoConfig,
+    WrRuntimeConfig,
+    servo_board_name_for_joint,
+)
 from wr_runtime.hardware.ttl_servo_controller import build_ttl_servo_controller  # noqa: E402
 
 # Calibration constants (use ServoConfig constants for conversion)
@@ -112,6 +119,13 @@ class PolicyActionEvaluation:
     target_rad_unclipped: float
     target_rad: float
     clipped_by_joint_range: bool
+
+
+@dataclass(frozen=True)
+class DetectedServoBoard:
+    name: str
+    port: str
+    servo_ids: Tuple[int, ...]
 
 
 def normalize_joint_state(offset: float | int, motor_sign: float | int) -> JointState:
@@ -650,6 +664,209 @@ def offset_from_reference_pose_units(
 
 def build_calibration_controller(servo_controller_config):
     return build_ttl_servo_controller(servo_controller_config)
+
+
+def _stable_serial_port(device: str) -> str:
+    """Prefer Linux by-id symlinks when they resolve to the enumerated device."""
+    by_id_dir = Path("/dev/serial/by-id")
+    if not by_id_dir.is_dir():
+        return str(device)
+    try:
+        resolved_device = Path(device).resolve()
+        for candidate in sorted(by_id_dir.iterdir()):
+            if candidate.resolve() == resolved_device:
+                return str(candidate)
+    except OSError:
+        pass
+    return str(device)
+
+
+def detect_usb_serial_ports() -> List[str]:
+    """Enumerate USB serial devices suitable for TTL board probing."""
+    from serial.tools import list_ports
+
+    devices: List[str] = []
+    for info in list_ports.comports():
+        device = str(getattr(info, "device", "")).strip()
+        hwid = str(getattr(info, "hwid", "")).upper()
+        if not device:
+            continue
+        is_usb = getattr(info, "vid", None) is not None or "USB" in hwid
+        if not is_usb:
+            continue
+        stable = _stable_serial_port(device)
+        if stable not in devices:
+            devices.append(stable)
+    return sorted(devices)
+
+
+def _probe_servo_board(
+    *,
+    port: str,
+    servo_ids: Tuple[int, ...],
+    controller_type: str,
+    baudrate: int,
+    controller_factory,
+) -> DetectedServoBoard:
+    controller = controller_factory(
+        SimpleNamespace(
+            type=str(controller_type),
+            port=str(port),
+            baudrate=int(baudrate),
+            boards=(),
+        )
+    )
+    found: List[int] = []
+    try:
+        for servo_id in servo_ids:
+            for _ in range(2):
+                if hasattr(controller, "probe_servo_id"):
+                    detected = bool(controller.probe_servo_id(int(servo_id)))
+                else:
+                    response = controller.read_servo_positions([int(servo_id)])
+                    detected = bool(
+                        response
+                        and any(int(sid) == int(servo_id) for sid, _ in response)
+                    )
+                if detected:
+                    found.append(int(servo_id))
+                    break
+    finally:
+        controller.close()
+    return DetectedServoBoard(name="", port=str(port), servo_ids=tuple(found))
+
+
+def discover_servo_boards(
+    *,
+    servo_ids_by_joint: Dict[str, int],
+    controller_type: str,
+    baudrate: int,
+    ports: Optional[Iterable[str]] = None,
+    controller_factory=None,
+) -> List[DetectedServoBoard]:
+    """Probe configured servo IDs and return one complete ID-to-port mapping."""
+    configured_ids = {
+        str(joint_name): int(servo_id)
+        for joint_name, servo_id in servo_ids_by_joint.items()
+    }
+    ordered_ids = tuple(configured_ids.values())
+    if not ordered_ids:
+        raise ValueError("No configured servo IDs to discover")
+    if len(set(ordered_ids)) != len(ordered_ids):
+        raise ValueError(
+            "Configured servo IDs must be globally unique before board discovery"
+        )
+    controller_factory = controller_factory or build_calibration_controller
+    port_source = detect_usb_serial_ports() if ports is None else ports
+    candidate_ports = sorted(dict.fromkeys(str(port) for port in port_source))
+    if not candidate_ports:
+        raise RuntimeError("No USB serial ports detected")
+
+    detected: List[DetectedServoBoard] = []
+    failures: List[str] = []
+    with ThreadPoolExecutor(
+        max_workers=len(candidate_ports),
+        thread_name_prefix="ServoBoardDiscovery",
+    ) as executor:
+        futures = {
+            executor.submit(
+                _probe_servo_board,
+                port=port,
+                servo_ids=ordered_ids,
+                controller_type=controller_type,
+                baudrate=baudrate,
+                controller_factory=controller_factory,
+            ): port
+            for port in candidate_ports
+        }
+        for future in as_completed(futures):
+            port = futures[future]
+            try:
+                board = future.result()
+            except Exception as exc:
+                failures.append(f"{port}: {exc!r}")
+                continue
+            if board.servo_ids:
+                detected.append(board)
+
+    detected.sort(key=lambda board: candidate_ports.index(board.port))
+    ports_by_servo_id: Dict[int, List[str]] = {servo_id: [] for servo_id in ordered_ids}
+    for board in detected:
+        for servo_id in board.servo_ids:
+            ports_by_servo_id[servo_id].append(board.port)
+    missing = [servo_id for servo_id, found_ports in ports_by_servo_id.items() if not found_ports]
+    duplicate = {
+        servo_id: found_ports
+        for servo_id, found_ports in ports_by_servo_id.items()
+        if len(found_ports) > 1
+    }
+    if missing or duplicate:
+        detail = f"missing={missing}, duplicate={duplicate}"
+        if failures:
+            detail += f", port_errors={failures}"
+        raise RuntimeError(
+            "Servo board discovery did not produce a complete unambiguous mapping: "
+            + detail
+        )
+
+    expected_ids_by_name: Dict[str, Tuple[int, ...]] = {}
+    for joint_name, servo_id in configured_ids.items():
+        board_name = servo_board_name_for_joint(joint_name)
+        expected_ids_by_name[board_name] = (
+            *expected_ids_by_name.get(board_name, ()),
+            servo_id,
+        )
+    classified: List[DetectedServoBoard] = []
+    for board in detected:
+        matches = [
+            board_name
+            for board_name, expected_ids in expected_ids_by_name.items()
+            if set(board.servo_ids) == set(expected_ids)
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Detected servo board does not match one physical joint group: "
+                f"port={board.port}, servo_ids={list(board.servo_ids)}, "
+                f"expected={expected_ids_by_name}"
+            )
+        classified.append(
+            DetectedServoBoard(
+                name=matches[0],
+                port=board.port,
+                servo_ids=board.servo_ids,
+            )
+        )
+    expected_names = set(expected_ids_by_name)
+    detected_names = {board.name for board in classified}
+    if detected_names != expected_names:
+        raise RuntimeError(
+            "Servo board discovery is missing a physical joint group: "
+            f"expected={sorted(expected_names)}, detected={sorted(detected_names)}"
+        )
+    order = {name: idx for idx, name in enumerate(SERVO_BOARD_NAMES)}
+    return sorted(classified, key=lambda board: order[board.name])
+
+
+def write_servo_board_config(
+    base_data: dict,
+    output_path: Path,
+    boards: Iterable[DetectedServoBoard],
+) -> None:
+    board_list = list(boards)
+    if not board_list:
+        raise ValueError("Refusing to write an empty servo board mapping")
+    servo_block = base_data.setdefault("servo_controller", {})
+    servo_block.setdefault("type", "hiwonder_ttl_bus")
+    servo_block.pop("port", None)
+    servo_block["boards"] = [
+        {
+            "name": board.name,
+            "port": board.port,
+            "servo_ids": list(board.servo_ids),
+        }
+        for board in board_list
+    ]
+    _write_json_with_retries(output_path, base_data)
 
 
 @contextlib.contextmanager
@@ -3873,6 +4090,9 @@ Examples (copy/paste):
   # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
 
+  # Detect USB TTL boards and save each board's connected servo IDs
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-servo-board
+
   # Test range of motion for joints interactively
   uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --range
 
@@ -3919,6 +4139,15 @@ Examples (copy/paste):
         "--calibrate-footswitch",
         action="store_true",
         help="Interactive footswitch test: select signals and print live pressed/open status",
+    )
+    parser.add_argument(
+        "--calibrate-servo-board",
+        dest="calibrate_servo_board",
+        action="store_true",
+        help=(
+            "Detect USB TTL boards, probe configured servo IDs, and save "
+            "servo_controller.boards"
+        ),
     )
     parser.add_argument(
         "--imu-samples",
@@ -3972,14 +4201,44 @@ Examples (copy/paste):
         or args.calibrate_home
         or args.calibrate_imu
         or args.calibrate_footswitch
+        or args.calibrate_servo_board
         or args.range
         or args.go_home
         or args.record_pos
         or args.dry_run
     ):
         parser.error(
-            "Must specify a mode: --calibrate, --calibrate-home, --calibrate-imu, --calibrate-footswitch, --range, --go-home, or --record-pos"
+            "Must specify a mode: --calibrate, --calibrate-home, --calibrate-imu, "
+            "--calibrate-footswitch, --calibrate-servo-board, --range, --go-home, "
+            "or --record-pos"
         )
+
+    if args.calibrate_servo_board:
+        if args.dry_run:
+            parser.error("--calibrate-servo-board requires connected hardware")
+        output_path = Path(args.output) if args.output else config_path
+        configured_ids = {
+            joint_name: int(servo.id) for joint_name, servo in servo_cfgs.items()
+        }
+        ports = detect_usb_serial_ports()
+        print("\n== Servo Board Discovery ==", flush=True)
+        print(f"USB serial ports: {ports}", flush=True)
+        print(f"Configured servo IDs: {configured_ids}", flush=True)
+        boards = discover_servo_boards(
+            servo_ids_by_joint=configured_ids,
+            controller_type=config.servo_controller.type,
+            baudrate=config.servo_controller.baudrate,
+            ports=ports,
+        )
+        for board in boards:
+            print(
+                f"  {board.name}: port={board.port} "
+                f"servo_ids={list(board.servo_ids)}",
+                flush=True,
+            )
+        write_servo_board_config(raw_config, output_path, boards)
+        print(f"Saved servo_controller.boards to {output_path}", flush=True)
+        return
 
     if args.calibrate_imu:
         output_path = Path(args.output) if args.output else config_path

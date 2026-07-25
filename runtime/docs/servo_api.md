@@ -89,6 +89,7 @@ single-servo request/response transactions.
 - Keep the policy-facing interface in joint radians.
 - Keep raw protocol details out of policy/runtime code.
 - Ensure exactly one owner touches the serial bus.
+- Run one independent owner per USB serial bus so boards can operate in parallel.
 - Support a background worker that prioritizes writes and fills a servo state
   cache from staggered reads.
 - Make timing, cache age, read failures, and write delays measurable.
@@ -274,9 +275,13 @@ policy thread:
   action = policy(servo_state, imu, footswitches)
   servo_io.submit_targets(action)
 
-servo worker thread:
+multi-board facade:
+  partition targets by configured servo ID -> named board role
+  merge the board caches in policy actuator order
+
+one servo worker thread per board:
   if latest target pending:
-    write latest target
+    write that board's latest target subset
   else:
     read next scheduled servo
     update that joint cache
@@ -313,6 +318,17 @@ if a newer target arrives before the worker writes the previous target:
 ```
 
 This prevents stale commands from being replayed after the loop is already late.
+
+Independent boards are concurrent, but transactions on one half-duplex board
+remain serialized. This follows ToddlerBot's established multi-controller
+design (`create_controllers`, parallel `get_motor_states`/`set_motor_pos`) while
+retaining WildRobot's cache and latest-wins scheduling. USB discovery uses the
+official pySerial `serial.tools.list_ports` API.
+
+References:
+
+- ToddlerBot multi-controller implementation: `toddlerbot/actuation/src/dynamixel_mch.cpp` in [hshi74/toddlerbot](https://github.com/hshi74/toddlerbot).
+- [pySerial port enumeration documentation](https://pyserial.readthedocs.io/en/latest/tools.html#module-serial.tools.list_ports).
 
 After a successful write, the worker should suppress duplicate or near-duplicate
 per-servo commands. If the move time is unchanged and the rounded target unit is

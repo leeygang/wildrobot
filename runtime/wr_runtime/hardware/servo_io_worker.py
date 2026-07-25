@@ -81,10 +81,12 @@ class ServoIOWorker:
         config: ServoIOWorkerConfig,
         *,
         logger: Logger | None = None,
+        worker_name: str = "servo_board",
     ) -> None:
         self.raw_bus = raw_bus
         self.config = config
         self.logger = logger
+        self.worker_name = str(worker_name)
 
         self._read_groups = self._normalize_read_groups(config)
         self._read_group_by_name = {group.name: group for group in self._read_groups}
@@ -187,7 +189,11 @@ class ServoIOWorker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="ServoIOWorker", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"ServoIOWorker-{self.worker_name}",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self, *, timeout_s: float = 1.0) -> None:
@@ -248,6 +254,10 @@ class ServoIOWorker:
             self.raw_bus.transport.close()
         except Exception:
             pass
+
+    def unload_servos(self, servo_ids: Sequence[int]) -> None:
+        for servo_id in servo_ids:
+            self.raw_bus.unload(int(servo_id))
 
     def _run(self) -> None:
         reads_after_write_remaining = 0
@@ -526,10 +536,152 @@ class ServoIOWorker:
             print(f"Warning: {message}", flush=True)
 
 
+class MultiBoardServoIO:
+    """Route servo IDs to independent, concurrently running board workers."""
+
+    def __init__(
+        self,
+        workers_by_board: dict[str, ServoIOWorker],
+        *,
+        servo_ids: Sequence[int],
+    ) -> None:
+        if not workers_by_board:
+            raise ValueError("MultiBoardServoIO requires at least one board worker")
+        self.workers_by_board = dict(workers_by_board)
+        self.servo_ids = tuple(int(servo_id) for servo_id in servo_ids)
+        if len(set(self.servo_ids)) != len(self.servo_ids):
+            raise ValueError("MultiBoardServoIO requires globally unique servo IDs")
+        self._worker_by_servo_id: dict[int, ServoIOWorker] = {}
+        for worker in self.workers_by_board.values():
+            for servo_id in worker.servo_ids:
+                sid = int(servo_id)
+                if sid in self._worker_by_servo_id:
+                    raise ValueError(f"servo id {sid} is assigned to multiple workers")
+                self._worker_by_servo_id[sid] = worker
+        missing = sorted(set(self.servo_ids) - set(self._worker_by_servo_id))
+        extra = sorted(set(self._worker_by_servo_id) - set(self.servo_ids))
+        if missing or extra:
+            raise ValueError(
+                f"MultiBoardServoIO routing mismatch: missing={missing}, extra={extra}"
+            )
+        self.config = next(iter(self.workers_by_board.values())).config
+
+    def start(self) -> None:
+        for worker in self.workers_by_board.values():
+            worker.start()
+
+    def stop(self, *, timeout_s: float = 1.0) -> None:
+        for worker in self.workers_by_board.values():
+            worker.stop(timeout_s=timeout_s)
+
+    def submit_targets_units(
+        self,
+        positions_by_servo_id: dict[int, int],
+        *,
+        move_time_ms: int,
+    ) -> None:
+        targets_by_worker: dict[ServoIOWorker, dict[int, int]] = {}
+        for servo_id, position in positions_by_servo_id.items():
+            sid = int(servo_id)
+            worker = self._worker_by_servo_id.get(sid)
+            if worker is None:
+                raise KeyError(f"servo id {sid} is not assigned to a board worker")
+            targets_by_worker.setdefault(worker, {})[sid] = int(position)
+        for worker, targets in targets_by_worker.items():
+            worker.submit_targets_units(targets, move_time_ms=int(move_time_ms))
+
+    def get_cached_servo_state(self) -> CachedServoState:
+        state_by_id = {}
+        last_candidates: list[tuple[float, str | None, int | None]] = []
+        errors: list[str] = []
+        for board_name, worker in self.workers_by_board.items():
+            state = worker.get_cached_servo_state()
+            for idx, servo_id in enumerate(state.servo_ids):
+                state_by_id[int(servo_id)] = (state, idx)
+            finite_updates = state.last_update_time_s[
+                np.isfinite(state.last_update_time_s)
+            ]
+            latest = float(np.max(finite_updates)) if finite_updates.size else -math.inf
+            group = (
+                f"{board_name}:{state.last_read_group}"
+                if state.last_read_group is not None
+                else None
+            )
+            last_candidates.append((latest, group, state.last_read_servo_id))
+            if state.last_error:
+                errors.append(f"{board_name}: {state.last_error}")
+
+        n = len(self.servo_ids)
+        position = np.full(n, np.nan, dtype=np.float32)
+        velocity = np.zeros(n, dtype=np.float32)
+        age = np.full(n, np.inf, dtype=np.float32)
+        fail_count = np.zeros(n, dtype=np.int32)
+        update_time = np.full(n, np.nan, dtype=np.float64)
+        for out_idx, servo_id in enumerate(self.servo_ids):
+            state, state_idx = state_by_id[servo_id]
+            position[out_idx] = state.position_units[state_idx]
+            velocity[out_idx] = state.velocity_units_s[state_idx]
+            age[out_idx] = state.position_age_s[state_idx]
+            fail_count[out_idx] = state.read_fail_count[state_idx]
+            update_time[out_idx] = state.last_update_time_s[state_idx]
+
+        _, last_group, last_servo_id = max(last_candidates, key=lambda item: item[0])
+        return CachedServoState(
+            servo_ids=self.servo_ids,
+            position_units=position,
+            velocity_units_s=velocity,
+            position_age_s=age,
+            read_fail_count=fail_count,
+            last_update_time_s=update_time,
+            last_read_group=last_group,
+            last_read_servo_id=last_servo_id,
+            last_error="; ".join(errors) or None,
+        )
+
+    def get_metrics(self) -> ServoIOMetrics:
+        metrics = [worker.get_metrics() for worker in self.workers_by_board.values()]
+        return ServoIOMetrics(
+            write_targets_submitted=max(m.write_targets_submitted for m in metrics),
+            write_targets_replaced=sum(m.write_targets_replaced for m in metrics),
+            write_commands=sum(m.write_commands for m in metrics),
+            write_commands_skipped=sum(m.write_commands_skipped for m in metrics),
+            write_failures=sum(m.write_failures for m in metrics),
+            cache_deadline_reads=sum(m.cache_deadline_reads for m in metrics),
+            forced_read_after_write=sum(m.forced_read_after_write for m in metrics),
+            forced_read_after_write_missed=sum(
+                m.forced_read_after_write_missed for m in metrics
+            ),
+            read_success=sum(m.read_success for m in metrics),
+            read_failures=sum(m.read_failures for m in metrics),
+            stale_cache_errors=sum(m.stale_cache_errors for m in metrics),
+            latest_write_queue_latency_s=max(
+                m.latest_write_queue_latency_s for m in metrics
+            ),
+            latest_write_latency_s=max(m.latest_write_latency_s for m in metrics),
+            latest_read_latency_s=max(m.latest_read_latency_s for m in metrics),
+        )
+
+    def unload_servos(self, servo_ids: Sequence[int]) -> None:
+        ids_by_worker: dict[ServoIOWorker, list[int]] = {}
+        for servo_id in servo_ids:
+            sid = int(servo_id)
+            worker = self._worker_by_servo_id.get(sid)
+            if worker is None:
+                raise KeyError(f"servo id {sid} is not assigned to a board worker")
+            ids_by_worker.setdefault(worker, []).append(sid)
+        for worker, ids in ids_by_worker.items():
+            worker.unload_servos(ids)
+
+    def close(self) -> None:
+        for worker in self.workers_by_board.values():
+            worker.close()
+
+
 __all__ = [
     "CachedServoState",
     "ServoIOWorker",
     "ServoIOWorkerConfig",
     "ServoIOMetrics",
+    "MultiBoardServoIO",
     "ServoReadGroup",
 ]

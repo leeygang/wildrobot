@@ -427,6 +427,241 @@ def test_ttl_servo_controller_rejects_deprecated_board_type() -> None:
         build_ttl_servo_controller(cfg)
 
 
+def test_multi_board_calibration_controller_routes_by_servo_id(monkeypatch) -> None:
+    import wr_runtime.hardware.ttl_servo_controller as controller_mod
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+            self.moves = []
+            self.closed = False
+
+        def move_servos(self, commands, time_ms):
+            self.moves.append((list(commands), int(time_ms)))
+            return True
+
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_id), 500 + int(servo_id)) for servo_id in servo_ids]
+
+        def unload_servos(self, servo_ids):
+            return True
+
+        def get_battery_voltage(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    controllers = {}
+
+    def _build(*, port, baudrate):
+        controllers[port] = _FakeController(port)
+        return controllers[port]
+
+    monkeypatch.setattr(controller_mod, "_build_single_ttl_servo_controller", _build)
+    cfg = SimpleNamespace(
+        type="hiwonder_ttl_bus",
+        baudrate=115200,
+        boards=(
+            SimpleNamespace(
+                name="left_leg_board", port="/dev/ttyUSB0", servo_ids=(1,)
+            ),
+            SimpleNamespace(
+                name="right_leg_board", port="/dev/ttyUSB1", servo_ids=(2,)
+            ),
+        ),
+    )
+    controller = controller_mod.build_ttl_servo_controller(cfg)
+    try:
+        assert controller.move_servos([(1, 510), (2, 520)], 20)
+        assert controller.read_servo_positions([2, 1]) == [(2, 502), (1, 501)]
+    finally:
+        controller.close()
+
+    assert controllers["/dev/ttyUSB0"].moves == [([(1, 510)], 20)]
+    assert controllers["/dev/ttyUSB1"].moves == [([(2, 520)], 20)]
+    assert all(item.closed for item in controllers.values())
+
+
+def test_calibrate_servo_board_discovers_complete_mapping_and_writes_config(
+    tmp_path,
+) -> None:
+    from runtime.scripts import calibrate
+
+    positions_by_port = {
+        "/dev/ttyUSB0": {1: 501, 2: 502},
+        "/dev/ttyUSB1": {5: 505},
+        "/dev/ttyUSB2": {21: 521},
+        "/dev/ttyUSB3": {},
+    }
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+
+        def read_servo_positions(self, servo_ids):
+            positions = positions_by_port[self.port]
+            return [
+                (int(servo_id), positions[int(servo_id)])
+                for servo_id in servo_ids
+                if int(servo_id) in positions
+            ] or None
+
+        def close(self):
+            pass
+
+    boards = calibrate.discover_servo_boards(
+        servo_ids_by_joint={
+            "left_hip_pitch": 1,
+            "left_hip_roll": 2,
+            "right_hip_pitch": 5,
+            "left_shoulder_pitch": 21,
+        },
+        controller_type="hiwonder_ttl_bus",
+        baudrate=115200,
+        ports=positions_by_port,
+        controller_factory=lambda cfg: _FakeController(cfg.port),
+    )
+
+    assert [(board.name, board.port, board.servo_ids) for board in boards] == [
+        ("left_leg_board", "/dev/ttyUSB0", (1, 2)),
+        ("right_leg_board", "/dev/ttyUSB1", (5,)),
+        ("upper_body_board", "/dev/ttyUSB2", (21,)),
+    ]
+    output = tmp_path / "config.json"
+    raw = {"servo_controller": {"port": "/dev/ttyUSB-old", "servos": {}}}
+    calibrate.write_servo_board_config(raw, output, boards)
+    saved = json.loads(output.read_text())
+    assert "port" not in saved["servo_controller"]
+    assert saved["servo_controller"]["boards"] == [
+        {
+            "name": "left_leg_board",
+            "port": "/dev/ttyUSB0",
+            "servo_ids": [1, 2],
+        },
+        {
+            "name": "right_leg_board",
+            "port": "/dev/ttyUSB1",
+            "servo_ids": [5],
+        },
+        {
+            "name": "upper_body_board",
+            "port": "/dev/ttyUSB2",
+            "servo_ids": [21],
+        },
+    ]
+
+
+def test_calibrate_servo_board_detects_only_usb_serial_ports(monkeypatch) -> None:
+    from serial.tools import list_ports
+    from runtime.scripts import calibrate
+
+    ports = [
+        SimpleNamespace(device="/dev/ttyS0", vid=None, hwid="PNP0501"),
+        SimpleNamespace(device="/dev/ttyUSB1", vid=0x1A86, hwid="USB VID:PID=1A86:7523"),
+        SimpleNamespace(device="/dev/ttyACM0", vid=None, hwid="USB CDC"),
+    ]
+    monkeypatch.setattr(list_ports, "comports", lambda: ports)
+    monkeypatch.setattr(calibrate, "_stable_serial_port", lambda device: device)
+
+    assert calibrate.detect_usb_serial_ports() == ["/dev/ttyACM0", "/dev/ttyUSB1"]
+
+
+def test_calibrate_servo_board_rejects_duplicate_servo_response() -> None:
+    from runtime.scripts import calibrate
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_ids[0]), 500)]
+
+        def close(self):
+            pass
+
+    with pytest.raises(RuntimeError, match="duplicate"):
+        calibrate.discover_servo_boards(
+            servo_ids_by_joint={"left_hip_pitch": 1},
+            controller_type="hiwonder_ttl_bus",
+            baudrate=115200,
+            ports=["/dev/ttyUSB0", "/dev/ttyUSB1"],
+            controller_factory=lambda cfg: _FakeController(cfg.port),
+        )
+
+
+def test_calibrate_servo_board_rejects_split_leg_group() -> None:
+    from runtime.scripts import calibrate
+
+    positions_by_port = {
+        "/dev/ttyUSB0": {1: 501},
+        "/dev/ttyUSB1": {2: 502},
+    }
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+
+        def read_servo_positions(self, servo_ids):
+            positions = positions_by_port[self.port]
+            return [
+                (int(servo_id), positions[int(servo_id)])
+                for servo_id in servo_ids
+                if int(servo_id) in positions
+            ] or None
+
+        def close(self):
+            pass
+
+    with pytest.raises(RuntimeError, match="physical joint group"):
+        calibrate.discover_servo_boards(
+            servo_ids_by_joint={"left_hip_pitch": 1, "left_hip_roll": 2},
+            controller_type="hiwonder_ttl_bus",
+            baudrate=115200,
+            ports=positions_by_port,
+            controller_factory=lambda cfg: _FakeController(cfg.port),
+        )
+
+
+def test_calibrate_servo_board_is_top_level_cli_mode(monkeypatch, tmp_path) -> None:
+    from runtime.scripts import calibrate
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(_V2_CONFIG.read_text())
+    discovered = [
+        calibrate.DetectedServoBoard(
+            "left_leg_board", "/dev/ttyUSB0", (1, 2, 3, 4, 9)
+        ),
+        calibrate.DetectedServoBoard(
+            "right_leg_board", "/dev/ttyUSB1", (5, 6, 7, 8, 10)
+        ),
+        calibrate.DetectedServoBoard(
+            "upper_body_board",
+            "/dev/ttyUSB2",
+            (40, 21, 22, 23, 24, 25, 31, 32, 33, 34, 35),
+        ),
+    ]
+    monkeypatch.setattr(calibrate, "detect_usb_serial_ports", lambda: [b.port for b in discovered])
+    monkeypatch.setattr(calibrate, "discover_servo_boards", lambda **kwargs: discovered)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(config_path),
+            "--calibrate-servo-board",
+        ],
+    )
+
+    calibrate.main()
+
+    saved = json.loads(config_path.read_text())["servo_controller"]
+    assert "port" not in saved
+    assert len(saved["boards"]) == 3
+    assert saved["boards"][2]["servo_ids"] == list(discovered[2].servo_ids)
+
+
 def test_hardware_protocols_have_no_from_config() -> None:
     """The protocols never had a ``from_config`` factory — pin it so the builder
     can't regress back to calling one."""
@@ -488,6 +723,7 @@ def _patch_ttl_servo_backend(monkeypatch, captured):
     class _FakeTransport:
         def __init__(self, config):
             captured["transport_config"] = config
+            captured.setdefault("transport_configs", []).append(config)
             self.port = config.port
             self.baudrate = config.baudrate
 
@@ -497,14 +733,25 @@ def _patch_ttl_servo_backend(monkeypatch, captured):
             self.transport = transport
 
     class _FakeServoIOWorker:
-        def __init__(self, raw_bus, config):
+        def __init__(self, raw_bus, config, *, worker_name="servo_board"):
             captured["worker_config"] = config
+            captured.setdefault("worker_configs", []).append(config)
+            captured.setdefault("workers", []).append(self)
             self.raw_bus = raw_bus
+            self.config = config
+            self.servo_ids = tuple(config.servo_ids)
+            self.worker_name = worker_name
             self.started = False
 
         def start(self):
             self.started = True
             captured["worker_started"] = True
+
+        def stop(self, *, timeout_s=1.0):
+            self.started = False
+
+        def close(self):
+            self.started = False
 
     class _FakeActuators:
         def __init__(self, **kwargs):
@@ -605,6 +852,78 @@ def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None
 
     assert captured["imu"]["sampling_hz"] == 20
     assert captured["imu"]["enable_rotation_vector"] is False
+
+
+def test_build_hardware_robot_io_creates_one_parallel_worker_per_board(
+    monkeypatch,
+) -> None:
+    import configs
+    import wr_runtime.hardware.bno085 as bno_mod
+    import wr_runtime.hardware.foot_switches as fs_mod
+    from wr_runtime.control import run_policy
+    from wr_runtime.hardware.servo_io_worker import MultiBoardServoIO
+
+    captured = {}
+    _patch_ttl_servo_backend(monkeypatch, captured)
+    cfg = _fake_runtime_config()
+    cfg.servo_controller.servo_ids = {"j1": 1, "j2": 2, "j3": 3}
+    cfg.servo_controller.joint_servo_offset_units = {"j1": 0, "j2": 0, "j3": 0}
+    cfg.servo_controller.joint_motor_unit_directions = {
+        "j1": 1.0,
+        "j2": 1.0,
+        "j3": 1.0,
+    }
+    cfg.servo_controller.joint_angle_at_zero_unit_deg = {
+        "j1": 0.0,
+        "j2": 0.0,
+        "j3": 0.0,
+    }
+    cfg.servo_controller.effective_boards = (
+        SimpleNamespace(
+            name="left_leg_board", port="/dev/ttyUSB0", servo_ids=(1,)
+        ),
+        SimpleNamespace(
+            name="right_leg_board", port="/dev/ttyUSB1", servo_ids=(2,)
+        ),
+        SimpleNamespace(
+            name="upper_body_board", port="/dev/ttyUSB2", servo_ids=(3,)
+        ),
+    )
+
+    class _FakeImu:
+        def __init__(self, **kwargs):
+            pass
+
+    class _FakeFootSwitches:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(configs.WrRuntimeConfig, "load", staticmethod(lambda path: cfg))
+    monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
+    monkeypatch.setattr(fs_mod, "FootSwitches", _FakeFootSwitches)
+
+    run_policy._build_hardware_robot_io(
+        runtime_config_path="ignored",
+        actuator_names=["j1", "j2", "j3"],
+        control_dt=0.02,
+    )
+
+    assert [item.port for item in captured["transport_configs"]] == [
+        "/dev/ttyUSB0",
+        "/dev/ttyUSB1",
+        "/dev/ttyUSB2",
+    ]
+    assert all(worker.started for worker in captured["workers"])
+    assert [worker.worker_name for worker in captured["workers"]] == [
+        "left_leg_board",
+        "right_leg_board",
+        "upper_body_board",
+    ]
+    assert isinstance(captured["actuators"]["servo_io"], MultiBoardServoIO)
+    assert captured["actuators"]["port"] == (
+        "left_leg_board=/dev/ttyUSB0,right_leg_board=/dev/ttyUSB1,"
+        "upper_body_board=/dev/ttyUSB2"
+    )
 
 
 def test_build_hardware_robot_io_filters_external_servos_from_read_schedule(

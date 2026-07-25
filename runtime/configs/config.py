@@ -48,6 +48,22 @@ DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 # Current assets layout is v2.
 DEFAULT_ROBOT_CONFIG_PATH = Path("assets/v2/mujoco_robot_config.json")
 
+LEFT_LEG_BOARD = "left_leg_board"
+RIGHT_LEG_BOARD = "right_leg_board"
+UPPER_BODY_BOARD = "upper_body_board"
+SERVO_BOARD_NAMES = (LEFT_LEG_BOARD, RIGHT_LEG_BOARD, UPPER_BODY_BOARD)
+
+
+def servo_board_name_for_joint(joint_name: str) -> str:
+    """Return the fixed physical board role for a configured joint."""
+    name = str(joint_name)
+    is_leg_joint = any(part in name for part in ("hip", "knee", "ankle"))
+    if name.startswith("left_") and is_leg_joint:
+        return LEFT_LEG_BOARD
+    if name.startswith("right_") and is_leg_joint:
+        return RIGHT_LEG_BOARD
+    return UPPER_BODY_BOARD
+
 
 # =============================================================================
 # Nested Configuration Dataclasses
@@ -265,12 +281,50 @@ class ServoSpec:
 
 
 @dataclass(frozen=True)
+class ServoBoardConfig:
+    """One independent USB TTL servo bus."""
+
+    name: str
+    port: str
+    servo_ids: Tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        name = str(self.name).strip()
+        port = str(self.port).strip()
+        servo_ids = tuple(int(servo_id) for servo_id in self.servo_ids)
+        if not name:
+            raise ValueError("servo_controller.boards name must not be empty")
+        if name not in (*SERVO_BOARD_NAMES, "legacy_board"):
+            raise ValueError(
+                f"Unknown servo board name {name!r}; expected {list(SERVO_BOARD_NAMES)}"
+            )
+        if not port:
+            raise ValueError("servo_controller.boards port must not be empty")
+        if not servo_ids:
+            raise ValueError(
+                f"servo_controller.boards[{port!r}].servo_ids must not be empty"
+            )
+        if len(set(servo_ids)) != len(servo_ids):
+            raise ValueError(
+                f"servo_controller.boards[{port!r}].servo_ids contains duplicates"
+            )
+        if any(servo_id < 0 or servo_id > 253 for servo_id in servo_ids):
+            raise ValueError(
+                f"servo_controller.boards[{port!r}].servo_ids must be in [0, 253]"
+            )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "port", port)
+        object.__setattr__(self, "servo_ids", servo_ids)
+
+
+@dataclass(frozen=True)
 class ServoControllerConfig:
     """Servo controller board configuration (Hiwonder-compatible).
 
     Attributes:
         type: Controller type (e.g., "hiwonder_ttl_bus")
         port: Serial port for the USB TTL debug board.
+        boards: Independent USB boards and the servo IDs connected to each.
         baudrate: Serial baudrate (default: 115200)
         servos: Mapping from joint name to ServoConfig
         default_move_time_ms: Optional default move time for commands
@@ -279,6 +333,7 @@ class ServoControllerConfig:
     type: str = "hiwonder_ttl_bus"
     port: str = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
     baudrate: int = 115200
+    boards: Tuple[ServoBoardConfig, ...] = ()
     servos: Dict[str, ServoConfig] = field(default_factory=dict)
     default_move_time_ms: Optional[int] = None
 
@@ -289,11 +344,6 @@ class ServoControllerConfig:
     DEG_TO_SERVO: float = 1000.0 / 240.0  # ~4.1667 servo units per degree
 
     def __post_init__(self) -> None:
-        if not self.servos:
-            return
-        if all(isinstance(s, ServoConfig) for s in self.servos.values()):
-            return
-
         normalized: Dict[str, ServoConfig] = {}
         for name, servo in self.servos.items():
             if isinstance(servo, ServoConfig):
@@ -306,6 +356,78 @@ class ServoControllerConfig:
                 )
 
         object.__setattr__(self, "servos", normalized)
+        boards = tuple(
+            board
+            if isinstance(board, ServoBoardConfig)
+            else ServoBoardConfig(**board)
+            for board in self.boards
+        )
+        object.__setattr__(self, "boards", boards)
+        if boards:
+            object.__setattr__(self, "port", boards[0].port)
+            self._validate_board_assignments()
+
+    def _validate_board_assignments(self) -> None:
+        names = [board.name for board in self.boards]
+        if len(set(names)) != len(names):
+            raise ValueError("servo_controller.boards contains duplicate names")
+        ports = [board.port for board in self.boards]
+        if len(set(ports)) != len(ports):
+            raise ValueError("servo_controller.boards contains duplicate ports")
+
+        configured_ids = [int(servo.id) for servo in self.servos.values()]
+        if len(set(configured_ids)) != len(configured_ids):
+            raise ValueError(
+                "servo_controller.servos IDs must be globally unique for multi-board routing"
+            )
+        board_ids = [servo_id for board in self.boards for servo_id in board.servo_ids]
+        if len(set(board_ids)) != len(board_ids):
+            raise ValueError(
+                "servo_controller.boards assigns a servo ID to more than one board"
+            )
+        unknown = sorted(set(board_ids) - set(configured_ids))
+        missing = sorted(set(configured_ids) - set(board_ids))
+        if unknown:
+            raise ValueError(
+                f"servo_controller.boards references unconfigured servo IDs: {unknown}"
+            )
+        if missing:
+            raise ValueError(
+                f"servo_controller.boards is missing configured servo IDs: {missing}"
+            )
+
+        expected_ids: Dict[str, set[int]] = {}
+        for joint_name, servo in self.servos.items():
+            board_name = servo_board_name_for_joint(joint_name)
+            expected_ids.setdefault(board_name, set()).add(int(servo.id))
+        expected_names = set(expected_ids)
+        configured_names = set(names)
+        if configured_names != expected_names:
+            raise ValueError(
+                "servo_controller.boards names do not match configured joint groups: "
+                f"expected={sorted(expected_names)}, got={sorted(configured_names)}"
+            )
+        for board in self.boards:
+            expected = expected_ids[board.name]
+            actual = set(board.servo_ids)
+            if actual != expected:
+                raise ValueError(
+                    f"servo_controller.boards[{board.name!r}] servo IDs do not match "
+                    f"its joint group: expected={sorted(expected)}, got={sorted(actual)}"
+                )
+
+    @property
+    def effective_boards(self) -> Tuple[ServoBoardConfig, ...]:
+        """Return explicit boards or the legacy single-port bus."""
+        if self.boards:
+            return self.boards
+        return (
+            ServoBoardConfig(
+                name="legacy_board",
+                port=self.port,
+                servo_ids=tuple(int(servo.id) for servo in self.servos.values()),
+            ),
+        )
 
     @property
     def servo_ids(self) -> Dict[str, int]:
@@ -746,10 +868,52 @@ class WrRuntimeConfig:
                     max_velocity=joint_spec.get("max_velocity", 10.0),
                 )
 
+            boards_raw = block.get("boards", [])
+            if boards_raw is None:
+                boards_raw = []
+            if not isinstance(boards_raw, list):
+                raise ValueError("servo_controller.boards must be a list")
+            boards: List[ServoBoardConfig] = []
+            for board_idx, board_data in enumerate(boards_raw):
+                if not isinstance(board_data, dict):
+                    raise ValueError(
+                        f"servo_controller.boards[{board_idx}] must be an object"
+                    )
+                if "port" not in board_data or "servo_ids" not in board_data:
+                    raise ValueError(
+                        f"servo_controller.boards[{board_idx}] requires name, port, and servo_ids"
+                    )
+                if "name" not in board_data:
+                    raise ValueError(
+                        f"servo_controller.boards[{board_idx}] requires name, port, and servo_ids"
+                    )
+                boards.append(
+                    ServoBoardConfig(
+                        name=str(board_data["name"]),
+                        port=str(board_data["port"]),
+                        servo_ids=tuple(int(x) for x in board_data["servo_ids"]),
+                    )
+                )
+
+            legacy_port = block.get("port")
+            if boards and legacy_port is not None and str(legacy_port) != boards[0].port:
+                raise ValueError(
+                    "servo_controller.port conflicts with the first explicit board port; "
+                    "remove the legacy port field"
+                )
+            port = (
+                boards[0].port
+                if boards
+                else str(
+                    legacy_port
+                    or "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+                )
+            )
             return ServoControllerConfig(
                 type=str(block.get("type", "hiwonder_ttl_bus")),
-                port=str(block.get("port", "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")),
+                port=port,
                 baudrate=int(block.get("baudrate", 115200)),
+                boards=tuple(boards),
                 servos=servos,
                 default_move_time_ms=int(block["default_move_time_ms"]) if "default_move_time_ms" in block else None,
             )
@@ -984,7 +1148,20 @@ class WrRuntimeConfig:
             "yaw_rate_cmd": self.control.yaw_rate_cmd,
             "servo_controller": {
                 "type": self.servo_controller.type,
-                "port": self.servo_controller.port,
+                **(
+                    {
+                        "boards": [
+                            {
+                                "name": board.name,
+                                "port": board.port,
+                                "servo_ids": list(board.servo_ids),
+                            }
+                            for board in self.servo_controller.boards
+                        ]
+                    }
+                    if self.servo_controller.boards
+                    else {"port": self.servo_controller.port}
+                ),
                 "baudrate": self.servo_controller.baudrate,
                 "servos": servos_dict,
                 **(

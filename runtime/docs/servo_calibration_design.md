@@ -87,6 +87,47 @@ Defaults:
 - If `servo_offset_unit` is missing, runtime assumes `0`.
 - If `joint_angle_at_zero_unit_deg` is missing, runtime assumes `0`.
 
+### Multiple USB servo boards
+
+Assign each globally unique servo ID to one USB board under
+`servo_controller.boards`:
+
+```json
+{
+  "servo_controller": {
+    "type": "hiwonder_ttl_bus",
+    "baudrate": 115200,
+    "boards": [
+      {"name": "left_leg_board", "port": "/dev/serial/by-id/usb-board-left", "servo_ids": [1]},
+      {"name": "right_leg_board", "port": "/dev/serial/by-id/usb-board-right", "servo_ids": [5]},
+      {"name": "upper_body_board", "port": "/dev/serial/by-id/usb-board-upper", "servo_ids": [40]}
+    ],
+    "servos": {
+      "left_hip_pitch": {"id": 1},
+      "right_hip_pitch": {"id": 5},
+      "waist_yaw": {"id": 40}
+    }
+  }
+}
+```
+
+Do not enter these example assignments manually. With all boards powered and
+connected, detect the actual mapping:
+
+```bash
+uv run python runtime/scripts/calibrate.py \
+  --config ~/.wildrobot/config.json \
+  --calibrate-servo-board
+```
+
+The command enumerates USB serial ports using pySerial, probes every ID already
+declared under `servo_controller.servos`, and classifies complete buses as
+`left_leg_board`, `right_leg_board`, or `upper_body_board` from their joint
+names. It writes the mapping only when every ID responds on exactly one board
+and each physical bus matches one entire joint group. Missing, duplicate,
+mixed-group, or split-leg responses leave the config unchanged. The legacy
+`servo_controller.port` format remains valid for a single board.
+
 ## Mapping With Offset + Motor Sign + Center
 
 For each joint:

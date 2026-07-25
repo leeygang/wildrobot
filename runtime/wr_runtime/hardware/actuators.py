@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Protocol, Sequence
 
 import numpy as np
 
-from .servo_io_worker import ServoIOWorker
+from .servo_io_worker import MultiBoardServoIO, ServoIOWorker
 
 
 class Actuators(Protocol):
@@ -72,7 +72,7 @@ class HiwonderCachedActuators(Actuators):
         servo_ids: Dict[str, int],
         default_move_time_ms: Optional[int],
         joint_servo_offset_units: Dict[str, int],
-        servo_io: ServoIOWorker,
+        servo_io: ServoIOWorker | MultiBoardServoIO,
         joint_motor_unit_directions: Optional[Dict[str, float]] = None,
         joint_angle_at_zero_unit_deg: Optional[Dict[str, float]] = None,
         servo_model: ServoModel | None = None,
@@ -294,11 +294,10 @@ class HiwonderCachedActuators(Actuators):
 
     def disable(self) -> None:
         self.servo_io.stop()
-        for sid in self.servo_ids_list:
-            try:
-                self.servo_io.raw_bus.unload(int(sid))
-            except Exception:
-                pass
+        try:
+            self.servo_io.unload_servos(self.servo_ids_list)
+        except Exception:
+            pass
 
     def close(self) -> None:
         self.servo_io.close()

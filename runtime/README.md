@@ -80,8 +80,12 @@ Minimal example:
 
   "servo_controller": {
     "type": "hiwonder_ttl_bus",
-    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
     "baudrate": 115200,
+    "boards": [
+      { "name": "left_leg_board", "port": "/dev/serial/by-id/usb-board-left", "servo_ids": [1, 2, 3, 4] },
+      { "name": "right_leg_board", "port": "/dev/serial/by-id/usb-board-right", "servo_ids": [5, 6, 7, 8] },
+      { "name": "upper_body_board", "port": "/dev/serial/by-id/usb-board-upper", "servo_ids": [40] }
+    ],
     "servos": {
       "left_hip_pitch":  { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
       "left_hip_roll":   { "id": 2, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
@@ -90,7 +94,8 @@ Minimal example:
       "right_hip_pitch": { "id": 5, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
       "right_hip_roll":  { "id": 6, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
       "right_knee_pitch":{ "id": 7, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "right_ankle_pitch": { "id": 8, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
+      "right_ankle_pitch": { "id": 8, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
+      "waist_yaw": { "id": 40, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
     }
   },
 
@@ -119,6 +124,7 @@ Notes:
 - `mjcf_path` is used to discover *actuator/joint order* (the policy action order must match this).
 - `policy_onnx_path` should point to `policy.onnx` inside a bundle folder that also contains `policy_spec.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
+- `servo_controller.boards` assigns each globally unique servo ID to exactly one named USB TTL board. The required roles are `left_leg_board`, `right_leg_board`, and `upper_body_board`; calibration derives their ID sets from joint names. Run `uv run python runtime/scripts/calibrate.py --config ~/.wildrobot/config.json --calibrate-servo-board` to detect and write the real ports and assignments. The legacy single-board `servo_controller.port` field remains supported.
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
@@ -208,7 +214,8 @@ actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
 
 If you see servo cache initialization or position-read failures:
 - Confirm the USB TTL debug board is powered and servos have external power.
-- Confirm `servo_controller.port` and `servo_controller.baudrate` in `wildrobot_config.json` match the debug board (`115200`).
+- Rerun `calibrate.py --calibrate-servo-board` and confirm every board and servo ID is listed once.
+- Confirm `servo_controller.boards[*].port` and `servo_controller.baudrate` in `wildrobot_config.json` match the debug boards (`115200`).
 - Try smaller `--servo-ids` lists in `scripts/probe_hiwonder_ttl_timing.py` to isolate bus or servo issues.
 
 ## Bundle utilities
