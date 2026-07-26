@@ -230,14 +230,14 @@ actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
 home stabilizer from checkpoint 90. The policy has 63 observations and 17
 actions; the four wrist actuators remain in the MuJoCo model but are excluded
 from the locomotion servo worker's reads and writes. The mode always uses a
-zero velocity command.
+zero velocity command and runs until Ctrl+C. `--max-steps` applies only to
+walking and dry-run execution.
 
 ```bash
 cd runtime
 uv run wildrobot-run-policy \
-  --bundle bundles/deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90 \
+  --bundle bundles/standing_walk_v0222 \
   --stable-only \
-  --max-steps 3000 \
   --log-steps 20
 ```
 

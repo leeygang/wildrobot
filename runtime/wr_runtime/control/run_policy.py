@@ -23,8 +23,7 @@ Stable-only run with the integrated standing stabilizer::
 
     uv run --project runtime wildrobot-run-policy \
       --bundle /path/to/bundle \
-      --stable-only \
-      --max-steps 500
+      --stable-only
 """
 
 from __future__ import annotations
@@ -32,12 +31,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import faulthandler
+import itertools
 import json
 import math
 import signal
 import sys
 import time
 import traceback
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, List, Optional, Sequence, TextIO
@@ -230,6 +231,15 @@ def _resolve_run_bundle_path(
     if bundle_arg is None:
         raise SystemExit("--bundle is required.")
     return Path(bundle_arg)
+
+
+def _policy_loop_max_steps(
+    *, stable_only: bool, dry_run: bool, max_steps: int
+) -> int | None:
+    """Run real stable-only control until the operator interrupts it."""
+    if stable_only and not dry_run:
+        return None
+    return int(max_steps)
 
 
 def _standing_runtime_plan(
@@ -936,7 +946,7 @@ def _format_hz_from_period(value_s: float | None) -> str:
     return f"{1.0 / float(value_s):.1f}"
 
 
-def _timing_values(samples: List[dict], key: str) -> List[float]:
+def _timing_values(samples: Sequence[dict], key: str) -> List[float]:
     out = []
     for sample in samples:
         value = sample.get(key)
@@ -951,28 +961,30 @@ def _timing_values(samples: List[dict], key: str) -> List[float]:
     return out
 
 
-def _timing_avg(samples: List[dict], key: str) -> float | None:
+def _timing_avg(samples: Sequence[dict], key: str) -> float | None:
     values = _timing_values(samples, key)
     if not values:
         return None
     return float(np.mean(values))
 
 
-def _timing_max(samples: List[dict], key: str) -> float | None:
+def _timing_max(samples: Sequence[dict], key: str) -> float | None:
     values = _timing_values(samples, key)
     if not values:
         return None
     return float(np.max(values))
 
 
-def _timing_sum(samples: List[dict], key: str) -> float | None:
+def _timing_sum(samples: Sequence[dict], key: str) -> float | None:
     values = _timing_values(samples, key)
     if not values:
         return None
     return float(np.sum(values))
 
 
-def _timing_percentile(samples: List[dict], key: str, percentile: float) -> float | None:
+def _timing_percentile(
+    samples: Sequence[dict], key: str, percentile: float
+) -> float | None:
     values = _timing_values(samples, key)
     if not values:
         return None
@@ -1023,7 +1035,7 @@ def _metric_delta(first: dict, last: dict, key: str) -> int | None:
         return None
 
 
-def _print_io_bottleneck_summary(timing_samples: List[dict]) -> None:
+def _print_io_bottleneck_summary(timing_samples: Sequence[dict]) -> None:
     components = [
         ("imu", "io_imu_read"),
         ("servo_read", "io_actuator_read"),
@@ -1060,11 +1072,11 @@ def _print_io_bottleneck_summary(timing_samples: List[dict]) -> None:
 
 def _print_timing_summary(
     *,
-    timing_samples: List[dict],
+    timing_samples: Sequence[dict],
     ctrl_dt: float,
     realtime: bool,
     completed: bool = True,
-    servo_metric_samples: List[dict] | None = None,
+    servo_metric_samples: Sequence[dict] | None = None,
 ) -> None:
     if not timing_samples:
         return
@@ -1680,7 +1692,7 @@ def _run_standing_stabilization(
 def run_policy_loop(
     *,
     runner: RuntimePolicyRunner,
-    max_steps: int,
+    max_steps: int | None,
     velocity_cmd: np.ndarray,
     log_steps: int,
     ctrl_dt: float,
@@ -1696,7 +1708,7 @@ def run_policy_loop(
     startup_confirm_input_fn: Callable[[str], str] | None = None,
     startup_confirm_imu_timeout_s: float = 3.0,
 ) -> List[dict]:
-    """Run the control loop for ``max_steps`` iterations; return per-log infos."""
+    """Run for ``max_steps`` iterations, or until interrupted when it is ``None``."""
     logs: List[dict] = []
     leg_indices = _actuator_indices(
         actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
@@ -1715,12 +1727,14 @@ def run_policy_loop(
         confirm_imu_timeout_s=float(startup_confirm_imu_timeout_s),
         input_fn=startup_confirm_input_fn,
     )
-    timing_samples: List[dict] = []
-    servo_metric_samples: List[dict] = []
+    history_size = max(1, int(round(60.0 / max(float(ctrl_dt), 1e-9))))
+    timing_samples = deque(maxlen=history_size) if max_steps is None else []
+    servo_metric_samples = deque(maxlen=history_size) if max_steps is None else []
     last_loop_start_s: float | None = None
     completed = False
+    steps = itertools.count() if max_steps is None else range(int(max_steps))
     try:
-        for step in range(int(max_steps)):
+        for step in steps:
             loop_start_s = time.monotonic()
             loop_period_s = (
                 None if last_loop_start_s is None else loop_start_s - last_loop_start_s
@@ -1754,7 +1768,8 @@ def run_policy_loop(
             servo_metrics = info.get("servo_metrics")
             if isinstance(servo_metrics, dict) and servo_metrics:
                 servo_metric_samples.append(servo_metrics)
-            if log_steps > 0 and (step % log_steps == 0 or step == max_steps - 1):
+            is_last_step = max_steps is not None and step == int(max_steps) - 1
+            if log_steps > 0 and (step % log_steps == 0 or is_last_step):
                 applied = info["applied_action"]
                 target = info["target_q_rad"]
                 leg_applied_max = (
@@ -1805,7 +1820,8 @@ def run_policy_loop(
                     f"{extra}",
                     flush=True,
                 )
-                logs.append(info)
+                if max_steps is not None:
+                    logs.append(info)
             if realtime:
                 elapsed = time.monotonic() - loop_start_s
                 remaining = ctrl_dt - elapsed
@@ -1840,7 +1856,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--stable_only",
         action="store_true",
         help=(
-            "Run only the deployment bundle's 17-action standing stabilizer."
+            "Run only the deployment bundle's 17-action standing stabilizer "
+            "until interrupted."
         ),
     )
     parser.add_argument(
@@ -1859,7 +1876,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--dry-run", action="store_true",
         help="Run with mock IO (no hardware): exercises the full loop for smoke tests.",
     )
-    parser.add_argument("--max-steps", type=int, default=500, help="Number of control steps.")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=500,
+        help=(
+            "Number of walking or dry-run control steps. Real --stable-only "
+            "runs until interrupted."
+        ),
+    )
     parser.add_argument("--log-steps", type=int, default=20, help="Log every N steps (0=off).")
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument(
@@ -2021,7 +2046,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 traceback.print_exc()
                 return 1
 
-    return _run_policy_from_args(args)
+    try:
+        return _run_policy_from_args(args)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
 
 
 def _load_runtime_onnx_policy(bundle: PolicyBundle) -> OnnxPolicy:
@@ -2209,9 +2238,18 @@ def _run_deployment_bundle_from_args(
 
     try:
         if args.stable_only:
+            if not args.dry_run:
+                print(
+                    "Stable-only control will run until interrupted (Ctrl+C).",
+                    flush=True,
+                )
             run_policy_loop(
                 runner=standing_runner,
-                max_steps=args.max_steps,
+                max_steps=_policy_loop_max_steps(
+                    stable_only=True,
+                    dry_run=bool(args.dry_run),
+                    max_steps=int(args.max_steps),
+                ),
                 velocity_cmd=np.zeros(3, dtype=np.float32),
                 log_steps=args.log_steps,
                 ctrl_dt=ctrl_dt,
@@ -2587,7 +2625,11 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     try:
         run_policy_loop(
             runner=runner,
-            max_steps=args.max_steps,
+            max_steps=_policy_loop_max_steps(
+                stable_only=stable_only,
+                dry_run=bool(args.dry_run),
+                max_steps=int(args.max_steps),
+            ),
             velocity_cmd=velocity_cmd,
             log_steps=args.log_steps,
             ctrl_dt=ctrl_dt,

@@ -149,6 +149,33 @@ def test_stable_only_bundle_is_17_action_and_excludes_wrist_io() -> None:
     assert fixed_home == {}
 
 
+def test_stable_only_hardware_runs_without_step_limit() -> None:
+    from runtime.wr_runtime.control.run_policy import _policy_loop_max_steps
+
+    assert (
+        _policy_loop_max_steps(stable_only=True, dry_run=False, max_steps=500)
+        is None
+    )
+    assert _policy_loop_max_steps(
+        stable_only=True, dry_run=True, max_steps=5
+    ) == 5
+    assert _policy_loop_max_steps(
+        stable_only=False, dry_run=False, max_steps=500
+    ) == 500
+
+
+def test_policy_cli_handles_interrupt_without_log(monkeypatch, capsys) -> None:
+    from runtime.wr_runtime.control import run_policy
+
+    def _interrupt(args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_policy, "_run_policy_from_args", _interrupt)
+
+    assert run_policy.main(["--bundle", "ignored"]) == 130
+    assert "Interrupted." in capsys.readouterr().err
+
+
 def test_bundle_is_required_for_all_runtime_modes() -> None:
     from runtime.wr_runtime.control.run_policy import _resolve_run_bundle_path
 

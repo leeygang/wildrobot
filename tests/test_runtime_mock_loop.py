@@ -123,6 +123,22 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
     assert robot_io.closed is True
 
 
+def test_policy_loop_accepts_unbounded_execution_until_interrupt() -> None:
+    class _InterruptingRunner:
+        def step(self, velocity_cmd, *, action_scale=1.0):
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_policy_loop(
+            runner=_InterruptingRunner(),
+            max_steps=None,
+            velocity_cmd=np.zeros(3, dtype=np.float32),
+            log_steps=0,
+            ctrl_dt=0.02,
+            realtime=False,
+        )
+
+
 def test_walk_policy_keeps_21d_contract_while_locomotion_io_uses_17_servos(
     v8_spec, runtime_policy_config
 ):
