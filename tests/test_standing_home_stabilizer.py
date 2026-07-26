@@ -216,6 +216,55 @@ def test_standing_runtime_applies_exported_one_step_action_delay() -> None:
     assert np.max(np.abs(second_applied)) > 0.0
 
 
+def test_startup_standing_honors_policy_diagnostics(capsys) -> None:
+    from policy_contract.spec_builder import build_policy_spec
+    from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
+    from runtime.wr_runtime.control.run_policy import _run_standing_stabilization
+    from runtime.wr_runtime.control.standing_policy_runner import StandingPolicyRunner
+
+    actuator_names = ["left_hip_pitch", "right_hip_pitch"]
+    spec = build_policy_spec(
+        robot_name="WildRobotTest",
+        actuated_joint_specs=[
+            {"name": name, "range": [-1.0, 1.0], "max_velocity": 10.0}
+            for name in actuator_names
+        ],
+        action_filter_alpha=0.0,
+        layout_id="wr_obs_v1",
+        mapping_id="pos_target_home_v1",
+        home_ctrl_rad=[0.0, 0.0],
+    )
+    runner = StandingPolicyRunner(
+        spec=spec,
+        policy=_ConstantPolicy(np.array([0.25, -0.5], dtype=np.float32)),
+        robot_io=MockRobotIO(
+            actuator_names=actuator_names,
+            control_dt=0.02,
+            home_q_rad=np.zeros(2, dtype=np.float32),
+        ),
+    )
+
+    _run_standing_stabilization(
+        runner=runner,
+        steps=1,
+        log_steps=1,
+        ctrl_dt=0.02,
+        realtime=False,
+        actuator_names=actuator_names,
+        diagnostic_log_policy=True,
+        stability_check=False,
+        stability_max_tilt_deg=10.0,
+        confirm_before_walk=False,
+        confirm_imu_timeout_s=1.0,
+    )
+
+    output = capsys.readouterr().out
+    assert "leg_deg=LHP=+14.3 RHP=-28.6" in output
+    assert "obs_leg_deg=LHP=+0.0 RHP=+0.0" in output
+    assert "diag[|raw|max=0.500" in output
+    assert "raw_lr=[HP=+0.750" in output
+
+
 def test_standing_home_stabilizer_uses_active_reward_terms() -> None:
     from training.configs.training_config import load_training_config
 

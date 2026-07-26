@@ -1609,6 +1609,7 @@ def _run_standing_stabilization(
     ctrl_dt: float,
     realtime: bool,
     actuator_names: list[str],
+    diagnostic_log_policy: bool,
     stability_check: bool,
     stability_max_tilt_deg: float,
     confirm_before_walk: bool,
@@ -1631,9 +1632,31 @@ def _run_standing_stabilization(
             ):
                 leg_err = _leg_error_max_deg(info, leg_indices)
                 leg_text = "n/a" if leg_err is None else f"{leg_err:.1f}"
+                diagnostic_parts: list[str] = []
+                if diagnostic_log_policy:
+                    target_summary = _format_leg_targets_deg(
+                        info["target_q_rad"], actuator_names
+                    )
+                    observed_summary = _format_leg_values_deg(
+                        info["signals"].joint_pos_rad, actuator_names
+                    )
+                    if target_summary:
+                        diagnostic_parts.append(f"leg_deg={target_summary}")
+                    if observed_summary:
+                        diagnostic_parts.append(f"obs_leg_deg={observed_summary}")
+                    policy_diagnostic = _format_policy_diagnostics(
+                        info=info,
+                        actuator_names=actuator_names,
+                        leg_indices=leg_indices,
+                        spec=runner.spec,
+                    )
+                    if policy_diagnostic:
+                        diagnostic_parts.append(policy_diagnostic)
+                diagnostic = " ".join(diagnostic_parts)
                 print(
                     f"[{label} {step + 1:4d}/{count:4d}] "
-                    f"leg_err|max_deg={leg_text} {_format_foot_switches(info)}",
+                    f"leg_err|max_deg={leg_text} {_format_foot_switches(info)}"
+                    f"{' ' + diagnostic if diagnostic else ''}",
                     flush=True,
                 )
             if realtime:
@@ -2327,6 +2350,7 @@ def _run_deployment_bundle_from_args(
                     ctrl_dt=ctrl_dt,
                     realtime=realtime,
                     actuator_names=standing_names,
+                    diagnostic_log_policy=bool(args.diagnostic_log_policy),
                     stability_check=not bool(args.disable_startup_stability_check),
                     stability_max_tilt_deg=float(
                         args.startup_stability_max_tilt_deg
@@ -2356,6 +2380,7 @@ def _run_deployment_bundle_from_args(
                 ctrl_dt=ctrl_dt,
                 realtime=realtime,
                 actuator_names=standing_names,
+                diagnostic_log_policy=bool(args.diagnostic_log_policy),
                 stability_check=(
                     not bool(args.disable_startup_stability_check)
                     and not bool(args.dry_run)
