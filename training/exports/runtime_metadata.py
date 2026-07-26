@@ -242,5 +242,20 @@ def build_runtime_policy_config(
     spec: PolicySpec,
 ) -> Dict[str, Any]:
     """Full build: reference phase table (heavy) + metadata assembly."""
+    if spec.observation.layout_id == "wr_obs_v1":
+        ctrl_dt = float(_env_get(env, "ctrl_dt", 0.02))
+        if ctrl_dt <= 0.0:
+            raise ValueError(f"ctrl_dt must be positive; got {ctrl_dt!r}")
+        return {
+            "schema_version": 1,
+            "policy_role": "standing",
+            "actor_obs_layout_id": spec.observation.layout_id,
+            "action_mapping_id": spec.action.mapping_id,
+            "ctrl_dt": ctrl_dt,
+            "control_hz": 1.0 / ctrl_dt,
+            "action_delay_steps": int(_env_get(env, "action_delay_steps", 0)),
+            "action_filter_alpha": float(_env_get(env, "action_filter_alpha", 0.0)),
+            "default_velocity_cmd": [0.0, 0.0, 0.0],
+        }
     reference = build_reference_phase_table(env)
     return build_runtime_metadata(env=env, spec=spec, reference=reference)

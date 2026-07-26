@@ -24,6 +24,7 @@ from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicySpec
+from wr_runtime.control.runtime_policy_config import StandingRuntimePolicyConfig
 
 
 _SUPPORTED_LAYOUT = "wr_obs_v1"
@@ -32,7 +33,8 @@ _SUPPORTED_LAYOUT = "wr_obs_v1"
 @dataclass
 class StandingRunnerState:
     step_idx: int
-    prev_action: np.ndarray
+    pending_action: np.ndarray
+    last_applied_action: np.ndarray
 
 
 class StandingPolicyRunner:
@@ -44,6 +46,7 @@ class StandingPolicyRunner:
         spec: PolicySpec,
         policy,
         robot_io,
+        runtime_config: StandingRuntimePolicyConfig | None = None,
         fixed_home_targets_rad: Mapping[str, float] | None = None,
         zero_cmd_hold_home_deadzone: float | None = None,
     ) -> None:
@@ -59,6 +62,7 @@ class StandingPolicyRunner:
         self._spec = spec
         self._policy = policy
         self._robot_io = robot_io
+        self._runtime_config = runtime_config
         self._zero_cmd_hold_home_deadzone = zero_cmd_hold_home_deadzone
         self._action_dim = int(spec.model.action_dim)
         self._policy_actuator_names = list(spec.robot.actuator_names)
@@ -69,6 +73,27 @@ class StandingPolicyRunner:
             str(name): float(value)
             for name, value in (fixed_home_targets_rad or {}).items()
         }
+        delay_steps = 0 if runtime_config is None else int(runtime_config.action_delay_steps)
+        if delay_steps not in (0, 1):
+            raise ValueError(f"standing action_delay_steps must be 0 or 1; got {delay_steps}")
+        self._action_delay_enabled = delay_steps == 1
+        if runtime_config is not None:
+            if runtime_config.actor_obs_layout_id != layout:
+                raise ValueError(
+                    "standing runtime config layout mismatch: "
+                    f"{runtime_config.actor_obs_layout_id!r} != {layout!r}"
+                )
+            if runtime_config.action_mapping_id != spec.action.mapping_id:
+                raise ValueError(
+                    "standing runtime config action mapping mismatch: "
+                    f"{runtime_config.action_mapping_id!r} != {spec.action.mapping_id!r}"
+                )
+            spec_alpha = float(spec.action.postprocess_params.get("alpha", 0.0))
+            if abs(float(runtime_config.action_filter_alpha) - spec_alpha) > 1e-9:
+                raise ValueError(
+                    "standing runtime config action filter mismatch: "
+                    f"{runtime_config.action_filter_alpha} != {spec_alpha}"
+                )
 
         self._init_joint_ranges()
         self._init_home_q_rad()
@@ -100,9 +125,11 @@ class StandingPolicyRunner:
         return int(self._state.step_idx)
 
     def reset(self) -> None:
+        zeros = np.zeros(self._action_dim, dtype=np.float32)
         self._state = StandingRunnerState(
             step_idx=0,
-            prev_action=np.zeros(self._action_dim, dtype=np.float32),
+            pending_action=zeros.copy(),
+            last_applied_action=zeros.copy(),
         )
 
     def _init_joint_ranges(self) -> None:
@@ -193,7 +220,7 @@ class StandingPolicyRunner:
     def build_obs(self, signals: Signals, velocity_cmd: np.ndarray) -> np.ndarray:
         return build_observation(
             spec=self._spec,
-            state=PolicyState(prev_action=self._state.prev_action),
+            state=PolicyState(prev_action=self._state.last_applied_action),
             signals=signals,
             velocity_cmd=_velocity_cmd_scalar(velocity_cmd),
         )
@@ -209,19 +236,25 @@ class StandingPolicyRunner:
         scaled_raw = raw * np.float32(_sanitize_action_scale(action_scale))
         applied, new_state = postprocess_action(
             spec=self._spec,
-            state=PolicyState(prev_action=self._state.prev_action),
+            state=PolicyState(prev_action=self._state.pending_action),
             action_raw=scaled_raw,
         )
-        applied = np.asarray(applied, dtype=np.float32).reshape(self._action_dim)
+        filtered = np.asarray(applied, dtype=np.float32).reshape(self._action_dim)
+        if self._action_delay_enabled:
+            applied = self._state.pending_action.copy()
+        else:
+            applied = filtered
         target_q = NumpyCalibOps.action_to_ctrl(spec=self._spec, action=applied)
         target_q = np.clip(target_q, self._joint_min, self._joint_max).astype(np.float32)
-        self._state.prev_action = np.asarray(new_state.prev_action, dtype=np.float32)
+        self._state.pending_action = np.asarray(new_state.prev_action, dtype=np.float32)
+        self._state.last_applied_action = applied.copy()
         self._state.step_idx += 1
         return target_q, applied
 
     def hold_home_step(self) -> tuple[np.ndarray, np.ndarray]:
         zeros = np.zeros(self._action_dim, dtype=np.float32)
-        self._state.prev_action = zeros.copy()
+        self._state.pending_action = zeros.copy()
+        self._state.last_applied_action = zeros.copy()
         self._state.step_idx += 1
         return self._home_q_rad.copy(), zeros
 

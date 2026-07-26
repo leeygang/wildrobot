@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+
+_DEPLOYMENT_BUNDLE = (
+    "runtime/bundles/deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90"
+)
 
 
 class _ConstantPolicy:
@@ -109,6 +115,78 @@ def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
     assert hardware_names == spec.robot.actuator_names
     assert home.shape == mins.shape == maxs.shape == (17,)
     assert fixed_home == {}
+
+
+def test_stable_only_bundle_is_17_action_and_excludes_wrist_io() -> None:
+    from runtime.wr_runtime.deployment_bundle import DeploymentBundle
+    from runtime.wr_runtime.control.run_policy import (
+        _resolve_run_bundle_path,
+        _standing_runtime_fixed_metadata,
+        _standing_runtime_plan,
+    )
+
+    bundle_path = _resolve_run_bundle_path(
+        bundle_arg=_DEPLOYMENT_BUNDLE, stable_only=True
+    )
+    deployment = DeploymentBundle.load(bundle_path)
+    bundle = deployment.policy_bundle("standing")
+    fixed_names = _standing_runtime_fixed_metadata(bundle.spec)[
+        "fixed_actuator_names"
+    ]
+    hardware_names, home, mins, maxs, fixed_home = _standing_runtime_plan(
+        bundle.spec,
+        externally_managed_actuator_names=fixed_names,
+    )
+
+    assert bundle_path.name == "deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90"
+    assert bundle.spec.observation.layout_id == "wr_obs_v1"
+    assert bundle.spec.model.obs_dim == 63
+    assert bundle.spec.model.action_dim == 17
+    assert len(fixed_names) == 4
+    assert all("wrist" in name for name in fixed_names)
+    assert hardware_names == bundle.spec.robot.actuator_names
+    assert home.shape == mins.shape == maxs.shape == (17,)
+    assert fixed_home == {}
+
+
+def test_bundle_is_required_for_all_runtime_modes() -> None:
+    from runtime.wr_runtime.control.run_policy import _resolve_run_bundle_path
+
+    for stable_only in (False, True):
+        with pytest.raises(SystemExit, match="--bundle is required"):
+            _resolve_run_bundle_path(bundle_arg=None, stable_only=stable_only)
+
+
+def test_standing_runtime_applies_exported_one_step_action_delay() -> None:
+    from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
+    from runtime.wr_runtime.control.runtime_policy_config import (
+        StandingRuntimePolicyConfig,
+    )
+    from runtime.wr_runtime.control.standing_policy_runner import StandingPolicyRunner
+    from runtime.wr_runtime.deployment_bundle import DeploymentBundle
+
+    deployment = DeploymentBundle.load(_DEPLOYMENT_BUNDLE)
+    bundle = deployment.policy_bundle("standing")
+    runtime_cfg = StandingRuntimePolicyConfig.from_json(
+        deployment.policy_dir("standing") / "runtime_policy_config.json"
+    )
+    robot_io = MockRobotIO(
+        actuator_names=bundle.spec.robot.actuator_names,
+        control_dt=runtime_cfg.ctrl_dt,
+        home_q_rad=np.asarray(bundle.spec.robot.home_ctrl_rad, dtype=np.float32),
+    )
+    runner = StandingPolicyRunner(
+        spec=bundle.spec,
+        policy=_ConstantPolicy(np.ones(17, dtype=np.float32)),
+        robot_io=robot_io,
+        runtime_config=runtime_cfg,
+    )
+
+    _, first_applied = runner.compose_and_apply(np.ones(17, dtype=np.float32))
+    _, second_applied = runner.compose_and_apply(np.ones(17, dtype=np.float32))
+
+    np.testing.assert_allclose(first_applied, 0.0, atol=1e-7)
+    assert np.max(np.abs(second_applied)) > 0.0
 
 
 def test_standing_home_stabilizer_uses_active_reward_terms() -> None:

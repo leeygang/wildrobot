@@ -3,10 +3,12 @@
 
 Usage:
   uv run python training/exports/export_policy_bundle_cli.py \
-    --checkpoint training/checkpoints/ppo_standing/.../checkpoint_580.pkl \
-    --training-config training/configs/ppo_standing.yaml \
-    --asset v1 \
-        --bundle-path training/checkpoints/standing_v0.12.2
+    --walk-checkpoint training/checkpoints/ppo_walking/.../checkpoint_1650.pkl \
+    --training-config training/configs/ppo_walking.yaml \
+    --standing-checkpoint training/checkpoints/ppo_standing/.../checkpoint_90.pkl \
+    --standing-training-config training/configs/ppo_standing.yaml \
+    --asset v2 \
+    --bundle-path runtime/bundles/deployment_new
 """
 
 from __future__ import annotations
@@ -20,10 +22,15 @@ import yaml
 # Add project root to path (exports/ -> training/ -> project_root/)
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
+runtime_root = project_root / "runtime"
+sys.path.insert(0, str(runtime_root))
 
 from policy_contract.spec import PolicyBundle, validate_spec
 
-from training.exports.export_policy_bundle import export_policy_bundle
+from training.exports.export_policy_bundle import (
+    export_deployment_bundle,
+    export_policy_bundle,
+)
 
 
 def _resolve_repo_relative(path: Path) -> Path:
@@ -142,18 +149,44 @@ def _resolve_training_config_path(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export a WildRobot policy bundle")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to PPO checkpoint (.pkl)")
+    parser.add_argument(
+        "--walk-checkpoint",
+        type=str,
+        required=True,
+        help="Path to walking PPO checkpoint (.pkl)",
+    )
     parser.add_argument(
         "--training-config",
         type=str,
         default=None,
-        help="Path to training config (.yaml). Required if auto-detection fails.",
+        help="Walking training config (.yaml). Required if auto-detection fails.",
+    )
+    parser.add_argument(
+        "--standing-checkpoint",
+        type=str,
+        default=None,
+        help="Standing PPO checkpoint; enables combined deployment-bundle export.",
+    )
+    parser.add_argument(
+        "--standing-training-config",
+        type=str,
+        default=None,
+        help="Standing training config for combined deployment-bundle export.",
+    )
+    parser.add_argument(
+        "--hardware-config",
+        type=str,
+        default=None,
+        help="Calibrated hardware config to snapshot as shared hardware_config.json.",
     )
     parser.add_argument(
         "--bundle-path",
         type=str,
         required=True,
-        help="Output bundle directory path, including folder name (e.g., training/checkpoints/standing_v0.12.1).",
+        help=(
+            "Output bundle directory path, including folder name "
+            "(e.g., runtime/bundles/deployment_new)."
+        ),
     )
     parser.add_argument(
         "--asset",
@@ -170,7 +203,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    checkpoint_path = _resolve_repo_relative(Path(args.checkpoint))
+    checkpoint_path = _resolve_repo_relative(Path(args.walk_checkpoint))
     config_path = _resolve_training_config_path(
         checkpoint_path=checkpoint_path,
         training_config_arg=args.training_config,
@@ -183,16 +216,52 @@ def main() -> None:
         config_path=config_path,
     )
 
-    export_policy_bundle(
-        checkpoint_path=checkpoint_path,
-        config_path=config_path,
-        output_dir=output_dir,
-        robot_config_path=robot_config_path,
-    )
-    shutil.copy2(config_path, output_dir / "training_config.yaml")
+    if args.standing_checkpoint:
+        if not args.standing_training_config:
+            raise SystemExit(
+                "--standing-training-config is required with --standing-checkpoint"
+            )
+        standing_checkpoint_path = _resolve_repo_relative(
+            Path(args.standing_checkpoint)
+        )
+        standing_config_path = _resolve_repo_relative(
+            Path(args.standing_training_config)
+        )
+        hardware_config_path = (
+            _resolve_repo_relative(Path(args.hardware_config))
+            if args.hardware_config
+            else None
+        )
+        export_deployment_bundle(
+            walking_checkpoint_path=checkpoint_path,
+            walking_config_path=config_path,
+            standing_checkpoint_path=standing_checkpoint_path,
+            standing_config_path=standing_config_path,
+            output_dir=output_dir,
+            robot_config_path=robot_config_path,
+            hardware_config_source=hardware_config_path,
+        )
+        from wr_runtime.deployment_bundle import DeploymentBundle
 
-    bundle = PolicyBundle.load(output_dir)
-    validate_spec(bundle.spec)
+        deployment = DeploymentBundle.load(output_dir)
+        for role in ("standing", "walking"):
+            validate_spec(deployment.policy_bundle(role).spec)
+    else:
+        if args.standing_training_config or args.hardware_config:
+            raise SystemExit(
+                "--standing-training-config/--hardware-config require "
+                "--standing-checkpoint"
+            )
+        export_policy_bundle(
+            checkpoint_path=checkpoint_path,
+            config_path=config_path,
+            output_dir=output_dir,
+            robot_config_path=robot_config_path,
+        )
+        shutil.copy2(config_path, output_dir / "training_config.yaml")
+
+        bundle = PolicyBundle.load(output_dir)
+        validate_spec(bundle.spec)
     print(f"Bundle export OK: {output_dir}")
 
 

@@ -16,6 +16,11 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
 from configs import WildRobotRuntimeConfig
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
+from wr_runtime.deployment_bundle import (
+    DeploymentBundle,
+    is_deployment_bundle,
+    resolve_hardware_config_path,
+)
 
 
 def _print_pass(message: str) -> None:
@@ -69,9 +74,12 @@ def validate_bundle(
 
 def _default_mjcf_from_bundle(bundle_path: Path) -> Optional[Path]:
     """Best-effort MJCF path discovery from a colocated runtime config in the bundle."""
-    cfg_path = bundle_path / "wildrobot_config.json"
+    direct_mjcf = bundle_path / "wildrobot.xml"
+    if direct_mjcf.exists():
+        return direct_mjcf
+    cfg_path = resolve_hardware_config_path(bundle_path)
     if not cfg_path.exists():
-        raise FileNotFoundError(f"Bundle missing wildrobot_config.json: {cfg_path}")
+        raise FileNotFoundError(f"Bundle missing hardware configuration: {cfg_path}")
     _print_pass(f"found {cfg_path.name}")
     cfg = WildRobotRuntimeConfig.load(cfg_path)
     mjcf_path = cfg.mjcf_resolved_path
@@ -90,11 +98,30 @@ def main() -> None:
 
     step = "startup"
     try:
-        step = "locate wildrobot_config.json"
-        mjcf_path = _default_mjcf_from_bundle(bundle_path)
-
-        step = "validate policy bundle"
-        validate_bundle(bundle_path=bundle_path, mjcf_path=mjcf_path)
+        if is_deployment_bundle(bundle_path):
+            step = "load deployment bundle"
+            deployment = DeploymentBundle.load(bundle_path)
+            mjcf_path = deployment.mjcf_path
+            cfg = WildRobotRuntimeConfig.load(
+                deployment.hardware_config_path,
+                robot_config_path=deployment.robot_config_path,
+            )
+            _print_pass(f"found {deployment.hardware_config_path.name}")
+            _print_pass(
+                "loaded shared hardware config "
+                f"(external={list(cfg.externally_managed_actuator_names)})"
+            )
+            for role in ("standing", "walking"):
+                step = f"validate {role} policy bundle"
+                validate_bundle(
+                    bundle_path=deployment.policy_dir(role),
+                    mjcf_path=mjcf_path,
+                )
+        else:
+            step = "locate hardware configuration"
+            mjcf_path = _default_mjcf_from_bundle(bundle_path)
+            step = "validate policy bundle"
+            validate_bundle(bundle_path=bundle_path, mjcf_path=mjcf_path)
 
         _print_pass("Bundle validation OK")
     except Exception as exc:

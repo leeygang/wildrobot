@@ -1,9 +1,8 @@
 """``wildrobot-run-policy`` — deterministic control loop for the latest bundle.
 
-Loads a policy bundle (``policy.onnx`` + ``policy_spec.json`` +
-``runtime_policy_config.json``) and runs the v8 home-base-residual control loop
-at ``control_hz``.  Supports a hardware-free ``--dry-run`` mode (mock IO) for
-smoke tests and safe validation on a developer machine.
+Loads a deployment bundle containing standing and walking policy contracts plus
+one shared hardware configuration. Supports a hardware-free ``--dry-run`` mode
+for smoke tests and safe validation on a developer machine.
 
 Examples
 --------
@@ -17,8 +16,15 @@ Hardware run (on the robot), forward walk for 500 control steps::
 
     uv run --project runtime wildrobot-run-policy \
       --bundle /path/to/bundle \
-      --runtime-config ~/.wildrobot/config.json \
+      --hardware-config ~/.wildrobot/hardware_config.json \
       --max-steps 500 --velocity-cmd 0.13,0.0,0.0
+
+Stable-only run with the integrated standing stabilizer::
+
+    uv run --project runtime wildrobot-run-policy \
+      --bundle /path/to/bundle \
+      --stable-only \
+      --max-steps 500
 """
 
 from __future__ import annotations
@@ -46,7 +52,9 @@ from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.control.mock_robot_io import MockRobotIO
 from wr_runtime.control.policy_runner import RuntimePolicyRunner
 from wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
+from wr_runtime.control.runtime_policy_config import StandingRuntimePolicyConfig
 from wr_runtime.control.standing_policy_runner import StandingPolicyRunner
+from wr_runtime.deployment_bundle import DeploymentBundle, is_deployment_bundle
 
 
 _LEG_LOG_JOINTS = (
@@ -110,6 +118,37 @@ class _LogStream:
 
     def isatty(self) -> bool:
         return self._mirror_console and bool(self._console_stream.isatty())
+
+
+class _TargetBlendRobotIO:
+    """Blend initial walking writes from the final standing target."""
+
+    def __init__(self, robot_io, *, initial_target: np.ndarray, blend_steps: int):
+        self._robot_io = robot_io
+        self.actuator_names = list(robot_io.actuator_names)
+        self._initial_target = np.asarray(initial_target, dtype=np.float32).reshape(-1)
+        if self._initial_target.size != len(self.actuator_names):
+            raise ValueError(
+                "initial blend target size does not match hardware actuator count"
+            )
+        self._blend_steps = max(0, int(blend_steps))
+        self._write_step = 0
+
+    def read(self):
+        return self._robot_io.read()
+
+    def write_ctrl(self, target_q_rad: np.ndarray) -> None:
+        target = np.asarray(target_q_rad, dtype=np.float32).reshape(-1)
+        if self._write_step < self._blend_steps:
+            scale = float(self._write_step + 1) / float(self._blend_steps)
+            target = self._initial_target + np.float32(scale) * (
+                target - self._initial_target
+            )
+        self._write_step += 1
+        self._robot_io.write_ctrl(target.astype(np.float32))
+
+    def __getattr__(self, name: str):
+        return getattr(self._robot_io, name)
 
 
 @contextlib.contextmanager
@@ -183,6 +222,14 @@ def _standing_runtime_fixed_metadata(spec) -> dict[str, Any]:
     provenance = spec.provenance if isinstance(spec.provenance, dict) else {}
     metadata = provenance.get(_RUNTIME_FIXED_HOME_KEY, {})
     return metadata if isinstance(metadata, dict) else {}
+
+
+def _resolve_run_bundle_path(
+    *, bundle_arg: Optional[str], stable_only: bool
+) -> Path:
+    if bundle_arg is None:
+        raise SystemExit("--bundle is required.")
+    return Path(bundle_arg)
 
 
 def _standing_runtime_plan(
@@ -1555,6 +1602,96 @@ def _run_startup_home_hold(
     runner.reset()
 
 
+def _run_standing_stabilization(
+    *,
+    runner: StandingPolicyRunner,
+    steps: int,
+    log_steps: int,
+    ctrl_dt: float,
+    realtime: bool,
+    actuator_names: list[str],
+    stability_check: bool,
+    stability_max_tilt_deg: float,
+    confirm_before_walk: bool,
+    confirm_imu_timeout_s: float,
+) -> dict:
+    """Run the standing policy, optionally confirm, then verify a fresh window."""
+    velocity_cmd = np.zeros(3, dtype=np.float32)
+    leg_indices = _actuator_indices(
+        actuator_names, tuple(name for _, name in _LEG_LOG_JOINTS)
+    )
+
+    def _run_steps(count: int, *, label: str) -> list[dict]:
+        infos: list[dict] = []
+        for step in range(max(1, int(count))):
+            loop_start_s = time.monotonic()
+            info = runner.step(velocity_cmd)
+            infos.append(info)
+            if step == 0 or step == count - 1 or (
+                log_steps > 0 and step % log_steps == 0
+            ):
+                leg_err = _leg_error_max_deg(info, leg_indices)
+                leg_text = "n/a" if leg_err is None else f"{leg_err:.1f}"
+                print(
+                    f"[{label} {step + 1:4d}/{count:4d}] "
+                    f"leg_err|max_deg={leg_text} {_format_foot_switches(info)}",
+                    flush=True,
+                )
+            if realtime:
+                remaining = float(ctrl_dt) - (time.monotonic() - loop_start_s)
+                if remaining > 0.0:
+                    time.sleep(remaining)
+        return infos
+
+    print(
+        "Startup standing stabilization: "
+        f"steps={max(1, int(steps))} "
+        f"duration_s={max(1, int(steps)) * float(ctrl_dt):.2f}",
+        flush=True,
+    )
+    infos = _run_steps(max(1, int(steps)), label="startup_standing")
+
+    if confirm_before_walk:
+        print("Start policy walking now? [y/N]:", flush=True)
+        answer = sys.stdin.readline().strip().lower()
+        if answer not in {"y", "yes"}:
+            raise SystemExit(
+                "Walking cancelled after standing stabilization; unloading servos."
+            )
+        robot_io = getattr(runner, "_robot_io", None)
+        wait_for_imu = getattr(robot_io, "wait_for_valid_imu_sample", None)
+        if callable(wait_for_imu):
+            wait_for_imu(timeout_s=float(confirm_imu_timeout_s))
+        refresh_steps = max(
+            1,
+            int(round(_STARTUP_STABILITY_WINDOW_S / max(float(ctrl_dt), 1e-9))),
+        )
+        infos = _run_steps(refresh_steps, label="standing_confirm")
+
+    if stability_check:
+        errors, summary = _startup_home_stability_errors(
+            infos=infos,
+            ctrl_dt=ctrl_dt,
+            leg_indices=leg_indices,
+            window_s=_STARTUP_STABILITY_WINDOW_S,
+            min_footswitch_pressed_ratio=(
+                _STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO
+            ),
+            max_tilt_deg=float(stability_max_tilt_deg),
+            max_gyro_rad_s=_STARTUP_STABILITY_MAX_GYRO_RAD_S,
+            max_leg_error_deg=_STARTUP_STABILITY_MAX_LEG_ERROR_DEG,
+        )
+        summary_text = " ".join(summary)
+        if errors:
+            raise SystemExit(
+                "Standing stability failed; refusing to switch to walking: "
+                + "; ".join(errors)
+            )
+        print(f"Standing stability OK: {summary_text}", flush=True)
+
+    return infos[-1]
+
+
 def run_policy_loop(
     *,
     runner: RuntimePolicyRunner,
@@ -1707,12 +1844,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Run a WildRobot policy bundle (latest v8 home-residual contract)."
     )
     parser.add_argument(
-        "--bundle", type=str, required=True,
-        help="Bundle directory (policy.onnx + policy_spec.json + runtime_policy_config.json)",
+        "--bundle", type=str, default=None,
+        help=(
+            "Deployment bundle containing standing/walking policies, or a legacy "
+            "single-policy bundle."
+        ),
     )
     parser.add_argument(
-        "--runtime-config", type=str, default=None,
-        help="Hardware runtime config JSON (servo IDs/calibration). Required unless --dry-run.",
+        "--stable-only",
+        "--stable_only",
+        action="store_true",
+        help=(
+            "Run only the deployment bundle's 17-action standing stabilizer."
+        ),
+    )
+    parser.add_argument(
+        "--hardware-config",
+        "--runtime-config",
+        dest="hardware_config",
+        type=str,
+        default=None,
+        help=(
+            "Physical robot configuration (servo IDs/calibration, IMU, GPIO). "
+            "Defaults to the deployment bundle's hardware_config.json; "
+            "--runtime-config is a legacy alias."
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -1883,16 +2039,280 @@ def main(argv: Optional[List[str]] = None) -> int:
     return _run_policy_from_args(args)
 
 
+def _load_runtime_onnx_policy(bundle: PolicyBundle) -> OnnxPolicy:
+    policy = OnnxPolicy(
+        str(bundle.model_path),
+        input_name=bundle.spec.model.input_name,
+        output_name=bundle.spec.model.output_name,
+        expected_obs_dim=int(bundle.spec.model.obs_dim),
+        expected_action_dim=int(bundle.spec.model.action_dim),
+    )
+    if policy.info.obs_dim is not None and int(policy.info.obs_dim) != int(
+        bundle.spec.model.obs_dim
+    ):
+        raise SystemExit(
+            f"ONNX obs_dim {policy.info.obs_dim} != spec {bundle.spec.model.obs_dim}"
+        )
+    if policy.info.action_dim is not None and int(policy.info.action_dim) != int(
+        bundle.spec.model.action_dim
+    ):
+        raise SystemExit(
+            f"ONNX action_dim {policy.info.action_dim} != spec "
+            f"{bundle.spec.model.action_dim}"
+        )
+    return policy
+
+
+def _run_deployment_bundle_from_args(
+    args: argparse.Namespace, bundle_path: Path
+) -> int:
+    deployment = DeploymentBundle.load(bundle_path)
+    standing_bundle = deployment.policy_bundle("standing")
+    walking_bundle = deployment.policy_bundle("walking")
+    validate_spec(standing_bundle.spec)
+    validate_spec(walking_bundle.spec)
+    if standing_bundle.spec.observation.layout_id != _STANDING_LAYOUT_ID:
+        raise SystemExit("Deployment standing policy must use wr_obs_v1")
+    if walking_bundle.spec.observation.layout_id != _WALKING_LAYOUT_ID:
+        raise SystemExit("Deployment walking policy must use wr_obs_v8_cmd3d")
+
+    standing_cfg = StandingRuntimePolicyConfig.from_json(
+        deployment.policy_dir("standing") / "runtime_policy_config.json"
+    )
+    walking_cfg = RuntimePolicyConfig.from_json(
+        deployment.policy_dir("walking") / "runtime_policy_config.json"
+    )
+    if abs(float(standing_cfg.ctrl_dt) - float(walking_cfg.ctrl_dt)) > 1e-9:
+        raise SystemExit(
+            "Standing/walking control periods differ: "
+            f"{standing_cfg.ctrl_dt} != {walking_cfg.ctrl_dt}"
+        )
+    ctrl_dt = float(walking_cfg.ctrl_dt)
+
+    from configs import WrRuntimeConfig
+
+    hardware_config_path = (
+        Path(args.hardware_config)
+        if args.hardware_config is not None
+        else deployment.hardware_config_path
+    )
+    hardware_cfg = WrRuntimeConfig.load(
+        hardware_config_path,
+        robot_config_path=deployment.robot_config_path,
+    )
+    externally_managed = [
+        str(name) for name in hardware_cfg.externally_managed_actuator_names
+    ]
+    fixed_names = [
+        str(name)
+        for name in _standing_runtime_fixed_metadata(standing_bundle.spec).get(
+            "fixed_actuator_names", []
+        )
+    ]
+    missing_external = sorted(set(fixed_names) - set(externally_managed))
+    if missing_external:
+        raise SystemExit(
+            "hardware_config.json must declare standing-excluded wrists under "
+            f"externally_managed_actuator_names; missing={missing_external}"
+        )
+
+    walking_names = list(walking_bundle.spec.robot.actuator_names)
+    walking_index = {name: idx for idx, name in enumerate(walking_names)}
+    hardware_names = [
+        name for name in walking_names if name not in set(externally_managed)
+    ]
+    standing_names = list(standing_bundle.spec.robot.actuator_names)
+    if hardware_names != standing_names:
+        raise SystemExit(
+            "Standing policy actuator order must equal walking hardware order: "
+            f"standing={standing_names}, hardware={hardware_names}"
+        )
+
+    walking_home = np.asarray(
+        walking_bundle.spec.robot.home_ctrl_rad, dtype=np.float32
+    )
+    hardware_home = np.asarray(
+        [walking_home[walking_index[name]] for name in hardware_names],
+        dtype=np.float32,
+    )
+    hardware_min = np.asarray(
+        [walking_bundle.spec.robot.joints[name].range_min_rad for name in hardware_names],
+        dtype=np.float32,
+    )
+    hardware_max = np.asarray(
+        [walking_bundle.spec.robot.joints[name].range_max_rad for name in hardware_names],
+        dtype=np.float32,
+    )
+    external_home = {
+        name: float(walking_home[walking_index[name]]) for name in externally_managed
+    }
+
+    standing_policy = _load_runtime_onnx_policy(standing_bundle)
+    walking_policy = _load_runtime_onnx_policy(walking_bundle)
+
+    if args.dry_run:
+        base_robot_io = MockRobotIO(
+            actuator_names=hardware_names,
+            control_dt=ctrl_dt,
+            home_q_rad=hardware_home,
+        )
+        realtime = False
+    else:
+        base_robot_io = _build_hardware_robot_io(
+            runtime_config_path=hardware_config_path,
+            actuator_names=hardware_names,
+            control_dt=ctrl_dt,
+            loaded_runtime_config=hardware_cfg,
+        )
+        if not args.skip_hardware_preflight:
+            try:
+                _run_hardware_preflight(
+                    robot_io=base_robot_io,
+                    actuator_names=hardware_names,
+                    home_q_rad=hardware_home,
+                    joint_min_rad=hardware_min,
+                    joint_max_rad=hardware_max,
+                    imu_startup_timeout_s=float(args.imu_startup_timeout_s),
+                    require_all_footswitches=not bool(
+                        args.allow_unpressed_footswitch
+                    ),
+                    home_tolerance_deg=float(args.preflight_home_tolerance_deg),
+                )
+            except BaseException:
+                base_robot_io.close()
+                raise
+        elif hasattr(base_robot_io, "wait_for_valid_imu_sample"):
+            base_robot_io.wait_for_valid_imu_sample(
+                timeout_s=float(args.imu_startup_timeout_s)
+            )
+        realtime = not args.no_realtime
+
+    standing_runner = StandingPolicyRunner(
+        spec=standing_bundle.spec,
+        policy=standing_policy,
+        robot_io=base_robot_io,
+        runtime_config=standing_cfg,
+    )
+    velocity_cmd = _parse_velocity_cmd(
+        args.velocity_cmd, list(walking_cfg.default_velocity_cmd)
+    )
+    manifest_transition = deployment.manifest.get("transition", {})
+    standing_min_s = float(manifest_transition.get("standing_min_duration_s", 2.0))
+    requested_standing_s = max(0.0, float(args.startup_home_hold_s))
+    standing_steps = max(
+        1,
+        int(round(max(standing_min_s, requested_standing_s) / ctrl_dt)),
+    )
+    manifest_blend_s = float(manifest_transition.get("walking_action_ramp_s", 0.5))
+    blend_s = (
+        float(args.startup_action_ramp_s)
+        if float(args.startup_action_ramp_s) > 0.0
+        else manifest_blend_s
+    )
+    blend_steps = max(0, int(round(blend_s / ctrl_dt)))
+
+    print(
+        f"Running deployment bundle {bundle_path} | hardware_config={hardware_config_path} "
+        f"| control_hz={1.0 / ctrl_dt:.1f} | hardware_actuators={len(hardware_names)} "
+        f"| standing=({standing_bundle.spec.model.obs_dim},"
+        f"{standing_bundle.spec.model.action_dim}) "
+        f"| walking=({walking_bundle.spec.model.obs_dim},"
+        f"{walking_bundle.spec.model.action_dim}) "
+        f"| externally_managed={externally_managed} | stable_only={bool(args.stable_only)}",
+        flush=True,
+    )
+
+    try:
+        if args.stable_only:
+            run_policy_loop(
+                runner=standing_runner,
+                max_steps=args.max_steps,
+                velocity_cmd=np.zeros(3, dtype=np.float32),
+                log_steps=args.log_steps,
+                ctrl_dt=ctrl_dt,
+                realtime=realtime,
+                actuator_names=standing_names,
+                diagnostic_log_policy=bool(args.diagnostic_log_policy),
+            )
+        else:
+            last_standing = _run_standing_stabilization(
+                runner=standing_runner,
+                steps=standing_steps,
+                log_steps=args.log_steps,
+                ctrl_dt=ctrl_dt,
+                realtime=realtime,
+                actuator_names=standing_names,
+                stability_check=(
+                    not bool(args.disable_startup_stability_check)
+                    and not bool(args.dry_run)
+                ),
+                stability_max_tilt_deg=float(args.startup_stability_max_tilt_deg),
+                confirm_before_walk=(
+                    bool(args.confirm_before_walk) and not bool(args.dry_run)
+                ),
+                confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+            )
+            blended_robot_io = _TargetBlendRobotIO(
+                base_robot_io,
+                initial_target=np.asarray(
+                    last_standing["target_q_rad"], dtype=np.float32
+                ),
+                blend_steps=blend_steps,
+            )
+            walking_robot_io = ExternalActuatorRobotIO(
+                robot_io=blended_robot_io,
+                policy_actuator_names=walking_names,
+                external_home_rad=external_home,
+            )
+            walking_runner = RuntimePolicyRunner(
+                spec=walking_bundle.spec,
+                runtime_config=walking_cfg,
+                policy=walking_policy,
+                robot_io=walking_robot_io,
+                zero_cmd_hold_home_deadzone=(
+                    None
+                    if bool(args.disable_zero_cmd_hold_home)
+                    else max(0.0, float(args.zero_cmd_hold_home_deadzone))
+                ),
+            )
+            run_policy_loop(
+                runner=walking_runner,
+                max_steps=args.max_steps,
+                velocity_cmd=velocity_cmd,
+                log_steps=args.log_steps,
+                ctrl_dt=ctrl_dt,
+                realtime=realtime,
+                actuator_names=walking_names,
+                diagnostic_log_policy=bool(args.diagnostic_log_policy),
+                startup_command_ramp_steps=max(
+                    0,
+                    int(round(float(args.startup_command_ramp_s) / ctrl_dt)),
+                ),
+                startup_action_ramp_steps=blend_steps,
+                startup_stability_check=False,
+            )
+    finally:
+        base_robot_io.close()
+    print("Run complete.", flush=True)
+    return 0
+
+
 def _run_policy_from_args(args: argparse.Namespace) -> int:
-    bundle_path = Path(args.bundle)
+    stable_only = bool(args.stable_only)
+    bundle_path = _resolve_run_bundle_path(
+        bundle_arg=args.bundle,
+        stable_only=stable_only,
+    )
+    if is_deployment_bundle(bundle_path):
+        return _run_deployment_bundle_from_args(args, bundle_path)
     bundle = PolicyBundle.load(bundle_path)
     validate_spec(bundle.spec)
     loaded_hardware_config = None
     externally_managed_actuator_names: list[str] = []
-    if args.runtime_config is not None:
+    if args.hardware_config is not None:
         from configs import WrRuntimeConfig
 
-        loaded_hardware_config = WrRuntimeConfig.load(Path(args.runtime_config))
+        loaded_hardware_config = WrRuntimeConfig.load(Path(args.hardware_config))
         externally_managed_actuator_names = [
             str(name)
             for name in getattr(
@@ -1901,6 +2321,31 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         ]
 
     layout_id = str(bundle.spec.observation.layout_id)
+    if stable_only:
+        if layout_id != _STANDING_LAYOUT_ID:
+            raise SystemExit(
+                "The integrated stable-only bundle must use standing layout "
+                f"{_STANDING_LAYOUT_ID!r}; got {layout_id!r}."
+            )
+        if int(bundle.spec.model.action_dim) != 17:
+            raise SystemExit(
+                "The integrated stable-only bundle must have 17 policy actions; "
+                f"got {bundle.spec.model.action_dim}."
+            )
+        fixed_names = [
+            str(name)
+            for name in _standing_runtime_fixed_metadata(bundle.spec).get(
+                "fixed_actuator_names", []
+            )
+        ]
+        if len(fixed_names) != 4:
+            raise SystemExit(
+                "The integrated stable-only bundle must declare four fixed wrist "
+                f"actuators; got {fixed_names}."
+            )
+        externally_managed_actuator_names = list(
+            dict.fromkeys(externally_managed_actuator_names + fixed_names)
+        )
     runtime_config: RuntimePolicyConfig | None = None
     external_home_targets_rad: dict[str, float] = {}
     if layout_id == _WALKING_LAYOUT_ID:
@@ -1978,9 +2423,18 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             f"{_WALKING_LAYOUT_ID!r} and {_STANDING_LAYOUT_ID!r}."
         )
 
-    velocity_cmd = _parse_velocity_cmd(
-        args.velocity_cmd, _default_velocity_cmd_for_layout(bundle.spec, runtime_config)
-    )
+    if stable_only:
+        if args.velocity_cmd is not None:
+            print(
+                "--stable-only ignores --velocity-cmd and uses [0.0, 0.0, 0.0].",
+                flush=True,
+            )
+        velocity_cmd = np.zeros(3, dtype=np.float32)
+    else:
+        velocity_cmd = _parse_velocity_cmd(
+            args.velocity_cmd,
+            _default_velocity_cmd_for_layout(bundle.spec, runtime_config),
+        )
 
     policy = OnnxPolicy(
         str(bundle.model_path),
@@ -2014,14 +2468,14 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         )
         realtime = False  # dry-run is a smoke test; never sleep
     else:
-        if args.runtime_config is None:
-            raise SystemExit("--runtime-config is required unless --dry-run is set.")
+        if args.hardware_config is None:
+            raise SystemExit("--hardware-config is required unless --dry-run is set.")
         if not args.skip_hardware_preflight and hardware_home is None:
             raise SystemExit(
                 "policy_spec.robot.home_ctrl_rad is required for hardware preflight"
             )
         robot_io = _build_hardware_robot_io(
-            runtime_config_path=Path(args.runtime_config),
+            runtime_config_path=Path(args.hardware_config),
             actuator_names=hardware_actuator_names,
             control_dt=ctrl_dt,
             loaded_runtime_config=loaded_hardware_config,
@@ -2135,6 +2589,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| hardware_actuators={len(hardware_actuator_names)}"
         f"{fixed_text}{external_text} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "
+        f"| stable_only={stable_only} "
         f"| zero_cmd_hold_home={zero_cmd_hold_home_deadzone is not None} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
         f"| confirm_before_walk={bool(args.confirm_before_walk)} "

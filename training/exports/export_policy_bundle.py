@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -104,7 +105,7 @@ def export_policy_bundle(
         onnx_action_dim=action_dim,
     )
 
-    _export_runtime_config(output_dir=output_dir)
+    hardware_config_path = _export_hardware_config(output_dir=output_dir)
 
     runtime_policy_config_path = _export_runtime_policy_config(
         output_dir=output_dir,
@@ -112,33 +113,32 @@ def export_policy_bundle(
         spec=spec,
     )
 
-    checksums = _build_checksums(
-        [
-            onnx_path,
-            checkpoint_snapshot_path,
-            spec_path,
-            robot_snapshot_path,
-            mjcf_snapshot_path,
-            output_dir / "wildrobot_config.json",
-            runtime_policy_config_path,
-        ]
-    )
+    checksum_paths = [
+        onnx_path,
+        checkpoint_snapshot_path,
+        spec_path,
+        robot_snapshot_path,
+        mjcf_snapshot_path,
+        hardware_config_path,
+        runtime_policy_config_path,
+    ]
+    realism_profile_path = output_dir / "realism_profile.json"
+    if realism_profile_path.exists():
+        checksum_paths.append(realism_profile_path)
+    checksums = _build_checksums(checksum_paths)
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
 
-def _export_runtime_config(
+def _export_hardware_config(
     *,
     output_dir: Path,
-) -> None:
-    """Generate a runtime config JSON colocated with the exported bundle.
-
-    Source of truth for hardware settings is `runtime/configs/runtime_config_template.json`.
-    The generated config patches:
-      - `policy_onnx_path` -> `./policy.onnx`
-      - `mjcf_path` -> `./wildrobot.xml` (bundle-local snapshot)
-    """
+    source_path: Path | None = None,
+) -> Path:
+    """Write policy-independent physical I/O configuration."""
     project_root = Path(__file__).parent.parent.parent
-    base_path = project_root / "runtime" / "configs" / "runtime_config_template.json"
+    base_path = source_path or (
+        project_root / "runtime" / "configs" / "runtime_config_template.json"
+    )
 
     if not base_path.exists():
         raise FileNotFoundError(f"Runtime config base not found: {base_path}")
@@ -147,11 +147,154 @@ def _export_runtime_config(
     if not isinstance(data, dict):
         raise ValueError(f"Runtime config base is not a JSON object: {base_path}")
 
-    data["policy_onnx_path"] = "./policy.onnx"
-    data["mjcf_path"] = "./wildrobot.xml"
+    for key in (
+        "policy_onnx_path",
+        "mjcf_path",
+        "action_scale_rad",
+        "control_hz",
+        "velocity_cmd",
+        "yaw_rate_cmd",
+    ):
+        data.pop(key, None)
+    data["robot_config_path"] = "./mujoco_robot_config.json"
 
-    out_path = output_dir / "wildrobot_config.json"
+    realism_source = project_root / "assets" / "v2" / "realism_profile_v0.19.1.json"
+    if data.get("realism_profile_path") is not None and realism_source.exists():
+        realism_name = "realism_profile.json"
+        shutil.copy2(realism_source, output_dir / realism_name)
+        data["realism_profile_path"] = f"./{realism_name}"
+
+    out_path = output_dir / "hardware_config.json"
     out_path.write_text(json.dumps(data, indent=2) + "\n")
+    return out_path
+
+
+def export_deployment_bundle(
+    *,
+    walking_checkpoint_path: Path,
+    walking_config_path: Path,
+    standing_checkpoint_path: Path,
+    standing_config_path: Path,
+    output_dir: Path,
+    robot_config_path: Path,
+    hardware_config_source: Path | None = None,
+) -> None:
+    """Export compatible standing and walking policies into one deployment bundle."""
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise ValueError(f"Deployment bundle output directory is not empty: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="wildrobot_bundle_") as tmp:
+        tmp_root = Path(tmp)
+        staged: dict[str, Path] = {}
+        for role, checkpoint_path, config_path in (
+            ("standing", standing_checkpoint_path, standing_config_path),
+            ("walking", walking_checkpoint_path, walking_config_path),
+        ):
+            role_stage = tmp_root / role
+            export_policy_bundle(
+                checkpoint_path=checkpoint_path,
+                config_path=config_path,
+                output_dir=role_stage,
+                robot_config_path=robot_config_path,
+            )
+            staged[role] = role_stage
+
+        standing_xml = (staged["standing"] / "wildrobot.xml").read_bytes()
+        walking_xml = (staged["walking"] / "wildrobot.xml").read_bytes()
+        if standing_xml != walking_xml:
+            raise ValueError("Standing and walking exports use different wildrobot.xml models")
+
+        policy_dirs: dict[str, Path] = {}
+        for role, config_path in (
+            ("standing", standing_config_path),
+            ("walking", walking_config_path),
+        ):
+            policy_dir = output_dir / "policies" / role
+            policy_dir.mkdir(parents=True, exist_ok=True)
+            for name in (
+                "policy.onnx",
+                "checkpoint.pkl",
+                "policy_spec.json",
+                "runtime_policy_config.json",
+            ):
+                shutil.copy2(staged[role] / name, policy_dir / name)
+            shutil.copy2(config_path, policy_dir / "training_config.yaml")
+            policy_dirs[role] = policy_dir
+
+        standing_spec = json.loads(
+            (policy_dirs["standing"] / "policy_spec.json").read_text()
+        )
+        walking_spec = json.loads(
+            (policy_dirs["walking"] / "policy_spec.json").read_text()
+        )
+        if standing_spec["observation"]["layout_id"] != "wr_obs_v1":
+            raise ValueError("Standing policy must use wr_obs_v1")
+        if walking_spec["observation"]["layout_id"] != "wr_obs_v8_cmd3d":
+            raise ValueError("Walking policy must use wr_obs_v8_cmd3d")
+        if int(standing_spec["model"]["action_dim"]) != 17:
+            raise ValueError("Standing policy must have 17 actions")
+        standing_home = dict(
+            zip(
+                standing_spec["robot"]["actuator_names"],
+                standing_spec["robot"]["home_ctrl_rad"],
+                strict=True,
+            )
+        )
+        walking_home = dict(
+            zip(
+                walking_spec["robot"]["actuator_names"],
+                walking_spec["robot"]["home_ctrl_rad"],
+                strict=True,
+            )
+        )
+        mismatched_home = [
+            name
+            for name, value in standing_home.items()
+            if name not in walking_home or abs(float(value) - float(walking_home[name])) > 1e-6
+        ]
+        if mismatched_home:
+            raise ValueError(
+                "Standing/walking home targets differ for shared actuators: "
+                f"{mismatched_home}"
+            )
+
+        shutil.copy2(staged["standing"] / "wildrobot.xml", output_dir / "wildrobot.xml")
+        shutil.copy2(
+            staged["standing"] / "mujoco_robot_config.json",
+            output_dir / "mujoco_robot_config.json",
+        )
+        _export_hardware_config(
+            output_dir=output_dir,
+            source_path=hardware_config_source,
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "bundle_type": "wildrobot_deployment",
+        "policies": {
+            "standing": {"path": "policies/standing"},
+            "walking": {"path": "policies/walking"},
+        },
+        "shared": {
+            "hardware_config": "hardware_config.json",
+            "mjcf": "wildrobot.xml",
+            "robot_config": "mujoco_robot_config.json",
+        },
+        "transition": {
+            "standing_min_duration_s": 2.0,
+            "walking_action_ramp_s": 0.5,
+        },
+    }
+    (output_dir / "bundle_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n"
+    )
+    checksums = {
+        str(path.relative_to(output_dir)): _sha256(path)
+        for path in sorted(output_dir.rglob("*"))
+        if path.is_file() and path.name != "checksums.json"
+    }
+    (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2) + "\n")
 
 
 def _export_runtime_policy_config(

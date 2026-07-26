@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -36,6 +37,11 @@ from configs.config import (  # noqa: E402
     servo_board_name_for_joint,
 )
 from wr_runtime.hardware.ttl_servo_controller import build_ttl_servo_controller  # noqa: E402
+from wr_runtime.deployment_bundle import (  # noqa: E402
+    is_deployment_bundle,
+    resolve_hardware_config_path,
+    resolve_policy_dir,
+)
 
 # Calibration constants (use ServoConfig constants for conversion)
 DEFAULT_MOVE_MS = 300
@@ -900,15 +906,20 @@ def _alarm_timeout(seconds: float, *, message: str):
             pass
 
 
-def load_bundle_spec(bundle_dir: Path) -> tuple[List[str], List[float]]:
-    _, _, actuator_names, home = load_bundle_spec_data(bundle_dir)
+def load_bundle_spec(
+    bundle_dir: Path, *, policy_role: str = "walking"
+) -> tuple[List[str], List[float]]:
+    policy_dir = resolve_policy_dir(bundle_dir, role=policy_role)
+    _, _, actuator_names, home = load_bundle_spec_data(policy_dir)
     return actuator_names, home
 
 
 def resolve_bundle_dir(args: argparse.Namespace, config: WrRuntimeConfig) -> Optional[Path]:
     bundle_arg = getattr(args, "bundle", None)
     if bundle_arg:
-        return Path(bundle_arg)
+        return resolve_policy_dir(
+            Path(bundle_arg), role=str(getattr(args, "policy_role", "walking"))
+        )
     try:
         candidate = config.policy_resolved_path.parent
         if (candidate / "policy_spec.json").exists():
@@ -944,6 +955,25 @@ def write_bundle_home_ctrl_rad(bundle_dir: Path, home_ctrl_rad: List[float]) -> 
     robot = data.setdefault("robot", {})
     robot["home_ctrl_rad"] = [float(x) for x in home_ctrl_rad]
     _write_json_with_retries(spec_path, data)
+    deployment_root = _find_deployment_root(spec_path)
+    if deployment_root is not None:
+        home_by_name = dict(zip(actuator_names, home_ctrl_rad, strict=True))
+        manifest = json.loads((deployment_root / "bundle_manifest.json").read_text())
+        for entry in manifest.get("policies", {}).values():
+            other_spec_path = deployment_root / str(entry["path"]) / "policy_spec.json"
+            if other_spec_path.resolve() == spec_path.resolve():
+                continue
+            other_data = json.loads(other_spec_path.read_text())
+            other_robot = other_data.get("robot", {})
+            other_names = other_robot.get("actuator_names", [])
+            other_home = other_robot.get("home_ctrl_rad", [])
+            if len(other_names) != len(other_home):
+                raise ValueError(f"Invalid home vector in {other_spec_path}")
+            other_robot["home_ctrl_rad"] = [
+                float(home_by_name.get(name, value))
+                for name, value in zip(other_names, other_home, strict=True)
+            ]
+            _write_json_with_retries(other_spec_path, other_data)
     return spec_path
 
 
@@ -961,13 +991,15 @@ def resolve_robot_config_path(
         p = Path(json_robot_cfg).expanduser()
         candidates.append(p if p.is_absolute() else (config_dir / p).resolve())
 
+    if bundle_dir is not None and is_deployment_bundle(bundle_dir):
+        candidates.append(Path(bundle_dir) / "mujoco_robot_config.json")
     candidates.extend(
         [
             _REPO_ROOT / "assets" / "v2" / "mujoco_robot_config.json",
             Path("assets/v2/mujoco_robot_config.json"),
         ]
     )
-    if bundle_dir is not None:
+    if bundle_dir is not None and not is_deployment_bundle(bundle_dir):
         candidates.append(Path(bundle_dir) / "mujoco_robot_config.json")
 
     for candidate in candidates:
@@ -993,13 +1025,12 @@ def resolve_robot_xml_path(
         except Exception:
             pass
 
+    if bundle_dir is not None:
+        candidates.append(Path(bundle_dir) / "wildrobot.xml")
     try:
         candidates.append(config.mjcf_resolved_path)
     except Exception:
         pass
-
-    if bundle_dir is not None:
-        candidates.append(Path(bundle_dir) / "wildrobot.xml")
     candidates.append(_REPO_ROOT / "assets" / "v2" / "wildrobot.xml")
 
     for candidate in candidates:
@@ -1077,7 +1108,11 @@ def load_policy_action_setup(
             bundle_dir = None
 
     if bundle_dir is not None:
-        bundle_names, bundle_home = load_bundle_spec(bundle_dir)
+        policy_role = str(getattr(args, "policy_role", "walking"))
+        policy_dir = resolve_policy_dir(bundle_dir, role=policy_role)
+        bundle_names, bundle_home = load_bundle_spec(
+            bundle_dir, policy_role=policy_role
+        )
         home_by_joint = dict(zip(bundle_names, bundle_home, strict=True))
         base_rad_by_joint = {
             joint: float(home_by_joint.get(joint, 0.0)) for joint in joint_names
@@ -1085,7 +1120,7 @@ def load_policy_action_setup(
         residual_base = "home"
         source = "policy_spec home_ctrl_rad + runtime config action_scale_rad fallback"
 
-        runtime_cfg_path = bundle_dir / "runtime_policy_config.json"
+        runtime_cfg_path = policy_dir / "runtime_policy_config.json"
         if runtime_cfg_path.exists():
             runtime_cfg = json.loads(runtime_cfg_path.read_text())
             residual_base = str(runtime_cfg.get("loc_ref_residual_base", residual_base))
@@ -1150,7 +1185,7 @@ def resolve_config_path(args: argparse.Namespace) -> Path:
     if args.config:
         return Path(args.config)
     if args.bundle:
-        bundle_cfg = Path(args.bundle) / "wildrobot_config.json"
+        bundle_cfg = resolve_hardware_config_path(Path(args.bundle))
         if bundle_cfg.exists():
             return bundle_cfg
     return _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
@@ -1164,7 +1199,10 @@ def resolve_joint_names(
     if not args.bundle:
         return list(servo_cfgs.keys())
 
-    actuator_names, _ = load_bundle_spec(Path(args.bundle))
+    actuator_names, _ = load_bundle_spec(
+        Path(args.bundle),
+        policy_role=str(getattr(args, "policy_role", "walking")),
+    )
     missing = [name for name in actuator_names if name not in servo_cfgs]
     if missing:
         raise ValueError(
@@ -1238,7 +1276,10 @@ def load_home_from_scene(scene_xml: Path, joint_names: List[str]) -> List[float]
 
 def resolve_home_ctrl(args: argparse.Namespace, joint_names: List[str]) -> List[float]:
     if args.bundle:
-        bundle_names, bundle_home = load_bundle_spec(Path(args.bundle))
+        bundle_names, bundle_home = load_bundle_spec(
+            Path(args.bundle),
+            policy_role=str(getattr(args, "policy_role", "walking")),
+        )
         home_by_name = dict(zip(bundle_names, bundle_home, strict=True))
         missing = [name for name in joint_names if name not in home_by_name]
         if missing:
@@ -2358,12 +2399,34 @@ def _write_json_with_retries(path: Path, data: dict, *, attempts: int = 3, delay
                     os.close(fd)
             except Exception:
                 pass
+            _refresh_deployment_checksums(path)
             return
         except Exception as exc:
             last_exc = exc
             if attempt < attempts:
                 time.sleep(float(delay_s) * attempt)
     raise RuntimeError(f"Failed to write config to {path}") from last_exc
+
+
+def _find_deployment_root(path: Path) -> Optional[Path]:
+    for candidate in (path.parent, *path.parents):
+        if (candidate / "bundle_manifest.json").is_file():
+            return candidate
+    return None
+
+
+def _refresh_deployment_checksums(changed_path: Path) -> None:
+    root = _find_deployment_root(changed_path)
+    if root is None:
+        return
+    checksums = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name == "checksums.json":
+            continue
+        checksums[str(path.relative_to(root))] = hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+    (root / "checksums.json").write_text(json.dumps(checksums, indent=2) + "\n")
 
 
 def _expected_sensor_axis_for_body(body_axis: str) -> tuple[str, np.ndarray]:
@@ -4113,7 +4176,10 @@ Examples (copy/paste):
     parser.add_argument(
         "--config",
         default=None,
-        help="Input runtime config path (default: bundle's wildrobot_config.json if --bundle is set, else runtime/configs/runtime_config_v2.json)",
+        help=(
+            "Input hardware config path (default: bundle's hardware_config.json, "
+            "with legacy wildrobot_config.json fallback)"
+        ),
     )
     parser.add_argument("--output", help="Optional output path; default is in-place update with backup")
     parser.add_argument(
@@ -4162,7 +4228,16 @@ Examples (copy/paste):
     )
     parser.add_argument("--step-units", type=int, default=DEFAULT_STEP_UNITS, help="Jog step size in servo units")
     parser.add_argument("--move-ms", type=int, default=DEFAULT_MOVE_MS, help="Move duration in milliseconds")
-    parser.add_argument("--bundle", help="Policy bundle directory containing policy_spec.json")
+    parser.add_argument(
+        "--bundle",
+        help="Deployment bundle root or legacy policy bundle directory",
+    )
+    parser.add_argument(
+        "--policy-role",
+        choices=("standing", "walking"),
+        default="walking",
+        help="Policy contract to inspect when --bundle is a deployment bundle",
+    )
     parser.add_argument("--scene-xml", help="Scene XML path (requires MuJoCo installed)")
     parser.add_argument(
         "--keyframes-xml",

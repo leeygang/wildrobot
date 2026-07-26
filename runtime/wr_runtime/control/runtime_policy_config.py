@@ -119,3 +119,35 @@ class RuntimePolicyConfig:
             ],
             reference=ReferencePhaseTable.from_dict(data["reference"]),
         )
+
+
+@dataclass(frozen=True)
+class StandingRuntimePolicyConfig:
+    schema_version: int
+    actor_obs_layout_id: str
+    action_mapping_id: str
+    ctrl_dt: float
+    control_hz: float
+    action_delay_steps: int
+    action_filter_alpha: float
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "StandingRuntimePolicyConfig":
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"standing runtime_policy_config.json not found: {path}")
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"runtime_policy_config.json must be a dict: {path}")
+        ctrl_dt = float(data["ctrl_dt"])
+        if ctrl_dt <= 0.0:
+            raise ValueError(f"ctrl_dt must be positive; got {ctrl_dt!r}")
+        return cls(
+            schema_version=int(data.get("schema_version", 1)),
+            actor_obs_layout_id=str(data.get("actor_obs_layout_id", "")),
+            action_mapping_id=str(data.get("action_mapping_id", "")),
+            ctrl_dt=ctrl_dt,
+            control_hz=float(data.get("control_hz", 1.0 / ctrl_dt)),
+            action_delay_steps=int(data.get("action_delay_steps", 0)),
+            action_filter_alpha=float(data.get("action_filter_alpha", 0.0)),
+        )

@@ -42,6 +42,7 @@ import yaml
 
 HOME_DIR = Path(os.path.expanduser("~"))
 DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
+DEFAULT_HARDWARE_CONFIG_PATH = DEFAULT_CONFIG_DIR / "hardware_config.json"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
 
 # Default robot_config path (joint ranges, mirror signs, etc.)
@@ -600,8 +601,8 @@ class WrRuntimeConfig:
         toe_pin = config.foot_switches.left_toe
     """
 
-    mjcf_path: str
-    policy_onnx_path: str
+    mjcf_path: Optional[str]
+    policy_onnx_path: Optional[str]
     control: ControlConfig
     servo_controller: ServoControllerConfig
     servo_read_schedule: ServoReadScheduleConfig
@@ -630,11 +631,15 @@ class WrRuntimeConfig:
     @property
     def mjcf_resolved_path(self) -> Path:
         """Get the resolved MJCF model path."""
+        if not self.mjcf_path:
+            raise ValueError("hardware config does not define mjcf_path")
         return self.resolve_path(self.mjcf_path)
 
     @property
     def policy_resolved_path(self) -> Path:
         """Get the resolved policy ONNX path."""
+        if not self.policy_onnx_path:
+            raise ValueError("hardware config does not define policy_onnx_path")
         return self.resolve_path(self.policy_onnx_path)
 
     @classmethod
@@ -647,8 +652,9 @@ class WrRuntimeConfig:
 
         Args:
             config_path: Path to JSON config file. If None, searches for:
-                1. ~/.wildrobot/config.json
-                2. ~/wildrobot_config.json (legacy)
+                1. ~/.wildrobot/hardware_config.json
+                2. ~/.wildrobot/config.json (legacy)
+                3. ~/wildrobot_config.json (legacy)
             robot_config_path: Path to robot_config.(json|yaml) for joint specs.
                 If None, uses a best-effort search (prefers assets/v2/mujoco_robot_config.json).
 
@@ -662,13 +668,16 @@ class WrRuntimeConfig:
         """
         # Resolve config path
         if config_path is None:
-            if DEFAULT_CONFIG_PATH.exists():
+            if DEFAULT_HARDWARE_CONFIG_PATH.exists():
+                config_path = DEFAULT_HARDWARE_CONFIG_PATH
+            elif DEFAULT_CONFIG_PATH.exists():
                 config_path = DEFAULT_CONFIG_PATH
             elif (HOME_DIR / "wildrobot_config.json").exists():
                 config_path = HOME_DIR / "wildrobot_config.json"
             else:
                 raise FileNotFoundError(
                     f"Config file not found. Searched:\n"
+                    f"  - {DEFAULT_HARDWARE_CONFIG_PATH}\n"
                     f"  - {DEFAULT_CONFIG_PATH}\n"
                     f"  - {HOME_DIR / 'wildrobot_config.json'}\n"
                     f"Please create a config file or specify path explicitly."
@@ -754,8 +763,12 @@ class WrRuntimeConfig:
         foot_switches = cls._parse_foot_switch_config(data)
 
         return cls(
-            mjcf_path=data["mjcf_path"],
-            policy_onnx_path=data["policy_onnx_path"],
+            mjcf_path=(str(data["mjcf_path"]) if data.get("mjcf_path") else None),
+            policy_onnx_path=(
+                str(data["policy_onnx_path"])
+                if data.get("policy_onnx_path")
+                else None
+            ),
             control=control,
             servo_controller=servo_controller,
             servo_read_schedule=servo_read_schedule,
@@ -1140,8 +1153,12 @@ class WrRuntimeConfig:
         }
 
         out = {
-            "mjcf_path": self.mjcf_path,
-            "policy_onnx_path": self.policy_onnx_path,
+            **({"mjcf_path": self.mjcf_path} if self.mjcf_path else {}),
+            **(
+                {"policy_onnx_path": self.policy_onnx_path}
+                if self.policy_onnx_path
+                else {}
+            ),
             "control_hz": self.control.hz,
             "action_scale_rad": self.control.action_scale_rad,
             "velocity_cmd": self.control.velocity_cmd,
