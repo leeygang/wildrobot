@@ -145,6 +145,8 @@ REWARD_TERM_KEYS = [
     # Same silent-drop bug — registered + env-writing but missing here.
     "reward/penalty_close_feet_xy",
     "reward/feet_phase",
+    # v0.22.3: weighted, dt-scaled bilateral standing support contribution.
+    "reward/standing_support_balance",
 ]
 
 

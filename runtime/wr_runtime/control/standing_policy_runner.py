@@ -1,8 +1,8 @@
 """Runtime runner for the legacy standing policy contract.
 
 The walking runner is intentionally specific to ``wr_obs_v8_cmd3d`` and its
-phase/reference history.  Standing policies use the simpler ``wr_obs_v1``
-contract: proprioception, foot switches, previous action, and a scalar command.
+phase/reference history.  Standing policies use ``wr_obs_v1`` or the
+foot-switch-free actor contract ``wr_obs_v9_standing``.
 
 This runner also supports the ToddlerBot-style active-action subset used by the
 home stabilizer: the policy can control a subset of actuators while runtime
@@ -27,7 +27,7 @@ from policy_contract.spec import PolicySpec
 from wr_runtime.control.runtime_policy_config import StandingRuntimePolicyConfig
 
 
-_SUPPORTED_LAYOUT = "wr_obs_v1"
+_SUPPORTED_LAYOUTS = {"wr_obs_v1", "wr_obs_v9_standing"}
 
 
 @dataclass
@@ -38,7 +38,7 @@ class StandingRunnerState:
 
 
 class StandingPolicyRunner:
-    """Run a ``wr_obs_v1`` standing policy against RobotIO."""
+    """Run a supported standing policy against RobotIO."""
 
     def __init__(
         self,
@@ -51,9 +51,9 @@ class StandingPolicyRunner:
         zero_cmd_hold_home_deadzone: float | None = None,
     ) -> None:
         layout = spec.observation.layout_id
-        if layout != _SUPPORTED_LAYOUT:
+        if layout not in _SUPPORTED_LAYOUTS:
             raise ValueError(
-                f"StandingPolicyRunner supports only layout_id={_SUPPORTED_LAYOUT!r}; "
+                f"StandingPolicyRunner supports layout_id in {sorted(_SUPPORTED_LAYOUTS)!r}; "
                 f"got {layout!r}."
             )
         if spec.robot.home_ctrl_rad is None:

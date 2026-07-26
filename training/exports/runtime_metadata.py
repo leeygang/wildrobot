@@ -242,7 +242,7 @@ def build_runtime_policy_config(
     spec: PolicySpec,
 ) -> Dict[str, Any]:
     """Full build: reference phase table (heavy) + metadata assembly."""
-    if spec.observation.layout_id == "wr_obs_v1":
+    if spec.observation.layout_id in ("wr_obs_v1", "wr_obs_v9_standing"):
         ctrl_dt = float(_env_get(env, "ctrl_dt", 0.02))
         if ctrl_dt <= 0.0:
             raise ValueError(f"ctrl_dt must be positive; got {ctrl_dt!r}")

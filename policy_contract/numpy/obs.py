@@ -49,6 +49,7 @@ def build_observation_from_components(
 ) -> np.ndarray:
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
+        "wr_obs_v9_standing",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
         # v0.21.0 P11: strict superset of v7 — same base + phase +
@@ -153,7 +154,10 @@ def build_observation_from_components(
         np.asarray(angvel_heading_local, dtype=np.float32).reshape(3),
         np.asarray(joint_pos_normalized, dtype=np.float32).reshape(-1),
         np.asarray(joint_vel_normalized, dtype=np.float32).reshape(-1),
-        np.asarray(foot_switches, dtype=np.float32).reshape(4),
+    ]
+    if spec.observation.layout_id != "wr_obs_v9_standing":
+        parts.append(np.asarray(foot_switches, dtype=np.float32).reshape(4))
+    parts.extend([
         np.asarray(prev_action, dtype=np.float32).reshape(-1),
         # v0.21.0 P11: mirror policy_contract/jax/obs.py.  ``velocity_cmd``
         # may arrive as scalar, (1,), or (3,) — the env now always emits
@@ -162,7 +166,7 @@ def build_observation_from_components(
         # behavior (vx_cmd lives at index 0 of the 3-vec).  The v8 layout
         # dispatches (vy, wz) separately via ``velocity_cmd_lateral_yaw``.
         np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)[..., :1].reshape(1),
-    ]
+    ])
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
     if spec.observation.layout_id == "wr_obs_v3":

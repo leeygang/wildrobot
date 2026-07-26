@@ -2063,6 +2063,45 @@ for _actuator_name in TORQUE_ACTUATOR_NAMES:
         ]
     )
 
+# v0.22.3 standing-support diagnostics (append-only).  These are aggregate
+# per-foot force signals from simulation, not the policy-facing hardware switch
+# channels.
+METRIC_SPECS.extend(
+    [
+        MetricSpec(
+            name="reward/standing_support_balance",
+            reducer=Reducer.MEAN,
+            description="Weighted bilateral standing support reward",
+        ),
+        MetricSpec(
+            name="support/left_loaded",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            description="Fraction of samples with aggregate left-foot force above threshold",
+        ),
+        MetricSpec(
+            name="support/right_loaded",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            description="Fraction of samples with aggregate right-foot force above threshold",
+        ),
+        MetricSpec(
+            name="support/both_loaded",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            topline=True,
+            description="Fraction of samples with both feet loaded",
+        ),
+        MetricSpec(
+            name="support/load_imbalance",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            topline=True,
+            description="Dimensionless |FL-FR|/(FL+FR) support-force imbalance",
+        ),
+    ]
+)
+
 # =============================================================================
 # Derived constants
 # =============================================================================

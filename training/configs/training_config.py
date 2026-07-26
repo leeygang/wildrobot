@@ -776,6 +776,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
                 "post_training_checkpoint_label",
                 eval_cfg.get("promotion_checkpoint_label", "eval_promoted"),
             ),
+            post_training_task=str(
+                eval_cfg.get("post_training_task", "walking")
+            ).lower(),
             post_training_strict_lateral_drift=eval_cfg.get(
                 "post_training_strict_lateral_drift", False
             ),
@@ -956,6 +959,10 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         ref_body_quat_track=rewards.get("ref_body_quat_track", 0.0),
         torso_pos_xy=rewards.get("torso_pos_xy", 0.0),
         ref_contact_match=rewards.get("ref_contact_match", 0.0),
+        standing_support_balance=rewards.get("standing_support_balance", 0.0),
+        standing_support_balance_alpha=rewards.get(
+            "standing_support_balance_alpha", 4.0
+        ),
         lin_vel_z=rewards.get("lin_vel_z", 0.0),
         ang_vel_xy=rewards.get("ang_vel_xy", 0.0),
         cmd_forward_velocity_track=rewards.get("cmd_forward_velocity_track", 0.0),

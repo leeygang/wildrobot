@@ -236,6 +236,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # Standing-home stabilizer: no reference channels, but uses the
             # same home-residual action path with optional active actuator mask.
             "wr_obs_v1",
+            "wr_obs_v9_standing",
             "wr_obs_v6_offline_ref_history",
             "wr_obs_v7_phase_proprio",
             # v0.21.0 P7 (lateral+yaw prior): superset of v7 that
@@ -245,7 +246,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
-                "{'wr_obs_v1', 'wr_obs_v6_offline_ref_history', "
+                "{'wr_obs_v1', 'wr_obs_v9_standing', 'wr_obs_v6_offline_ref_history', "
                 "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
                 "high-confidence prep (proprio history is now always wired); "
                 "v7 (smoke11) drops every reference-trajectory channel from "
@@ -2016,6 +2017,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         The two reference channels depend on
         ``env.critic_imitation_refs`` (see LocomotionEnvConfig docstring):
 
+          - ``wr_obs_v9_standing`` override:
+                motor_pos_error = q_actual - home_q_rad
+                ref_stance      = [1, 1]
+            because the current offline library contains alternating walking
+            contacts, not a valid standing contact target.
+
           - True  (default / TB-parity asymmetric critic):
                 motor_pos_error = q_actual - nominal_q_ref
                 ref_stance      = ref_contact_mask
@@ -2044,7 +2051,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         q_actual = data.qpos[self._actuator_qpos_addrs]
         actuator_force = data.actuator_force.astype(jp.float32)
 
-        if self._critic_imitation_refs:
+        if self._policy_spec.observation.layout_id == "wr_obs_v9_standing":
+            # The current offline library is a walking reference with an
+            # alternating contact mask.  The v9 task is stationary standing,
+            # so its critic target is the home pose with both feet expected
+            # loaded; actual per-foot forces remain in contacts above.
+            motor_pos_error = (q_actual - self._home_q_rad).astype(jp.float32)
+            ref_stance = jp.ones((2,), dtype=jp.float32)
+        elif self._critic_imitation_refs:
             motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
             ref_stance = ref_contact_mask.astype(jp.float32)
         else:
@@ -2638,6 +2652,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
             zero_on_standing=self._feet_phase_zero_on_standing,
         )
 
+        # v0.22.3 standing support.  Normalizing by total support force makes
+        # this morphology/weight independent; the configured Newton threshold
+        # is used only to decide whether each foot is genuinely loaded.
+        support_force = jp.maximum(left_force + right_force, jp.float32(1e-6))
+        support_load_imbalance = (
+            jp.abs(left_force - right_force) / support_force
+        ).astype(jp.float32)
+        left_loaded = left_force > jp.float32(contact_thresh)
+        right_loaded = right_force > jp.float32(contact_thresh)
+        both_loaded = left_loaded & right_loaded
+        r_standing_support_balance = jp.where(
+            is_standing & both_loaded,
+            jp.exp(
+                -jp.float32(weights.standing_support_balance_alpha)
+                * support_load_imbalance
+                * support_load_imbalance
+            ),
+            jp.float32(0.0),
+        ).astype(jp.float32)
+
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
@@ -2651,6 +2685,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # remain comparable.
             r_contact_match=r_contact,
             contact_phase_match_diag=contact_phase_match_diag,
+            r_standing_support_balance=r_standing_support_balance,
+            support_left_loaded=left_loaded.astype(jp.float32),
+            support_right_loaded=right_loaded.astype(jp.float32),
+            support_both_loaded=both_loaded.astype(jp.float32),
+            support_load_imbalance=support_load_imbalance,
             r_cmd_forward_velocity_track=r_vx,
             # v0.21.0 P6.4 (H5) — yaw-rate tracking term (TB-aligned
             # alpha=0.25 via cmd_yaw_rate_alpha; weight defaults 0.0).
@@ -2788,6 +2827,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ang_vel_xy=jp.float32(w.ang_vel_xy) * terms["r_ang_vel_xy"],
             ref_contact_match=jp.float32(w.ref_contact_match)
             * terms["r_contact_match"],
+            standing_support_balance=jp.float32(w.standing_support_balance)
+            * terms["r_standing_support_balance"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
             * terms["r_cmd_forward_velocity_track"],
             # v0.21.0 smoke10 — axis-split standalone lateral command tracking.
@@ -3822,6 +3863,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
             action_rate=jp.float32(0.0),
             total_reward=reset_reward,
         )
+        reset_left_loaded = left_force > jp.float32(
+            self._config.env.contact_threshold_force
+        )
+        reset_right_loaded = right_force > jp.float32(
+            self._config.env.contact_threshold_force
+        )
+        reset_support_force = jp.maximum(
+            left_force + right_force, jp.float32(1e-6)
+        )
+        metrics_dict["support/left_loaded"] = reset_left_loaded.astype(jp.float32)
+        metrics_dict["support/right_loaded"] = reset_right_loaded.astype(jp.float32)
+        metrics_dict["support/both_loaded"] = (
+            reset_left_loaded & reset_right_loaded
+        ).astype(jp.float32)
+        metrics_dict["support/load_imbalance"] = (
+            jp.abs(left_force - right_force) / reset_support_force
+        ).astype(jp.float32)
         # Live diagnostics at reset.  episode_step_count is 0; phase
         # progress is 0; loc_ref tracking fields read from the window
         # at step 0.  Single-mode (offline playback) → mode_id=0,
@@ -4111,7 +4169,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action if self._action_delay_enabled else filtered_action
         )
 
-        if self._policy_spec.observation.layout_id == "wr_obs_v1":
+        if self._policy_spec.observation.layout_id in (
+            "wr_obs_v1",
+            "wr_obs_v9_standing",
+        ):
             applied_target_q = JaxCalibOps.action_to_ctrl(
                 spec=self._policy_spec,
                 action=applied_action,
@@ -4667,6 +4728,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/ang_vel_xy"] = reward_contrib["ang_vel_xy"]
         terminal_metrics_dict["reward/ref_contact_match"] = reward_contrib[
             "ref_contact_match"
+        ]
+        terminal_metrics_dict["reward/standing_support_balance"] = reward_contrib[
+            "standing_support_balance"
+        ]
+        terminal_metrics_dict["support/left_loaded"] = reward_terms[
+            "support_left_loaded"
+        ]
+        terminal_metrics_dict["support/right_loaded"] = reward_terms[
+            "support_right_loaded"
+        ]
+        terminal_metrics_dict["support/both_loaded"] = reward_terms[
+            "support_both_loaded"
+        ]
+        terminal_metrics_dict["support/load_imbalance"] = reward_terms[
+            "support_load_imbalance"
         ]
         terminal_metrics_dict["reward/cmd_forward_velocity_track"] = reward_contrib[
             "cmd_forward_velocity_track"

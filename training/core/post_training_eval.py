@@ -37,15 +37,17 @@ class RankedCheckpointCandidate:
     used_reward_fallback: bool
     passes_filters: bool
     filter_fail_reasons: tuple[str, ...]
+    train_both_loaded: Optional[float] = None
+    train_load_imbalance: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class DeterministicEvalDecision:
     """Deterministic promotion gate decision.
 
-    ``passed`` reflects the HARD gates only — currently the v0.20.1 G4
-    set (forward_velocity, cmd_vs_achieved_forward, mean_episode_length,
-    step_length_touchdown_event_m, forward_velocity_cmd_ratio).
+    ``passed`` reflects the hard gates selected by the task-specific caller.
+    Walking uses the v0.20.1 G4 set; standing uses survival, bilateral support,
+    posture, and saturation gates.
 
     ``soft_signals`` is a separate dict of deploy-facing pass/fail
     flags that are computed and logged but do NOT block promotion.
@@ -76,6 +78,15 @@ class DeterministicEvalDecision:
 LATERAL_VELOCITY_SOFT_CAP_MPS = 0.10
 YAW_DRIFT_SOFT_CAP_RAD = 0.40
 WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
+
+# v0.22.3 deterministic standing promotion thresholds.  Support thresholds
+# match the hardware startup gate's 0.90 pressed-ratio contract.  Load
+# imbalance is dimensionless, so it does not inherit ToddlerBot's body weight.
+STANDING_SUPPORT_RATIO_MIN = 0.90
+STANDING_LOAD_IMBALANCE_MAX = 0.35
+STANDING_BODY_QUAT_ERR_DEG_MAX = 10.0
+STANDING_TORQUE_SAT_FRAC_MAX = 0.05
+STANDING_ACTION_SAT_FRAC_MAX = 0.05
 
 # walking_training.md Appendix C (v0.21.0+) lateral / yaw cmd
 # tracking pass-criterion thresholds.  Both require the SIGNED ratio
@@ -301,11 +312,78 @@ def _train_walking_score(
     return score, False
 
 
+def _train_standing_filter_failures(
+    episode_length: Optional[float],
+    both_loaded: Optional[float],
+    load_imbalance: Optional[float],
+    *,
+    episode_length_target: int,
+) -> list[str]:
+    failures: list[str] = []
+    episode_floor = 0.95 * float(episode_length_target)
+    if episode_length is not None and episode_length < episode_floor:
+        failures.append(f"episode_length<{episode_floor:.0f}")
+    if both_loaded is not None and both_loaded < STANDING_SUPPORT_RATIO_MIN:
+        failures.append(f"both_loaded<{STANDING_SUPPORT_RATIO_MIN:.2f}")
+    if (
+        load_imbalance is not None
+        and load_imbalance > STANDING_LOAD_IMBALANCE_MAX
+    ):
+        failures.append(f"load_imbalance>{STANDING_LOAD_IMBALANCE_MAX:.2f}")
+    return failures
+
+
+def _train_standing_score(
+    episode_length: Optional[float],
+    both_loaded: Optional[float],
+    load_imbalance: Optional[float],
+    reward: Optional[float],
+    *,
+    episode_length_target: int,
+) -> tuple[float, bool]:
+    reward_tiebreak = 0.05 * math.tanh((reward or 0.0) / 100.0)
+    rich_count = sum(
+        metric is not None
+        for metric in (episode_length, both_loaded, load_imbalance)
+    )
+    if rich_count == 0:
+        return reward_tiebreak, True
+
+    balance_score = (
+        0.0
+        if load_imbalance is None
+        else max(
+            0.0,
+            1.0
+            - float(load_imbalance) / STANDING_LOAD_IMBALANCE_MAX,
+        )
+    )
+    score = (
+        _norm_non_negative(
+            episode_length,
+            ref=float(episode_length_target),
+            cap=1.0,
+        )
+        + _norm_non_negative(both_loaded, ref=1.0, cap=1.0)
+        + balance_score
+        + reward_tiebreak
+    )
+    return score, False
+
+
 def rank_checkpoint_candidates(
     candidates: Sequence[CheckpointMetricCandidate],
     top_k: int,
+    *,
+    task: str = "walking",
+    episode_length_target: int = 500,
 ) -> tuple[list[RankedCheckpointCandidate], bool]:
-    """Rank checkpoints by train-side walking score with metric-aware fallback."""
+    """Rank checkpoints by task-specific train metrics with reward fallback."""
+    if task not in {"walking", "standing"}:
+        raise ValueError(f"Unsupported checkpoint ranking task: {task!r}")
+    if episode_length_target <= 0:
+        raise ValueError("episode_length_target must be positive")
+
     ranked_all: list[RankedCheckpointCandidate] = []
     for candidate in candidates:
         metrics = candidate.metrics
@@ -315,31 +393,52 @@ def rank_checkpoint_candidates(
         step_length = _metric(metrics, "tracking/step_length_touchdown_event_m")
         episode_length = _metric(metrics, "episode_length")
         cmd_ratio = _metric(metrics, "tracking/forward_velocity_cmd_ratio")
+        both_loaded = _metric(metrics, "support/both_loaded")
+        load_imbalance = _metric(metrics, "support/load_imbalance")
 
-        failures = _train_candidate_filter_failures(
-            forward_velocity=forward_velocity,
-            cmd_err=cmd_err,
-            step_length=step_length,
-            episode_length=episode_length,
-            cmd_ratio=cmd_ratio,
-        )
-        score, used_reward_fallback = _train_walking_score(
-            forward_velocity=forward_velocity,
-            cmd_err=cmd_err,
-            step_length=step_length,
-            episode_length=episode_length,
-            reward=reward,
-        )
-        rich_metric_count = sum(
-            metric is not None
-            for metric in (
+        if task == "standing":
+            failures = _train_standing_filter_failures(
+                episode_length=episode_length,
+                both_loaded=both_loaded,
+                load_imbalance=load_imbalance,
+                episode_length_target=episode_length_target,
+            )
+            score, used_reward_fallback = _train_standing_score(
+                episode_length=episode_length,
+                both_loaded=both_loaded,
+                load_imbalance=load_imbalance,
+                reward=reward,
+                episode_length_target=episode_length_target,
+            )
+            rich_metric_count = sum(
+                metric is not None
+                for metric in (episode_length, both_loaded, load_imbalance)
+            )
+        else:
+            failures = _train_candidate_filter_failures(
                 forward_velocity,
                 cmd_err,
                 step_length,
                 episode_length,
                 cmd_ratio,
             )
-        )
+            score, used_reward_fallback = _train_walking_score(
+                forward_velocity=forward_velocity,
+                cmd_err=cmd_err,
+                step_length=step_length,
+                episode_length=episode_length,
+                reward=reward,
+            )
+            rich_metric_count = sum(
+                metric is not None
+                for metric in (
+                    forward_velocity,
+                    cmd_err,
+                    step_length,
+                    episode_length,
+                    cmd_ratio,
+                )
+            )
 
         ranked_all.append(
             RankedCheckpointCandidate(
@@ -357,6 +456,8 @@ def rank_checkpoint_candidates(
                 used_reward_fallback=used_reward_fallback,
                 passes_filters=len(failures) == 0,
                 filter_fail_reasons=tuple(failures),
+                train_both_loaded=both_loaded,
+                train_load_imbalance=load_imbalance,
             )
         )
 
@@ -560,4 +661,60 @@ def deterministic_eval_gate(
         forward_velocity_cmd_ratio=ratio_value,
         gates=gates,
         soft_signals=soft_signals,
+    )
+
+
+def deterministic_standing_eval_gate(
+    eval_metrics: Mapping[str, Any],
+    *,
+    eval_num_steps: int,
+) -> DeterministicEvalDecision:
+    """Grade the exact deterministic standing policy used for deployment."""
+    episode_length = _metric(eval_metrics, "mean_episode_length")
+    left_loaded = _metric(eval_metrics, "left_loaded")
+    right_loaded = _metric(eval_metrics, "right_loaded")
+    both_loaded = _metric(eval_metrics, "both_loaded")
+    load_imbalance = _metric(eval_metrics, "load_imbalance")
+    body_quat_err_deg = _metric(eval_metrics, "body_quat_err_deg")
+    torque_sat_frac = _metric(eval_metrics, "torque_sat_frac")
+    action_sat_frac = _metric(eval_metrics, "action_sat_frac")
+
+    gates: Dict[str, bool] = {
+        "mean_episode_length": (
+            episode_length is not None
+            and episode_length >= 0.95 * float(eval_num_steps)
+        ),
+        "left_loaded": (
+            left_loaded is not None and left_loaded >= STANDING_SUPPORT_RATIO_MIN
+        ),
+        "right_loaded": (
+            right_loaded is not None and right_loaded >= STANDING_SUPPORT_RATIO_MIN
+        ),
+        "both_loaded": (
+            both_loaded is not None and both_loaded >= STANDING_SUPPORT_RATIO_MIN
+        ),
+        "load_imbalance": (
+            load_imbalance is not None
+            and load_imbalance <= STANDING_LOAD_IMBALANCE_MAX
+        ),
+        "body_quat_err_deg": (
+            body_quat_err_deg is not None
+            and body_quat_err_deg <= STANDING_BODY_QUAT_ERR_DEG_MAX
+        ),
+        "torque_sat_frac": (
+            torque_sat_frac is not None
+            and torque_sat_frac <= STANDING_TORQUE_SAT_FRAC_MAX
+        ),
+        "action_sat_frac": (
+            action_sat_frac is not None
+            and action_sat_frac <= STANDING_ACTION_SAT_FRAC_MAX
+        ),
+    }
+    return DeterministicEvalDecision(
+        passed=all(gates.values()),
+        step_metric_available=False,
+        ratio_gate_applied=False,
+        forward_velocity_cmd_ratio=None,
+        gates=gates,
+        soft_signals={},
     )

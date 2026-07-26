@@ -10,6 +10,10 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 SUPPORTED_LAYOUT_IDS = {
     "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
+    # v0.22.3 standing contract: wr_obs_v1 without binary foot switches.
+    # Contact remains available to the training critic/rewards and runtime
+    # safety supervisor.
+    "wr_obs_v9_standing",
     # v0.20.1 (high-confidence prep): the active locomotion contract.
     # Strict superset of the deprecated wr_obs_v5_offline_ref (which
     # was the same channel set without the proprio-history stack).
@@ -391,6 +395,23 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
         if got != expected:
             raise ValueError(
                 "observation.layout mismatch for layout_id='wr_obs_v1':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v9_standing":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id='wr_obs_v9_standing':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )

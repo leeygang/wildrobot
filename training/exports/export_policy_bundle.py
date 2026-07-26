@@ -228,8 +228,13 @@ def export_deployment_bundle(
         walking_spec = json.loads(
             (policy_dirs["walking"] / "policy_spec.json").read_text()
         )
-        if standing_spec["observation"]["layout_id"] != "wr_obs_v1":
-            raise ValueError("Standing policy must use wr_obs_v1")
+        if standing_spec["observation"]["layout_id"] not in {
+            "wr_obs_v1",
+            "wr_obs_v9_standing",
+        }:
+            raise ValueError(
+                "Standing policy must use wr_obs_v1 or wr_obs_v9_standing"
+            )
         if walking_spec["observation"]["layout_id"] != "wr_obs_v8_cmd3d":
             raise ValueError("Walking policy must use wr_obs_v8_cmd3d")
         if int(standing_spec["model"]["action_dim"]) != 17:

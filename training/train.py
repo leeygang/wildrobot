@@ -84,6 +84,7 @@ from training.core.checkpoint import (
 from training.core.post_training_eval import (
     CheckpointMetricCandidate,
     deterministic_eval_gate,
+    deterministic_standing_eval_gate,
     rank_checkpoint_candidates,
 )
 
@@ -674,6 +675,14 @@ def start_training(
     post_training_top_k = int(training_cfg.ppo.eval.post_training_top_k or 3)
     post_training_num_envs = int(training_cfg.ppo.eval.post_training_num_envs or 8)
     post_training_num_steps = int(training_cfg.ppo.eval.post_training_num_steps or 500)
+    post_training_task = str(
+        getattr(training_cfg.ppo.eval, "post_training_task", "walking")
+    ).lower()
+    if post_training_task not in {"walking", "standing"}:
+        raise ValueError(
+            "ppo.eval.post_training_task must be 'walking' or 'standing'; "
+            f"got {post_training_task!r}"
+        )
     post_training_strict_lateral_drift = bool(
         getattr(training_cfg.ppo.eval, "post_training_strict_lateral_drift", False)
     )
@@ -815,6 +824,8 @@ def start_training(
                 "tracking/cmd_vs_achieved_forward",
                 "tracking/step_length_touchdown_event_m",
                 "tracking/forward_velocity_cmd_ratio",
+                "support/both_loaded",
+                "support/load_imbalance",
             )
             raw_candidates: list[CheckpointMetricCandidate] = []
             used_metrics_jsonl = False
@@ -843,6 +854,8 @@ def start_training(
             ranked_candidates, ranking_filter_fallback = rank_checkpoint_candidates(
                 raw_candidates,
                 top_k=post_training_top_k,
+                task=post_training_task,
+                episode_length_target=post_training_num_steps,
             )
             if not ranked_candidates:
                 print("No candidate checkpoints available for post-training evaluation.")
@@ -857,7 +870,7 @@ def start_training(
                 if any(candidate.used_reward_fallback for candidate in ranked_candidates):
                     print(
                         "  ⚠ ranking used reward fallback for candidates with sparse "
-                        "walking metrics"
+                        f"{post_training_task} metrics"
                     )
 
                 def _fmt(value: Optional[float], spec: str) -> str:
@@ -865,20 +878,35 @@ def start_training(
 
                 print()
                 print("Post-training deterministic eval candidates:")
-                print(
-                    "rank  checkpoint                      train_score  train_vx  "
-                    "train_cmd_err  train_step_len  train_ep_len"
-                )
-                for rank, candidate in enumerate(ranked_candidates, 1):
+                if post_training_task == "standing":
                     print(
-                        f"{rank:<5} "
-                        f"{Path(candidate.checkpoint_path).name:<30} "
-                        f"{candidate.train_score:>10.3f}  "
-                        f"{_fmt(candidate.train_forward_velocity, '.3f'):>8}  "
-                        f"{_fmt(candidate.train_cmd_err, '.3f'):>13}  "
-                        f"{_fmt(candidate.train_step_length, '.4f'):>14}  "
-                        f"{_fmt(candidate.train_episode_length, '.0f'):>12}"
+                        "rank  checkpoint                      train_score  "
+                        "train_ep_len  both_loaded  load_imbalance"
                     )
+                    for rank, candidate in enumerate(ranked_candidates, 1):
+                        print(
+                            f"{rank:<5} "
+                            f"{Path(candidate.checkpoint_path).name:<30} "
+                            f"{candidate.train_score:>10.3f}  "
+                            f"{_fmt(candidate.train_episode_length, '.0f'):>12}  "
+                            f"{_fmt(candidate.train_both_loaded, '.3f'):>11}  "
+                            f"{_fmt(candidate.train_load_imbalance, '.3f'):>14}"
+                        )
+                else:
+                    print(
+                        "rank  checkpoint                      train_score  train_vx  "
+                        "train_cmd_err  train_step_len  train_ep_len"
+                    )
+                    for rank, candidate in enumerate(ranked_candidates, 1):
+                        print(
+                            f"{rank:<5} "
+                            f"{Path(candidate.checkpoint_path).name:<30} "
+                            f"{candidate.train_score:>10.3f}  "
+                            f"{_fmt(candidate.train_forward_velocity, '.3f'):>8}  "
+                            f"{_fmt(candidate.train_cmd_err, '.3f'):>13}  "
+                            f"{_fmt(candidate.train_step_length, '.4f'):>14}  "
+                            f"{_fmt(candidate.train_episode_length, '.0f'):>12}"
+                        )
 
                 from training.algos.ppo.ppo_core import create_networks, sample_actions
                 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
@@ -964,6 +992,13 @@ def start_training(
                         "step_length_touchdown_event_m": _mean(
                             "tracking/step_length_touchdown_event_m"
                         ),
+                        "left_loaded": _mean("support/left_loaded"),
+                        "right_loaded": _mean("support/right_loaded"),
+                        "both_loaded": _mean("support/both_loaded"),
+                        "load_imbalance": _mean("support/load_imbalance"),
+                        "body_quat_err_deg": _mean("ref/body_quat_err_deg"),
+                        "torque_sat_frac": _mean("debug/torque_sat_frac"),
+                        "action_sat_frac": _mean("debug/action_sat_frac"),
                         "lateral_velocity_abs": _mean(
                             "tracking/lateral_velocity_abs"
                         ),
@@ -1149,6 +1184,15 @@ def start_training(
                             eval_result["cmd_vs_achieved_forward"]
                         ),
                         "step_length_touchdown_event_m": step_length_value,
+                        "left_loaded": float(eval_result["left_loaded"]),
+                        "right_loaded": float(eval_result["right_loaded"]),
+                        "both_loaded": float(eval_result["both_loaded"]),
+                        "load_imbalance": float(eval_result["load_imbalance"]),
+                        "body_quat_err_deg": float(
+                            eval_result["body_quat_err_deg"]
+                        ),
+                        "torque_sat_frac": float(eval_result["torque_sat_frac"]),
+                        "action_sat_frac": float(eval_result["action_sat_frac"]),
                         # smoke15 deploy-facing eval metrics — exposed
                         # so the gate (lateral cap) and the JSON summary
                         # can show sideways-walk / heading-drift even
@@ -1206,12 +1250,18 @@ def start_training(
                             eval_result["step_length_right_per_touchdown_m"]
                         ),
                     }
-                    decision = deterministic_eval_gate(
-                        eval_metrics=eval_metrics,
-                        eval_velocity_cmd=eval_velocity_cmd,
-                        eval_num_steps=post_training_num_steps,
-                        strict_lateral_drift=post_training_strict_lateral_drift,
-                    )
+                    if post_training_task == "standing":
+                        decision = deterministic_standing_eval_gate(
+                            eval_metrics=eval_metrics,
+                            eval_num_steps=post_training_num_steps,
+                        )
+                    else:
+                        decision = deterministic_eval_gate(
+                            eval_metrics=eval_metrics,
+                            eval_velocity_cmd=eval_velocity_cmd,
+                            eval_num_steps=post_training_num_steps,
+                            strict_lateral_drift=post_training_strict_lateral_drift,
+                        )
                     eval_rows.append(
                         {
                             "rank": rank,
@@ -1224,6 +1274,8 @@ def start_training(
                                 "step_length_touchdown_event_m": candidate.train_step_length,
                                 "episode_length": candidate.train_episode_length,
                                 "forward_velocity_cmd_ratio": candidate.train_cmd_ratio,
+                                "both_loaded": candidate.train_both_loaded,
+                                "load_imbalance": candidate.train_load_imbalance,
                             },
                             "eval_metrics": eval_metrics,
                             "eval_ratio": decision.forward_velocity_cmd_ratio,
@@ -1255,8 +1307,12 @@ def start_training(
                 # primary ``eval_velocity_cmd``).  Surfaced in the JSON
                 # summary so the smoke promotion decision can be made
                 # against the criteria the doc actually writes down.
-                probe_cmds: list[Tuple[float, float, float]] = list(
-                    getattr(training_cfg.env, "eval_velocity_cmd_probes", ())
+                probe_cmds: list[Tuple[float, float, float]] = (
+                    []
+                    if post_training_task == "standing"
+                    else list(
+                        getattr(training_cfg.env, "eval_velocity_cmd_probes", ())
+                    )
                 )
                 if probe_cmds:
                     print()
@@ -1377,30 +1433,58 @@ def start_training(
 
                 print()
                 print("Deterministic eval results:")
-                print(
-                    "rank  checkpoint                      eval_vx  eval_cmd_err  "
-                    "eval_step_len  eval_ep_len  vx/cmd  pass"
-                )
-                for row in eval_rows:
-                    eval_metrics = row["eval_metrics"]
-                    ratio_text = (
-                        "n/a"
-                        if row["eval_ratio"] is None
-                        else format(float(row["eval_ratio"]), ".2f")
-                    )
+                if post_training_task == "standing":
                     print(
-                        f"{row['rank']:<5} "
-                        f"{row['checkpoint_name']:<30} "
-                        f"{eval_metrics['forward_velocity']:>7.3f}  "
-                        f"{eval_metrics['cmd_vs_achieved_forward']:>12.3f}  "
-                        f"{_fmt(eval_metrics['step_length_touchdown_event_m'], '.4f'):>13}  "
-                        f"{eval_metrics['mean_episode_length']:>11.0f}  "
-                        f"{ratio_text:>6}  "
-                        f"{'✓' if row['passed'] else '✗'}"
+                        "rank  checkpoint                      eval_ep_len  "
+                        "both_loaded  imbalance  body_err  torque_sat  pass"
                     )
+                    for row in eval_rows:
+                        eval_metrics = row["eval_metrics"]
+                        print(
+                            f"{row['rank']:<5} "
+                            f"{row['checkpoint_name']:<30} "
+                            f"{eval_metrics['mean_episode_length']:>11.0f}  "
+                            f"{eval_metrics['both_loaded']:>11.3f}  "
+                            f"{eval_metrics['load_imbalance']:>9.3f}  "
+                            f"{eval_metrics['body_quat_err_deg']:>8.2f}  "
+                            f"{eval_metrics['torque_sat_frac']:>10.3f}  "
+                            f"{'✓' if row['passed'] else '✗'}"
+                        )
+                else:
+                    print(
+                        "rank  checkpoint                      eval_vx  eval_cmd_err  "
+                        "eval_step_len  eval_ep_len  vx/cmd  pass"
+                    )
+                    for row in eval_rows:
+                        eval_metrics = row["eval_metrics"]
+                        ratio_text = (
+                            "n/a"
+                            if row["eval_ratio"] is None
+                            else format(float(row["eval_ratio"]), ".2f")
+                        )
+                        print(
+                            f"{row['rank']:<5} "
+                            f"{row['checkpoint_name']:<30} "
+                            f"{eval_metrics['forward_velocity']:>7.3f}  "
+                            f"{eval_metrics['cmd_vs_achieved_forward']:>12.3f}  "
+                            f"{_fmt(eval_metrics['step_length_touchdown_event_m'], '.4f'):>13}  "
+                            f"{eval_metrics['mean_episode_length']:>11.0f}  "
+                            f"{ratio_text:>6}  "
+                            f"{'✓' if row['passed'] else '✗'}"
+                        )
 
                 def _eval_select_score(row: dict[str, Any]) -> float:
                     eval_metrics = row["eval_metrics"]
+                    if post_training_task == "standing":
+                        return (
+                            float(eval_metrics["mean_episode_length"])
+                            / float(max(1, post_training_num_steps))
+                            + float(eval_metrics["both_loaded"])
+                            - float(eval_metrics["load_imbalance"])
+                            - float(eval_metrics["body_quat_err_deg"]) / 10.0
+                            - float(eval_metrics["torque_sat_frac"])
+                            - float(eval_metrics["action_sat_frac"])
+                        )
                     step = (
                         float(eval_metrics["step_length_touchdown_event_m"])
                         if eval_metrics["step_length_touchdown_event_m"] is not None
@@ -1440,22 +1524,15 @@ def start_training(
                 if selected_row is None:
                     # Make the no-passing outcome unambiguous in the JSON so
                     # downstream analyzer / reporting tools cannot silently fall
-                    # back to a train-side proxy.  List the gate set ACTUALLY
-                    # applied (the forward set plus, when configured, the smoke7
-                    # strict lateral-drift + probe-tracking gates) and surface the
-                    # observed failing gates, so a smoke7 null-promotion isn't
-                    # mis-described as a forward-only ("G4") failure.
-                    applied_gates = [
-                        "forward_velocity",
-                        "cmd_vs_achieved_forward",
-                        "mean_episode_length",
-                        "step_length_touchdown_event_m",
-                        "forward_velocity_cmd_ratio",
-                    ]
-                    if post_training_strict_lateral_drift:
-                        applied_gates += ["lateral_velocity_abs", "world_y_drift_abs_m"]
-                        if probe_cmds:
-                            applied_gates.append("lateral_probe_tracking")
+                    # back to a train-side proxy.  Report the gate set actually
+                    # applied for either walking or standing.
+                    applied_gates = sorted(
+                        {
+                            gate
+                            for row in eval_rows
+                            for gate in row.get("gates", {})
+                        }
+                    )
                     observed_fail_reasons = sorted(
                         {r for row in eval_rows for r in row.get("fail_reasons", [])}
                     )
@@ -1470,7 +1547,29 @@ def start_training(
                         "for per-candidate detail."
                     )
 
+                if post_training_task == "standing":
+                    lateral_yaw_probes_message = (
+                        "Lateral / yaw command probes are not applicable to "
+                        "the standing promotion task."
+                    )
+                elif not probe_cmds:
+                    lateral_yaw_probes_message = (
+                        "Lateral / yaw cmd tracking pass criteria "
+                        "(walking_training.md Appendix C) were NOT evaluated — "
+                        "no probes configured on env.eval_velocity_cmd_probes. "
+                        "Promotion is forward-only; do not treat this checkpoint "
+                        "as lateral-ready or yaw-ready without running probes."
+                    )
+                else:
+                    lateral_yaw_probes_message = (
+                        f"Evaluated {len(probe_cmds)} Appendix C probe(s) per "
+                        "top-k candidate; see "
+                        "top_k_candidates[*].lateral_yaw_probes for per-probe "
+                        "pass/fail (>=0.5 signed ratio with matching sign)."
+                    )
+
                 summary_payload = {
+                    "post_training_task": post_training_task,
                     "selected_checkpoint_path": promoted_checkpoint_path,
                     "selected_rank_before_eval": (
                         None if selected_row is None else int(selected_row["rank"])
@@ -1498,23 +1597,7 @@ def start_training(
                     "eval_velocity_cmd_probes_configured": [
                         list(p) for p in probe_cmds
                     ],
-                    "lateral_yaw_probes_message": (
-                        "Lateral / yaw cmd tracking pass criteria "
-                        "(walking_training.md Appendix C) were NOT "
-                        "evaluated — no probes configured on "
-                        "env.eval_velocity_cmd_probes.  Promotion is "
-                        "forward-only; do not treat this checkpoint "
-                        "as lateral-ready or yaw-ready without "
-                        "running probes."
-                        if not probe_cmds
-                        else (
-                            f"Evaluated {len(probe_cmds)} Appendix C probe(s) "
-                            "per top-k candidate; see "
-                            "top_k_candidates[*].lateral_yaw_probes "
-                            "for per-probe pass/fail (>=0.5 signed ratio "
-                            "with matching sign)."
-                        )
-                    ),
+                    "lateral_yaw_probes_message": lateral_yaw_probes_message,
                     "top_k_candidates": [
                         {
                             "rank": row["rank"],
@@ -1563,17 +1646,6 @@ def start_training(
                     best_eval_row = max(eval_rows, key=_eval_select_score)
                     best_eval_metrics = best_eval_row["eval_metrics"]
                     wandb_summary = {
-                        "post_training_eval/best_forward_velocity": float(
-                            best_eval_metrics["forward_velocity"]
-                        ),
-                        "post_training_eval/best_cmd_vs_achieved_forward": float(
-                            best_eval_metrics["cmd_vs_achieved_forward"]
-                        ),
-                        "post_training_eval/best_step_length_touchdown_event_m": (
-                            float(best_eval_metrics["step_length_touchdown_event_m"])
-                            if best_eval_metrics["step_length_touchdown_event_m"] is not None
-                            else float("nan")
-                        ),
                         "post_training_eval/best_mean_episode_length": float(
                             best_eval_metrics["mean_episode_length"]
                         ),
@@ -1582,6 +1654,49 @@ def start_training(
                         ),
                         "post_training_eval/evaluated_count": float(len(eval_rows)),
                     }
+                    if post_training_task == "standing":
+                        wandb_summary.update(
+                            {
+                                "post_training_eval/best_both_loaded": float(
+                                    best_eval_metrics["both_loaded"]
+                                ),
+                                "post_training_eval/best_load_imbalance": float(
+                                    best_eval_metrics["load_imbalance"]
+                                ),
+                                "post_training_eval/best_body_quat_err_deg": float(
+                                    best_eval_metrics["body_quat_err_deg"]
+                                ),
+                                "post_training_eval/best_torque_sat_frac": float(
+                                    best_eval_metrics["torque_sat_frac"]
+                                ),
+                                "post_training_eval/best_action_sat_frac": float(
+                                    best_eval_metrics["action_sat_frac"]
+                                ),
+                            }
+                        )
+                    else:
+                        wandb_summary.update(
+                            {
+                                "post_training_eval/best_forward_velocity": float(
+                                    best_eval_metrics["forward_velocity"]
+                                ),
+                                "post_training_eval/best_cmd_vs_achieved_forward": float(
+                                    best_eval_metrics["cmd_vs_achieved_forward"]
+                                ),
+                                "post_training_eval/best_step_length_touchdown_event_m": (
+                                    float(
+                                        best_eval_metrics[
+                                            "step_length_touchdown_event_m"
+                                        ]
+                                    )
+                                    if best_eval_metrics[
+                                        "step_length_touchdown_event_m"
+                                    ]
+                                    is not None
+                                    else float("nan")
+                                ),
+                            }
+                        )
                     wandb_tracker.log(wandb_summary, step=int(final_state.total_steps))
                     if metrics_log_path is not None:
                         with metrics_log_path.open("a", encoding="utf-8") as f:

@@ -8,6 +8,76 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.3-standing-contact-privileged] - 2026-07-25: remove foot switches from the actor and grade bilateral support
+
+### Status
+
+Implemented and ready for a fresh training run. There is no v0.22.3 training or
+hardware result yet, so this entry does not claim deployment readiness.
+
+The v0.22.2 hardware diagnostic (`standing_v0222_diag.log`) showed that the
+home-pose transition reached low joint error with all four switches pressed,
+then the deterministic policy unloaded the right foot. Direct evaluation of the
+v0.22.2 ONNX policy at symmetric home/all-contact input also produced asymmetric
+leg targets. This is evidence for an actor/contact sim-to-real discontinuity and
+an insufficient bilateral-support objective; it is not evidence of an I/O
+latency or joint-tracking failure.
+
+### Implemented recipe
+
+1. `wr_obs_v9_standing` is a new backward-compatible actor layout. It removes
+   the four binary foot-switch values from `wr_obs_v1`, reducing the standing
+   actor observation from 63 to 59 values. Existing v0.22.2 bundles retain their
+   original `wr_obs_v1` contract.
+2. Simulated per-foot contact forces remain in the 52-value privileged critic
+   observation and in rewards. Hardware foot switches remain available to the
+   runtime safety gate and diagnostics; they are only absent from policy input.
+3. The standing reward now requires both feet above the existing 5 N simulation
+   contact threshold and rewards normalized load balance as
+   `exp(-4 * (|F_L-F_R|/(F_L+F_R))^2)`. The ratio is dimensionless, so it does
+   not copy ToddlerBot's absolute body-weight scale onto WR.
+4. The walking library's alternating `ref_contact_match` target is disabled for
+   this standing task. The v9 privileged critic uses home-pose error and an
+   expected `[left=1, right=1]` stance instead of walking phase. Dynamics
+   randomization remains independently sampled across bodies and joints so the
+   policy trains against asymmetry without a fixed preferred side.
+5. Standing checkpoint ranking uses episode length, both-feet-loaded fraction,
+   and load imbalance instead of walking velocity/touchdown filters. Promotion
+   runs the deterministic policy for 1,000 steps (20 s at 50 Hz) and requires
+   at least 90% bilateral loading, normalized imbalance at most 0.35, torso
+   orientation error at most 10 deg, and torque/action saturation at most 5%.
+   The 1,000-step horizon remains within the current 1,104-frame offline
+   reference instead of relying on terminal-frame clamping.
+
+Training command:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_standing_home_stabilizer_v0223.yaml
+```
+
+Run the short compile/training smoke first with `--verify --skip-gpu-check`.
+v0.22.3 is a fresh 59-input policy and cannot resume an existing v0.22.2
+63-input actor checkpoint.
+
+### ToddlerBot comparison and references
+
+Current local ToddlerBot locomotion code builds the actor from phase, command,
+motor position/velocity, previous action, angular velocity, and orientation;
+contact/stance is not actor input (`toddlerbot/locomotion/mjx_env.py`,
+`_get_obs`). Its privileged critic does receive stance and actuator state. WR
+follows that separation here while retaining WR's hardware switches for safety.
+WR's explicit load-balance reward is an intentional addition because the
+v0.22.2 hardware evidence identifies bilateral support as the failing margin;
+it uses a normalized ratio rather than a robot-size-specific Newton target.
+
+Public reference: Shi et al., **ToddlerBot: Open-Source ML-Compatible Humanoid
+Platform for Loco-Manipulation**, arXiv:2502.00893 (2025). The local
+`~/projects/toddlerbot` checkout is the implementation source of truth used for
+the code comparison.
+
+---
+
 ## [v0.22.1-standing-home-stabilizer-result] - 2026-07-19: standing learned under mild pushes; torque saturation blocks deployment
 
 ### Result

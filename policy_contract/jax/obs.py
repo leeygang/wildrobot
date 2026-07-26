@@ -53,6 +53,7 @@ def build_observation_from_components(
 ) -> jnp.ndarray:
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
+        "wr_obs_v9_standing",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
         # v0.21.0 P7: see spec.py SUPPORTED_LAYOUT_IDS for the
@@ -158,7 +159,10 @@ def build_observation_from_components(
         angvel_heading_local.reshape(3),
         joint_pos_normalized.reshape(-1),
         joint_vel_normalized.reshape(-1),
-        foot_switches.reshape(4),
+    ]
+    if spec.observation.layout_id != "wr_obs_v9_standing":
+        parts.append(foot_switches.reshape(4))
+    parts.extend([
         prev_action.reshape(-1),
         # v0.21.0 P7: ``velocity_cmd`` may arrive as scalar, (1,), or
         # (3,) — the env now always emits (3,) [vx, vy, wz] post-P3,
@@ -168,7 +172,7 @@ def build_observation_from_components(
         # 3-vec).  The v8 layout dispatches (vy, wz) separately via
         # the ``velocity_cmd_lateral_yaw`` kwarg.
         jnp.atleast_1d(jnp.asarray(velocity_cmd, dtype=jnp.float32))[..., :1].reshape(1),
-    ]
+    ])
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
     if spec.observation.layout_id == "wr_obs_v3":

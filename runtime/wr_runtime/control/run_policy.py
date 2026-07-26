@@ -81,7 +81,7 @@ _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 _STARTUP_POSE_BLEND_S = 2.0
 _STARTUP_POSE_HOLD_S = 5.0
-_STANDING_LAYOUT_ID = "wr_obs_v1"
+_STANDING_LAYOUT_IDS = {"wr_obs_v1", "wr_obs_v9_standing"}
 _WALKING_LAYOUT_ID = "wr_obs_v8_cmd3d"
 _RUNTIME_FIXED_HOME_KEY = "runtime_fixed_home"
 
@@ -213,7 +213,7 @@ def _load_optional_runtime_control_dt(bundle_path: Path, *, default: float = 0.0
 def _default_velocity_cmd_for_layout(spec, runtime_config: RuntimePolicyConfig | None) -> list[float]:
     if runtime_config is not None:
         return list(runtime_config.default_velocity_cmd)
-    if spec.observation.layout_id == _STANDING_LAYOUT_ID:
+    if spec.observation.layout_id in _STANDING_LAYOUT_IDS:
         return [0.0, 0.0, 0.0]
     raise SystemExit(
         "runtime_policy_config.json is required for this policy layout; "
@@ -2129,8 +2129,11 @@ def _run_deployment_bundle_from_args(
     walking_bundle = deployment.policy_bundle("walking")
     validate_spec(standing_bundle.spec)
     validate_spec(walking_bundle.spec)
-    if standing_bundle.spec.observation.layout_id != _STANDING_LAYOUT_ID:
-        raise SystemExit("Deployment standing policy must use wr_obs_v1")
+    if standing_bundle.spec.observation.layout_id not in _STANDING_LAYOUT_IDS:
+        raise SystemExit(
+            "Deployment standing policy must use one of "
+            f"{sorted(_STANDING_LAYOUT_IDS)}"
+        )
     if walking_bundle.spec.observation.layout_id != _WALKING_LAYOUT_ID:
         raise SystemExit("Deployment walking policy must use wr_obs_v8_cmd3d")
 
@@ -2461,10 +2464,10 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
 
     layout_id = str(bundle.spec.observation.layout_id)
     if stable_only:
-        if layout_id != _STANDING_LAYOUT_ID:
+        if layout_id not in _STANDING_LAYOUT_IDS:
             raise SystemExit(
-                "The integrated stable-only bundle must use standing layout "
-                f"{_STANDING_LAYOUT_ID!r}; got {layout_id!r}."
+                "The integrated stable-only bundle must use a standing layout "
+                f"from {sorted(_STANDING_LAYOUT_IDS)!r}; got {layout_id!r}."
             )
         if int(bundle.spec.model.action_dim) != 17:
             raise SystemExit(
@@ -2543,7 +2546,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             dtype=np.float32,
         )
         fixed_home_targets_rad: dict[str, float] = {}
-    elif layout_id == _STANDING_LAYOUT_ID:
+    elif layout_id in _STANDING_LAYOUT_IDS:
         ctrl_dt = _load_optional_runtime_control_dt(bundle_path, default=0.02)
         actuator_names = list(bundle.spec.robot.actuator_names)
         (
@@ -2559,7 +2562,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     else:
         raise SystemExit(
             f"Unsupported runtime layout={layout_id!r}; supported layouts are "
-            f"{_WALKING_LAYOUT_ID!r} and {_STANDING_LAYOUT_ID!r}."
+            f"{_WALKING_LAYOUT_ID!r} and {sorted(_STANDING_LAYOUT_IDS)!r}."
         )
 
     if stable_only:
@@ -2656,10 +2659,10 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
 
     zero_cmd_hold_home_deadzone = (
         None
-        if bool(args.disable_zero_cmd_hold_home) or layout_id == _STANDING_LAYOUT_ID
+        if bool(args.disable_zero_cmd_hold_home) or layout_id in _STANDING_LAYOUT_IDS
         else max(0.0, float(args.zero_cmd_hold_home_deadzone))
     )
-    if layout_id == _STANDING_LAYOUT_ID:
+    if layout_id in _STANDING_LAYOUT_IDS:
         runner = StandingPolicyRunner(
             spec=bundle.spec,
             policy=policy,

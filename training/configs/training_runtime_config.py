@@ -908,6 +908,9 @@ class PPOEvalConfig(Freezable):
     post_training_num_envs: int = 8
     post_training_num_steps: int = 500
     post_training_checkpoint_label: str = "eval_promoted"
+    # Promotion contract.  ``walking`` preserves the historical G4/G5 gates;
+    # ``standing`` grades survival, bilateral support, tilt, and saturation.
+    post_training_task: str = "walking"
     # smoke7 — when True, promote the lateral_velocity_abs and
     # world_y_drift_abs_m soft signals to HARD promotion gates (using the
     # existing documented soft caps) so a forward+tiny-vy run cannot
@@ -1118,6 +1121,11 @@ class RewardWeightsConfig(Freezable):
     lin_vel_z: float = 0.0
     ang_vel_xy: float = 0.0
     ref_contact_match: float = 0.0
+    # Standing-only bilateral support reward.  The raw term is zero unless
+    # both aggregate foot forces clear env.contact_threshold_force, then
+    # exp(-alpha * imbalance^2), where imbalance=|FL-FR|/(FL+FR).
+    standing_support_balance: float = 0.0
+    standing_support_balance_alpha: float = 4.0
     cmd_forward_velocity_track: float = 0.0
 
     # DeepMimic Gaussian kernel widths (numerator-α convention,
