@@ -1,0 +1,267 @@
+{
+  "realism_profile_path": "./realism_profile.json",
+  "servo_controller": {
+    "type": "hiwonder_ttl_bus",
+    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+    "baudrate": 115200,
+    "servos": {
+      "left_hip_pitch": {
+        "id": 1,
+        "servo_offset_unit": -34,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_hip_roll": {
+        "id": 2,
+        "servo_offset_unit": 24,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_knee_pitch": {
+        "id": 3,
+        "servo_offset_unit": 37,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_ankle_pitch": {
+        "id": 4,
+        "servo_offset_unit": 38,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_ankle_roll": {
+        "id": 9,
+        "servo_offset_unit": -2,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_hip_pitch": {
+        "id": 5,
+        "servo_offset_unit": 19,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_hip_roll": {
+        "id": 6,
+        "servo_offset_unit": 21,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_knee_pitch": {
+        "id": 7,
+        "servo_offset_unit": -9,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_ankle_pitch": {
+        "id": 8,
+        "servo_offset_unit": 27,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_ankle_roll": {
+        "id": 10,
+        "servo_offset_unit": -21,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "waist_yaw": {
+        "id": 40,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_shoulder_pitch": {
+        "id": 21,
+        "servo_offset_unit": 22,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 90
+      },
+      "left_shoulder_roll": {
+        "id": 22,
+        "servo_offset_unit": 18,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": -85
+      },
+      "left_elbow_pitch": {
+        "id": 23,
+        "servo_offset_unit": 21,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_wrist_yaw": {
+        "id": 24,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "left_wrist_pitch": {
+        "id": 25,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_shoulder_pitch": {
+        "id": 31,
+        "servo_offset_unit": 3,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": -90
+      },
+      "right_shoulder_roll": {
+        "id": 32,
+        "servo_offset_unit": -75,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 85
+      },
+      "right_elbow_pitch": {
+        "id": 33,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_wrist_yaw": {
+        "id": 34,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      },
+      "right_wrist_pitch": {
+        "id": 35,
+        "servo_offset_unit": 0,
+        "motor_unit_direction": -1,
+        "joint_angle_at_zero_unit_deg": 0
+      }
+    }
+  },
+  "externally_managed_actuator_names": [
+    "left_wrist_yaw",
+    "left_wrist_pitch",
+    "right_wrist_yaw",
+    "right_wrist_pitch"
+  ],
+  "servo_read_schedule": {
+    "mode": "staggered",
+    "groups": [
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll"
+      ],
+      [
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      [
+        "waist_yaw",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_elbow_pitch",
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_elbow_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch"
+      ]
+    ],
+    "max_cache_age_s": {
+      "leg": 0.16,
+      "arm": 1.25,
+      "wrist": 1.25,
+      "default": 1.25
+    }
+  },
+  "bno085": {
+    "transport": "spi",
+    "i2c_address": "0x4B",
+    "upside_down": false,
+    "suppress_debug": true,
+    "i2c_frequency_hz": 100000,
+    "spi_baudrate": 50000,
+    "spi_read_skip_bytes": 2,
+    "spi_cs_pin": "D8",
+    "spi_int_pin": "D17",
+    "spi_reset_pin": "D27",
+    "spi_wake_pin": "D25",
+    "init_retries": 3,
+    "sampling_hz": 50,
+    "enable_rotation_vector": false,
+    "axis_map": [
+      "+X",
+      "+Y",
+      "+Z"
+    ],
+    "axis_map_measurements": {
+      "body_x": [
+        0.9971171021461487,
+        -0.045597199350595474,
+        0.06065057963132858
+      ],
+      "body_y": [
+        0.03316419944167137,
+        0.9725830554962158,
+        -0.23017892241477966
+      ],
+      "body_z": [
+        0.06973326951265335,
+        0.1273161619901657,
+        0.9894078373908997
+      ]
+    }
+  },
+  "foot_switches": {
+    "left_toe": "D5",
+    "left_heel": "D6",
+    "right_toe": "D13",
+    "right_heel": "D19"
+  },
+  "robot_config_path": "./mujoco_robot_config.json"
+}

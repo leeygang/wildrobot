@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "policy_role": "standing",
+  "actor_obs_layout_id": "wr_obs_v1",
+  "action_mapping_id": "pos_target_home_025_v1",
+  "ctrl_dt": 0.02,
+  "control_hz": 50.0,
+  "action_delay_steps": 1,
+  "action_filter_alpha": 0.6,
+  "default_velocity_cmd": [
+    0.0,
+    0.0,
+    0.0
+  ]
+}
