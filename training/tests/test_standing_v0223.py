@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pickle
+import types
+
 import numpy as np
 
 
 _CONFIG = "training/configs/ppo_standing_home_stabilizer_v0223.yaml"
+_V0224_CONFIG = "training/configs/ppo_standing_home_stabilizer_v0224.yaml"
 
 
 def _load_config_and_spec():
@@ -35,6 +39,27 @@ def test_v0223_contract_is_fresh_contact_privileged_standing() -> None:
     assert cfg.reward_weights.ref_contact_match == 0.0
     assert cfg.reward_weights.standing_support_balance == 1.0
     assert cfg.ppo.eval.post_training_enabled is True
+    assert cfg.ppo.eval.post_training_task == "standing"
+    assert cfg.ppo.eval.post_training_num_steps == 1000
+
+
+def test_v0224_preserves_contract_for_corrected_contact_training() -> None:
+    from assets.robot_config import get_robot_config, load_robot_config
+    from training.configs.training_config import load_training_config
+    from training.policy_spec_utils import build_policy_spec_from_training_config
+
+    cfg = load_training_config(_V0224_CONFIG)
+    load_robot_config(cfg.env.robot_config_path)
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=get_robot_config(),
+    )
+
+    assert cfg.version == "0.22.4"
+    assert spec.observation.layout_id == "wr_obs_v9_standing"
+    assert spec.model.obs_dim == 59
+    assert spec.model.action_dim == 17
+    assert cfg.reward_weights.standing_support_balance == 1.0
     assert cfg.ppo.eval.post_training_task == "standing"
     assert cfg.ppo.eval.post_training_num_steps == 1000
 
@@ -206,3 +231,48 @@ def test_v0223_support_metrics_are_registered() -> None:
     assert "support/right_loaded" in METRIC_NAMES
     assert "support/both_loaded" in METRIC_NAMES
     assert "support/load_imbalance" in METRIC_NAMES
+
+
+def test_standing_support_metrics_are_saved_in_checkpoint(tmp_path) -> None:
+    from training.core.checkpoint import save_checkpoint_from_cpu
+
+    cfg, _ = _load_config_and_spec()
+    state = types.SimpleNamespace(
+        policy_params={},
+        value_params={},
+        processor_params={},
+        policy_opt_state={},
+        value_opt_state={},
+        rng=np.array([0, 1], dtype=np.uint32),
+    )
+    metrics = types.SimpleNamespace(
+        episode_reward=1.0,
+        task_reward_mean=0.1,
+        episode_length=1000.0,
+        policy_loss=0.01,
+        value_loss=0.02,
+        env_metrics={
+            "forward_velocity": 0.0,
+            "height": 0.46,
+            "support/left_loaded": 0.99,
+            "support/right_loaded": 0.98,
+            "support/both_loaded": 0.97,
+            "support/load_imbalance": 0.12,
+        },
+    )
+
+    checkpoint_path = save_checkpoint_from_cpu(
+        state_cpu=state,
+        config=cfg,
+        iteration=10,
+        total_steps=100,
+        checkpoint_dir=str(tmp_path),
+        metrics=metrics,
+    )
+    with open(checkpoint_path, "rb") as f:
+        saved_metrics = pickle.load(f)["metrics"]
+
+    assert saved_metrics["support/left_loaded"] == 0.99
+    assert saved_metrics["support/right_loaded"] == 0.98
+    assert saved_metrics["support/both_loaded"] == 0.97
+    assert saved_metrics["support/load_imbalance"] == 0.12

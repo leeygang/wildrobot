@@ -1998,6 +1998,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         nominal_q_ref: jax.Array,
         ref_contact_mask: jax.Array,
         phase_sin_cos: jax.Array,
+        foot_forces: tuple[jax.Array, jax.Array] | None = None,
     ) -> jax.Array:
         """Privileged critic obs (asymmetric actor-critic, Phase 3 of
         walking_training.md Appendix B.2).
@@ -2043,10 +2044,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 Only read when critic_imitation_refs is True.
             phase_sin_cos: current gait clock (2,).  Used to derive
                 ``ref_stance`` when critic_imitation_refs is False.
+            foot_forces: optional precomputed (left, right) normal loads.
         """
         lin = root_vel_h.linear.astype(jp.float32)
         ang = root_vel_h.angular.astype(jp.float32)
-        left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        if foot_forces is None:
+            left_force, right_force = self._cal.get_aggregated_foot_contacts(data)
+        else:
+            left_force, right_force = foot_forces
         contacts = jp.stack([left_force, right_force]).astype(jp.float32)
         q_actual = data.qpos[self._actuator_qpos_addrs]
         actuator_force = data.actuator_force.astype(jp.float32)
@@ -3720,6 +3725,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_q_ref=q_ref0,
             ref_contact_mask=win0["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
+            foot_forces=(left_force, right_force),
         )
         # smoke14 critic stacking — initialize the rolling buffer to
         # all zeros (TB-style: zero-pad before the first step;
@@ -4354,6 +4360,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_q_ref=nominal_q_ref,
             ref_contact_mask=win["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
+            foot_forces=(left_force, right_force),
         )
         # smoke14 critic stacking — roll the buffer and flatten the
         # trailing N frames into the critic obs exposed to the algo.

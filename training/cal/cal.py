@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import jax
 import jax.numpy as jnp
 import mujoco
+import numpy as np
 from mujoco import mjx
 
 from training.cal.specs import (
@@ -31,6 +32,10 @@ from training.cal.specs import (
     Velocity3D,
 )
 from training.cal.types import ActuatorType, CoordinateFrame
+from training.sim_adapter.foot_switches import (
+    contact_forces_from_mujoco,
+    contact_forces_from_mjx,
+)
 
 
 # Legacy CAL still exposes normalized action <-> joint-range helpers used by
@@ -92,6 +97,7 @@ class ControlAbstractionLayer:
         self._mj_model = mj_model
         self._robot_config = robot_config
         self._contact_scale = robot_config.contact_scale
+        self._contact_cone_type = int(mj_model.opt.cone)
         self._actuated_joints_config = robot_config.actuated_joints
 
         # Build specs from model and config
@@ -920,18 +926,30 @@ class ControlAbstractionLayer:
         Returns:
             foot_contacts: (4,) - [left_toe, left_heel, right_toe, right_heel]
         """
-        contacts = []
-        for foot in self._foot_specs:
-            toe_force = self._get_geom_contact_force(data, foot.toe_geom_id)
-            heel_force = self._get_geom_contact_force(data, foot.heel_geom_id)
+        geom_ids = tuple(
+            geom_id
+            for foot in self._foot_specs
+            for geom_id in (foot.toe_geom_id, foot.heel_geom_id)
+        )
+        if hasattr(data, "_impl"):
+            contacts = contact_forces_from_mjx(
+                data,
+                geom_ids,
+                self._contact_cone_type,
+            )
+        else:
+            contacts = jnp.asarray(
+                contact_forces_from_mujoco(
+                    self._mj_model,
+                    data,
+                    geom_ids,
+                    np.zeros(6, dtype=np.float64),
+                )
+            )
 
-            if normalize:
-                toe_force = jnp.tanh(toe_force / self._contact_scale)
-                heel_force = jnp.tanh(heel_force / self._contact_scale)
-
-            contacts.extend([toe_force, heel_force])
-
-        return jnp.array(contacts)
+        if normalize:
+            contacts = jnp.tanh(contacts / self._contact_scale)
+        return contacts
 
     def get_aggregated_foot_contacts(
         self,
@@ -1086,24 +1104,21 @@ class ControlAbstractionLayer:
         data: mjx.Data,
         geom_id: int,
     ) -> jax.Array:
-        """Get normal contact force for a geom (solver-native efc_force)."""
-        # Handle both MJX data (has _impl) and native MuJoCo data
+        """Get normal contact force for one geom in Newtons."""
         if hasattr(data, "_impl"):
-            # MJX data - use _impl to avoid deprecation warnings
-            contact = data._impl.contact
-            efc_force = data._impl.efc_force
-        else:
-            # Native MuJoCo data
-            contact = data.contact
-            efc_force = data.efc_force
-        geom1_match = contact.geom1 == geom_id
-        geom2_match = contact.geom2 == geom_id
-        is_our_contact = geom1_match | geom2_match
-
-        # efc_force contains constraint forces; contact.efc_address maps to them
-        normal_forces = efc_force[contact.efc_address]
-        our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
-        return jnp.sum(our_forces)
+            return contact_forces_from_mjx(
+                data,
+                (geom_id,),
+                self._contact_cone_type,
+            )[0]
+        return jnp.asarray(
+            contact_forces_from_mujoco(
+                self._mj_model,
+                data,
+                (geom_id,),
+                np.zeros(6, dtype=np.float64),
+            )[0]
+        )
 
     # =========================================================================
     # Root State Access (4 Core APIs using Pose3D/Velocity3D)

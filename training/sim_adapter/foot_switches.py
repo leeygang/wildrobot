@@ -32,10 +32,10 @@ def switches_from_forces_jax(forces, threshold: float):
 def contact_forces_from_mujoco(
     mj_model,
     mj_data,
-    geom_ids: tuple[int, int, int, int],
+    geom_ids: tuple[int, ...],
     contact_force: np.ndarray,
 ) -> np.ndarray:
-    forces = np.zeros((4,), dtype=np.float32)
+    forces = np.zeros((len(geom_ids),), dtype=np.float32)
     for i in range(int(mj_data.ncon)):
         con = mj_data.contact[i]
         g1 = int(con.geom1)
@@ -52,7 +52,19 @@ def contact_forces_from_mujoco(
     return forces
 
 
-def contact_forces_from_mjx(data, geom_ids: tuple[int, int, int, int]):
+def contact_forces_from_mjx(
+    data,
+    geom_ids: tuple[int, ...],
+    cone_type: int,
+):
+    """Return per-geom normal loads using MuJoCo's contact-force convention.
+
+    MJX stores a pyramidal contact as ``2 * (condim - 1)`` nonnegative
+    constraint rows.  Their sum is the normal force; the first row alone is
+    not a force in Newtons.  This is the vectorized equivalent of MJX
+    ``support.contact_force`` / ``_decode_pyramid`` and avoids a Python loop
+    over the padded contact capacity in every batched training step.
+    """
     import jax.numpy as jnp
 
     if hasattr(data, "_impl"):
@@ -62,13 +74,31 @@ def contact_forces_from_mjx(data, geom_ids: tuple[int, int, int, int]):
         contact = data.contact
         efc_force = data.efc_force
 
+    efc_address = contact.efc_address
+    valid = efc_address >= 0
+    safe_address = jnp.maximum(efc_address, 0)
+
+    if int(cone_type) == int(mujoco.mjtCone.mjCONE_PYRAMIDAL):
+        # MuJoCo's maximum condim is 6, hence at most 10 pyramid rows.
+        offsets = jnp.arange(10, dtype=jnp.int32)
+        row_count = jnp.where(contact.dim == 1, 1, 2 * (contact.dim - 1))
+        row_indices = safe_address[:, None] + offsets[None, :]
+        row_indices = jnp.clip(row_indices, 0, efc_force.shape[0] - 1)
+        rows = efc_force[row_indices]
+        row_valid = valid[:, None] & (offsets[None, :] < row_count[:, None])
+        normal_forces = jnp.sum(jnp.where(row_valid, rows, 0.0), axis=1)
+    elif int(cone_type) == int(mujoco.mjtCone.mjCONE_ELLIPTIC):
+        normal_forces = jnp.where(valid, efc_force[safe_address], 0.0)
+    else:
+        raise ValueError(f"Unsupported MuJoCo cone type: {cone_type}")
+
+    normal_forces = jnp.abs(normal_forces)
     forces = []
     for geom_id in geom_ids:
         geom1_match = contact.geom1 == geom_id
         geom2_match = contact.geom2 == geom_id
         is_our_contact = geom1_match | geom2_match
-        normal_forces = efc_force[contact.efc_address]
-        our_forces = jnp.where(is_our_contact, jnp.abs(normal_forces), 0.0)
+        our_forces = jnp.where(is_our_contact, normal_forces, 0.0)
         forces.append(jnp.sum(our_forces))
 
     return jnp.stack(forces)

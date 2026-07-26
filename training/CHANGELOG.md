@@ -8,6 +8,80 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.4-standing-contact-force-correction] - 2026-07-26: decode MJX support loads in Newtons
+
+### Result and root cause
+
+The completed v0.22.3 run is
+`training/wandb/offline-run-20260726_000507-pz91dgww`. Its official standing
+promotion rejected every checkpoint because the reported both-feet-loaded
+fractions were only 0.03-0.06. That conclusion was invalid: both WR contact
+readers used only `efc_force[contact.efc_address]`. With MuJoCo's configured
+pyramidal friction cone, the normal force is the sum of
+`2 * (condim - 1)` solver rows (four rows for the feet's `condim=3`), not the
+first row.
+
+After decoding the same contacts correctly, checkpoint 50 completes all 1,000
+steps in all 16 deterministic environments with and without configured pushes:
+
+| Metric | Clean | Configured push |
+|---|---:|---:|
+| both feet loaded | 0.99994 | 0.99994 |
+| normalized load imbalance | 0.1451 | 0.1455 |
+| torso orientation error | 2.75 deg | 2.76 deg |
+| torque/action saturation | 0 / 0 | 0 / 0 |
+| mean left/right load | 23.17 / 17.36 N | comparable |
+
+The mean total load is 40.53 N, consistent with WR's 4.128 kg model weight
+(40.49 N). A native-MuJoCo regression now checks per-geom equality and total
+body-weight support. This makes checkpoint 50 the corrected v0.22.3 candidate,
+but it remains limited to a tethered standing-only hardware trial rather than
+unrestricted deployment.
+
+### Implemented next-training fix
+
+1. MJX support decoding now vectorizes MuJoCo's pyramidal/elliptic normal-force
+   convention. CAL, privileged critic/rewards, and simulated foot switches use
+   the same implementation; native evaluation continues to use
+   `mujoco.mj_contactForce`.
+2. `support/left_loaded`, `support/right_loaded`, `support/both_loaded`, and
+   `support/load_imbalance` now reach W&B and checkpoint metadata. Standing
+   checkpoint ranking therefore uses its declared support metrics instead of
+   silently falling back to training reward.
+3. `ppo_standing_home_stabilizer_v0224.yaml` preserves the 59-input v0.22.3
+   actor contract and reward weights, but starts a fresh run under corrected
+   critic/reward semantics. Do not resume v0.22.3: the parameter shapes match,
+   but historical returns and value targets used under-scaled contacts.
+
+Run the compile/training smoke first:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_standing_home_stabilizer_v0224.yaml \
+  --verify --skip-gpu-check
+```
+
+Then remove `--verify --skip-gpu-check` for the full run. Monitor episode
+length; all four `support/*` metrics; body quaternion error; named torque
+saturation; action saturation; PPO KL/clip fraction; and value loss. The
+standing promotion gate should consume non-null support metrics and select a
+checkpoint without reward fallback.
+
+### ToddlerBot comparison and references
+
+ToddlerBot's local implementation calls MJX
+`support.contact_force(self.sys, data, i, True)` before aggregating contacts
+(`~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py`). WR now follows the
+same MuJoCo force definition; its vectorized form avoids a Python loop over
+WR's padded contact capacity for 1,024 batched environments. This is an
+implementation optimization, not a different physical model.
+
+References: MuJoCo documentation, **Computation / Contact** and MJX
+`support._decode_pyramid`; Shi et al., **ToddlerBot: Open-Source ML-Compatible
+Humanoid Platform for Loco-Manipulation**, arXiv:2502.00893 (2025).
+
+---
+
 ## [v0.22.3-standing-contact-privileged] - 2026-07-25: remove foot switches from the actor and grade bilateral support
 
 ### Status

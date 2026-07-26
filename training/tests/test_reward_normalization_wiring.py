@@ -186,6 +186,32 @@ def test_build_wandb_metrics_emits_soft_violation_metrics(
     assert m["soft_violation_roll_frac"] == pytest.approx(0.2)
 
 
+def test_build_wandb_metrics_emits_standing_support_metrics(
+    fake_iteration_metrics,
+) -> None:
+    from training.core.experiment_tracking import build_wandb_metrics
+
+    fake_iteration_metrics.env_metrics.update(
+        {
+            "support/left_loaded": 0.99,
+            "support/right_loaded": 0.98,
+            "support/both_loaded": 0.97,
+            "support/load_imbalance": 0.12,
+        }
+    )
+
+    metrics, _ = build_wandb_metrics(
+        iteration=1,
+        metrics=fake_iteration_metrics,
+        steps_per_sec=829.0,
+        reward_terms=[],
+    )
+    assert metrics["support/left_loaded"] == pytest.approx(0.99)
+    assert metrics["support/right_loaded"] == pytest.approx(0.98)
+    assert metrics["support/both_loaded"] == pytest.approx(0.97)
+    assert metrics["support/load_imbalance"] == pytest.approx(0.12)
+
+
 def test_eval_runner_includes_soft_violation_in_logged_dicts() -> None:
     """Fix for 2026-05-18 metric-correctness blocker #3: the eval-side
     code path must surface ``soft_violation_pitch_frac`` /

@@ -110,6 +110,15 @@ def save_checkpoint_from_cpu(
             if "tracking/forward_velocity_cmd_ratio" in env_metrics
             else None
         )
+        support_metrics = {
+            key: float(env_metrics[key]) if key in env_metrics else None
+            for key in (
+                "support/left_loaded",
+                "support/right_loaded",
+                "support/both_loaded",
+                "support/load_imbalance",
+            )
+        }
         metrics_dict = {
             "episode_reward": float(metrics.episode_reward),
             "task_reward_mean": float(metrics.task_reward_mean),
@@ -121,6 +130,7 @@ def save_checkpoint_from_cpu(
             "tracking/cmd_vs_achieved_forward": cmd_err,
             "tracking/step_length_touchdown_event_m": step_len,
             "tracking/forward_velocity_cmd_ratio": cmd_ratio,
+            **support_metrics,
         }
 
     # state_cpu is already on CPU, no need for jax.device_get

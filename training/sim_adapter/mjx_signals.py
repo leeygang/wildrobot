@@ -41,6 +41,7 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         foot_geom_names = robot_config.get_foot_geom_names()
         self._foot_geom_ids = resolve_foot_geom_ids(mj_model, foot_geom_names)
         self._foot_switch_threshold = float(foot_switch_threshold)
+        self._contact_cone_type = int(mj_model.opt.cone)
 
         self._joint_qpos = []
         self._joint_qvel = []
@@ -68,7 +69,11 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         joint_pos = jnp.take(data.qpos, self._joint_qpos_idx)
         joint_vel = jnp.take(data.qvel, self._joint_qvel_idx)
 
-        foot_forces = contact_forces_from_mjx(data, self._foot_geom_ids)
+        foot_forces = contact_forces_from_mjx(
+            data,
+            self._foot_geom_ids,
+            self._contact_cone_type,
+        )
         foot_switches = switches_from_forces_jax(
             foot_forces, self._foot_switch_threshold
         )
