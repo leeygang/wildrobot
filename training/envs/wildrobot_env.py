@@ -3801,9 +3801,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # first +alive_w accrues on step 1, not at reset.  Mirrors TB
         # mjx_env reset path.
         reset_reward = jp.float32(0.0)
-        contact_thresh = self._config.env.contact_threshold_force
-        left_switch_init = (left_force > contact_thresh).astype(jp.float32)
-        right_switch_init = (right_force > contact_thresh).astype(jp.float32)
+        actor_foot_switches = signals_override.foot_switches.astype(jp.float32)
         metrics_dict = get_initial_env_metrics_jax(
             # v0.21.0 P3: ``velocity_command`` metric slot stays scalar
             # for back-compat with the registry ``MetricSpec``; pass
@@ -3815,10 +3813,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             roll=roll_init.astype(jp.float32),
             left_force=left_force,
             right_force=right_force,
-            left_toe_switch=left_switch_init,
-            left_heel_switch=left_switch_init,
-            right_toe_switch=right_switch_init,
-            right_heel_switch=right_switch_init,
+            left_toe_switch=actor_foot_switches[0],
+            left_heel_switch=actor_foot_switches[1],
+            right_toe_switch=actor_foot_switches[2],
+            right_heel_switch=actor_foot_switches[3],
             forward_reward=jp.float32(0.0),
             healthy_reward=jp.float32(0.0),
             action_rate=jp.float32(0.0),
@@ -4453,10 +4451,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             roll=roll_post.astype(jp.float32),
             left_force=left_force,
             right_force=right_force,
-            left_toe_switch=left_toe_switch,
-            left_heel_switch=left_toe_switch,
-            right_toe_switch=right_toe_switch,
-            right_heel_switch=right_toe_switch,
+            left_toe_switch=signals_override.foot_switches[0],
+            left_heel_switch=signals_override.foot_switches[1],
+            right_toe_switch=signals_override.foot_switches[2],
+            right_heel_switch=signals_override.foot_switches[3],
             forward_reward=jp.float32(0.0),
             healthy_reward=jp.float32(0.0),
             action_rate=action_rate,

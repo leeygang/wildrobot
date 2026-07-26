@@ -79,6 +79,8 @@ _STARTUP_STABILITY_MIN_FOOTSWITCH_PRESSED_RATIO = 0.9
 _STARTUP_STABILITY_MAX_TILT_DEG = 15.0
 _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
+_STARTUP_POSE_BLEND_S = 2.0
+_STARTUP_POSE_HOLD_S = 5.0
 _STANDING_LAYOUT_ID = "wr_obs_v1"
 _WALKING_LAYOUT_ID = "wr_obs_v8_cmd3d"
 _RUNTIME_FIXED_HOME_KEY = "runtime_fixed_home"
@@ -1947,6 +1949,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--startup-pose-blend-s",
+        type=float,
+        default=_STARTUP_POSE_BLEND_S,
+        help=(
+            "Integrated hardware bundle only: linearly blend from the measured "
+            "servo pose to standing policy targets before enforcing the stability "
+            f"gate (default: {_STARTUP_POSE_BLEND_S:.1f}; set 0 to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--startup-pose-hold-s",
+        type=float,
+        default=_STARTUP_POSE_HOLD_S,
+        help=(
+            "Integrated hardware bundle only: hold home after the measured-pose "
+            f"blend before starting policy inference (default: {_STARTUP_POSE_HOLD_S:.1f})."
+        ),
+    )
+    parser.add_argument(
         "--confirm-before-walk",
         action="store_true",
         help=(
@@ -2201,12 +2222,6 @@ def _run_deployment_bundle_from_args(
             )
         realtime = not args.no_realtime
 
-    standing_runner = StandingPolicyRunner(
-        spec=standing_bundle.spec,
-        policy=standing_policy,
-        robot_io=base_robot_io,
-        runtime_config=standing_cfg,
-    )
     velocity_cmd = _parse_velocity_cmd(
         args.velocity_cmd, list(walking_cfg.default_velocity_cmd)
     )
@@ -2216,6 +2231,50 @@ def _run_deployment_bundle_from_args(
     standing_steps = max(
         1,
         int(round(max(standing_min_s, requested_standing_s) / ctrl_dt)),
+    )
+    pose_blend_steps = (
+        0
+        if bool(args.dry_run)
+        else max(
+            0,
+            int(round(max(0.0, float(args.startup_pose_blend_s)) / ctrl_dt)),
+        )
+    )
+    pose_hold_steps = (
+        0
+        if pose_blend_steps <= 0
+        else max(
+            0,
+            int(round(max(0.0, float(args.startup_pose_hold_s)) / ctrl_dt)),
+        )
+    )
+    pose_prep_steps = pose_blend_steps + pose_hold_steps
+    standing_robot_io = base_robot_io
+    if pose_blend_steps > 0:
+        try:
+            initial_signals = base_robot_io.read()
+        except BaseException:
+            base_robot_io.close()
+            raise
+        initial_q = np.asarray(
+            initial_signals.joint_pos_rad, dtype=np.float32
+        ).reshape(-1)
+        if initial_q.size != len(standing_names) or not np.all(np.isfinite(initial_q)):
+            base_robot_io.close()
+            raise SystemExit(
+                "Cannot start standing pose blend: initial joint readback is invalid "
+                f"(size={initial_q.size}, expected={len(standing_names)})."
+            )
+        standing_robot_io = _TargetBlendRobotIO(
+            base_robot_io,
+            initial_target=initial_q,
+            blend_steps=pose_blend_steps,
+        )
+    standing_runner = StandingPolicyRunner(
+        spec=standing_bundle.spec,
+        policy=standing_policy,
+        robot_io=standing_robot_io,
+        runtime_config=standing_cfg,
     )
     manifest_blend_s = float(manifest_transition.get("walking_action_ramp_s", 0.5))
     blend_s = (
@@ -2232,16 +2291,48 @@ def _run_deployment_bundle_from_args(
         f"{standing_bundle.spec.model.action_dim}) "
         f"| walking=({walking_bundle.spec.model.obs_dim},"
         f"{walking_bundle.spec.model.action_dim}) "
-        f"| externally_managed={externally_managed} | stable_only={bool(args.stable_only)}",
+        f"| externally_managed={externally_managed} | stable_only={bool(args.stable_only)} "
+        f"| startup_pose_blend_steps={pose_blend_steps} "
+        f"| startup_pose_hold_steps={pose_hold_steps}",
         flush=True,
     )
 
     try:
+        if pose_prep_steps > 0:
+            _run_startup_home_hold(
+                runner=standing_runner,
+                velocity_cmd=np.zeros(3, dtype=np.float32),
+                steps=pose_prep_steps,
+                log_steps=args.log_steps,
+                ctrl_dt=ctrl_dt,
+                realtime=realtime,
+                leg_indices=_actuator_indices(
+                    standing_names, tuple(name for _, name in _LEG_LOG_JOINTS)
+                ),
+                stability_check=not bool(args.disable_startup_stability_check),
+                stability_max_tilt_deg=float(args.startup_stability_max_tilt_deg),
+                confirm_before_walk=False,
+                confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+            )
         if args.stable_only:
             if not args.dry_run:
                 print(
                     "Stable-only control will run until interrupted (Ctrl+C).",
                     flush=True,
+                )
+                _run_standing_stabilization(
+                    runner=standing_runner,
+                    steps=standing_steps,
+                    log_steps=args.log_steps,
+                    ctrl_dt=ctrl_dt,
+                    realtime=realtime,
+                    actuator_names=standing_names,
+                    stability_check=not bool(args.disable_startup_stability_check),
+                    stability_max_tilt_deg=float(
+                        args.startup_stability_max_tilt_deg
+                    ),
+                    confirm_before_walk=False,
+                    confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
                 )
             run_policy_loop(
                 runner=standing_runner,

@@ -206,6 +206,40 @@ def _step_metrics_for_action(
     return {name: float(vec[idx]) for name, idx in METRIC_INDEX.items()}
 
 
+def test_footswitch_metrics_preserve_all_four_actor_channels() -> None:
+    """Toe/heel metrics must report the actor inputs, not per-foot duplicates."""
+    from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
+
+    env = _maybe_build_env(_SMOKE12B_CFG)
+    delegate = env._signals_adapter
+    fixed_switches = jp.array([1.0, 0.0, 0.0, 1.0], dtype=jp.float32)
+
+    class _FixedFootswitchAdapter:
+        def read(self, data):
+            return delegate.read(data).replace(foot_switches=fixed_switches)
+
+    env._signals_adapter = _FixedFootswitchAdapter()
+    state = env.reset(jax.random.PRNGKey(0))
+    state = env.step(
+        state,
+        jp.zeros(env.action_size, dtype=jp.float32),
+        disable_pushes=True,
+        disable_cmd_resample=True,
+    )
+    vec = state.metrics[METRICS_VEC_KEY]
+
+    actual = np.array(
+        [
+            vec[METRIC_INDEX["debug/left_toe_switch"]],
+            vec[METRIC_INDEX["debug/left_heel_switch"]],
+            vec[METRIC_INDEX["debug/right_toe_switch"]],
+            vec[METRIC_INDEX["debug/right_heel_switch"]],
+        ],
+        dtype=np.float32,
+    )
+    np.testing.assert_array_equal(actual, np.asarray(fixed_switches))
+
+
 def test_live_debug_metrics_under_nontrivial_action() -> None:
     """The hardcoded-zero family (debug/forward_vel, debug/lateral_vel,
     tracking/vel_error, debug/action_*, debug/raw_action_*,
