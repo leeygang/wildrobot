@@ -542,15 +542,8 @@ class FootSwitchConfig:
 
 @dataclass(frozen=True)
 class ServoReadScheduleConfig:
-    """Optional runtime servo read schedule.
+    """Feedback freshness limits for the per-board servo workers."""
 
-    ``mode="full"`` preserves the old behavior: read all policy servos every
-    control step. ``mode="staggered"`` reads an initial full state, then reads
-    one configured joint group per step while returning the full cached state.
-    """
-
-    mode: str = "full"
-    groups: List[List[str]] = field(default_factory=list)
     max_cache_age_s: Dict[str, float] = field(
         default_factory=lambda: {
             "leg": 0.12,
@@ -559,10 +552,6 @@ class ServoReadScheduleConfig:
             "default": 1.25,
         }
     )
-
-    @property
-    def enabled(self) -> bool:
-        return self.mode == "staggered"
 
 
 # =============================================================================
@@ -961,31 +950,12 @@ class WrRuntimeConfig:
             return ServoReadScheduleConfig()
         if not isinstance(raw, dict):
             raise ValueError("servo_read_schedule must be an object")
-
-        groups_raw = raw.get("groups", [])
-        if groups_raw is None:
-            groups_raw = []
-        if not isinstance(groups_raw, list):
-            raise ValueError("servo_read_schedule.groups must be a list of joint-name lists")
-
-        groups: List[List[str]] = []
-        for i, group in enumerate(groups_raw):
-            if not isinstance(group, list) or not group:
-                raise ValueError(
-                    f"servo_read_schedule.groups[{i}] must be a non-empty list"
-                )
-            names = [str(name) for name in group]
-            if any(not name.strip() for name in names):
-                raise ValueError(
-                    f"servo_read_schedule.groups[{i}] contains an empty joint name"
-                )
-            groups.append(names)
-
-        mode = str(raw.get("mode", "staggered" if groups else "full")).lower()
-        if mode not in {"full", "staggered"}:
-            raise ValueError("servo_read_schedule.mode must be 'full' or 'staggered'")
-        if mode == "staggered" and not groups:
-            raise ValueError("servo_read_schedule.groups is required for staggered mode")
+        obsolete = sorted(set(raw) & {"mode", "groups"})
+        if obsolete:
+            raise ValueError(
+                "servo_read_schedule no longer supports "
+                f"{obsolete}; board assignments define read sets"
+            )
 
         default_limits = ServoReadScheduleConfig().max_cache_age_s
         limits_raw = raw.get("max_cache_age_s", {})
@@ -1002,7 +972,7 @@ class WrRuntimeConfig:
                 )
             limits[str(key)] = value_f
 
-        return ServoReadScheduleConfig(mode=mode, groups=groups, max_cache_age_s=limits)
+        return ServoReadScheduleConfig(max_cache_age_s=limits)
 
     @staticmethod
     def _parse_externally_managed_actuator_names(data: dict) -> Tuple[str, ...]:
@@ -1218,17 +1188,9 @@ class WrRuntimeConfig:
                 if self.externally_managed_actuator_names
                 else {}
             ),
-            **(
-                {
-                    "servo_read_schedule": {
-                        "mode": self.servo_read_schedule.mode,
-                        "groups": self.servo_read_schedule.groups,
-                        "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
-                    }
-                }
-                if self.servo_read_schedule.enabled or self.servo_read_schedule.groups
-                else {}
-            ),
+            "servo_read_schedule": {
+                "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
+            },
             **(
                 {"realism_profile_path": self.realism_profile_path}
                 if self.realism_profile_path is not None

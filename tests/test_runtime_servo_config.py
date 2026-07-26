@@ -317,29 +317,34 @@ def test_servo_read_schedule_parses_and_serializes(tmp_path: Path) -> None:
             },
         },
         "servo_read_schedule": {
-            "mode": "staggered",
-            "groups": [["left_hip_pitch"], ["right_hip_pitch"]],
             "max_cache_age_s": {"leg": 0.12, "default": 0.25},
         },
     }
 
     cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
-    assert cfg.servo_read_schedule.enabled is True
-    assert cfg.servo_read_schedule.groups == [["left_hip_pitch"], ["right_hip_pitch"]]
     assert cfg.servo_read_schedule.max_cache_age_s["leg"] == pytest.approx(0.12)
     out = cfg.to_dict()
-    assert out["servo_read_schedule"]["mode"] == "staggered"
-    assert out["servo_read_schedule"]["groups"] == [["left_hip_pitch"], ["right_hip_pitch"]]
-
-
-def test_servo_read_schedule_rejects_empty_staggered_groups(tmp_path: Path) -> None:
-    cfg_dict = _base_config() | {
-        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
-        "servo_read_schedule": {"mode": "staggered", "groups": []},
+    assert out["servo_read_schedule"] == {
+        "max_cache_age_s": {
+            "leg": 0.12,
+            "arm": 1.25,
+            "wrist": 1.25,
+            "default": 0.25,
+        }
     }
 
-    with pytest.raises(ValueError, match="groups"):
+
+@pytest.mark.parametrize("obsolete_key", ["mode", "groups"])
+def test_servo_read_schedule_rejects_obsolete_group_config(
+    tmp_path: Path, obsolete_key: str
+) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "servo_read_schedule": {obsolete_key: []},
+    }
+
+    with pytest.raises(ValueError, match="no longer supports"):
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 

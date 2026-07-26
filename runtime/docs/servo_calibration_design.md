@@ -11,7 +11,7 @@ WildRobot hardware runtime lives under `runtime/wr_runtime/` and assumes:
 Calibration is performed with the interactive script:
 - `runtime/scripts/calibrate.py`
 
-Calibration data is stored in the runtime JSON config (copy the sample `runtime/configs/runtime_config_template.json` (or `runtime/configs/runtime_config_v2.json`) to your robot, typically `~/.wildrobot/config.json`).
+Calibration data is stored in the hardware JSON config. Copy `runtime/configs/hardware_config.json` to the robot, typically as `~/.wildrobot/hardware_config.json`.
 
 This doc describes the servo calibration model and the operator workflow for per-joint:
 1) motor_unit_direction correction
@@ -59,7 +59,7 @@ Per joint, calibration values are:
 
 ## Config Shape
 
-Use `runtime/configs/runtime_config_template.json` as the canonical “in-repo” calibration target:
+Use `runtime/configs/hardware_config.json` as the canonical in-repo calibration target:
 - calibration reads joint names (and servo IDs) from this file
 - calibration writes results back to this file (in-place with backups, unless `--output` is provided)
 
@@ -116,7 +116,7 @@ connected, detect the actual mapping:
 
 ```bash
 uv run python runtime/scripts/calibrate.py \
-  --config ~/.wildrobot/config.json \
+  --config ~/.wildrobot/hardware_config.json \
   --calibrate-servo-board
 ```
 
@@ -328,7 +328,7 @@ We can add a console entrypoint later if desired.
 ## CLI Sketch
 
 Minimal flags:
-- `--config <path>`: input runtime config (default: `runtime/configs/runtime_config_v2.json`)
+- `--config <path>`: input hardware config (default: `runtime/configs/hardware_config.json`)
 - `--bundle <path>`: optional policy bundle folder (for `policy_spec.json` / `home_ctrl_rad`)
 - `--scene-xml <path>`: optional MuJoCo scene XML (read `"home"` keyframe via MuJoCo)
 - `--keyframes-xml <path>`: optional keyframes XML (read `"home"` keyframe by parsing `qpos`)
@@ -344,7 +344,7 @@ Non-interactive mode (optional later):
 
 ## Data Ownership and Integration Points
 
-- Calibration is runtime-specific: it lives in the runtime config and is applied in the hardware adapter layer.
+- Calibration is robot-specific: it lives in the hardware config and is applied in the hardware adapter layer.
 - Training and `policy_contract` remain in radians; they should not “know” about servo units, offsets, or wiring motor_unit_direction.
 
 ## Validation Checklist (post-calibration)
@@ -363,5 +363,5 @@ Non-interactive mode (optional later):
 ## Open Questions
 
 - What is the canonical “neutral pose” definition for each joint (visual description / photos)?
-- Do we want to store calibration per-robot in `~/.wildrobot/config.json`, or keep a separate `~/.wildrobot/calibration.json` included/merged at load time?
+- Do we need a separate calibration history artifact in addition to `~/.wildrobot/hardware_config.json`?
 - Is servo readback reliable and stable enough to use as the source of truth for offsets, or should we plan for external angle measurement support?

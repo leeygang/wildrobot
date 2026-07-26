@@ -310,7 +310,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--joint-name", required=True)
     parser.add_argument(
         "--runtime-config",
-        default="runtime/configs/runtime_config_v2.json",
+        default="runtime/configs/hardware_config.json",
         help="Runtime config path for servo and metadata context.",
     )
     parser.add_argument("--output-dir", default="runtime/logs/sysid")

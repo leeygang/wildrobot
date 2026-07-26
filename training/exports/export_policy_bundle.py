@@ -137,15 +137,15 @@ def _export_hardware_config(
     """Write policy-independent physical I/O configuration."""
     project_root = Path(__file__).parent.parent.parent
     base_path = source_path or (
-        project_root / "runtime" / "configs" / "runtime_config_template.json"
+        project_root / "runtime" / "configs" / "hardware_config.json"
     )
 
     if not base_path.exists():
-        raise FileNotFoundError(f"Runtime config base not found: {base_path}")
+        raise FileNotFoundError(f"Hardware config base not found: {base_path}")
 
     data = json.loads(base_path.read_text())
     if not isinstance(data, dict):
-        raise ValueError(f"Runtime config base is not a JSON object: {base_path}")
+        raise ValueError(f"Hardware config base is not a JSON object: {base_path}")
 
     for key in (
         "policy_onnx_path",

@@ -50,10 +50,7 @@ def _quat_angle_delta_rad(q0: np.ndarray, q1: np.ndarray) -> float:
 
 
 def _default_config_path() -> Path:
-    bundle_cfg = _RUNTIME_ROOT / "bundles" / "walking_v0210_smoke6_ckpt1650" / "wildrobot_config.json"
-    if bundle_cfg.exists():
-        return bundle_cfg
-    return _RUNTIME_ROOT / "configs" / "runtime_config_v2.json"
+    return _RUNTIME_ROOT / "configs" / "hardware_config.json"
 
 
 def _resolve_bundle_dir(config_path: Path, bundle_path: Path | None) -> Path:

@@ -5,16 +5,19 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from runtime.scripts.calibrate import resolve_config_path
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.run_policy import _TargetBlendRobotIO
 from runtime.wr_runtime.deployment_bundle import DeploymentBundle
+from training.exports.export_policy_bundle import _export_hardware_config
 
 
 _BUNDLE = Path(
     "runtime/bundles/deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90"
 )
+_CURRENT_BUNDLE = Path("runtime/bundles/standing_walk_v0222")
 
 
 def test_deployment_bundle_has_shared_hardware_and_two_policy_contracts() -> None:
@@ -63,14 +66,27 @@ def test_deployment_calibration_defaults_to_shared_hardware_config() -> None:
     ).resolve()
 
 
-def test_deployment_checksums_cover_every_artifact() -> None:
-    expected = json.loads((_BUNDLE / "checksums.json").read_text())
+@pytest.mark.parametrize("bundle", [_BUNDLE, _CURRENT_BUNDLE])
+def test_deployment_checksums_cover_every_artifact(bundle: Path) -> None:
+    expected = json.loads((bundle / "checksums.json").read_text())
     actual = {
-        str(path.relative_to(_BUNDLE)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(_BUNDLE.rglob("*"))
+        str(path.relative_to(bundle)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(bundle.rglob("*"))
         if path.is_file() and path.name != "checksums.json"
     }
     assert actual == expected
+
+
+def test_policy_export_uses_canonical_hardware_config(tmp_path: Path) -> None:
+    output = _export_hardware_config(output_dir=tmp_path)
+    exported = json.loads(output.read_text())
+    template = json.loads(Path("runtime/configs/hardware_config.json").read_text())
+
+    assert exported["servo_controller"] == template["servo_controller"]
+    assert exported["servo_read_schedule"] == template["servo_read_schedule"]
+    assert exported["robot_config_path"] == "./mujoco_robot_config.json"
+    assert exported["realism_profile_path"] == "./realism_profile.json"
+    assert (tmp_path / "realism_profile.json").is_file()
 
 
 def test_walking_transition_blends_from_final_standing_target() -> None:

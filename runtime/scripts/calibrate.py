@@ -1188,7 +1188,7 @@ def resolve_config_path(args: argparse.Namespace) -> Path:
         bundle_cfg = resolve_hardware_config_path(Path(args.bundle))
         if bundle_cfg.exists():
             return bundle_cfg
-    return _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
+    return _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
 
 
 def resolve_joint_names(
@@ -4139,31 +4139,31 @@ def main() -> None:
     examples = """
 Examples (copy/paste):
   # Dry-run: show planned moves only (no serial required)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --dry-run
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --dry-run
 
   # Move robot to home pose only (no calibration), then wait until you press 'q' to unload
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --go-home --keyframes-xml assets/v2/keyframes.xml
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --go-home --keyframes-xml assets/v2/keyframes.xml
 
   # Inspect current pose and optionally record it as home_ctrl_rad (press 'c' to save, 'q' to unload)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --record-pos
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --record-pos
 
   # Adjust the deployed bundle policy_spec.json home_ctrl_rad interactively
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --bundle runtime/bundles/walking_v0210_smoke6_ckpt1650 --calibrate-home
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --bundle runtime/bundles/walking_v0210_smoke6_ckpt1650 --calibrate-home
 
   # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate
 
   # Detect USB TTL boards and save each board's connected servo IDs
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-servo-board
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-servo-board
 
   # Test range of motion for joints interactively
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --range
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --range
 
   # Calibrate IMU upside_down (simple inversion check using gravity vector)
-  uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-imu
+  uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-imu
 
     # Footswitch calibration/test: select which switch signals to display, then press the switches to verify wiring
-    uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-footswitch
+    uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-footswitch
 """.strip()
 
     parser = argparse.ArgumentParser(

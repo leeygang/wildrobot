@@ -4,7 +4,7 @@ This runbook describes how to wire and use 4x mechanical foot/contact switches (
 
 WildRobot runtime integration points:
 - GPIO driver: `runtime/wr_runtime/hardware/foot_switches.py`
-- Runtime config field: `foot_switches` (see `runtime/README.md` and `runtime/configs/runtime_config_template.json`)
+- Runtime config field: `foot_switches` (see `runtime/README.md` and `runtime/configs/hardware_config.json`)
 
 ## 1) Electrical behavior (what the runtime expects)
 
@@ -39,7 +39,7 @@ Notes:
 
 The runtime config uses Adafruit Blinka `board` pin names like `"D5"`. On Raspberry Pi, Blinka `D<n>` corresponds to **BCM GPIO `<n>`**.
 
-Default pins from `runtime/configs/runtime_config_template.json`:
+Default pins from `runtime/configs/hardware_config.json`:
 
 | Runtime name | Blinka pin | BCM GPIO | Physical header pin |
 |---|---:|---:|---:|
@@ -112,7 +112,7 @@ Expected:
 Alternative (interactive):
 
 ```bash
-uv run python runtime/scripts/calibrate.py --config runtime/configs/runtime_config_v2.json --calibrate-footswitch
+uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-footswitch
 ```
 
 This will:

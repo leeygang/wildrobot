@@ -384,8 +384,6 @@ def _build_hardware_robot_io(
         default_move_time_ms = max(1, int(round(control_dt * 1000.0)))
 
     read_schedule = getattr(cfg, "servo_read_schedule", None)
-    read_schedule_mode = getattr(read_schedule, "mode", "full")
-    read_schedule_groups = getattr(read_schedule, "groups", [])
     read_schedule_max_cache_age_s = getattr(read_schedule, "max_cache_age_s", {})
 
     controller_type = str(getattr(sc, "type", "hiwonder_ttl_bus")).lower()
@@ -441,7 +439,6 @@ def _build_hardware_robot_io(
         read_groups, read_group_schedule = _build_ttl_servo_read_schedule(
             actuator_names=board_actuator_names,
             servo_ids=sc.servo_ids,
-            read_schedule_groups=read_schedule_groups,
             max_cache_age_s=read_schedule_max_cache_age_s,
         )
         transport = SerialTransport(
@@ -522,32 +519,20 @@ def _build_ttl_servo_read_schedule(
     *,
     actuator_names: Sequence[str],
     servo_ids: dict[str, int],
-    read_schedule_groups: Sequence[Sequence[str]],
     max_cache_age_s: dict[str, float],
 ):
     from wr_runtime.hardware.servo_io_worker import ServoReadGroup
 
-    active_set = set(actuator_names)
-    groups = [
-        [str(name) for name in group if str(name) in active_set]
-        for group in read_schedule_groups
-    ]
-    groups = [group for group in groups if group] or [list(actuator_names)]
-    unique_groups: dict[str, ServoReadGroup] = {}
-    schedule: list[str] = []
-    for group_idx, names in enumerate(groups):
-        label = _infer_servo_read_group_label(group_idx, names)
-        ids = tuple(int(servo_ids[name]) for name in names)
-        if label not in unique_groups:
-            unique_groups[label] = ServoReadGroup(
-                name=label,
-                servo_ids=ids,
-                max_cache_age_s=_group_cache_age_limit_s(
-                    names, max_cache_age_s=max_cache_age_s
-                ),
-            )
-        schedule.append(label)
-    return list(unique_groups.values()), schedule
+    names = [str(name) for name in actuator_names]
+    label = _infer_servo_read_group_label(0, names)
+    group = ServoReadGroup(
+        name=label,
+        servo_ids=tuple(int(servo_ids[name]) for name in names),
+        max_cache_age_s=_group_cache_age_limit_s(
+            names, max_cache_age_s=max_cache_age_s
+        ),
+    )
+    return [group], [label]
 
 
 def _infer_servo_read_group_label(group_idx: int, names: Sequence[str]) -> str:

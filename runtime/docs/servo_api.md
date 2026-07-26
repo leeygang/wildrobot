@@ -91,7 +91,7 @@ single-servo request/response transactions.
 - Ensure exactly one owner touches the serial bus.
 - Run one independent owner per USB serial bus so boards can operate in parallel.
 - Support a background worker that prioritizes writes and fills a servo state
-  cache from staggered reads.
+  cache from continuous per-servo reads.
 - Make timing, cache age, read failures, and write delays measurable.
 
 ## Non-Goals
@@ -283,24 +283,22 @@ one servo worker thread per board:
   if latest target pending:
     write that board's latest target subset
   else:
-    read next scheduled servo
+    read next servo assigned to that board
     update that joint cache
 ```
 
 Reads still block writes while a read transaction is in flight. For raw HTD
-servo reads, one servo `POS_READ` should be the atomic IO unit. Read "groups"
-should be scheduling concepts, not indivisible bus transactions.
+servo reads, one servo `POS_READ` is the atomic IO unit.
 
 Example:
 
 ```text
-read schedule:
-  left_leg group -> enqueue servo IDs [1,2,3,4,9]
-  right_leg group -> enqueue servo IDs [5,6,7,8,10]
-  torso_arms group -> enqueue servo IDs [...]
+left_leg_board worker -> round-robin servo IDs [1,2,3,4,9]
+right_leg_board worker -> round-robin servo IDs [5,6,7,8,10]
+upper_body_board worker -> round-robin its configured servo IDs
 
 worker read step:
-  sid = read_scheduler.next_servo_id()
+  sid = board_round_robin.next_servo_id()
   pos = raw_bus.read_position(sid)
   cache.update(sid, pos)
 ```
@@ -397,9 +395,9 @@ Example construction:
 servo_io = ServoIOWorker(
     raw_bus=raw_bus,
     config=ServoIOWorkerConfig(
-        servo_ids=tuple(servo_ids.values()),
-        read_groups=read_groups,
-        read_group_schedule=("left_leg", "right_leg", "left_leg", "right_leg", "torso_arms"),
+        servo_ids=tuple(board_servo_ids),
+        read_groups=(board_read_group,),
+        read_group_schedule=(board_read_group.name,),
     ),
 )
 ```

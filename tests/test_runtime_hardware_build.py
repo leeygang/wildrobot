@@ -23,34 +23,51 @@ from wr_runtime.hardware.imu import ImuSample
 from wr_runtime.hardware.robot_io import HardwareRobotIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_TEMPLATE = _REPO_ROOT / "runtime" / "configs" / "runtime_config_template.json"
-_V2_CONFIG = _REPO_ROOT / "runtime" / "configs" / "runtime_config_v2.json"
+_HARDWARE_CONFIG = _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
+_DEPLOYED_HARDWARE_CONFIG = (
+    _REPO_ROOT
+    / "runtime"
+    / "bundles"
+    / "standing_walk_v0222"
+    / "hardware_config.json"
+)
 _CALIBRATE = _REPO_ROOT / "runtime" / "scripts" / "calibrate.py"
 
 
-@pytest.mark.parametrize("config_path", [_TEMPLATE, _V2_CONFIG])
-def test_runtime_config_covers_all_v8_actuators(config_path: Path) -> None:
-    """Regression: the template (which export copies into every bundle) and the
-    v2 sample must define a servo for every actuator in the v8 21-joint spec.
+def test_hardware_config_covers_all_v8_actuators() -> None:
+    """The hardware template must cover every actuator exported to a bundle.
 
-    Reproduces the review finding: the template omitted left/right_ankle_roll, so
+    Reproduces the review finding: an old template omitted left/right_ankle_roll, so
     hardware startup raised KeyError "Servo ID missing for joint
     'left_ankle_roll'" before the first control tick.
     """
-    servos = json.loads(config_path.read_text())["servo_controller"]["servos"]
+    servos = json.loads(_HARDWARE_CONFIG.read_text())["servo_controller"]["servos"]
     spec_names = set(make_v8_spec().robot.actuator_names)
     missing = sorted(spec_names - set(servos))
-    assert not missing, f"{config_path.name} missing servo entries for {missing}"
+    assert not missing, f"{_HARDWARE_CONFIG.name} missing servo entries for {missing}"
     # ankle_roll specifically (the regressed joints) must be present.
     assert "left_ankle_roll" in servos
     assert "right_ankle_roll" in servos
+
+
+def test_hardware_config_template_matches_current_deployment_calibration() -> None:
+    template = json.loads(_HARDWARE_CONFIG.read_text())
+    deployed = json.loads(_DEPLOYED_HARDWARE_CONFIG.read_text())
+    for payload in (template, deployed):
+        payload.pop("realism_profile_path")
+        payload.pop("robot_config_path")
+    assert template == deployed
+
+    raw_template = json.loads(_HARDWARE_CONFIG.read_text())
+    for key in ("realism_profile_path", "robot_config_path"):
+        assert (_HARDWARE_CONFIG.parent / raw_template[key]).resolve().is_file()
 
 
 def test_calibrate_default_config_path_is_repo_root_relative(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     ns = runpy.run_path(str(_CALIBRATE))
     config_path = ns["resolve_config_path"](SimpleNamespace(config=None, bundle=None))
-    assert config_path == _V2_CONFIG
+    assert config_path == _HARDWARE_CONFIG
 
 
 def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
@@ -87,7 +104,7 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
         [
             "calibrate.py",
             "--config",
-            str(_V2_CONFIG),
+            str(_HARDWARE_CONFIG),
             "--calibrate",
             "--go-home",
             "--pause-s",
@@ -151,7 +168,7 @@ def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
         [
             "calibrate.py",
             "--config",
-            str(_V2_CONFIG),
+            str(_HARDWARE_CONFIG),
             "--bundle",
             str(bundle_dir),
             "--calibrate-home",
@@ -172,7 +189,7 @@ def test_calibrate_zero_pose_commands_can_ignore_or_apply_offset() -> None:
     import runtime.scripts.calibrate as calibrate_mod
     from configs.config import WrRuntimeConfig
 
-    cfg = WrRuntimeConfig.load(_V2_CONFIG)
+    cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
     joint = next(
         name
         for name, servo in cfg.hiwonder_controller.servos.items()
@@ -627,7 +644,7 @@ def test_calibrate_servo_board_is_top_level_cli_mode(monkeypatch, tmp_path) -> N
     from runtime.scripts import calibrate
 
     config_path = tmp_path / "config.json"
-    config_path.write_text(_V2_CONFIG.read_text())
+    config_path.write_text(_HARDWARE_CONFIG.read_text())
     discovered = [
         calibrate.DetectedServoBoard(
             "left_leg_board", "/dev/ttyUSB0", (1, 2, 3, 4, 9)
@@ -926,7 +943,7 @@ def test_build_hardware_robot_io_creates_one_parallel_worker_per_board(
     )
 
 
-def test_build_hardware_robot_io_filters_external_servos_from_read_schedule(
+def test_build_hardware_robot_io_builds_one_read_set_for_board_actuators(
     monkeypatch,
 ) -> None:
     import configs
@@ -938,8 +955,6 @@ def test_build_hardware_robot_io_filters_external_servos_from_read_schedule(
     _patch_ttl_servo_backend(monkeypatch, captured)
     cfg = _fake_runtime_config()
     cfg.servo_read_schedule = SimpleNamespace(
-        mode="staggered",
-        groups=[["j", "left_wrist_yaw"], ["left_wrist_yaw"]],
         max_cache_age_s={"default": 0.25},
     )
 

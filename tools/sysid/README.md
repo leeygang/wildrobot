@@ -10,7 +10,7 @@ Step response:
 uv run python tools/sysid/run_capture.py \
   --mode step \
   --joint-name left_knee_pitch \
-  --runtime-config runtime/configs/runtime_config_v2.json \
+  --runtime-config runtime/configs/hardware_config.json \
   --output-dir runtime/logs/sysid
 ```
 

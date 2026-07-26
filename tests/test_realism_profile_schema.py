@@ -60,7 +60,7 @@ def test_realism_profile_rejects_duplicate_joint_entries() -> None:
 
 
 def test_runtime_config_loads_realism_profile_path_and_validation() -> None:
-    cfg = WildRobotRuntimeConfig.load(REPO_ROOT / "runtime/configs/runtime_config_v2.json")
+    cfg = WildRobotRuntimeConfig.load(REPO_ROOT / "runtime/configs/hardware_config.json")
     profile = load_runtime_realism_profile(cfg)
     assert profile is not None
     assert profile.asset_version == "v2"

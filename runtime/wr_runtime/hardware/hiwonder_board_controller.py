@@ -7,7 +7,7 @@ Usage:
     from configs import WrRuntimeConfig
     from runtime.hardware.hiwonder_board_controller import HiwonderBoardController
 
-    config = WrRuntimeConfig.load("runtime/configs/runtime_config_v2.json")
+    config = WrRuntimeConfig.load("runtime/configs/hardware_config.json")
     controller = HiwonderBoardController(config.hiwonder_controller)
 
     # Convert joint targets in radians to servo commands and move

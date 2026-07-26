@@ -243,7 +243,7 @@ These parts remain mainline assets:
 - `training/envs/`
 - `training/core/`
 - `training/eval/`
-- `runtime/configs/runtime_config_v2.json`
+- `runtime/configs/hardware_config.json`
 - current export/runtime flow
 - the standing regression targets in
   [standing_training.md](/home/leeygang/projects/wildrobot/training/docs/standing_training.md)
