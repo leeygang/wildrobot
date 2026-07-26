@@ -2,7 +2,6 @@
   "realism_profile_path": "./realism_profile.json",
   "servo_controller": {
     "type": "hiwonder_ttl_bus",
-    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
     "baudrate": 115200,
     "servos": {
       "left_hip_pitch": {
@@ -131,7 +130,48 @@
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       }
-    }
+    },
+    "boards": [
+      {
+        "name": "left_leg_board",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00",
+        "servo_ids": [
+          1,
+          2,
+          3,
+          4,
+          9
+        ]
+      },
+      {
+        "name": "right_leg_board",
+        "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+        "servo_ids": [
+          5,
+          6,
+          7,
+          8,
+          10
+        ]
+      },
+      {
+        "name": "upper_body_board",
+        "port": "/dev/ttyUSB0",
+        "servo_ids": [
+          40,
+          21,
+          22,
+          23,
+          24,
+          25,
+          31,
+          32,
+          33,
+          34,
+          35
+        ]
+      }
+    ]
   },
   "externally_managed_actuator_names": [
     "left_wrist_yaw",
