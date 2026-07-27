@@ -627,14 +627,14 @@ def _footswitch_values(info: dict) -> list[int] | None:
     return [int(round(float(v))) for v in switches]
 
 
-def _quat_xyzw_to_rpy_rad(quat_xyzw: np.ndarray) -> tuple[float, float, float] | None:
-    quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+def _quat_wxyz_to_rpy_rad(quat_wxyz: np.ndarray) -> tuple[float, float, float] | None:
+    quat = np.asarray(quat_wxyz, dtype=np.float64).reshape(-1)
     if quat.size != 4 or not np.all(np.isfinite(quat)):
         return None
     norm = float(np.linalg.norm(quat))
     if norm <= 1e-9:
         return None
-    x, y, z, w = (quat / norm).tolist()
+    w, x, y, z = (quat / norm).tolist()
 
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
@@ -649,14 +649,14 @@ def _quat_xyzw_to_rpy_rad(quat_xyzw: np.ndarray) -> tuple[float, float, float] |
     return roll, pitch, yaw
 
 
-def _quat_xyzw_tilt_rad(quat_xyzw: np.ndarray) -> float | None:
-    quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+def _quat_wxyz_tilt_rad(quat_wxyz: np.ndarray) -> float | None:
+    quat = np.asarray(quat_wxyz, dtype=np.float64).reshape(-1)
     if quat.size != 4 or not np.all(np.isfinite(quat)):
         return None
     norm = float(np.linalg.norm(quat))
     if norm <= 1e-9:
         return None
-    x, y, _, _ = (quat / norm).tolist()
+    _, x, y, _ = (quat / norm).tolist()
     body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
     return math.acos(max(-1.0, min(1.0, body_z_world_z)))
 
@@ -665,7 +665,7 @@ def _info_tilt_deg(info: dict) -> float | None:
     signals = info.get("signals")
     if signals is None:
         return None
-    tilt = _quat_xyzw_tilt_rad(getattr(signals, "quat_xyzw", []))
+    tilt = _quat_wxyz_tilt_rad(getattr(signals, "quat_wxyz", []))
     if tilt is None:
         return None
     return float(math.degrees(tilt))
@@ -682,8 +682,8 @@ def _info_gyro_norm_rad_s(info: dict) -> float | None:
 
 
 def _format_base_orientation(signals) -> str:
-    rpy = _quat_xyzw_to_rpy_rad(getattr(signals, "quat_xyzw", []))
-    tilt = _quat_xyzw_tilt_rad(getattr(signals, "quat_xyzw", []))
+    rpy = _quat_wxyz_to_rpy_rad(getattr(signals, "quat_wxyz", []))
+    tilt = _quat_wxyz_tilt_rad(getattr(signals, "quat_wxyz", []))
     if rpy is None or tilt is None:
         return ""
     rpy_deg = [float(math.degrees(v)) for v in rpy]
@@ -1353,7 +1353,7 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
 
     valid = bool(getattr(sample, "valid", True))
     fresh = bool(getattr(sample, "fresh", True))
-    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float32).reshape(-1)
+    quat = np.asarray(getattr(sample, "quat_wxyz", []), dtype=np.float32).reshape(-1)
     gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
     quat_norm = float(np.linalg.norm(quat)) if quat.size == 4 else float("nan")
     imu = robot_io.imu

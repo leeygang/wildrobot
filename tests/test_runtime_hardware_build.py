@@ -382,7 +382,7 @@ def test_calibrate_home_imu_status_prints_body_angle() -> None:
         valid=True,
         fresh=True,
         timestamp_s=12.5,
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.array([0.0, 0.0, 0.0], dtype=np.float32),
     )
 
@@ -1019,13 +1019,13 @@ def test_build_hardware_robot_io_fails_fast_on_missing_servo(monkeypatch) -> Non
 
 def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
     valid_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
     )
     invalid_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=0.0,
         valid=False,
@@ -1064,14 +1064,14 @@ def test_hardware_robot_io_waits_for_first_valid_imu_sample() -> None:
 
 def test_hardware_robot_io_wait_rejects_startup_gyro_integrated_imu_sample() -> None:
     integrated_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
         fresh=True,
     )
     direct_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=2.0,
         valid=True,
@@ -1111,14 +1111,14 @@ def test_hardware_robot_io_wait_rejects_startup_gyro_integrated_imu_sample() -> 
 
 def test_hardware_robot_io_wait_counts_direct_samples_across_cached_reads() -> None:
     direct_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
         fresh=True,
     )
     cached_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -1163,13 +1163,13 @@ def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
     import wr_runtime.hardware.robot_io as robot_io_mod
 
     valid_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
     )
     stale_sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -1212,7 +1212,7 @@ def test_hardware_robot_io_reuses_recent_cached_imu_sample(monkeypatch) -> None:
     for t in (0.02, 0.04, 0.06, 0.08, 0.10, 0.12):
         now[0] = t
         signals = robot_io.read()
-        assert np.allclose(signals.quat_xyzw, valid_sample.quat_xyzw)
+        assert np.allclose(signals.quat_wxyz, valid_sample.quat_wxyz)
 
     assert robot_io._imu_nonfresh_consecutive == 6
     robot_io.write_ctrl(np.array([0.1], dtype=np.float32))
@@ -1227,7 +1227,7 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.array([0.01, 0.02, 0.03], dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -1286,7 +1286,7 @@ def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -1340,7 +1340,7 @@ def test_hardware_preflight_warns_on_open_footswitch_when_allowed(capsys) -> Non
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -1394,7 +1394,7 @@ def test_hardware_preflight_warns_on_initial_servo_out_of_range(capsys) -> None:
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,

@@ -55,7 +55,7 @@ def test_imu_payload_changed_only_when_report_values_change() -> None:
     from runtime.wr_runtime.hardware.imu import ImuSample
 
     sample = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.array([0.1, 0.0, 0.0], dtype=np.float32),
         timestamp_s=1.0,
         valid=True,
@@ -63,12 +63,12 @@ def test_imu_payload_changed_only_when_report_values_change() -> None:
 
     assert not _imu_payload_changed(
         sample,
-        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         np.array([0.1, 0.0, 0.0], dtype=np.float32),
     )
     assert _imu_payload_changed(
         sample,
-        np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         np.array([0.2, 0.0, 0.0], dtype=np.float32),
     )
 
@@ -629,7 +629,7 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
     imu = BNO085IMU.__new__(BNO085IMU)
     imu._imu = FakeAdafruitImu()
     imu._latest = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=None,
         valid=False,
@@ -646,7 +646,7 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
 
     assert not sample.valid
     assert sample.timestamp_s is None
-    np.testing.assert_allclose(sample.quat_xyzw, [0.0, 0.0, 0.0, 1.0])
+    np.testing.assert_allclose(sample.quat_wxyz, [1.0, 0.0, 0.0, 0.0])
     assert imu.diag["quat_status"] == "bad_norm"
 
 
@@ -669,7 +669,7 @@ def test_bno_read_integrates_gyro_when_runtime_quaternion_is_bad() -> None:
             return (0.0, 0.0, 1.0)
 
     previous = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=time.monotonic() - 0.02,
         valid=True,
@@ -693,7 +693,7 @@ def test_bno_read_integrates_gyro_when_runtime_quaternion_is_bad() -> None:
     assert sample.fresh is True
     assert sample.timestamp_s is not None
     assert sample.timestamp_s > previous.timestamp_s
-    np.testing.assert_allclose(np.linalg.norm(sample.quat_xyzw), 1.0, rtol=1e-5)
+    np.testing.assert_allclose(np.linalg.norm(sample.quat_wxyz), 1.0, rtol=1e-5)
     assert imu.diag["quat_status"] == "integrated_from_gyro_after_bad_norm"
 
 
@@ -716,7 +716,7 @@ def test_bno_read_does_not_integrate_from_old_cached_quaternion() -> None:
             return (0.0, 0.0, 1.0)
 
     previous = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=time.monotonic() - 1.0,
         valid=True,
@@ -761,7 +761,7 @@ def test_bno_read_records_property_exception_details() -> None:
     imu = BNO085IMU.__new__(BNO085IMU)
     imu._imu = FakeAdafruitImu()
     imu._latest = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=None,
         valid=False,
@@ -809,7 +809,7 @@ def test_bno_read_does_not_probe_game_quaternion_property_twice() -> None:
     imu = BNO085IMU.__new__(BNO085IMU)
     imu._imu = adafruit_imu
     imu._latest = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=None,
         valid=False,
@@ -829,6 +829,7 @@ def test_bno_read_does_not_probe_game_quaternion_property_twice() -> None:
     assert sample.valid is True
     assert sample.fresh is True
     assert adafruit_imu.game_quaternion_reads == 1
+    np.testing.assert_allclose(sample.quat_wxyz, [1.0, 0.0, 0.0, 0.0])
 
 
 def test_bno_background_read_marks_cached_sample_not_fresh() -> None:
@@ -841,7 +842,7 @@ def test_bno_background_read_marks_cached_sample_not_fresh() -> None:
     imu.polling_mode = False
     imu._q = Queue(maxsize=1)
     imu._latest = ImuSample(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         timestamp_s=1.0,
         valid=True,

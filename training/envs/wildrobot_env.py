@@ -132,7 +132,7 @@ def _apply_imu_noise_and_delay(signals, rng, cfg, prev_hist_quat, prev_hist_gyro
     latency = int(cfg.env.imu_latency_steps)
     hist_len = IMU_HIST_LEN
 
-    curr_quat = signals.quat_xyzw
+    curr_quat = signals.quat_wxyz
     curr_gyro = signals.gyro_rad_s
 
     use_noise = (imu_std != 0.0) or (quat_deg != 0.0)
@@ -169,7 +169,7 @@ def _apply_imu_noise_and_delay(signals, rng, cfg, prev_hist_quat, prev_hist_gyro
     delayed_gyro = new_g_hist[latency_clipped]
 
     signals_override = signals.replace(
-        quat_xyzw=delayed_quat.astype(jp.float32),
+        quat_wxyz=delayed_quat.astype(jp.float32),
         gyro_rad_s=delayed_gyro.astype(jp.float32),
     )
     return signals_override, new_q_hist, new_g_hist, rng_out
@@ -2192,15 +2192,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         # ---- world->body inverse quaternion (used by lin_vel_z + feet_distance)
-        # Build once and reuse.  rotate_vec_by_quat expects xyzw; MuJoCo
-        # convention is wxyz, so reorder + conjugate for the inverse.
-        root_quat_xyzw = jp.concatenate(
-            [quat_wxyz[1:], quat_wxyz[:1]]
-        ).astype(jp.float32)
-        root_quat_xyzw = jax_frames.normalize_quat_xyzw(root_quat_xyzw)
-        root_quat_inv_xyzw = jp.array(
-            [-root_quat_xyzw[0], -root_quat_xyzw[1], -root_quat_xyzw[2],
-             root_quat_xyzw[3]],
+        root_quat_wxyz = jax_frames.normalize_quat_wxyz(quat_wxyz)
+        root_quat_inv_wxyz = jp.array(
+            [root_quat_wxyz[0], -root_quat_wxyz[1], -root_quat_wxyz[2],
+             -root_quat_wxyz[3]],
             dtype=jp.float32,
         )
 
@@ -2248,7 +2243,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # peak); a well-balanced upright policy will track it tightly.
         world_lin_vel = data.qvel[0:3].astype(jp.float32)
         body_lin_vel = jax_frames.rotate_vec_by_quat(
-            root_quat_inv_xyzw, world_lin_vel
+            root_quat_inv_wxyz, world_lin_vel
         )
         body_lin_vel_z = body_lin_vel[2]
         ctrl_dt_inv = jp.float32(1.0 / self.dt)
@@ -2447,14 +2442,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # invariant to roll/pitch only when the torso is upright; under
         # the off-nominal poses where this reward is supposed to keep
         # spacing healthy, a yaw-only frame would feed pose-dependent
-        # noise into the reward.  ``rotate_vec_by_quat`` expects xyzw,
-        # so convert from MuJoCo's wxyz convention and conjugate for
-        # the world->body inverse rotation.
+        # noise into the reward. MuJoCo and ``rotate_vec_by_quat`` both use
+        # wxyz; conjugate for the world->body inverse rotation.
         feet_vec = left_foot_pos - right_foot_pos
         # Reuse the world->body inverse quat built once near the top of
         # the function (same construction).
         feet_vec_torso = jax_frames.rotate_vec_by_quat(
-            root_quat_inv_xyzw, feet_vec.astype(jp.float32)
+            root_quat_inv_wxyz, feet_vec.astype(jp.float32)
         )
         feet_dist = jp.abs(feet_vec_torso[1])
         d_min_clip = jp.clip(
@@ -2545,24 +2539,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # deviation indicates tilt.  Penalty = sum of (z+1)^2 + x^2 +
         # y^2 across both feet.
         gravity_world = jp.array([0.0, 0.0, -1.0], dtype=jp.float32)
-        # data.xquat is wxyz; rotate_vec_by_quat expects xyzw.  Inverse
-        # rotation = conjugate of unit quaternion.
+        # data.xquat and the policy frame contract are wxyz. Inverse rotation
+        # is the conjugate of the unit quaternion.
         left_foot_quat_wxyz = data.xquat[self._left_foot_body_id]
         right_foot_quat_wxyz = data.xquat[self._right_foot_body_id]
-        left_xyzw = jp.concatenate(
-            [left_foot_quat_wxyz[1:], left_foot_quat_wxyz[:1]]
-        ).astype(jp.float32)
-        right_xyzw = jp.concatenate(
-            [right_foot_quat_wxyz[1:], right_foot_quat_wxyz[:1]]
-        ).astype(jp.float32)
-        left_xyzw = jax_frames.normalize_quat_xyzw(left_xyzw)
-        right_xyzw = jax_frames.normalize_quat_xyzw(right_xyzw)
+        left_wxyz = jax_frames.normalize_quat_wxyz(left_foot_quat_wxyz)
+        right_wxyz = jax_frames.normalize_quat_wxyz(right_foot_quat_wxyz)
         left_inv = jp.array(
-            [-left_xyzw[0], -left_xyzw[1], -left_xyzw[2], left_xyzw[3]],
+            [left_wxyz[0], -left_wxyz[1], -left_wxyz[2], -left_wxyz[3]],
             dtype=jp.float32,
         )
         right_inv = jp.array(
-            [-right_xyzw[0], -right_xyzw[1], -right_xyzw[2], right_xyzw[3]],
+            [right_wxyz[0], -right_wxyz[1], -right_wxyz[2], -right_wxyz[3]],
             dtype=jp.float32,
         )
         left_grav_foot = jax_frames.rotate_vec_by_quat(left_inv, gravity_world)
@@ -2612,13 +2600,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Mirrors TB _reward_penalty_close_feet_xy (mjx_env.py:2709-2745).
         # Always computed; weight=0 disables contribution to the total.
         base_quat_wxyz = root_pose.orientation  # [w, x, y, z]
-        # Convert wxyz → xyzw, get base yaw via forward = R · [1,0,0].
-        base_xyzw = jp.concatenate(
-            [base_quat_wxyz[1:], base_quat_wxyz[:1]]
-        ).astype(jp.float32)
-        base_xyzw = jax_frames.normalize_quat_xyzw(base_xyzw)
+        base_quat_wxyz = jax_frames.normalize_quat_wxyz(base_quat_wxyz)
         base_forward = jax_frames.rotate_vec_by_quat(
-            base_xyzw, jp.array([1.0, 0.0, 0.0], dtype=jp.float32)
+            base_quat_wxyz, jp.array([1.0, 0.0, 0.0], dtype=jp.float32)
         )
         base_yaw = jp.arctan2(base_forward[1], base_forward[0])
         feet_diff = left_foot_pos[:2] - right_foot_pos[:2]
@@ -3169,25 +3153,22 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos = qpos.at[self._leg_pitch_qpos_addrs].set(leg_pitch_qpos_new)
 
         # Compose root-quat update: R_xyz(roll, pitch, 0) * R_curr.
-        # MJCF root quat is stored as [w, x, y, z] at qpos[3:7].  Use
-        # jax_frames helpers (xyzw convention) for the multiplication.
+        # MJCF and the policy frame contract both use [w, x, y, z].
         root_wxyz = qpos[3:7]
-        root_xyzw = jp.concatenate([root_wxyz[1:], root_wxyz[:1]]).astype(jp.float32)
-        delta_xyzw = self._euler_xyz_to_quat_xyzw(
+        delta_wxyz = self._euler_xyz_to_quat_wxyz(
             torso_roll, torso_pitch, jp.float32(0.0)
         )
-        new_xyzw = self._quat_mul_xyzw(delta_xyzw, root_xyzw)
-        new_xyzw = jax_frames.normalize_quat_xyzw(new_xyzw)
-        new_wxyz = jp.concatenate([new_xyzw[3:], new_xyzw[:3]]).astype(jp.float32)
+        new_wxyz = self._quat_mul_wxyz(delta_wxyz, root_wxyz)
+        new_wxyz = jax_frames.normalize_quat_wxyz(new_wxyz)
         qpos = qpos.at[3:7].set(new_wxyz)
 
         return qpos
 
     @staticmethod
-    def _euler_xyz_to_quat_xyzw(
+    def _euler_xyz_to_quat_wxyz(
         roll: jax.Array, pitch: jax.Array, yaw: jax.Array
     ) -> jax.Array:
-        """Convert XYZ-Euler (roll, pitch, yaw) to quaternion [x, y, z, w].
+        """Convert XYZ-Euler (roll, pitch, yaw) to quaternion [w, x, y, z].
 
         Matches ``scipy.spatial.transform.Rotation.from_euler('xyz', ...)``
         — that is, scipy's **lowercase 'xyz' = EXTRINSIC** convention
@@ -3198,7 +3179,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``R.from_euler('xyz', [roll, pitch, 0])`` composition
         (``mjx_env.py:1044``), which is also extrinsic.
 
-        Extrinsic 'xyz' as a Hamilton product on [x, y, z, w] is
+        Extrinsic 'xyz' as a Hamilton product is
         ``q_z(yaw) ⊗ q_y(pitch) ⊗ q_x(roll)`` (the last-applied fixed-
         axis rotation is leftmost in the product).  Verified against
         scipy: for (roll, pitch, yaw) = (0.1, 0.1, 0), this returns
@@ -3216,18 +3197,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         y = cr * sp * cy + sr * cp * sy
         z = cr * cp * sy - sr * sp * cy
         w = cr * cp * cy + sr * sp * sy
-        return jp.stack([x, y, z, w]).astype(jp.float32)
+        return jp.stack([w, x, y, z]).astype(jp.float32)
 
     @staticmethod
-    def _quat_mul_xyzw(q1: jax.Array, q2: jax.Array) -> jax.Array:
-        """Hamilton product q1 * q2 with quaternions in [x, y, z, w]."""
-        x1, y1, z1, w1 = q1[0], q1[1], q1[2], q1[3]
-        x2, y2, z2, w2 = q2[0], q2[1], q2[2], q2[3]
+    def _quat_mul_wxyz(q1: jax.Array, q2: jax.Array) -> jax.Array:
+        """Hamilton product q1 * q2 with quaternions in [w, x, y, z]."""
+        w1, x1, y1, z1 = q1[0], q1[1], q1[2], q1[3]
+        w2, x2, y2, z2 = q2[0], q2[1], q2[2], q2[3]
         x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
         y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
         z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
         w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-        return jp.stack([x, y, z, w]).astype(jp.float32)
+        return jp.stack([w, x, y, z]).astype(jp.float32)
 
     def reset_for_eval(
         self,

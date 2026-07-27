@@ -209,7 +209,7 @@ class StandingPolicyRunner:
                 f"{len(self._hardware_actuator_names)}"
             )
         return Signals(
-            quat_xyzw=np.asarray(signals.quat_xyzw, dtype=np.float32).reshape(4),
+            quat_wxyz=np.asarray(signals.quat_wxyz, dtype=np.float32).reshape(4),
             gyro_rad_s=np.asarray(signals.gyro_rad_s, dtype=np.float32).reshape(3),
             joint_pos_rad=joint_pos[self._active_to_hw].astype(np.float32),
             joint_vel_rad_s=joint_vel[self._active_to_hw].astype(np.float32),

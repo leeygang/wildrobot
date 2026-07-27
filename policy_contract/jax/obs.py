@@ -268,8 +268,8 @@ def build_observation(
     loc_ref_contact_mask: jnp.ndarray | None = None,
     proprio_history: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
-    gravity = gravity_local_from_quat(signals.quat_xyzw)
-    angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_xyzw)
+    gravity = gravity_local_from_quat(signals.quat_wxyz)
+    angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_wxyz)
 
     joint_pos_norm = JaxCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=signals.joint_pos_rad)
     joint_vel_norm = JaxCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=signals.joint_vel_rad_s)

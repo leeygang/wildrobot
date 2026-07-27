@@ -44,14 +44,14 @@ class MockRobotIO:
         self.closed = False
 
     def read(self) -> Signals:
-        # Upright torso: identity quat (xyzw), no rotation.
-        quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        # Upright torso: identity quaternion (wxyz), no rotation.
+        quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         gyro = np.zeros(3, dtype=np.float32)
         joint_pos = self._last_ctrl.copy()
         joint_vel = (self._last_ctrl - self._prev_ctrl) / max(self.control_dt, 1e-6)
         foot = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)  # both feet planted
         return Signals(
-            quat_xyzw=quat_xyzw,
+            quat_wxyz=quat_wxyz,
             gyro_rad_s=gyro,
             joint_pos_rad=joint_pos.astype(np.float32),
             joint_vel_rad_s=joint_vel.astype(np.float32),

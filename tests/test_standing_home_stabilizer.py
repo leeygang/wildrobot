@@ -290,8 +290,8 @@ def test_startup_standing_aborts_on_first_unsafe_tilt() -> None:
             signals = super().read()
             pitch = np.deg2rad(20.0)
             return Signals(
-                quat_xyzw=np.array(
-                    [0.0, np.sin(pitch / 2.0), 0.0, np.cos(pitch / 2.0)],
+                quat_wxyz=np.array(
+                    [np.cos(pitch / 2.0), 0.0, np.sin(pitch / 2.0), 0.0],
                     dtype=np.float32,
                 ),
                 gyro_rad_s=signals.gyro_rad_s,

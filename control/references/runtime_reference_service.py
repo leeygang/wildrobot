@@ -61,9 +61,8 @@ def _yaw_from_quat_wxyz(quat_wxyz):
     Pure-JAX implementation: no ``scipy.spatial.transform`` (the v0.21.0
     C11 invariant — heading-frame correction in the env must stay
     JIT-traceable).  Mirrors
-    ``policy_contract.jax.frames._yaw_from_quat_xyzw`` with the index
-    layout shifted for the wxyz convention used by the offline
-    ``RuntimeReferenceService`` / MuJoCo root quat.
+    ``policy_contract.jax.frames._yaw_from_quat_wxyz`` used by the policy
+    contract and MuJoCo root quaternion.
 
     Returns a scalar ``jnp.float32`` (or whatever dtype the input
     promotes to).  The standard ZYX-Euler yaw formula::

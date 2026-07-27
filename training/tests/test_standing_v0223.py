@@ -158,7 +158,7 @@ def test_v0223_actor_observation_ignores_foot_switches() -> None:
     action_dim = spec.model.action_dim
     home = np.asarray(spec.robot.home_ctrl_rad, dtype=np.float32)
     common = dict(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.zeros(3, dtype=np.float32),
         joint_pos_rad=home,
         joint_vel_rad_s=np.zeros(action_dim, dtype=np.float32),
@@ -192,7 +192,7 @@ def test_v0223_actor_observation_ignores_foot_switches() -> None:
         spec=spec,
         state=JaxPolicyState(prev_action=jnp.zeros(action_dim, dtype=jnp.float32)),
         signals=JaxSignals(
-            quat_xyzw=jnp.asarray(common["quat_xyzw"]),
+            quat_wxyz=jnp.asarray(common["quat_wxyz"]),
             gyro_rad_s=jnp.asarray(common["gyro_rad_s"]),
             joint_pos_rad=jnp.asarray(common["joint_pos_rad"]),
             joint_vel_rad_s=jnp.asarray(common["joint_vel_rad_s"]),

@@ -60,9 +60,6 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         if quat_wxyz is None:
             # Fallback: root freejoint quaternion.
             quat_wxyz = data.qpos[3:7]
-        # MuJoCo framequat sensors and free-joint qpos use [w, x, y, z].
-        # Policy Signals use [x, y, z, w], matching the hardware IMU.
-        quat_xyzw = jnp.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
 
         gyro = _read_sensor_or_none(data, self._gyro_sensor)
         if gyro is None:
@@ -82,7 +79,7 @@ class MjxSignalsAdapter(SignalsProvider[Signals]):
         )
 
         return Signals(
-            quat_xyzw=quat_xyzw.astype(jnp.float32),
+            quat_wxyz=quat_wxyz.astype(jnp.float32),
             gyro_rad_s=gyro.astype(jnp.float32),
             joint_pos_rad=joint_pos.astype(jnp.float32),
             joint_vel_rad_s=joint_vel.astype(jnp.float32),

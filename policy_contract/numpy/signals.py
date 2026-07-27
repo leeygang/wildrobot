@@ -8,7 +8,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Signals:
-    quat_xyzw: np.ndarray
+    quat_wxyz: np.ndarray
     gyro_rad_s: np.ndarray
     joint_pos_rad: np.ndarray
     joint_vel_rad_s: np.ndarray

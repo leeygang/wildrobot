@@ -11,7 +11,7 @@ class DummyImu:
     def read(self) -> ImuSample:
         self._called += 1
         return ImuSample(
-            quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
             timestamp_s=0.0,
             valid=True,
@@ -24,7 +24,7 @@ class DummyImu:
 def test_dummy_imu_satisfies_protocol() -> None:
     imu: Imu = DummyImu()
     sample = imu.read()
-    assert sample.quat_xyzw.shape == (4,)
+    assert sample.quat_wxyz.shape == (4,)
     assert sample.gyro_rad_s.shape == (3,)
     assert sample.valid is True
     assert sample.fresh is True
@@ -33,7 +33,7 @@ def test_dummy_imu_satisfies_protocol() -> None:
 class InvalidImu:
     def read(self) -> ImuSample:
         return ImuSample(
-            quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
             timestamp_s=None,
             valid=False,

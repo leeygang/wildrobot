@@ -209,7 +209,7 @@ try:
     time.sleep(0.2)
     for i in range(20):
         s = imu.read()
-        q = np.asarray(s.quat_xyzw, dtype=np.float32)
+        q = np.asarray(s.quat_wxyz, dtype=np.float32)
         w = float(np.linalg.norm(q))
         g = np.asarray(s.gyro_rad_s, dtype=np.float32)
         print(f\"{i:02d} | quat={q} | |quat|={w:.4f} | gyro(rad/s)={g}\")

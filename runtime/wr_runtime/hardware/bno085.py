@@ -22,12 +22,12 @@ _MAX_GYRO_INTEGRATION_DT_S = 0.25
 _SPI_WAKE_SETTLE_S = 0.002
 
 
-def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
+def _imu_payload_changed(previous: ImuSample, quat_wxyz: np.ndarray, gyro_rad_s: np.ndarray) -> bool:
     if previous.timestamp_s is None:
         return True
-    prev_quat = np.asarray(previous.quat_xyzw, dtype=np.float32)
+    prev_quat = np.asarray(previous.quat_wxyz, dtype=np.float32)
     prev_gyro = np.asarray(previous.gyro_rad_s, dtype=np.float32)
-    next_quat = np.asarray(quat_xyzw, dtype=np.float32)
+    next_quat = np.asarray(quat_wxyz, dtype=np.float32)
     next_gyro = np.asarray(gyro_rad_s, dtype=np.float32)
     return not (
         np.array_equal(prev_quat, next_quat)
@@ -35,32 +35,32 @@ def _imu_payload_changed(previous: ImuSample, quat_xyzw: np.ndarray, gyro_rad_s:
     )
 
 
-def _quat_multiply_xyzw(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    ax, ay, az, aw = [float(v) for v in a]
-    bx, by, bz, bw = [float(v) for v in b]
+def _quat_multiply_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = [float(v) for v in a]
+    bw, bx, by, bz = [float(v) for v in b]
     return np.array(
         [
+            aw * bw - ax * bx - ay * by - az * bz,
             aw * bx + ax * bw + ay * bz - az * by,
             aw * by - ax * bz + ay * bw + az * bx,
             aw * bz + ax * by - ay * bx + az * bw,
-            aw * bw - ax * bx - ay * by - az * bz,
         ],
         dtype=np.float32,
     )
 
 
-def _integrate_quat_xyzw_body_gyro(
-    quat_xyzw: np.ndarray,
+def _integrate_quat_wxyz_body_gyro(
+    quat_wxyz: np.ndarray,
     gyro_rad_s: np.ndarray,
     dt_s: float,
 ) -> np.ndarray:
-    quat_xyzw = np.asarray(quat_xyzw, dtype=np.float32).reshape(4)
+    quat_wxyz = np.asarray(quat_wxyz, dtype=np.float32).reshape(4)
     gyro_rad_s = np.asarray(gyro_rad_s, dtype=np.float32).reshape(3)
     dt_s = min(max(float(dt_s), 0.0), _MAX_GYRO_INTEGRATION_DT_S)
 
     omega_norm = float(np.linalg.norm(gyro_rad_s))
     if not np.isfinite(omega_norm) or omega_norm <= 1e-9 or dt_s <= 0.0:
-        return quat_xyzw.copy()
+        return quat_wxyz.copy()
 
     angle = omega_norm * dt_s
     axis = gyro_rad_s / omega_norm
@@ -68,18 +68,18 @@ def _integrate_quat_xyzw_body_gyro(
     sin_half = float(np.sin(half_angle))
     delta = np.array(
         [
+            float(np.cos(half_angle)),
             float(axis[0]) * sin_half,
             float(axis[1]) * sin_half,
             float(axis[2]) * sin_half,
-            float(np.cos(half_angle)),
         ],
         dtype=np.float32,
     )
-    integrated = _quat_multiply_xyzw(quat_xyzw, delta)
+    integrated = _quat_multiply_wxyz(quat_wxyz, delta)
     norm = float(np.linalg.norm(integrated))
     if np.isfinite(norm) and norm > 1e-6:
         return (integrated / norm).astype(np.float32)
-    return quat_xyzw.copy()
+    return quat_wxyz.copy()
 
 
 def _record_diag_exception(diag: dict[str, object], prefix: str, exc: BaseException) -> None:
@@ -789,7 +789,7 @@ class BNO085IMU(Imu):
     """BNO085 IMU wrapper.
 
     Designed to be compatible with the observation layout used in training:
-    - quaternion (xyzw)
+    - quaternion (wxyz)
     - gyro (rad/s)
 
     read() returns body-frame quat/gyro with upside_down and axis_map already applied.
@@ -943,7 +943,7 @@ class BNO085IMU(Imu):
             self._try_disable_debug()
 
         self._latest: ImuSample = ImuSample(
-            quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
             timestamp_s=None,
             valid=False,
@@ -1109,12 +1109,12 @@ class BNO085IMU(Imu):
         diag["input_report_advanced"] = input_report_advanced if seq_available else None
 
         if quat is None:
-            quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            quat_wxyz = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
             quat_valid = False
             diag["quat_status"] = "missing"
         else:
-            # adafruit_bno08x returns quaternion as (i, j, k, real)
-            quat_xyzw = np.array([quat[0], quat[1], quat[2], quat[3]], dtype=np.float32)
+            # Device boundary: adafruit_bno08x returns (i, j, k, real).
+            quat_wxyz = np.array([quat[3], quat[0], quat[1], quat[2]], dtype=np.float32)
             quat_valid = True
             diag["quat_status"] = "raw"
 
@@ -1127,7 +1127,7 @@ class BNO085IMU(Imu):
             gyro_valid = bool(gyro_rad_s.shape == (3,) and np.all(np.isfinite(gyro_rad_s)))
             diag["gyro_status"] = "raw" if gyro_valid else "bad"
 
-        raw_norm = float(np.linalg.norm(quat_xyzw))
+        raw_norm = float(np.linalg.norm(quat_wxyz))
         diag["quat_norm"] = raw_norm
 
         if quat_valid:
@@ -1136,7 +1136,7 @@ class BNO085IMU(Imu):
                 and raw_norm > 1e-6
                 and abs(raw_norm - 1.0) <= self.max_quat_norm_deviation
             ):
-                quat_xyzw = (quat_xyzw / raw_norm).astype(np.float32)
+                quat_wxyz = (quat_wxyz / raw_norm).astype(np.float32)
                 diag["quat_status"] = "normalized"
             else:
                 quat_valid = False
@@ -1144,8 +1144,8 @@ class BNO085IMU(Imu):
 
         if self.upside_down:
             if quat_valid:
-                quat_xyzw = np.array(
-                    [quat_xyzw[0], -quat_xyzw[1], -quat_xyzw[2], quat_xyzw[3]],
+                quat_wxyz = np.array(
+                    [quat_wxyz[0], quat_wxyz[1], -quat_wxyz[2], -quat_wxyz[3]],
                     dtype=np.float32,
                 )
             if gyro_valid:
@@ -1158,12 +1158,12 @@ class BNO085IMU(Imu):
             if gyro_valid:
                 gyro_rad_s = (self._r_bs @ gyro_rad_s.reshape(3, 1)).reshape(3).astype(np.float32)
             if quat_valid:
-                r_ws = _quat_xyzw_to_rotmat(quat_xyzw)
+                r_ws = _quat_wxyz_to_rotmat(quat_wxyz)
                 r_wb = r_ws @ self._r_bs.T
-                quat_xyzw = _rotmat_to_quat_xyzw(r_wb)
-                mapped_norm = float(np.linalg.norm(quat_xyzw))
+                quat_wxyz = _rotmat_to_quat_wxyz(r_wb)
+                mapped_norm = float(np.linalg.norm(quat_wxyz))
                 if np.isfinite(mapped_norm) and mapped_norm > 1e-6:
-                    quat_xyzw = (quat_xyzw / mapped_norm).astype(np.float32)
+                    quat_wxyz = (quat_wxyz / mapped_norm).astype(np.float32)
                 else:
                     quat_valid = False
                     diag["quat_status"] = "bad_axis_map_norm"
@@ -1171,7 +1171,7 @@ class BNO085IMU(Imu):
         last_report_sample = getattr(self, "_last_report_sample", self._latest)
         quat_integrated = False
         if quat_valid:
-            quat_out = quat_xyzw
+            quat_out = quat_wxyz
         elif (
             gyro_valid
             and bool(getattr(last_report_sample, "valid", False))
@@ -1179,8 +1179,8 @@ class BNO085IMU(Imu):
         ):
             dt_s = max(0.0, now_s - float(last_report_sample.timestamp_s))
             if dt_s <= _MAX_GYRO_INTEGRATION_DT_S:
-                quat_out = _integrate_quat_xyzw_body_gyro(
-                    np.asarray(last_report_sample.quat_xyzw, dtype=np.float32),
+                quat_out = _integrate_quat_wxyz_body_gyro(
+                    np.asarray(last_report_sample.quat_wxyz, dtype=np.float32),
                     gyro_rad_s,
                     dt_s,
                 )
@@ -1188,10 +1188,10 @@ class BNO085IMU(Imu):
                 diag["quat_status"] = f"integrated_from_gyro_after_{diag['quat_status']}"
                 diag["quat_integration_dt_s"] = dt_s
             else:
-                quat_out = last_report_sample.quat_xyzw
+                quat_out = last_report_sample.quat_wxyz
                 diag["quat_integration_skipped_dt_s"] = dt_s
         else:
-            quat_out = last_report_sample.quat_xyzw
+            quat_out = last_report_sample.quat_wxyz
         valid = bool(gyro_valid and (quat_valid or quat_integrated))
         payload_changed = _imu_payload_changed(last_report_sample, quat_out, gyro_rad_s)
         report_fresh = (
@@ -1210,7 +1210,7 @@ class BNO085IMU(Imu):
 
         self._diag = diag
         sample = ImuSample(
-            quat_xyzw=quat_out,
+            quat_wxyz=quat_out,
             gyro_rad_s=gyro_rad_s,
             timestamp_s=now_s if report_fresh else last_report_sample.timestamp_s,
             valid=bool(valid),
@@ -1245,7 +1245,7 @@ class BNO085IMU(Imu):
                     if os.environ.get("WR_BNO085_DEBUG_EXCEPTIONS", "").strip() not in ("", "0", "false", "False"):
                         print(self._last_traceback, flush=True)
                     sample = ImuSample(
-                        quat_xyzw=self._latest.quat_xyzw,
+                        quat_wxyz=self._latest.quat_wxyz,
                         gyro_rad_s=self._latest.gyro_rad_s,
                         timestamp_s=time.monotonic(),
                         valid=False,
@@ -1297,9 +1297,9 @@ def _axis_map_to_r_bs(axis_map: Optional[list[str]]) -> np.ndarray:
     return r_bs
 
 
-def _quat_xyzw_to_rotmat(quat_xyzw: np.ndarray) -> np.ndarray:
-    """Quaternion (xyzw) to rotation matrix R (sensor/body -> world)."""
-    x, y, z, w = [float(v) for v in quat_xyzw]
+def _quat_wxyz_to_rotmat(quat_wxyz: np.ndarray) -> np.ndarray:
+    """Quaternion (wxyz) to rotation matrix R (sensor/body -> world)."""
+    w, x, y, z = [float(v) for v in quat_wxyz]
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
     wx, wy, wz = w * x, w * y, w * z
@@ -1313,8 +1313,8 @@ def _quat_xyzw_to_rotmat(quat_xyzw: np.ndarray) -> np.ndarray:
     )
 
 
-def _rotmat_to_quat_xyzw(r: np.ndarray) -> np.ndarray:
-    """Rotation matrix to quaternion (xyzw)."""
+def _rotmat_to_quat_wxyz(r: np.ndarray) -> np.ndarray:
+    """Rotation matrix to quaternion (wxyz)."""
     r = np.asarray(r, dtype=np.float32).reshape(3, 3)
     t = float(np.trace(r))
     if t > 0.0:
@@ -1342,4 +1342,4 @@ def _rotmat_to_quat_xyzw(r: np.ndarray) -> np.ndarray:
             x = (r[0, 2] + r[2, 0]) / s
             y = (r[1, 2] + r[2, 1]) / s
             z = 0.25 * s
-    return np.array([x, y, z, w], dtype=np.float32)
+    return np.array([w, x, y, z], dtype=np.float32)

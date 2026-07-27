@@ -8,7 +8,7 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.22.5-standing-quaternion-contract] - 2026-07-26: correct simulation IMU ordering and require tilted-reset recovery
+## [v0.22.5-standing-quaternion-contract] - 2026-07-26: standardize wxyz IMU ordering and require tilted-reset recovery
 
 ### v0.22.4 hardware result and deployment decision
 
@@ -40,19 +40,20 @@ separate proof under the corrected quaternion contract before hardware use.
 ### Proven root cause
 
 MuJoCo `framequat` sensors and free-joint `qpos[3:7]` use quaternion order
-`[w, x, y, z]`. Both WR simulation adapters passed those arrays unchanged into
-`Signals.quat_xyzw`. The BNO085 hardware path correctly supplies
-`[x, y, z, w]`. Consequently, training and deterministic simulation promotion
-treated an upright robot as projected gravity approximately `[0, 0, +1]`,
-whereas hardware supplied approximately `[0, 0, -1]`. The v0.22.4 simulation
-metrics were internally repeatable but did not test the deployed observation
-semantics.
+`[w, x, y, z]`. Before v0.22.5, both WR simulation adapters passed those
+arrays unchanged into the scalar-last `Signals.quat_xyzw` contract. The
+BNO085 hardware path correctly supplied `[x, y, z, w]`. Consequently, training
+and deterministic simulation promotion treated an upright robot as projected
+gravity approximately `[0, 0, +1]`, whereas hardware supplied approximately
+`[0, 0, -1]`. The v0.22.4 simulation metrics were internally repeatable but
+did not test the deployed observation semantics.
 
 ToddlerBot avoids this mismatch by keeping the actor quaternion scalar-first
 end to end: MJX `pipeline_state.x.rot[0]` is wxyz, `_get_imu_noise` accepts and
 returns wxyz, its hardware IMU returns `as_quat(scalar_first=True)`, and
-`RealWorld` consumes it with `scalar_first=True`. WR retains its established
-xyzw policy/hardware contract and converts explicitly at the MuJoCo boundary.
+`RealWorld` consumes it with `scalar_first=True`. WR v0.22.5 now follows that
+same scalar-first contract. The BNO085 adapter converts its native
+`(i, j, k, real)` report once at the device boundary.
 
 References: MuJoCo documentation, **XML Reference / sensor / framequat** and
 **Computation / General framework** (quaternions use `w x y z`); Shi et al.,
@@ -61,11 +62,11 @@ Loco-Manipulation**, arXiv:2502.00893 (2025).
 
 ### Implemented v0.22.5 fix
 
-1. Native MuJoCo and MJX signal adapters convert wxyz to xyzw before building
-   actor observations. Regression coverage verifies both the raw conversion
-   and upright projected-gravity sign.
+1. `Signals`, `ImuSample`, MuJoCo/MJX adapters, runtime diagnostics, and
+   calibration use wxyz. Regression coverage verifies native simulation
+   pass-through, BNO085 boundary conversion, and upright projected gravity.
 2. NumPy/JAX quaternion multiplication and axis-angle helpers now honor their
-   declared xyzw API. This is required before enabling training IMU noise.
+   declared wxyz API. This is required before enabling training IMU noise.
 3. `ppo_standing_home_stabilizer_v0225.yaml` is a fresh-training recipe. It
    keeps the 59-observation contact-free actor, adds ToddlerBot's default
    +/-0.1 rad reset roll/pitch range, modest white IMU noise, and one 20 ms IMU

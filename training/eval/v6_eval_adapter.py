@@ -602,25 +602,41 @@ class V6EvalAdapter:
 
         # Compose R_xyz(roll, pitch, 0) onto the existing root quat.
         # MJCF stores root qpos[3:7] as [w, x, y, z].
-        wx, ix, iy, iz = (
+        root_w, root_x, root_y, root_z = (
             float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6])
         )
         # XYZ extrinsic Euler -> quaternion (matches env helper).
         cr, sr = np.cos(torso_roll * 0.5), np.sin(torso_roll * 0.5)
         cp, sp = np.cos(torso_pitch * 0.5), np.sin(torso_pitch * 0.5)
-        # R_xyz(roll, pitch, 0): q = q_x * q_y * q_z; with z=0 only q_x * q_y.
-        # q_x = (sr, 0, 0, cr); q_y = (0, sp, 0, cp); product (xyzw):
+        # R_xyz(roll, pitch, 0), represented as wxyz.
+        delta_w = cr * cp
         delta_x = sr * cp
         delta_y = cr * sp
         delta_z = -sr * sp
-        delta_w = cr * cp
-        # quat_mul(delta_xyzw, root_xyzw):
-        a, b, c, d = delta_x, delta_y, delta_z, delta_w
-        e, f, g, h = ix, iy, iz, wx
-        new_x = d * e + a * h + b * g - c * f
-        new_y = d * f - a * g + b * h + c * e
-        new_z = d * g + a * f - b * e + c * h
-        new_w = d * h - a * e - b * f - c * g
+        new_w = (
+            delta_w * root_w
+            - delta_x * root_x
+            - delta_y * root_y
+            - delta_z * root_z
+        )
+        new_x = (
+            delta_w * root_x
+            + delta_x * root_w
+            + delta_y * root_z
+            - delta_z * root_y
+        )
+        new_y = (
+            delta_w * root_y
+            - delta_x * root_z
+            + delta_y * root_w
+            + delta_z * root_x
+        )
+        new_z = (
+            delta_w * root_z
+            + delta_x * root_y
+            - delta_y * root_x
+            + delta_z * root_w
+        )
         # Normalize.
         norm = float(np.sqrt(new_x * new_x + new_y * new_y + new_z * new_z + new_w * new_w))
         if norm > 1e-12:

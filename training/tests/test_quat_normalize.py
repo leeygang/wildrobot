@@ -5,7 +5,7 @@ import numpy as np
 from brax import math as brax_math
 
 
-def test_normalize_equivalence_wxyz_xyzw():
+def test_normalize_wxyz_preserves_large_pitch():
     # Example quaternion representing large pitch (w,x,y,z)
     q_wxyz = np.array([0.7071, 0.0, 0.7071, 0.0], dtype=np.float32)
 

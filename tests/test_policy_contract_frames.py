@@ -7,10 +7,10 @@ import pytest
 def test_numpy_frames_interface() -> None:
     from policy_contract.numpy import frames as np_frames
 
-    quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
-    assert np_frames.normalize_quat_xyzw(quat).shape == (4,)
+    assert np_frames.normalize_quat_wxyz(quat).shape == (4,)
     assert np_frames.quat_mul(quat, quat).shape == (4,)
     assert np_frames.axis_angle_to_quat(
         np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0
@@ -26,7 +26,7 @@ def test_numpy_frames_interface() -> None:
         np.array([1.0, 0.0, 0.0], dtype=np.float32), np.pi / 2.0
     )
     expected = np.array(
-        [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)], dtype=np.float32
+        [np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0], dtype=np.float32
     )
     np.testing.assert_allclose(quarter_turn_x, expected, atol=1e-6)
     np.testing.assert_allclose(np_frames.quat_mul(quat, quarter_turn_x), expected)
@@ -40,10 +40,10 @@ def test_jax_frames_interface() -> None:
     jnp = pytest.importorskip("jax.numpy")
     from policy_contract.jax import frames as jax_frames
 
-    quat = jnp.array([0.0, 0.0, 0.0, 1.0], dtype=jnp.float32)
+    quat = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
     vec = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
 
-    assert jax_frames.normalize_quat_xyzw(quat).shape == (4,)
+    assert jax_frames.normalize_quat_wxyz(quat).shape == (4,)
     assert jax_frames.quat_mul(quat, quat).shape == (4,)
     assert jax_frames.axis_angle_to_quat(
         jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), 0.0
@@ -59,7 +59,7 @@ def test_jax_frames_interface() -> None:
         jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), jnp.pi / 2.0
     )
     expected = np.array(
-        [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)], dtype=np.float32
+        [np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0], dtype=np.float32
     )
     np.testing.assert_allclose(np.asarray(quarter_turn_x), expected, atol=1e-6)
     np.testing.assert_allclose(

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 @struct.dataclass
 class Signals:
-    quat_xyzw: jnp.ndarray
+    quat_wxyz: jnp.ndarray
     gyro_rad_s: jnp.ndarray
     joint_pos_rad: jnp.ndarray
     joint_vel_rad_s: jnp.ndarray

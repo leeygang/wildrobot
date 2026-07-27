@@ -13,7 +13,7 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
+from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_wxyz
 
 # v0.20.1: ``required_replay_log_fields`` was deleted with the
 # ``locomotion_log_schema`` module.  Inline the v0.19.x replay log
@@ -21,7 +21,7 @@ from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat
 # previously-captured logs.  v0.20.2 hardware runtime will define a
 # new log schema; update this list when that lands.
 _REQUIRED_REPLAY_LOG_FIELDS = (
-    "quat_xyzw",
+    "quat_wxyz",
     "gyro_rad_s",
     "joint_pos_rad",
     "joint_vel_rad_s",
@@ -69,12 +69,20 @@ def inspect_log(path: Path) -> None:
         raise ValueError(f"No arrays found in {path}")
 
     # Required-by-convention keys (created by run_policy.py)
-    required = list(required_replay_log_fields())
+    required = [k for k in required_replay_log_fields() if k != "quat_wxyz"]
     missing = [k for k in required if k not in data]
+    if "quat_wxyz" not in data and "quat_xyzw" not in data:
+        missing.append("quat_wxyz")
     if missing:
         raise ValueError(f"Missing required keys: {missing}. Found keys: {keys}")
 
-    quat = np.asarray(data["quat_xyzw"], dtype=np.float32)
+    if "quat_wxyz" in data:
+        quat = np.asarray(data["quat_wxyz"], dtype=np.float32)
+    else:
+        legacy_xyzw = np.asarray(data["quat_xyzw"], dtype=np.float32)
+        quat = np.concatenate(
+            [legacy_xyzw[..., 3:4], legacy_xyzw[..., :3]], axis=-1
+        )
     gyro = np.asarray(data["gyro_rad_s"], dtype=np.float32)
     joint_pos = np.asarray(data["joint_pos_rad"], dtype=np.float32)
     joint_vel = np.asarray(data["joint_vel_rad_s"], dtype=np.float32)
@@ -119,7 +127,9 @@ def inspect_log(path: Path) -> None:
         f"std={quat_norm_stats.get('std', float('nan')):.6f})"
     )
 
-    quat_n = np.stack([normalize_quat_xyzw(q) for q in quat.astype(np.float32)], axis=0)
+    quat_n = np.stack(
+        [normalize_quat_wxyz(q) for q in quat.astype(np.float32)], axis=0
+    )
     g_local = np.stack([gravity_local_from_quat(q) for q in quat_n], axis=0)
     g_z = g_local[:, 2]
     g_z_stats = _safe_stats_1d(g_z)

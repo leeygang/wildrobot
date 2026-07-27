@@ -4,7 +4,7 @@ from typing import Protocol
 
 
 class FrameOps(Protocol):
-    def normalize_quat_xyzw(self, quat_xyzw):
+    def normalize_quat_wxyz(self, quat_wxyz):
         ...
 
     def quat_mul(self, quat_a, quat_b):
@@ -13,11 +13,11 @@ class FrameOps(Protocol):
     def axis_angle_to_quat(self, axis, angle):
         ...
 
-    def rotate_vec_by_quat(self, quat_xyzw, vec):
+    def rotate_vec_by_quat(self, quat_wxyz, vec):
         ...
 
-    def gravity_local_from_quat(self, quat_xyzw):
+    def gravity_local_from_quat(self, quat_wxyz):
         ...
 
-    def angvel_heading_local(self, gyro_body, quat_xyzw):
+    def angvel_heading_local(self, gyro_body, quat_wxyz):
         ...

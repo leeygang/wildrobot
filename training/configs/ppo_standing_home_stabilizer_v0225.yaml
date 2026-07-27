@@ -1,7 +1,7 @@
 # =============================================================================
 # WildRobot PPO Standing Home Stabilizer v0.22.5
 # =============================================================================
-# Fresh training after correcting the MuJoCo wxyz -> policy xyzw boundary:
+# Fresh training after standardizing the simulation/hardware contract on wxyz:
 #   - actor remains the 59-value, contact-free v0.22.3 contract;
 #   - reset roll/pitch covers ToddlerBot's default +/-0.1 rad range;
 #   - modest IMU noise and one control-step latency improve transfer coverage.

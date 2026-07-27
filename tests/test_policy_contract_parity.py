@@ -217,7 +217,7 @@ def test_build_observation_signals_parity(spec: PolicySpec) -> None:
     velocity_cmd = np.array([0.5], dtype=np.float32)
 
     signals_np = SignalsNp(
-        quat_xyzw=quat,
+        quat_wxyz=quat,
         gyro_rad_s=gyro,
         joint_pos_rad=joint_pos,
         joint_vel_rad_s=joint_vel,
@@ -226,7 +226,7 @@ def test_build_observation_signals_parity(spec: PolicySpec) -> None:
     state_np = PolicyStateNp(prev_action=prev_action)
 
     signals_jax = SignalsJax(
-        quat_xyzw=jax.asarray(quat),
+        quat_wxyz=jax.asarray(quat),
         gyro_rad_s=jax.asarray(gyro),
         joint_pos_rad=jax.asarray(joint_pos),
         joint_vel_rad_s=jax.asarray(joint_vel),

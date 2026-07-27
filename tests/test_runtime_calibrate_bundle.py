@@ -127,7 +127,7 @@ def test_wait_for_imu_stream_error_includes_diagnostics() -> None:
             return SimpleNamespace(
                 timestamp_s=0.0,
                 valid=False,
-                quat_xyzw=[0.0, 0.0, 0.0, 1.0],
+                quat_wxyz=[1.0, 0.0, 0.0, 0.0],
                 gyro_rad_s=[0.0, 0.0, 0.0],
             )
 
@@ -151,7 +151,7 @@ def test_wait_for_imu_stream_accepts_slow_first_valid_sample() -> None:
             return SimpleNamespace(
                 timestamp_s=123.0,
                 valid=True,
-                quat_xyzw=[0.0, 0.0, 0.0, 1.0],
+                quat_wxyz=[1.0, 0.0, 0.0, 0.0],
                 gyro_rad_s=[0.0, 0.0, 0.0],
             )
 
@@ -174,7 +174,7 @@ def test_capture_imu_series_keeps_only_fresh_valid_samples(monkeypatch) -> None:
         return SimpleNamespace(
             timestamp_s=ts,
             valid=valid,
-            quat_xyzw=[gyro_x, 0.0, 0.0, 1.0],
+            quat_wxyz=[1.0, gyro_x, 0.0, 0.0],
             gyro_rad_s=[gyro_x, 0.0, 0.0],
         )
 
@@ -205,7 +205,7 @@ def test_capture_imu_series_keeps_only_fresh_valid_samples(monkeypatch) -> None:
 
     assert last_ts == 3.0
     np.testing.assert_allclose(gyro[:, 0], [1.0, 4.0])
-    np.testing.assert_allclose(quat[:, 0], [1.0, 4.0])
+    np.testing.assert_allclose(quat[:, 1], [1.0, 4.0])
 
 
 def test_imu_axis_calibration_uses_background_reader() -> None:

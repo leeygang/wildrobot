@@ -2074,14 +2074,14 @@ def _clamp_rad_to_range(rad: float, rad_range: Tuple[float, float]) -> float:
     return float(np.clip(float(rad), float(rad_range[0]), float(rad_range[1])))
 
 
-def _quat_xyzw_to_rpy_rad(quat_xyzw: Iterable[float]) -> Optional[Tuple[float, float, float]]:
-    quat = np.asarray(list(quat_xyzw), dtype=np.float64).reshape(-1)
+def _quat_wxyz_to_rpy_rad(quat_wxyz: Iterable[float]) -> Optional[Tuple[float, float, float]]:
+    quat = np.asarray(list(quat_wxyz), dtype=np.float64).reshape(-1)
     if quat.size != 4 or not np.all(np.isfinite(quat)):
         return None
     norm = float(np.linalg.norm(quat))
     if norm <= 1e-9:
         return None
-    x, y, z, w = (quat / norm).tolist()
+    w, x, y, z = (quat / norm).tolist()
 
     sinr_cosp = 2.0 * (w * x + y * z)
     cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
@@ -2096,14 +2096,14 @@ def _quat_xyzw_to_rpy_rad(quat_xyzw: Iterable[float]) -> Optional[Tuple[float, f
     return roll, pitch, yaw
 
 
-def _quat_xyzw_tilt_rad(quat_xyzw: Iterable[float]) -> Optional[float]:
-    quat = np.asarray(list(quat_xyzw), dtype=np.float64).reshape(-1)
+def _quat_wxyz_tilt_rad(quat_wxyz: Iterable[float]) -> Optional[float]:
+    quat = np.asarray(list(quat_wxyz), dtype=np.float64).reshape(-1)
     if quat.size != 4 or not np.all(np.isfinite(quat)):
         return None
     norm = float(np.linalg.norm(quat))
     if norm <= 1e-9:
         return None
-    x, y, _, _ = (quat / norm).tolist()
+    _, x, y, _ = (quat / norm).tolist()
     body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
     return math.acos(max(-1.0, min(1.0, body_z_world_z)))
 
@@ -2112,9 +2112,9 @@ def _format_calibrate_home_imu_status(sample) -> str:
     valid = getattr(sample, "valid", None)
     fresh = getattr(sample, "fresh", None)
     timestamp_s = getattr(sample, "timestamp_s", None)
-    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float64).reshape(-1)
-    rpy = _quat_xyzw_to_rpy_rad(quat)
-    tilt = _quat_xyzw_tilt_rad(quat)
+    quat = np.asarray(getattr(sample, "quat_wxyz", []), dtype=np.float64).reshape(-1)
+    rpy = _quat_wxyz_to_rpy_rad(quat)
+    tilt = _quat_wxyz_tilt_rad(quat)
     if rpy is None or tilt is None:
         return (
             "  IMU body_angle: unavailable "
@@ -2440,10 +2440,10 @@ def _expected_sensor_axis_for_body(body_axis: str) -> tuple[str, np.ndarray]:
     raise ValueError(f"Unknown body axis: {body_axis}")
 
 
-def _apply_upside_down_quat(quat_xyzw: List[float]) -> List[float]:
+def _apply_upside_down_quat(quat_wxyz: List[float]) -> List[float]:
     # Must match runtime/wr_runtime/hardware/bno085.py behavior.
-    x, y, z, w = [float(v) for v in quat_xyzw]
-    return [x, -y, -z, w]
+    w, x, y, z = [float(v) for v in quat_wxyz]
+    return [w, x, -y, -z]
 
 
 def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down: bool):
@@ -2502,7 +2502,7 @@ def calibrate_imu_upside_down(
     This does not solve arbitrary mounting rotations; it only helps detect an inverted mount.
     """
     try:
-        from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_xyzw
+        from policy_contract.numpy.frames import gravity_local_from_quat, normalize_quat_wxyz
         from runtime.wr_runtime.hardware.bno085 import BNO085IMU
     except Exception as exc:
         raise RuntimeError(
@@ -2583,10 +2583,12 @@ def calibrate_imu_upside_down(
                 time.sleep(0.01)
                 continue
 
-            q = normalize_quat_xyzw(np.asarray(s.quat_xyzw, dtype=np.float32))
+            q = normalize_quat_wxyz(np.asarray(s.quat_wxyz, dtype=np.float32))
             g0 = gravity_local_from_quat(q)
             g1 = gravity_local_from_quat(
-                normalize_quat_xyzw(np.asarray(_apply_upside_down_quat(q.tolist()), dtype=np.float32))
+                normalize_quat_wxyz(
+                    np.asarray(_apply_upside_down_quat(q.tolist()), dtype=np.float32)
+                )
             )
             g_normal.append(g0)
             g_flipped.append(g1)
@@ -2774,7 +2776,7 @@ def _capture_imu_series(
         if timestamp_changed and valid:
             stale_since = time.monotonic()
             samples.append(gyro_sample)
-            quat_samples.append(np.asarray(s.quat_xyzw, dtype=np.float32))
+            quat_samples.append(np.asarray(s.quat_wxyz, dtype=np.float32))
         elif time.monotonic() - stale_since > stall_timeout_s:
             raise RuntimeError(
                 "IMU sample stream stalled during gyro capture (no fresh valid samples). "
@@ -2854,7 +2856,7 @@ def _format_imu_debug(imu, sample) -> str:
         f"valid={getattr(sample, 'valid', None)}",
         f"timestamp_s={getattr(sample, 'timestamp_s', None)}",
     ]
-    quat = np.asarray(getattr(sample, "quat_xyzw", []), dtype=np.float32).reshape(-1)
+    quat = np.asarray(getattr(sample, "quat_wxyz", []), dtype=np.float32).reshape(-1)
     if quat.size == 4:
         parts.append(f"quat_norm={float(np.linalg.norm(quat)):.3f}")
         parts.append(f"quat={np.round(quat, 4).tolist()}")
@@ -3291,7 +3293,7 @@ def _measure_axis_once(
     baseline_ref_quat = (
         baseline_quat[-1].astype(np.float32)
         if baseline_quat.shape[0] > 0
-        else np.array([0, 0, 0, 1], dtype=np.float32)
+        else np.array([1, 0, 0, 0], dtype=np.float32)
     )
 
     if action_hint:
@@ -3350,7 +3352,7 @@ def _measure_axis_once(
                 q = q.astype(np.float32)
                 n = float(np.linalg.norm(q))
                 if not np.isfinite(n) or n < 1e-6:
-                    return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
                 return (q / n).astype(np.float32)
 
             def quat_normalize_batch(q: np.ndarray) -> np.ndarray:
@@ -3358,37 +3360,37 @@ def _measure_axis_once(
                 n = np.linalg.norm(q, axis=1, keepdims=True).astype(np.float32)
                 safe = n > 1e-6
                 out = np.zeros_like(q, dtype=np.float32)
-                out[:, 3] = 1.0
+                out[:, 0] = 1.0
                 out[safe[:, 0]] = (q[safe[:, 0]] / n[safe[:, 0]]).astype(np.float32)
                 return out
 
-            def quat_conj_xyzw(q: np.ndarray) -> np.ndarray:
-                return np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float32)
+            def quat_conj_wxyz(q: np.ndarray) -> np.ndarray:
+                return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float32)
 
-            def quat_mul_xyzw_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-                ax, ay, az, aw = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-                bx, by, bz, bw = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+            def quat_mul_wxyz_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+                aw, ax, ay, az = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+                bw, bx, by, bz = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
                 return np.stack(
                     [
+                        aw * bw - ax * bx - ay * by - az * bz,
                         aw * bx + ax * bw + ay * bz - az * by,
                         aw * by - ax * bz + ay * bw + az * bx,
                         aw * bz + ax * by - ay * bx + az * bw,
-                        aw * bw - ax * bx - ay * by - az * bz,
                     ],
                     axis=1,
                 ).astype(np.float32)
 
             _log_line(f"{body_axis_name}: axis inference step: normalize")
             q0 = quat_normalize_vec(baseline_ref_quat)
-            q0_inv = quat_conj_xyzw(q0)
+            q0_inv = quat_conj_wxyz(q0)
             motion_q = quat_normalize_batch(motion_quat)
 
             _log_line(f"{body_axis_name}: axis inference step: relative quat")
-            rel = quat_mul_xyzw_batch(motion_q, q0_inv.reshape(1, 4))
+            rel = quat_mul_wxyz_batch(motion_q, q0_inv.reshape(1, 4))
             rel = quat_normalize_batch(rel)
 
             _log_line(f"{body_axis_name}: axis inference step: dominant axis")
-            w = np.clip(np.abs(rel[:, 3]), 0.0, 1.0).astype(np.float32)
+            w = np.clip(np.abs(rel[:, 0]), 0.0, 1.0).astype(np.float32)
             ang = (2.0 * np.arccos(w)).astype(np.float32)
             i_max = int(np.argmax(ang))
             _log_line(f"{body_axis_name}: quat_max_relative_angle_rad={float(ang[i_max]):.6f}")
@@ -3399,7 +3401,7 @@ def _measure_axis_once(
                 f"{np.round(motion_q[mid_idx], 4).tolist()} / {np.round(motion_q[-1], 4).tolist()}"
             )
             q_rel = rel[i_max].astype(np.float32)
-            v = q_rel[:3].astype(np.float32)
+            v = q_rel[1:4].astype(np.float32)
             v_norm = float(np.linalg.norm(v))
             quat_result: Optional[tuple[float, np.ndarray]] = None
             if not np.isfinite(v_norm) or v_norm < 1e-6:
@@ -3472,7 +3474,7 @@ def _calibrate_axis_from_motion(
         baseline_ref_quat = (
             baseline_quat[-1].astype(np.float32)
             if baseline_quat.shape[0] > 0
-            else np.array([0, 0, 0, 1], dtype=np.float32)
+            else np.array([1, 0, 0, 0], dtype=np.float32)
         )
 
         print("", flush=True)
@@ -3494,7 +3496,7 @@ def _calibrate_axis_from_motion(
             q = q.astype(np.float32)
             n = float(np.linalg.norm(q))
             if not np.isfinite(n) or n < 1e-6:
-                return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
             return (q / n).astype(np.float32)
 
         def quat_normalize_batch(q: np.ndarray) -> np.ndarray:
@@ -3502,38 +3504,38 @@ def _calibrate_axis_from_motion(
             n = np.linalg.norm(q, axis=1, keepdims=True).astype(np.float32)
             safe = n > 1e-6
             out = np.zeros_like(q, dtype=np.float32)
-            out[:, 3] = 1.0
+            out[:, 0] = 1.0
             out[safe[:, 0]] = (q[safe[:, 0]] / n[safe[:, 0]]).astype(np.float32)
             return out
 
-        def quat_conj_xyzw(q: np.ndarray) -> np.ndarray:
-            return np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float32)
+        def quat_conj_wxyz(q: np.ndarray) -> np.ndarray:
+            return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float32)
 
-        def quat_mul_xyzw_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-            """Quaternion multiply (xyzw) for batch a (N,4) and b (4,) or (N,4)."""
-            ax, ay, az, aw = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
-            bx, by, bz, bw = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+        def quat_mul_wxyz_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+            """Quaternion multiply (wxyz) for batch a and broadcast b."""
+            aw, ax, ay, az = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+            bw, bx, by, bz = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
             return np.stack(
                 [
+                    aw * bw - ax * bx - ay * by - az * bz,
                     aw * bx + ax * bw + ay * bz - az * by,
                     aw * by - ax * bz + ay * bw + az * bx,
                     aw * bz + ax * by - ay * bx + az * bw,
-                    aw * bw - ax * bx - ay * by - az * bz,
                 ],
                 axis=1,
             ).astype(np.float32)
 
         q0 = quat_normalize_vec(baseline_ref_quat)
-        q0_inv = quat_conj_xyzw(q0)
+        q0_inv = quat_conj_wxyz(q0)
         motion_q = quat_normalize_batch(motion_quat)
-        rel = quat_mul_xyzw_batch(motion_q, q0_inv.reshape(1, 4))
+        rel = quat_mul_wxyz_batch(motion_q, q0_inv.reshape(1, 4))
         rel = quat_normalize_batch(rel)
 
-        w = np.clip(np.abs(rel[:, 3]), 0.0, 1.0).astype(np.float32)
+        w = np.clip(np.abs(rel[:, 0]), 0.0, 1.0).astype(np.float32)
         ang = (2.0 * np.arccos(w)).astype(np.float32)
         i_max = int(np.argmax(ang))
         q_rel = rel[i_max].astype(np.float32)
-        v = q_rel[:3].astype(np.float32)
+        v = q_rel[1:4].astype(np.float32)
         v_norm = float(np.linalg.norm(v))
         if not np.isfinite(v_norm) or v_norm < 1e-6:
             print(

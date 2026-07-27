@@ -7,7 +7,7 @@ from typing import List, Optional
 import numpy as np
 
 from policy_contract.io import RobotIO
-from policy_contract.numpy.frames import normalize_quat_xyzw
+from policy_contract.numpy.frames import normalize_quat_wxyz
 from policy_contract.numpy.signals import Signals
 
 from .actuators import Actuators
@@ -172,10 +172,12 @@ class HardwareRobotIO(RobotIO[Signals]):
         footswitch_s = time.monotonic() - foot_t0
         signal_t0 = time.monotonic()
         foot = np.array(foot_sample.switches, dtype=np.float32)
-        quat_xyzw = normalize_quat_xyzw(np.asarray(imu_sample.quat_xyzw, dtype=np.float32))
+        quat_wxyz = normalize_quat_wxyz(
+            np.asarray(imu_sample.quat_wxyz, dtype=np.float32)
+        )
 
         signals = Signals(
-            quat_xyzw=quat_xyzw,
+            quat_wxyz=quat_wxyz,
             gyro_rad_s=np.asarray(imu_sample.gyro_rad_s, dtype=np.float32),
             joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
             joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),

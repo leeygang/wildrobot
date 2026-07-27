@@ -71,9 +71,6 @@ class MujocoSignalsAdapter(NumpySignalsProvider[Signals]):
         quat_wxyz = _read_sensor_or_none(mj_data, self._orientation_sensor)
         if quat_wxyz is None:
             quat_wxyz = mj_data.qpos[3:7]
-        # MuJoCo framequat sensors and free-joint qpos use [w, x, y, z].
-        # Policy Signals use [x, y, z, w], matching the hardware IMU.
-        quat_xyzw = np.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
 
         gyro = _read_sensor_or_none(mj_data, self._gyro_sensor)
         if gyro is None:
@@ -97,7 +94,7 @@ class MujocoSignalsAdapter(NumpySignalsProvider[Signals]):
             )
 
         return Signals(
-            quat_xyzw=np.asarray(quat_xyzw, dtype=np.float32),
+            quat_wxyz=np.asarray(quat_wxyz, dtype=np.float32),
             gyro_rad_s=np.asarray(gyro, dtype=np.float32),
             joint_pos_rad=np.asarray(joint_pos, dtype=np.float32),
             joint_vel_rad_s=np.asarray(joint_vel, dtype=np.float32),

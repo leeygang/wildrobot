@@ -20,7 +20,7 @@ class _ZeroPolicy:
 def _signals(spec, *, joint_pos=None) -> Signals:
     n = spec.model.action_dim
     return Signals(
-        quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         gyro_rad_s=np.arange(3, dtype=np.float32) * 0.01,
         joint_pos_rad=(
             np.zeros(n, dtype=np.float32) if joint_pos is None else joint_pos
@@ -101,7 +101,7 @@ def test_proprio_history_rolls_oldest_to_newest(v8_spec, runtime_policy_config):
     runner.compose_and_apply(np.ones(action_dim, dtype=np.float32))
     post = _signals(v8_spec)
     post = Signals(
-        quat_xyzw=post.quat_xyzw,
+        quat_wxyz=post.quat_wxyz,
         gyro_rad_s=np.array([1.0, 2.0, 3.0], dtype=np.float32),
         joint_pos_rad=post.joint_pos_rad,
         joint_vel_rad_s=post.joint_vel_rad_s,

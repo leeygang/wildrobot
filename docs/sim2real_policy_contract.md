@@ -140,7 +140,7 @@ training/train.py
 runtime/wr_runtime/control/run_policy.py
   ├─ HardwareRobotIO (hardware IO → Signals; ctrl → hardware commands)
   │   └─ runtime/wr_runtime/hardware/robot_io.py
-  │        ├─ read() -> Signals (quat_xyzw, gyro_rad_s, joint_pos/vel, foot switches, ...)
+  │        ├─ read() -> Signals (quat_wxyz, gyro_rad_s, joint_pos/vel, foot switches, ...)
   │        └─ write_ctrl(ctrl_targets_rad) -> sends to actuators (drivers)
   ├─ policy_contract (raw signals → obs; action → ctrl)
   │   ├─ policy_contract/numpy/obs.py
@@ -498,7 +498,7 @@ Minimum required checks:
 The IO layer (`SimIO` / `HardwareIO`) should produce a `Signals` object with raw physical units.
 
 Stage 1 recommended minimal signals:
-- `quat_xyzw` (4,) float32
+- `quat_wxyz` (4,) float32
 - `gyro_rad_s` (3,) float32
 - `joint_pos_rad` (N,) float32
 - `joint_vel_rad_s` (N,) float32 (or zeros if not available)
@@ -536,7 +536,7 @@ class RobotIO(Protocol):
 @dataclass(frozen=True)
 class Signals:
     timestamp_s: float
-    quat_xyzw: ArrayLike        # (4,)
+    quat_wxyz: ArrayLike        # (4,)
     gyro_rad_s: ArrayLike       # (3,)
     joint_pos_rad: ArrayLike    # (N,)
     joint_vel_rad_s: ArrayLike  # (N,) (zeros if unavailable)
@@ -775,8 +775,8 @@ aligned with training and enforced by `policy_contract`.
 #### Contract expectation (what the policy sees)
 
 The actor observation contract assumes the IMU signals are expressed in the **robot body frame**:
-- `Signals.quat_xyzw`: quaternion in `xyzw` order, representing the robot body attitude in a convention compatible with
-  `policy_contract.*.frames.gravity_local_from_quat(quat_xyzw)` (upright → gravity_local ≈ `[0, 0, -1]`).
+- `Signals.quat_wxyz`: quaternion in `wxyz` order, representing the robot body attitude in a convention compatible with
+  `policy_contract.*.frames.gravity_local_from_quat(quat_wxyz)` (upright → gravity_local ≈ `[0, 0, -1]`).
 - `Signals.gyro_rad_s`: angular velocity `[wx, wy, wz]` in rad/s about body X/Y/Z.
   - yaw-left should yield `wz > 0`, pitch-down should yield `wy > 0`, roll-right should yield `wx > 0`.
 
@@ -787,7 +787,7 @@ The actor observation contract assumes the IMU signals are expressed in the **ro
 
 Runtime should treat IMU mounting corrections as **hardware/driver calibration**, not policy logic:
 - `bno085.upside_down` and `bno085.axis_map` belong in runtime config and are applied in the IMU driver.
-- The driver returns body-frame IMU outputs (`quat_xyzw_body`, `gyro_body`) so every consumer (policy loop, calibration tools, loggers)
+- The driver returns body-frame IMU outputs (`quat_wxyz_body`, `gyro_body`) so every consumer (policy loop, calibration tools, loggers)
   sees consistent body-frame semantics.
 - `HardwareRobotIO.read()` should remain an aggregator: it packages already-calibrated device outputs into `Signals`.
 
@@ -814,7 +814,7 @@ This mirrors the actuator design: servo offsets/directions are applied in the ac
 
 4) **Sanity checks (must pass before motors)**
    - Upright and still:
-     - `gravity_local_from_quat(quat_xyzw)` should be close to `[0, 0, -1]`.
+     - `gravity_local_from_quat(quat_wxyz)` should be close to `[0, 0, -1]`.
      - `gyro_rad_s` should be near zero (small noise OK).
    - Small manual motions:
      - yaw-left → `gyro_z` positive and dominant
@@ -879,7 +879,7 @@ Key boundary:
 #### Validation gates (recommended)
 
 Add (or keep) lightweight “bring-up” checks that fail fast:
-- **IMU contract gate**: in runtime startup, validate that `Signals.quat_xyzw` has unit norm (within tolerance) and produces reasonable
+- **IMU contract gate**: in runtime startup, validate that `Signals.quat_wxyz` has unit norm (within tolerance) and produces reasonable
   `gravity_local` when upright.
 - **Sign gate**: optional runtime “diagnostic mode” that prints dominant gyro axis/sign during manual yaw/pitch/roll motions.
 
@@ -1067,7 +1067,7 @@ This keeps `calib.py` stable, testable, and shareable across sim, runtime, and v
   - implements the shared `RobotIO` interface (`read()` / `write_ctrl()` / `close()`)
   - composes device drivers (IMU/actuators/foot switches) and returns contract-friendly `Signals`
 - `Signals` (in `policy_contract/numpy/signals.py`)
-  - `quat_xyzw`, `gyro_rad_s`, `joint_pos_rad`, `joint_vel_rad_s`, `foot_switches`, `timestamp_s`
+  - `quat_wxyz`, `gyro_rad_s`, `joint_pos_rad`, `joint_vel_rad_s`, `foot_switches`, `timestamp_s`
 - `run_policy.py` (in `runtime/wr_runtime/control/run_policy.py`)
   - CLI control loop: `Signals` → `policy_contract.numpy.obs.build_observation` → ONNX inference → `policy_contract.calib.action_to_ctrl`
   - fail-fast validation via `runtime/wr_runtime/validation/startup_validator.py`

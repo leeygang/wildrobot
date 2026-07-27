@@ -80,7 +80,7 @@ class ExternalActuatorRobotIO:
             joint_pos[idx] = value
 
         return Signals(
-            quat_xyzw=np.asarray(signals.quat_xyzw, dtype=np.float32),
+            quat_wxyz=np.asarray(signals.quat_wxyz, dtype=np.float32),
             gyro_rad_s=np.asarray(signals.gyro_rad_s, dtype=np.float32),
             joint_pos_rad=joint_pos,
             joint_vel_rad_s=joint_vel,

@@ -12,7 +12,7 @@ class _DummyRobotIO(RobotIO[Signals]):
 
     def read(self) -> Signals:
         return Signals(
-            quat_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+            quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             gyro_rad_s=np.zeros(3, dtype=np.float32),
             joint_pos_rad=np.zeros(1, dtype=np.float32),
             joint_vel_rad_s=np.zeros(1, dtype=np.float32),
@@ -26,5 +26,5 @@ class _DummyRobotIO(RobotIO[Signals]):
 def test_robot_io_interface() -> None:
     io = _DummyRobotIO()
     sig = io.read()
-    assert sig.quat_xyzw.shape == (4,)
+    assert sig.quat_wxyz.shape == (4,)
     io.write_ctrl(np.zeros(1, dtype=np.float32))

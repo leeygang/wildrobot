@@ -491,7 +491,7 @@ def main() -> int:
             read_t0 = time.monotonic()
             sample = imu.read()
             read_s = time.monotonic() - read_t0
-            q = np.asarray(sample.quat_xyzw, dtype=np.float32)
+            q = np.asarray(sample.quat_wxyz, dtype=np.float32)
             g = np.asarray(sample.gyro_rad_s, dtype=np.float32)
             ts = getattr(sample, "timestamp_s", None)
             diag = getattr(imu, "diag", {})

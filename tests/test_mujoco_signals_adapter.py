@@ -38,15 +38,15 @@ def test_mujoco_signals_adapter_shapes() -> None:
     )
 
     signals = adapter.read(mj_data)
-    assert signals.quat_xyzw.shape == (4,)
+    assert signals.quat_wxyz.shape == (4,)
     assert signals.gyro_rad_s.shape == (3,)
     assert signals.joint_pos_rad.shape == (len(policy_spec.robot.actuator_names),)
     assert signals.joint_vel_rad_s.shape == (len(policy_spec.robot.actuator_names),)
     assert signals.foot_switches.shape == (4,)
-    assert signals.quat_xyzw.dtype == signals.joint_pos_rad.dtype
+    assert signals.quat_wxyz.dtype == signals.joint_pos_rad.dtype
 
 
-def test_mujoco_signals_adapter_converts_framequat_to_xyzw() -> None:
+def test_mujoco_signals_adapter_preserves_framequat_wxyz() -> None:
     mujoco, mj_model, mj_data, robot_cfg, policy_spec = _load_assets()
     adapter = MujocoSignalsAdapter(
         mj_model=mj_model,
@@ -60,14 +60,12 @@ def test_mujoco_signals_adapter_converts_framequat_to_xyzw() -> None:
     )
     sensor_adr = int(mj_model.sensor_adr[sensor_id])
     quat_wxyz = mj_data.sensordata[sensor_adr : sensor_adr + 4]
-    expected_xyzw = np.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
-
     signals = adapter.read(mj_data)
 
-    np.testing.assert_allclose(signals.quat_xyzw, expected_xyzw, atol=1e-7)
+    np.testing.assert_allclose(signals.quat_wxyz, quat_wxyz, atol=1e-7)
     from policy_contract.numpy.frames import gravity_local_from_quat
 
-    gravity_local = gravity_local_from_quat(signals.quat_xyzw)
+    gravity_local = gravity_local_from_quat(signals.quat_wxyz)
     assert gravity_local[2] < -0.99
 
 
@@ -87,9 +85,8 @@ def test_mjx_signals_adapter_matches_native_quaternion_contract() -> None:
     )
     sensor_adr = int(mj_model.sensor_adr[sensor_id])
     quat_wxyz = mj_data.sensordata[sensor_adr : sensor_adr + 4]
-    expected_xyzw = np.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
     np.testing.assert_allclose(
-        np.asarray(signals.quat_xyzw), expected_xyzw, atol=1e-7
+        np.asarray(signals.quat_wxyz), quat_wxyz, atol=1e-7
     )
 
 

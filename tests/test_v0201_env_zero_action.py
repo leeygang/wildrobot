@@ -912,7 +912,7 @@ def test_smoke9c_reset_perturbation_only_touches_leg_pitch_joints(
 
 
 def test_smoke9c_euler_xyz_quat_matches_scipy() -> None:
-    """``_euler_xyz_to_quat_xyzw`` must match scipy's lowercase
+    """``_euler_xyz_to_quat_wxyz`` must match scipy's lowercase
     ``'xyz'`` convention — which scipy defines as **EXTRINSIC**
     (rotations about FIXED world axes), the convention TB uses at
     ``toddlerbot/locomotion/mjx_env.py:1044``
@@ -940,18 +940,18 @@ def test_smoke9c_euler_xyz_quat_matches_scipy() -> None:
     ]
     for r, p, y in cases:
         mine = np.asarray(
-            WildRobotEnv._euler_xyz_to_quat_xyzw(
+            WildRobotEnv._euler_xyz_to_quat_wxyz(
                 jp.float32(r), jp.float32(p), jp.float32(y)
             )
         )
-        scipy_xyzw = R.from_euler("xyz", [r, p, y]).as_quat()
+        scipy_wxyz = R.from_euler("xyz", [r, p, y]).as_quat(scalar_first=True)
         np.testing.assert_allclose(
             mine,
-            scipy_xyzw,
+            scipy_wxyz,
             atol=1e-6,
             err_msg=(
                 f"euler({r}, {p}, {y}) → quat mismatch with scipy "
-                f"'xyz' (intrinsic): mine={mine}, scipy={scipy_xyzw}.  "
+                f"'xyz' (intrinsic): mine={mine}, scipy={scipy_wxyz}.  "
                 f"Pin lost — see test docstring for the previous bug."
             ),
         )

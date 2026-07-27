@@ -45,8 +45,8 @@ def _body_id(model, name: str) -> int:
 
 def _body_rpy(data, body_id: int) -> tuple[float, float, float]:
     quat_wxyz = data.xquat[body_id]
-    quat_xyzw = np.concatenate([quat_wxyz[1:], quat_wxyz[:1]])
-    roll, pitch, yaw = R.from_quat(quat_xyzw).as_euler("xyz")
+    quat_scipy_xyzw = np.concatenate([quat_wxyz[1:], quat_wxyz[:1]])
+    roll, pitch, yaw = R.from_quat(quat_scipy_xyzw).as_euler("xyz")
     return float(roll), float(pitch), float(yaw)
 
 
