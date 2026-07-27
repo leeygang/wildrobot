@@ -122,9 +122,6 @@ def export_policy_bundle(
         hardware_config_path,
         runtime_policy_config_path,
     ]
-    realism_profile_path = output_dir / "realism_profile.json"
-    if realism_profile_path.exists():
-        checksum_paths.append(realism_profile_path)
     checksums = _build_checksums(checksum_paths)
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
 
@@ -154,15 +151,10 @@ def _export_hardware_config(
         "control_hz",
         "velocity_cmd",
         "yaw_rate_cmd",
+        "realism_profile_path",
     ):
         data.pop(key, None)
     data["robot_config_path"] = "./mujoco_robot_config.json"
-
-    realism_source = project_root / "assets" / "v2" / "realism_profile_v0.19.1.json"
-    if data.get("realism_profile_path") is not None and realism_source.exists():
-        realism_name = "realism_profile.json"
-        shutil.copy2(realism_source, output_dir / realism_name)
-        data["realism_profile_path"] = f"./{realism_name}"
 
     out_path = output_dir / "hardware_config.json"
     out_path.write_text(json.dumps(data, indent=2) + "\n")

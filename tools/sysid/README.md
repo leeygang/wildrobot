@@ -63,7 +63,6 @@ Each run writes:
   - sample rate
   - runtime config path
   - asset/runtime context
-  - realism profile reference (when configured)
 
 ## Notes
 

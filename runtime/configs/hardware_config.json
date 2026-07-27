@@ -1,5 +1,4 @@
 {
-  "realism_profile_path": "../../assets/v2/realism_profile_v0.19.1.json",
   "servo_controller": {
     "type": "hiwonder_ttl_bus",
     "baudrate": 115200,

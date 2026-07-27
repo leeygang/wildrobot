@@ -54,13 +54,13 @@ def test_hardware_config_template_matches_current_deployment_calibration() -> No
     template = json.loads(_HARDWARE_CONFIG.read_text())
     deployed = json.loads(_DEPLOYED_HARDWARE_CONFIG.read_text())
     for payload in (template, deployed):
-        payload.pop("realism_profile_path")
         payload.pop("robot_config_path")
     assert template == deployed
 
     raw_template = json.loads(_HARDWARE_CONFIG.read_text())
-    for key in ("realism_profile_path", "robot_config_path"):
-        assert (_HARDWARE_CONFIG.parent / raw_template[key]).resolve().is_file()
+    assert (
+        _HARDWARE_CONFIG.parent / raw_template["robot_config_path"]
+    ).resolve().is_file()
 
 
 def test_calibrate_default_config_path_is_repo_root_relative(monkeypatch, tmp_path) -> None:

@@ -25,14 +25,13 @@ uv run python ../post_process.py wildrobot.xml
 
 This writes `assets/v2/mujoco_robot_config.json` next to the MJCF and (if available) runs a basic validation.
 
-## Digital-twin realism profiles (`v0.19.1`)
+## Actuator dynamics
 
-Versioned realism parameters for actuator and sensor modeling live here:
-
-- `realism_profile_v0.19.1.json`: typed baseline profile with actuator delay/backlash/frictionloss/armature/effective output limits and sensor noise/latency/dropout parameters
-- `realism_profiles.json`: profile registry and default selector
-
-These files are intentionally JSON and diff-friendly so SysID updates can be reviewed in git.
+Nominal servo damping, armature, friction loss, position gains, and torque limits
+are defined in `joints_properties.xml`. The Onshape export config applies the
+`htd45hServo` class to every actuated joint and merges those properties into
+`wildrobot.xml`. Per-joint metadata, including maximum velocity, lives in the
+generated `mujoco_robot_config.json`.
 
 ## Actuator order (ABI)
 

@@ -78,15 +78,25 @@ def test_deployment_checksums_cover_every_artifact(bundle: Path) -> None:
 
 
 def test_policy_export_uses_canonical_hardware_config(tmp_path: Path) -> None:
-    output = _export_hardware_config(output_dir=tmp_path)
-    exported = json.loads(output.read_text())
     template = json.loads(Path("runtime/configs/hardware_config.json").read_text())
+    legacy_template = dict(template)
+    legacy_template["realism_profile_path"] = "./realism_profile.json"
+    source_path = tmp_path / "legacy_hardware_config.json"
+    source_path.write_text(json.dumps(legacy_template))
+    output_dir = tmp_path / "bundle"
+    output_dir.mkdir()
+
+    output = _export_hardware_config(
+        output_dir=output_dir,
+        source_path=source_path,
+    )
+    exported = json.loads(output.read_text())
 
     assert exported["servo_controller"] == template["servo_controller"]
     assert exported["servo_read_schedule"] == template["servo_read_schedule"]
     assert exported["robot_config_path"] == "./mujoco_robot_config.json"
-    assert exported["realism_profile_path"] == "./realism_profile.json"
-    assert (tmp_path / "realism_profile.json").is_file()
+    assert "realism_profile_path" not in exported
+    assert not (output_dir / "realism_profile.json").exists()
 
 
 def test_walking_transition_blends_from_final_standing_target() -> None:

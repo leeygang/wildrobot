@@ -24,7 +24,6 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
 from configs import WildRobotRuntimeConfig
 from runtime.wr_runtime.hardware.actuators import ServoModel
 from runtime.wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
-from runtime.wr_runtime.validation.realism_profile import load_runtime_realism_profile
 
 
 @dataclass(frozen=True)
@@ -349,7 +348,6 @@ def main() -> None:
     runtime_config = Path(args.runtime_config)
     cfg, servo_center_rad = _load_servo_config(runtime_config, args.joint_name)
 
-    runtime_realism_profile = load_runtime_realism_profile(cfg)
     metadata = {
         "captured_at_utc": datetime.now(UTC).isoformat(),
         "runtime_config_path": str(runtime_config),
@@ -364,11 +362,6 @@ def main() -> None:
         "runtime_servo_baudrate": int(cfg.servo_controller.baudrate),
         "joint_servo_id": int(cfg.servo_controller.get_servo(args.joint_name).id),
     }
-    if cfg.realism_profile_path is not None:
-        metadata["realism_profile_path"] = cfg.realism_profile_path
-    if runtime_realism_profile is not None:
-        metadata["realism_profile_name"] = runtime_realism_profile.profile_name
-
     num_samples = max(2, int(round(float(args.duration_s) * float(args.sample_rate_hz))))
     nominal_timestamps = np.arange(num_samples, dtype=np.float64) / float(args.sample_rate_hz)
     command_rad = _command_signal(

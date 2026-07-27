@@ -63,7 +63,6 @@ Minimal example:
 ```json
 {
   "robot_config_path": "./mujoco_robot_config.json",
-  "realism_profile_path": "./realism_profile.json",
 
   "externally_managed_actuator_names": [
     "left_wrist_yaw",
@@ -131,7 +130,6 @@ Notes:
 - The 17-actuator standing policy already excludes the wrists. With the same external-actuator setting, standing opens only the 17 active servos instead of expanding fixed wrist targets back to 21 hardware outputs.
 - Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
-- `realism_profile_path` points to versioned digital-twin realism parameters used by SysID/sim2real tooling and validated at runtime startup.
 
 ## Run
 

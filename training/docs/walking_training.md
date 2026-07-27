@@ -527,8 +527,8 @@ Expected additions:
 
 - `v0.19.0` complete: locomotion-first contract, schema, and runtime/logging
   split are in place.
-- `v0.19.1` complete: digital-twin realism profile, SysID capture, and
-  sim-vs-real comparison tooling are implemented.
+- `v0.19.1` complete: SysID capture and sim-vs-real comparison tooling are
+  implemented.
 - `v0.19.2` complete: `walking_ref_v1`, bounded sagittal IK, and nominal
   reference smoke tests are implemented.
 - `v0.19.3` implemented but first screening run failed:
@@ -627,7 +627,7 @@ The verbose v0.19.x → v0.20.0 history was archived 2026-05-24.
 Active state, summarized:
 
 - **Walking foundation in place** (v0.19.0–v0.19.4): runtime
-  contract, SysID realism profile, `walking_ref_v1`, DCM COM
+  contract, SysID capture/replay, `walking_ref_v1`, DCM COM
   trajectory.  Open-loop nominal walking reproduced (461 steps,
   +0.038 m/s at cmd=0.15).
 - **Prior-reference pivot complete** (v0.20.0-A → v0.20.0-D): ZMP
@@ -1349,9 +1349,8 @@ SysID tasks:
   `tools/sysid/run_capture.py`
 - fit delay, backlash, frictionloss, armature, and effective output limits
   from hardware captures
-- update `assets/v2/realism_profile_v0.19.1.json` with fitted values
-  (or create a new versioned profile)
-- apply fitted parameters to `wildrobot.xml` actuator model
+- apply fitted parameters to `assets/v2/joints_properties.xml` and regenerate
+  the `wildrobot.xml` actuator model
 - run sim-vs-real comparison via `tools/sim2real_eval/replay_compare.py`
 - verify leg-joint replay RMSE stays within the accepted servo-model budget
 

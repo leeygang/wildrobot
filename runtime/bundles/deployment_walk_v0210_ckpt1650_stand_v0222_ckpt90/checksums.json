@@ -1,6 +1,6 @@
 {
   "bundle_manifest.json": "2343723efd6f630c32ecd369e2103a54dfc15afc2ec17f5e9a0f976dd15f4988",
-  "hardware_config.json": "66d835c5a3424af45c4bbfea31a01c0f70ebae26b70cd1d03dcf01516a43142e",
+  "hardware_config.json": "67dbd9e442f5865f2112b0229588987c86d9f56e27fe1765e4660c6cbf49c014",
   "mujoco_robot_config.json": "769ba46618e4fc5405e4caf9effff3f5936014080e06e5f2acb15f0ac617b2e2",
   "policies/standing/checkpoint.pkl": "a9edbea6d89efc049b7a4a0d2fcd21f5a7fff390ca1ae760be32f62ccc8049e4",
   "policies/standing/policy.onnx": "3a6ef07f15995ea722f232e1b242cc94df29c98484339b428f6267a57e465bcb",
@@ -12,6 +12,5 @@
   "policies/walking/policy_spec.json": "bfc5ddf33eecdbbdcc2d9501396d5a411a0b363a32d21d0e199b8ea3b8530353",
   "policies/walking/runtime_policy_config.json": "2ff883a9328574fcce24a7195ef7304bef8aa445cd1e0a33a409f93c31b2170c",
   "policies/walking/training_config.yaml": "3be9b47884b505c01810acbcfa5dfd7817174d6ed32524b7f59a16d6b437d520",
-  "realism_profile.json": "97837ea85f24ebca2a8d05e2042d09a7d2592897a3f874bf039525c385b04d28",
   "wildrobot.xml": "0629958f06326a0be2386cb62948e3b2f19cccafda55093340a69c6f903aa60b"
 }

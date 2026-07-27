@@ -598,7 +598,6 @@ class WrRuntimeConfig:
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
     externally_managed_actuator_names: Tuple[str, ...] = field(default_factory=tuple)
-    realism_profile_path: Optional[str] = None
 
     # Store config directory for resolving relative paths
     _config_dir: Path = field(default=Path("."), repr=False, compare=False)
@@ -764,11 +763,6 @@ class WrRuntimeConfig:
             bno085=bno085,
             foot_switches=foot_switches,
             externally_managed_actuator_names=externally_managed_actuator_names,
-            realism_profile_path=(
-                str(data["realism_profile_path"])
-                if "realism_profile_path" in data and data["realism_profile_path"] is not None
-                else None
-            ),
             _config_dir=config_dir,
         )
 
@@ -1191,11 +1185,6 @@ class WrRuntimeConfig:
             "servo_read_schedule": {
                 "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
             },
-            **(
-                {"realism_profile_path": self.realism_profile_path}
-                if self.realism_profile_path is not None
-                else {}
-            ),
         }
         return out
 

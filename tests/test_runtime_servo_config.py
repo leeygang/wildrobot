@@ -22,7 +22,6 @@ def _base_config() -> dict:
     return {
         "mjcf_path": "model.xml",
         "policy_onnx_path": "policy.onnx",
-        "realism_profile_path": "assets/v2/realism_profile_v0.19.1.json",
     }
 
 
@@ -49,7 +48,6 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     assert cfg.servo_controller.joint_servo_offset_units["left_hip_pitch"] == 10
     assert cfg.servo_controller.joint_motor_unit_directions["right_hip_pitch"] == -1.0
     assert cfg.servo_controller.joint_angle_at_zero_unit_deg["right_hip_pitch"] == 90.0
-    assert cfg.realism_profile_path == "assets/v2/realism_profile_v0.19.1.json"
 
 
 def test_multi_board_servo_controller_parses_and_serializes(tmp_path: Path) -> None:
