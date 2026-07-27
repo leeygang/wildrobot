@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "bundle_type": "wildrobot_deployment",
+  "policies": {
+    "standing": {
+      "path": "policies/standing"
+    },
+    "walking": {
+      "path": "policies/walking"
+    }
+  },
+  "shared": {
+    "hardware_config": "hardware_config.json",
+    "mjcf": "wildrobot.xml",
+    "robot_config": "mujoco_robot_config.json"
+  },
+  "transition": {
+    "standing_min_duration_s": 2.0,
+    "walking_action_ramp_s": 0.5
+  }
+}

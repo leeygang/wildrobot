@@ -1,0 +1,17 @@
+{
+  "bundle_manifest.json": "2343723efd6f630c32ecd369e2103a54dfc15afc2ec17f5e9a0f976dd15f4988",
+  "hardware_config.json": "e6c115ca4bee0bbcb27067d7e2a58b972ba91af652847fc95c48522874e67433",
+  "mujoco_robot_config.json": "769ba46618e4fc5405e4caf9effff3f5936014080e06e5f2acb15f0ac617b2e2",
+  "policies/standing/checkpoint.pkl": "3dbeb3e1976b3609ee8be352ac6b26d55915e0c91a79f76079690b0ebe5512b7",
+  "policies/standing/policy.onnx": "de2393838998d64a6a65a0b8d52038469e6cf0c36dcb3b580c4cf36e3bbc621b",
+  "policies/standing/policy_spec.json": "079922edf3fd766a195bf344430e9f8e71f053af80b08a2dd7341410a60f5dfa",
+  "policies/standing/runtime_policy_config.json": "02e2ad4da3b867f1dddcf482ad64f6f069f543e122860f4e896102088cf17afd",
+  "policies/standing/training_config.yaml": "2c0d1d7e8940953461f5c22d28f596212d5c583f6af60176448a30d8ebcfaa16",
+  "policies/walking/checkpoint.pkl": "b9bd1428fb118678d4d6f23cc5800e146fca062d44e19f96f15892246a1b82c1",
+  "policies/walking/policy.onnx": "b7dc47565eb858559e2785b6ec35379f2e7fe9ec7f4b3f1ccf4b99c5ad1bb63c",
+  "policies/walking/policy_spec.json": "deed0140429c85de481eccf7f7b1443f6131410ef23eabe5d32bf7591945844e",
+  "policies/walking/runtime_policy_config.json": "2ff883a9328574fcce24a7195ef7304bef8aa445cd1e0a33a409f93c31b2170c",
+  "policies/walking/training_config.yaml": "3be9b47884b505c01810acbcfa5dfd7817174d6ed32524b7f59a16d6b437d520",
+  "realism_profile.json": "97837ea85f24ebca2a8d05e2042d09a7d2592897a3f874bf039525c385b04d28",
+  "wildrobot.xml": "0629958f06326a0be2386cb62948e3b2f19cccafda55093340a69c6f903aa60b"
+}
