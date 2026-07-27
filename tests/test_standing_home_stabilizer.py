@@ -265,6 +265,71 @@ def test_startup_standing_honors_policy_diagnostics(capsys) -> None:
     assert "raw_lr=[HP=+0.750" in output
 
 
+def test_startup_standing_aborts_on_first_unsafe_tilt() -> None:
+    from policy_contract.numpy.signals import Signals
+    from policy_contract.spec_builder import build_policy_spec
+    from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
+    from runtime.wr_runtime.control.run_policy import _run_standing_stabilization
+    from runtime.wr_runtime.control.standing_policy_runner import StandingPolicyRunner
+
+    actuator_names = ["left_hip_pitch", "right_hip_pitch"]
+    spec = build_policy_spec(
+        robot_name="WildRobotTest",
+        actuated_joint_specs=[
+            {"name": name, "range": [-1.0, 1.0], "max_velocity": 10.0}
+            for name in actuator_names
+        ],
+        action_filter_alpha=0.0,
+        layout_id="wr_obs_v1",
+        mapping_id="pos_target_home_v1",
+        home_ctrl_rad=[0.0, 0.0],
+    )
+
+    class _TiltedRobotIO(MockRobotIO):
+        def read(self) -> Signals:
+            signals = super().read()
+            pitch = np.deg2rad(20.0)
+            return Signals(
+                quat_xyzw=np.array(
+                    [0.0, np.sin(pitch / 2.0), 0.0, np.cos(pitch / 2.0)],
+                    dtype=np.float32,
+                ),
+                gyro_rad_s=signals.gyro_rad_s,
+                joint_pos_rad=signals.joint_pos_rad,
+                joint_vel_rad_s=signals.joint_vel_rad_s,
+                foot_switches=signals.foot_switches,
+                timestamp_s=signals.timestamp_s,
+            )
+
+    robot_io = _TiltedRobotIO(
+        actuator_names=actuator_names,
+        control_dt=0.02,
+        home_q_rad=np.zeros(2, dtype=np.float32),
+    )
+    runner = StandingPolicyRunner(
+        spec=spec,
+        policy=_ConstantPolicy(np.zeros(2, dtype=np.float32)),
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(SystemExit, match="safety abort.*step 1.*tilt 20.0deg"):
+        _run_standing_stabilization(
+            runner=runner,
+            steps=100,
+            log_steps=5,
+            ctrl_dt=0.02,
+            realtime=False,
+            actuator_names=actuator_names,
+            diagnostic_log_policy=False,
+            stability_check=True,
+            stability_max_tilt_deg=15.0,
+            confirm_before_walk=False,
+            confirm_imu_timeout_s=1.0,
+        )
+
+    assert len(robot_io.written) == 1
+
+
 def test_standing_home_stabilizer_uses_active_reward_terms() -> None:
     from training.configs.training_config import load_training_config
 

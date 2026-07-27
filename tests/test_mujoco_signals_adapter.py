@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from assets.robot_config import load_robot_config
 from policy_contract.spec import PolicySpec
+from training.sim_adapter.mjx_signals import MjxSignalsAdapter
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
 
 
@@ -42,6 +44,53 @@ def test_mujoco_signals_adapter_shapes() -> None:
     assert signals.joint_vel_rad_s.shape == (len(policy_spec.robot.actuator_names),)
     assert signals.foot_switches.shape == (4,)
     assert signals.quat_xyzw.dtype == signals.joint_pos_rad.dtype
+
+
+def test_mujoco_signals_adapter_converts_framequat_to_xyzw() -> None:
+    mujoco, mj_model, mj_data, robot_cfg, policy_spec = _load_assets()
+    adapter = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        policy_spec=policy_spec,
+        foot_switch_threshold=10.0,
+    )
+
+    sensor_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "chest_imu_quat"
+    )
+    sensor_adr = int(mj_model.sensor_adr[sensor_id])
+    quat_wxyz = mj_data.sensordata[sensor_adr : sensor_adr + 4]
+    expected_xyzw = np.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
+
+    signals = adapter.read(mj_data)
+
+    np.testing.assert_allclose(signals.quat_xyzw, expected_xyzw, atol=1e-7)
+    from policy_contract.numpy.frames import gravity_local_from_quat
+
+    gravity_local = gravity_local_from_quat(signals.quat_xyzw)
+    assert gravity_local[2] < -0.99
+
+
+def test_mjx_signals_adapter_matches_native_quaternion_contract() -> None:
+    mujoco, mj_model, mj_data, robot_cfg, _ = _load_assets()
+    mjx = pytest.importorskip("mujoco.mjx")
+    adapter = MjxSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        foot_switch_threshold=10.0,
+    )
+
+    signals = adapter.read(mjx.put_data(mj_model, mj_data))
+
+    sensor_id = mujoco.mj_name2id(
+        mj_model, mujoco.mjtObj.mjOBJ_SENSOR, "chest_imu_quat"
+    )
+    sensor_adr = int(mj_model.sensor_adr[sensor_id])
+    quat_wxyz = mj_data.sensordata[sensor_adr : sensor_adr + 4]
+    expected_xyzw = np.concatenate([quat_wxyz[1:4], quat_wxyz[0:1]])
+    np.testing.assert_allclose(
+        np.asarray(signals.quat_xyzw), expected_xyzw, atol=1e-7
+    )
 
 
 def test_mujoco_signals_adapter_missing_actuator() -> None:

@@ -421,6 +421,9 @@ def make_eval_env_fns(env, training_cfg, eval_num_envs: int):
     # ``eval_step_kwargs`` is unit-tested independently of env construction.
     step_kwargs = eval_step_kwargs(training_cfg.env)
     clean_step_kwargs = {"disable_pushes": True, **step_kwargs}
+    reset_perturb_pose = bool(
+        getattr(training_cfg.ppo.eval, "reset_perturb_pose", False)
+    )
 
     def step_fn(state, action):
         """Batched eval step (kwargs determined by eval_step_kwargs)."""
@@ -437,12 +440,13 @@ def make_eval_env_fns(env, training_cfg, eval_num_envs: int):
     def reset_fn(rng):
         """Batched eval reset.
 
-        Always uses ``reset_for_eval`` — it's a no-op when
-        ``eval_velocity_cmd < 0`` (delegates to ``reset``) so the
-        sentinel "eval = training" semantics are preserved.
+        Always uses ``reset_for_eval``. Configured reset perturbation is
+        explicit and remains deterministic under the evaluation RNG.
         """
         rngs = jax.random.split(rng, eval_num_envs)
-        return jax.vmap(env.reset_for_eval)(rngs)
+        return jax.vmap(
+            lambda r: env.reset_for_eval(r, perturb_pose=reset_perturb_pose)
+        )(rngs)
 
     return step_fn, clean_step_fn, reset_fn
 
@@ -956,6 +960,16 @@ def start_training(
                             rollout["metrics_vec"][..., METRIC_INDEX[name]]
                         )
 
+                    def _max(name: str) -> jnp.ndarray:
+                        return jnp.max(
+                            rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        )
+
+                    def _final_max(name: str) -> jnp.ndarray:
+                        return jnp.max(
+                            rollout["metrics_vec"][-1, :, METRIC_INDEX[name]]
+                        )
+
                     def _terminal_episode_mean(
                         name: str, abs_aggregate: bool = False
                     ) -> jnp.ndarray:
@@ -988,6 +1002,10 @@ def start_training(
                         "both_loaded": _mean("support/both_loaded"),
                         "load_imbalance": _mean("support/load_imbalance"),
                         "body_quat_err_deg": _mean("ref/body_quat_err_deg"),
+                        "body_quat_err_deg_peak": _max("ref/body_quat_err_deg"),
+                        "body_quat_err_deg_final_max": _final_max(
+                            "ref/body_quat_err_deg"
+                        ),
                         "torque_sat_frac": _mean("debug/torque_sat_frac"),
                         "action_sat_frac": _mean("debug/action_sat_frac"),
                         "lateral_velocity_abs": _mean(
@@ -1181,6 +1199,12 @@ def start_training(
                         "load_imbalance": float(eval_result["load_imbalance"]),
                         "body_quat_err_deg": float(
                             eval_result["body_quat_err_deg"]
+                        ),
+                        "body_quat_err_deg_peak": float(
+                            eval_result["body_quat_err_deg_peak"]
+                        ),
+                        "body_quat_err_deg_final_max": float(
+                            eval_result["body_quat_err_deg_final_max"]
                         ),
                         "torque_sat_frac": float(eval_result["torque_sat_frac"]),
                         "action_sat_frac": float(eval_result["action_sat_frac"]),

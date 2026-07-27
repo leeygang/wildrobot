@@ -907,6 +907,9 @@ class PPOEvalConfig(Freezable):
     post_training_num_envs: int = 8
     post_training_num_steps: int = 500
     post_training_checkpoint_label: str = "eval_promoted"
+    # Apply configured reset roll/pitch ranges during evaluation. The RNG is
+    # still fixed, so repeated promotion runs remain deterministic.
+    reset_perturb_pose: bool = False
     # Promotion contract.  ``walking`` preserves the historical G4/G5 gates;
     # ``standing`` grades survival, bilateral support, tilt, and saturation.
     post_training_task: str = "walking"

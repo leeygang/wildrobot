@@ -12,13 +12,28 @@ def test_numpy_frames_interface() -> None:
 
     assert np_frames.normalize_quat_xyzw(quat).shape == (4,)
     assert np_frames.quat_mul(quat, quat).shape == (4,)
-    assert np_frames.axis_angle_to_quat(np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0).shape == (4,)
+    assert np_frames.axis_angle_to_quat(
+        np.array([1.0, 0.0, 0.0], dtype=np.float32), 0.0
+    ).shape == (4,)
     assert np_frames.rotate_vec_by_quat(quat, vec).shape == (3,)
     assert np_frames.gravity_local_from_quat(quat).shape == (3,)
     assert np_frames.angvel_heading_local(vec, quat).shape == (3,)
 
     ops = np_frames.NumpyFrameOps()
     assert ops.gravity_local_from_quat(quat).shape == (3,)
+
+    quarter_turn_x = np_frames.axis_angle_to_quat(
+        np.array([1.0, 0.0, 0.0], dtype=np.float32), np.pi / 2.0
+    )
+    expected = np.array(
+        [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)], dtype=np.float32
+    )
+    np.testing.assert_allclose(quarter_turn_x, expected, atol=1e-6)
+    np.testing.assert_allclose(np_frames.quat_mul(quat, quarter_turn_x), expected)
+    np.testing.assert_allclose(np_frames.quat_mul(quarter_turn_x, quat), expected)
+    np.testing.assert_allclose(
+        np_frames.gravity_local_from_quat(quat), [0.0, 0.0, -1.0]
+    )
 
 
 def test_jax_frames_interface() -> None:
@@ -30,10 +45,30 @@ def test_jax_frames_interface() -> None:
 
     assert jax_frames.normalize_quat_xyzw(quat).shape == (4,)
     assert jax_frames.quat_mul(quat, quat).shape == (4,)
-    assert jax_frames.axis_angle_to_quat(jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), 0.0).shape == (4,)
+    assert jax_frames.axis_angle_to_quat(
+        jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), 0.0
+    ).shape == (4,)
     assert jax_frames.rotate_vec_by_quat(quat, vec).shape == (3,)
     assert jax_frames.gravity_local_from_quat(quat).shape == (3,)
     assert jax_frames.angvel_heading_local(vec, quat).shape == (3,)
 
     ops = jax_frames.JaxFrameOps()
     assert ops.gravity_local_from_quat(quat).shape == (3,)
+
+    quarter_turn_x = jax_frames.axis_angle_to_quat(
+        jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32), jnp.pi / 2.0
+    )
+    expected = np.array(
+        [np.sqrt(0.5), 0.0, 0.0, np.sqrt(0.5)], dtype=np.float32
+    )
+    np.testing.assert_allclose(np.asarray(quarter_turn_x), expected, atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(jax_frames.quat_mul(quat, quarter_turn_x)), expected
+    )
+    np.testing.assert_allclose(
+        np.asarray(jax_frames.quat_mul(quarter_turn_x, quat)), expected
+    )
+    np.testing.assert_allclose(
+        np.asarray(jax_frames.gravity_local_from_quat(quat)),
+        [0.0, 0.0, -1.0],
+    )

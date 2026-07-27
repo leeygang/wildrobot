@@ -8,6 +8,83 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.5-standing-quaternion-contract] - 2026-07-26: correct simulation IMU ordering and require tilted-reset recovery
+
+### v0.22.4 hardware result and deployment decision
+
+The tethered checkpoint-90 run in `standing_v0224_ckpt90_robot_5s_2.log`
+reached the policy after a successful 7 s home stage. All four foot switches
+were pressed, and the maximum leg tracking error was 1.6 deg on the first
+policy step. The policy then amplified a forward fall:
+
+| Stabilization step | Pitch | Pitch gyro | Contacts | Max leg error |
+|---:|---:|---:|---|---:|
+| 1 | +5.6 deg | +0.012 rad/s | 4 / 4 | 1.6 deg |
+| 46 | +12.4 deg | +0.269 rad/s | 4 / 4 | 2.3 deg |
+| 56 | +15.9 deg | +0.313 rad/s | right toe/heel open | 2.5 deg |
+| 86 | +32.2 deg | +0.742 rad/s | only left toe pressed | 2.7 deg |
+| 100 | +50.7 deg | -1.881 rad/s | 0 / 4 | 4.2 deg |
+
+The raw policy action maximum grew from 0.179 to 0.479, while the delayed
+left/right hip-pitch action difference reached 0.827. Joint tracking remained
+within 4.2 deg and the log contains no servo read/write failure. Hardware
+torque was not measured, so this log cannot quantify physical torque
+saturation; however, saturation or USB latency is not the primary explanation
+for this deterministic policy-onset divergence.
+
+**Decision:** revoke v0.22.4 checkpoint 90 for hardware deployment. Do not run
+it again. Older policies trained through the same adapter, including the
+v0.21.0 walking half of the deployment bundle, also require retraining or
+separate proof under the corrected quaternion contract before hardware use.
+
+### Proven root cause
+
+MuJoCo `framequat` sensors and free-joint `qpos[3:7]` use quaternion order
+`[w, x, y, z]`. Both WR simulation adapters passed those arrays unchanged into
+`Signals.quat_xyzw`. The BNO085 hardware path correctly supplies
+`[x, y, z, w]`. Consequently, training and deterministic simulation promotion
+treated an upright robot as projected gravity approximately `[0, 0, +1]`,
+whereas hardware supplied approximately `[0, 0, -1]`. The v0.22.4 simulation
+metrics were internally repeatable but did not test the deployed observation
+semantics.
+
+ToddlerBot avoids this mismatch by keeping the actor quaternion scalar-first
+end to end: MJX `pipeline_state.x.rot[0]` is wxyz, `_get_imu_noise` accepts and
+returns wxyz, its hardware IMU returns `as_quat(scalar_first=True)`, and
+`RealWorld` consumes it with `scalar_first=True`. WR retains its established
+xyzw policy/hardware contract and converts explicitly at the MuJoCo boundary.
+
+References: MuJoCo documentation, **XML Reference / sensor / framequat** and
+**Computation / General framework** (quaternions use `w x y z`); Shi et al.,
+**ToddlerBot: Open-Source ML-Compatible Humanoid Platform for
+Loco-Manipulation**, arXiv:2502.00893 (2025).
+
+### Implemented v0.22.5 fix
+
+1. Native MuJoCo and MJX signal adapters convert wxyz to xyzw before building
+   actor observations. Regression coverage verifies both the raw conversion
+   and upright projected-gravity sign.
+2. NumPy/JAX quaternion multiplication and axis-angle helpers now honor their
+   declared xyzw API. This is required before enabling training IMU noise.
+3. `ppo_standing_home_stabilizer_v0225.yaml` is a fresh-training recipe. It
+   keeps the 59-observation contact-free actor, adds ToddlerBot's default
+   +/-0.1 rad reset roll/pitch range, modest white IMU noise, and one 20 ms IMU
+   latency step. The smaller noise than ToddlerBot's correlated IMU model is
+   intentional because WR currently implements only independent white noise.
+4. Standing promotion now deterministically samples the configured reset-tilt
+   range across 16 environments. In addition to mean posture, it rejects any
+   rollout whose peak orientation error exceeds 15 deg or whose worst final
+   orientation error exceeds 10 deg.
+5. Hardware startup stabilization checks tilt and gyro after every policy
+   action. It stops at the first unsafe sample instead of allowing the full
+   100-step window to finish; this limits a bad policy trial but does not make
+   an unvalidated checkpoint safe.
+
+Start v0.22.5 from scratch. Do not resume v0.22.4: tensor shapes are compatible,
+but every historical actor observation used the wrong quaternion semantics.
+
+---
+
 ## [v0.22.4-standing-contact-force-correction] - 2026-07-26: corrected support loads and selected checkpoint 90
 
 ### Root cause and corrected v0.22.3 baseline
@@ -108,9 +185,9 @@ substantially better bilateral load balance. A native-MuJoCo recording with the
 configured random 2-5 N, six-control-step waist push also showed no visible
 instability.
 
-**Selected model:** `checkpoint_90_11796480.pkl`. It is approved for a staged,
-tethered standing-only hardware trial. It is not evidence for unrestricted
-walking deployment. The evaluator still exports aggregate rather than
+**Historical selection:** `checkpoint_90_11796480.pkl`. Its hardware approval
+is revoked by the v0.22.5 finding above because the simulation and hardware
+quaternion orders differed. The evaluator still exports aggregate rather than
 per-environment support distributions, so no support-distribution confidence
 interval is claimed.
 

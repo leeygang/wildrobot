@@ -85,6 +85,8 @@ WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
 STANDING_SUPPORT_RATIO_MIN = 0.90
 STANDING_LOAD_IMBALANCE_MAX = 0.35
 STANDING_BODY_QUAT_ERR_DEG_MAX = 10.0
+STANDING_BODY_QUAT_ERR_DEG_PEAK_MAX = 15.0
+STANDING_BODY_QUAT_ERR_DEG_FINAL_MAX = 10.0
 STANDING_TORQUE_SAT_FRAC_MAX = 0.05
 STANDING_ACTION_SAT_FRAC_MAX = 0.05
 
@@ -676,6 +678,10 @@ def deterministic_standing_eval_gate(
     both_loaded = _metric(eval_metrics, "both_loaded")
     load_imbalance = _metric(eval_metrics, "load_imbalance")
     body_quat_err_deg = _metric(eval_metrics, "body_quat_err_deg")
+    body_quat_err_deg_peak = _metric(eval_metrics, "body_quat_err_deg_peak")
+    body_quat_err_deg_final_max = _metric(
+        eval_metrics, "body_quat_err_deg_final_max"
+    )
     torque_sat_frac = _metric(eval_metrics, "torque_sat_frac")
     action_sat_frac = _metric(eval_metrics, "action_sat_frac")
 
@@ -700,6 +706,15 @@ def deterministic_standing_eval_gate(
         "body_quat_err_deg": (
             body_quat_err_deg is not None
             and body_quat_err_deg <= STANDING_BODY_QUAT_ERR_DEG_MAX
+        ),
+        "body_quat_err_deg_peak": (
+            body_quat_err_deg_peak is not None
+            and body_quat_err_deg_peak <= STANDING_BODY_QUAT_ERR_DEG_PEAK_MAX
+        ),
+        "body_quat_err_deg_final_max": (
+            body_quat_err_deg_final_max is not None
+            and body_quat_err_deg_final_max
+            <= STANDING_BODY_QUAT_ERR_DEG_FINAL_MAX
         ),
         "torque_sat_frac": (
             torque_sat_frac is not None

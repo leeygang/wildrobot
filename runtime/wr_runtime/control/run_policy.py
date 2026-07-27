@@ -1659,6 +1659,28 @@ def _run_standing_stabilization(
                     f"{' ' + diagnostic if diagnostic else ''}",
                     flush=True,
                 )
+            if stability_check:
+                tilt_deg = _info_tilt_deg(info)
+                gyro_norm = _info_gyro_norm_rad_s(info)
+                safety_errors = []
+                if tilt_deg is not None and tilt_deg > float(stability_max_tilt_deg):
+                    safety_errors.append(
+                        f"tilt {tilt_deg:.1f}deg > {float(stability_max_tilt_deg):.1f}deg"
+                    )
+                if (
+                    gyro_norm is not None
+                    and gyro_norm > _STARTUP_STABILITY_MAX_GYRO_RAD_S
+                ):
+                    safety_errors.append(
+                        f"gyro {gyro_norm:.3f}rad/s > "
+                        f"{_STARTUP_STABILITY_MAX_GYRO_RAD_S:.3f}rad/s"
+                    )
+                if safety_errors:
+                    raise SystemExit(
+                        f"Standing safety abort at {label} step {step + 1}: "
+                        + "; ".join(safety_errors)
+                        + ". Keep the robot supported while runtime unloads servos."
+                    )
             if realtime:
                 remaining = float(ctrl_dt) - (time.monotonic() - loop_start_s)
                 if remaining > 0.0:

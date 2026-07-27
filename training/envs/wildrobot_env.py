@@ -2973,10 +2973,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
         ``perturb_pose`` (default True): when False, the reset
         perturbation is skipped regardless of the configured ranges.
-        ``reset_for_eval`` passes ``perturb_pose=False`` so eval-side
-        rollouts stay deterministic (G4/G5 promotion thresholds and the
-        v6 eval-adapter native-reset parity both require a noise-free
-        eval reset).
+        ``reset_for_eval`` defaults to ``perturb_pose=False`` so walking
+        G4/G5 and native-reset parity retain a clean eval reset. Standing
+        promotion can explicitly enable deterministic, seeded perturbations.
 
         ``velocity_cmd_override`` (v0.21.0 follow-up): when supplied
         (3-vec ``[vx, vy, wz]``), unconditionally replaces the sampled
@@ -3023,8 +3022,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
         # smoke5 — Reference State Initialization (RSI), train-only.  Gated on
-        # ``perturb_pose`` so eval (reset_for_eval, perturb_pose=False) keeps
-        # the static standstill reset.  Override qpos with a RANDOM gait frame
+        # ``perturb_pose`` so clean eval (reset_for_eval's default) keeps the
+        # static standstill reset.  Override qpos with a RANDOM gait frame
         # f and seed the reference velocity so the robot starts ON the moving
         # manifold (velocity reward live at step 0).  prev_*/init_root/foot/
         # touchdown fields in _make_initial_state derive from this qpos+qvel
@@ -3234,6 +3233,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         rng: jax.Array,
         cmd_override: Optional[jax.Array] = None,
+        perturb_pose: bool = False,
     ) -> WildRobotEnvState:
         """Eval-only reset that pins ``velocity_cmd`` via ``env.reset``'s
         ``velocity_cmd_override`` arg — see follow-up #2 note below for
@@ -3249,8 +3249,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
              (YAML-pinned mode).  Threaded through
              ``velocity_cmd_override=`` so obs / window / metrics
              see it from step 0.
-          3. Otherwise sentinel mode: fall through to plain
-             ``reset(perturb_pose=False)`` with sampled cmd.
+          3. Otherwise sentinel mode: fall through to ``reset`` with sampled
+             cmd and the caller-selected ``perturb_pose`` value.
 
         v0.20.1-smoke7 rationale: when training enables multi-cmd
         sampling (``cmd_resample_steps > 0``, vx range
@@ -3286,12 +3286,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         loop so mid-episode resample doesn't re-randomize the pinned
         cmd.
 
-        Always disables the smoke9c reset-time pose perturbation so eval
-        rollouts stay deterministic.  G4/G5 promotion thresholds are
-        defined at the pinned eval cmd with a clean ref_init pose; the
-        v6 eval adapter's native-MJ reset also expects this contract for
-        sim-to-real parity (``test_smoke9c_native_reset_matches_env_reset_for_eval_joint_state``).
-        Training-side ``reset`` keeps perturbation enabled by default.
+        ``perturb_pose`` defaults to False, preserving the clean ref_init
+        reset used by walking G4/G5 and native-MJ parity tests. Standing
+        promotion can opt in to its configured reset roll/pitch ranges while
+        remaining deterministic under fixed evaluation RNG seeds.
         """
         # v0.21.0 follow-up — eval cmd is now resolved BEFORE
         # ``self.reset`` runs so the initial obs / window / metrics
@@ -3310,7 +3308,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 cmd_override, dtype=jp.float32
             ).reshape(3)
             return self.reset(
-                rng, perturb_pose=False, velocity_cmd_override=resolved_cmd
+                rng,
+                perturb_pose=perturb_pose,
+                velocity_cmd_override=resolved_cmd,
             )
 
         # No per-call override — decide between YAML-pinned eval cmd
@@ -3334,10 +3334,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
             return self.reset(
                 rng,
-                perturb_pose=False,
+                perturb_pose=perturb_pose,
                 velocity_cmd_override=yaml_eval_cmd,
             )
-        return self.reset(rng, perturb_pose=False)
+        return self.reset(rng, perturb_pose=perturb_pose)
 
     # ----------------------------------------------------- cmd resampling
 

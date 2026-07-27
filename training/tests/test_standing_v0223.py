@@ -8,6 +8,7 @@ import numpy as np
 
 _CONFIG = "training/configs/ppo_standing_home_stabilizer_v0223.yaml"
 _V0224_CONFIG = "training/configs/ppo_standing_home_stabilizer_v0224.yaml"
+_V0225_CONFIG = "training/configs/ppo_standing_home_stabilizer_v0225.yaml"
 
 
 def _load_config_and_spec():
@@ -62,6 +63,85 @@ def test_v0224_preserves_contract_for_corrected_contact_training() -> None:
     assert cfg.reward_weights.standing_support_balance == 1.0
     assert cfg.ppo.eval.post_training_task == "standing"
     assert cfg.ppo.eval.post_training_num_steps == 1000
+
+
+def test_v0225_adds_tilt_reset_and_imu_transfer_coverage() -> None:
+    from assets.robot_config import get_robot_config, load_robot_config
+    from training.configs.training_config import load_training_config
+    from training.policy_spec_utils import build_policy_spec_from_training_config
+
+    cfg = load_training_config(_V0225_CONFIG)
+    load_robot_config(cfg.env.robot_config_path)
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=get_robot_config(),
+    )
+
+    assert cfg.version == "0.22.5"
+    assert spec.observation.layout_id == "wr_obs_v9_standing"
+    assert spec.model.obs_dim == 59
+    assert spec.model.action_dim == 17
+    assert cfg.env.reset_torso_roll_range == [-0.1, 0.1]
+    assert cfg.env.reset_torso_pitch_range == [-0.1, 0.1]
+    assert cfg.env.imu_gyro_noise_std == 0.015
+    assert cfg.env.imu_quat_noise_deg == 0.25
+    assert cfg.env.imu_latency_steps == 1
+    assert cfg.ppo.eval.reset_perturb_pose is True
+    assert cfg.reward_weights.standing_support_balance == 1.0
+    assert cfg.ppo.eval.post_training_num_steps == 1000
+
+
+def test_v0225_eval_reset_exercises_configured_tilt() -> None:
+    import jax
+
+    from assets.robot_config import load_robot_config
+    from training.configs.training_config import load_training_config
+    from training.envs.env_info import WR_INFO_KEY
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    cfg = load_training_config(_V0225_CONFIG)
+    load_robot_config(cfg.env.robot_config_path)
+    env = WildRobotEnv(config=cfg)
+    rng = jax.random.PRNGKey(123)
+
+    clean = env.reset_for_eval(rng, perturb_pose=False)
+    tilted = env.reset_for_eval(rng, perturb_pose=True)
+
+    clean_qpos = np.asarray(clean.pipeline_state.qpos)
+    tilted_qpos = np.asarray(tilted.pipeline_state.qpos)
+    assert not np.allclose(clean_qpos[3:7], tilted_qpos[3:7])
+    np.testing.assert_allclose(
+        np.asarray(clean.info[WR_INFO_KEY].velocity_cmd),
+        np.asarray(tilted.info[WR_INFO_KEY].velocity_cmd),
+    )
+
+
+def test_v0225_eval_factory_enables_seeded_reset_tilt() -> None:
+    import jax
+    import jax.numpy as jnp
+
+    from training.configs.training_config import load_training_config
+    from training.train import make_eval_env_fns
+
+    cfg = load_training_config(_V0225_CONFIG)
+
+    class _FakeEnv:
+        def reset_for_eval(self, rng, *, perturb_pose=False):
+            return {
+                "rng": rng,
+                "perturb_pose": jnp.asarray(perturb_pose),
+            }
+
+        def step(self, state, action, **kwargs):
+            raise AssertionError("step is not used by this reset test")
+
+    _, _, reset_fn = make_eval_env_fns(_FakeEnv(), cfg, eval_num_envs=3)
+    reset_state = reset_fn(jax.random.PRNGKey(7))
+
+    np.testing.assert_array_equal(
+        np.asarray(reset_state["perturb_pose"]),
+        np.ones(3, dtype=np.bool_),
+    )
 
 
 def test_v0223_actor_observation_ignores_foot_switches() -> None:
@@ -165,6 +245,8 @@ def test_v0223_standing_deterministic_gate_checks_support() -> None:
         "both_loaded": 0.97,
         "load_imbalance": 0.10,
         "body_quat_err_deg": 3.0,
+        "body_quat_err_deg_peak": 8.0,
+        "body_quat_err_deg_final_max": 4.0,
         "torque_sat_frac": 0.01,
         "action_sat_frac": 0.00,
     }
@@ -178,6 +260,12 @@ def test_v0223_standing_deterministic_gate_checks_support() -> None:
     assert not failed.passed
     assert failed.gates["right_loaded"] is False
     assert failed.gates["both_loaded"] is False
+
+    diverging = deterministic_standing_eval_gate(
+        {**metrics, "body_quat_err_deg_peak": 18.0}, eval_num_steps=1000
+    )
+    assert not diverging.passed
+    assert diverging.gates["body_quat_err_deg_peak"] is False
 
 
 def test_v0223_checkpoint_ranking_uses_standing_support_metrics() -> None:

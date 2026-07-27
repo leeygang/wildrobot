@@ -775,6 +775,7 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
                 "post_training_checkpoint_label",
                 eval_cfg.get("promotion_checkpoint_label", "eval_promoted"),
             ),
+            reset_perturb_pose=bool(eval_cfg.get("reset_perturb_pose", False)),
             post_training_task=str(
                 eval_cfg.get("post_training_task", "walking")
             ).lower(),
