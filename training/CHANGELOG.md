@@ -8,9 +8,9 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
-## [v0.22.4-standing-contact-force-correction] - 2026-07-26: decode MJX support loads in Newtons
+## [v0.22.4-standing-contact-force-correction] - 2026-07-26: corrected support loads and selected checkpoint 90
 
-### Result and root cause
+### Root cause and corrected v0.22.3 baseline
 
 The completed v0.22.3 run is
 `training/wandb/offline-run-20260726_000507-pz91dgww`. Its official standing
@@ -53,19 +53,66 @@ unrestricted deployment.
    critic/reward semantics. Do not resume v0.22.3: the parameter shapes match,
    but historical returns and value targets used under-scaled contacts.
 
-Run the compile/training smoke first:
+### v0.22.4 training result
 
-```bash
-uv run python training/train.py \
-  --config training/configs/ppo_standing_home_stabilizer_v0224.yaml \
-  --verify --skip-gpu-check
-```
+The fresh corrected-contact run is
+`training/wandb/offline-run-20260726_095158-u0gjr7z4`; checkpoints and its
+authoritative post-training summary are under
+`training/checkpoints/ppo_standing_home_stabilizer_v0224_v00224_20260726_095203-u0gjr7z4`.
+It completed 100 iterations and 13,107,200 environment steps in 5.03 hours.
+The deployed actor contract is `wr_obs_v9_standing` with 59 observations and
+17 actions; the four wrist joints remain in the model but are absent from the
+standing policy and locomotion I/O.
 
-Then remove `--verify --skip-gpu-check` for the full run. Monitor episode
-length; all four `support/*` metrics; body quaternion error; named torque
-saturation; action saturation; PPO KL/clip fraction; and value loss. The
-standing promotion gate should consume non-null support metrics and select a
-checkpoint without reward fallback.
+Full 1,000-step episode completion was reached by iteration 20. Late training
+(iterations 40-100) was stable:
+
+| Metric | Iterations 40-100 mean | Final iteration 100 |
+|---|---:|---:|
+| episode length | 1000.0 / 1000 | 1000.0 / 1000 |
+| both feet loaded | 0.95784 | 0.96754 |
+| normalized load imbalance | 0.28669 | 0.27147 |
+| torso orientation error | 4.89 deg | 4.84 deg |
+| reward | 0.29826 / step | 0.29881 / step |
+| total support load | 40.96 N | 40.90 N |
+| torque saturation | 0.0000265 | 0.0000251 |
+| applied-action saturation | 0 | 0 |
+
+Training reward peaked at iteration 90 (`0.29946` per step). Late PPO updates
+were somewhat aggressive (`clip_fraction` mean `0.308`, final `0.341`), and
+value loss briefly spiked to `11.47` at iteration 40 before recovering to
+`0.842` at iteration 100. Deploy-facing metrics did not regress, so this is a
+monitoring caveat rather than evidence that more training is needed.
+
+The automatic 16-environment deterministic gate passed checkpoints 80, 90,
+and 100 and selected checkpoint 90. Because that gate folds each checkpoint's
+iteration into its reset RNG while evaluation still samples domain-randomized
+physics, the finalists were then rerun with common random numbers. Each cell
+below aggregates three shared seeds, 128 environments per seed, and 1,000
+steps per environment:
+
+| Checkpoint | Mode | Horizon survival | Both loaded | Load imbalance mean / worst seed | Body error mean / worst seed |
+|---|---|---:|---:|---:|---:|
+| 80 | clean | 384 / 384 | 0.999917 | 0.05597 / 0.05838 | 4.02 / 4.25 deg |
+| 80 | configured push | 384 / 384 | 0.999914 | 0.05688 / 0.05909 | 4.04 / 4.28 deg |
+| **90** | **clean** | **384 / 384** | **0.999914** | **0.02002 / 0.02051** | **4.33 / 4.58 deg** |
+| **90** | **configured push** | **384 / 384** | **0.999914** | **0.02128 / 0.02157** | **4.34 / 4.59 deg** |
+| 100 | clean | 384 / 384 | 0.999891 | 0.04547 / 0.04795 | 5.10 / 5.39 deg |
+| 100 | configured push | 384 / 384 | 0.999875 | 0.04652 / 0.04907 | 5.11 / 5.40 deg |
+
+Every one of the 18 common-seed rollouts reported `episode_length=1000`,
+`success_rate=1`, `total_done=128`, and zero torque/applied-action saturation.
+Checkpoint 90 beats checkpoint 80 under the standing promotion score for each
+paired seed in both modes: its small orientation disadvantage is outweighed by
+substantially better bilateral load balance. A native-MuJoCo recording with the
+configured random 2-5 N, six-control-step waist push also showed no visible
+instability.
+
+**Selected model:** `checkpoint_90_11796480.pkl`. It is approved for a staged,
+tethered standing-only hardware trial. It is not evidence for unrestricted
+walking deployment. The evaluator still exports aggregate rather than
+per-environment support distributions, so no support-distribution confidence
+interval is claimed.
 
 ### ToddlerBot comparison and references
 
@@ -75,6 +122,15 @@ ToddlerBot's local implementation calls MJX
 same MuJoCo force definition; its vectorized form avoids a Python loop over
 WR's padded contact capacity for 1,024 batched environments. This is an
 implementation optimization, not a different physical model.
+
+The actor/critic separation also remains ToddlerBot-aligned: contacts are not
+actor inputs, while decoded stance and actuator state remain privileged. WR's
+normalized bilateral-load reward is an explicit addition motivated by the
+v0.22.2 hardware unloading evidence. WR's 4.128 kg model is 1.095 times the
+3.769 kg local ToddlerBot model. The configured WR disturbance impulse is
+0.24-0.60 N s (2-5 N for 0.12 s), overlapping ToddlerBot's configured
+0.20-0.60 N s range (1-3 N for 0.20 s); their mass-normalized disturbance
+ranges are therefore comparable rather than copied as unscaled forces.
 
 References: MuJoCo documentation, **Computation / Contact** and MJX
 `support._decode_pyramid`; Shi et al., **ToddlerBot: Open-Source ML-Compatible
@@ -86,8 +142,11 @@ Humanoid Platform for Loco-Manipulation**, arXiv:2502.00893 (2025).
 
 ### Status
 
-Implemented and ready for a fresh training run. There is no v0.22.3 training or
-hardware result yet, so this entry does not claim deployment readiness.
+Superseded by v0.22.4. The completed v0.22.3 run is
+`training/wandb/offline-run-20260726_000507-pz91dgww`; its original promotion
+decision was invalid because support forces were decoded from only the first
+pyramidal solver row. The corrected baseline and fresh-training result are
+recorded in the v0.22.4 entry above.
 
 The v0.22.2 hardware diagnostic (`standing_v0222_diag.log`) showed that the
 home-pose transition reached low joint error with all four switches pressed,
