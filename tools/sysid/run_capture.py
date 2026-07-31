@@ -23,7 +23,9 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
 
 from configs import WildRobotRuntimeConfig
 from runtime.wr_runtime.hardware.actuators import ServoModel
-from runtime.wr_runtime.hardware.hiwonder_board_controller import HiwonderBoardController
+from runtime.wr_runtime.hardware.ttl_servo_controller import (
+    build_ttl_servo_controller,
+)
 
 
 @dataclass(frozen=True)
@@ -130,7 +132,7 @@ def _simulate_measured_response(
 
 
 def _read_servo_position_units(
-    controller: HiwonderBoardController,
+    controller: Any,
     *,
     servo_id: int,
     retries: int,
@@ -163,10 +165,7 @@ def _capture_measured_response_hardware(
     return_to_hold: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     servo = cfg.servo_controller.get_servo(joint_name)
-    controller = HiwonderBoardController(
-        port=cfg.servo_controller.port,
-        baudrate=cfg.servo_controller.baudrate,
-    )
+    controller = build_ttl_servo_controller(cfg.servo_controller)
     period_s = 1.0 / float(sample_rate_hz)
     num_samples = int(command_rad.shape[0])
     measured_position_rad = np.zeros((num_samples,), dtype=np.float32)
@@ -348,6 +347,12 @@ def main() -> None:
     runtime_config = Path(args.runtime_config)
     cfg, servo_center_rad = _load_servo_config(runtime_config, args.joint_name)
 
+    servo = cfg.servo_controller.get_servo(args.joint_name)
+    servo_board = next(
+        board
+        for board in cfg.servo_controller.effective_boards
+        if int(servo.id) in board.servo_ids
+    )
     metadata = {
         "captured_at_utc": datetime.now(UTC).isoformat(),
         "runtime_config_path": str(runtime_config),
@@ -358,9 +363,10 @@ def main() -> None:
         "servo_model": ServoModel().__dict__,
         "capture_source": str(args.capture_source),
         "simulated_capture": bool(args.capture_source == "synthetic"),
-        "runtime_servo_port": cfg.servo_controller.port,
+        "runtime_servo_board": servo_board.name,
+        "runtime_servo_port": servo_board.port,
         "runtime_servo_baudrate": int(cfg.servo_controller.baudrate),
-        "joint_servo_id": int(cfg.servo_controller.get_servo(args.joint_name).id),
+        "joint_servo_id": int(servo.id),
     }
     num_samples = max(2, int(round(float(args.duration_s) * float(args.sample_rate_hz))))
     nominal_timestamps = np.arange(num_samples, dtype=np.float64) / float(args.sample_rate_hz)

@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from tools.sysid.run_capture import build_capture_artifact
+from tools.sysid.run_capture import _capture_measured_response_hardware
 from tools.sysid.run_capture import _read_servo_position_units
 
 
@@ -61,3 +62,64 @@ def test_read_servo_position_units_retries_and_succeeds() -> None:
         retry_sleep_s=0.0,
     )
     assert units == 512
+
+
+def test_hardware_capture_uses_runtime_ttl_controller(monkeypatch) -> None:
+    class _FakeServo:
+        id = 3
+
+        @staticmethod
+        def joint_target_rad_to_elect_unit(value):
+            return int(round(500.0 + (100.0 * value)))
+
+        @staticmethod
+        def servo_elect_units_to_joint_target_rad(value):
+            return (float(value) - 500.0) / 100.0
+
+    class _FakeServoControllerConfig:
+        @staticmethod
+        def get_servo(_joint_name):
+            return _FakeServo()
+
+    class _FakeConfig:
+        servo_controller = _FakeServoControllerConfig()
+
+    class _FakeTtlController:
+        def __init__(self) -> None:
+            self.position = 500
+            self.closed = False
+
+        def move_servos(self, commands, time_ms):
+            assert time_ms == 20
+            self.position = int(commands[0][1])
+            return True
+
+        def read_servo_positions(self, ids):
+            return [(int(ids[0]), self.position)]
+
+        def close(self):
+            self.closed = True
+
+    controller = _FakeTtlController()
+    monkeypatch.setattr(
+        "tools.sysid.run_capture.build_ttl_servo_controller",
+        lambda config: controller,
+    )
+
+    position, velocity, timestamps = _capture_measured_response_hardware(
+        cfg=_FakeConfig(),
+        joint_name="left_knee_pitch",
+        command_rad=np.array([0.0, 0.1], dtype=np.float32),
+        sample_rate_hz=1000.0,
+        move_time_ms=20,
+        read_retries=1,
+        read_retry_sleep_s=0.0,
+        settle_s=0.0,
+        return_to_hold=True,
+    )
+
+    np.testing.assert_allclose(position, [0.0, 0.1], atol=1e-6)
+    assert velocity.shape == (2,)
+    assert timestamps.shape == (2,)
+    assert controller.position == 500
+    assert controller.closed
