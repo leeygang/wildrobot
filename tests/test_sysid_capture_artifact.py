@@ -88,9 +88,11 @@ def test_hardware_capture_uses_runtime_ttl_controller(monkeypatch) -> None:
         def __init__(self) -> None:
             self.position = 500
             self.closed = False
+            self.move_commands = []
 
         def move_servos(self, commands, time_ms):
             assert time_ms == 20
+            self.move_commands.append(commands[0])
             self.position = int(commands[0][1])
             return True
 
@@ -109,7 +111,7 @@ def test_hardware_capture_uses_runtime_ttl_controller(monkeypatch) -> None:
     position, velocity, timestamps = _capture_measured_response_hardware(
         cfg=_FakeConfig(),
         joint_name="left_knee_pitch",
-        command_rad=np.array([0.0, 0.1], dtype=np.float32),
+        command_rad=np.array([0.0, 0.0, 0.1, 0.1], dtype=np.float32),
         sample_rate_hz=1000.0,
         move_time_ms=20,
         read_retries=1,
@@ -118,8 +120,9 @@ def test_hardware_capture_uses_runtime_ttl_controller(monkeypatch) -> None:
         return_to_hold=True,
     )
 
-    np.testing.assert_allclose(position, [0.0, 0.1], atol=1e-6)
-    assert velocity.shape == (2,)
-    assert timestamps.shape == (2,)
+    np.testing.assert_allclose(position, [0.0, 0.0, 0.1, 0.1], atol=1e-6)
+    assert velocity.shape == (4,)
+    assert timestamps.shape == (4,)
     assert controller.position == 500
+    assert controller.move_commands == [(3, 500), (3, 510), (3, 500)]
     assert controller.closed

@@ -174,6 +174,7 @@ def _capture_measured_response_hardware(
     try:
         hold_units = servo.joint_target_rad_to_elect_unit(float(command_rad[0]))
         controller.move_servos([(int(servo.id), int(hold_units))], time_ms=max(20, int(move_time_ms)))
+        last_command_units = hold_units
         if settle_s > 0.0:
             time.sleep(float(settle_s))
 
@@ -185,7 +186,12 @@ def _capture_measured_response_hardware(
                 time.sleep(tick_target - now)
 
             cmd_units = servo.joint_target_rad_to_elect_unit(float(command_rad[i]))
-            controller.move_servos([(int(servo.id), int(cmd_units))], time_ms=max(20, int(move_time_ms)))
+            if cmd_units != last_command_units:
+                controller.move_servos(
+                    [(int(servo.id), int(cmd_units))],
+                    time_ms=max(20, int(move_time_ms)),
+                )
+                last_command_units = cmd_units
             measured_units = _read_servo_position_units(
                 controller,
                 servo_id=int(servo.id),
