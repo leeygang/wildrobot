@@ -86,10 +86,8 @@ def _conditions(
 
 def _pitch_from_quat_wxyz(quat: jax.Array) -> jax.Array:
     w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
-    return jnp.arctan2(
-        2.0 * (w * y - z * x),
-        1.0 - 2.0 * (x * x + y * y),
-    ).astype(jnp.float32)
+    sin_pitch = jnp.clip(2.0 * (w * y - z * x), -1.0, 1.0)
+    return jnp.arcsin(sin_pitch).astype(jnp.float32)
 
 
 def _stagger_leg_pitch_values(
@@ -286,6 +284,20 @@ def _summarize_rollout(
     both_loaded = np.asarray(rollout["both_loaded"], dtype=np.float64)
     torque_max = np.asarray(rollout["torque_abs_max"], dtype=np.float64)
     action_abs_max = np.asarray(rollout["action_abs_max"], dtype=np.float64)
+    zeros = np.zeros_like(pitch)
+    recovery_phase = np.asarray(rollout.get("recovery_phase", zeros), dtype=np.float64)
+    recovery_steps = np.asarray(
+        rollout.get("recovery_step_count", zeros), dtype=np.float64
+    )
+    recovery_touchdown = np.asarray(
+        rollout.get("recovery_touchdown", zeros), dtype=np.float64
+    )
+    squat_recovered = np.asarray(
+        rollout.get("squat_recovered", zeros), dtype=np.float64
+    )
+    unnecessary_liftoff = np.asarray(
+        rollout.get("unnecessary_liftoff", zeros), dtype=np.float64
+    )
     n_steps, n_seeds = pitch.shape
     response_step = min(
         n_steps - 1, max(0, int(round(response_window_s / ctrl_dt)) - 1)
@@ -315,6 +327,13 @@ def _summarize_rollout(
             and np.all(np.abs(pitch[final_start : last_idx + 1, seed_idx]) < np.deg2rad(3.0))
             and np.all(np.abs(rate[final_start : last_idx + 1, seed_idx]) < 0.1)
         )
+        stepped = bool(np.max(recovery_steps[: last_idx + 1, seed_idx]) > 0.5)
+        touched_down = bool(
+            np.sum(recovery_touchdown[: last_idx + 1, seed_idx]) > 0.5
+        )
+        returned_to_squat = bool(
+            np.sum(squat_recovered[: last_idx + 1, seed_idx]) > 0.5
+        )
         seed_results.append(
             {
                 "initial_pitch_rad": theta0,
@@ -324,6 +343,16 @@ def _summarize_rollout(
                 "response_avg_pitch_accel_rad_s2": avg_accel,
                 "corrective_response": corrective,
                 "recovered": recovered,
+                "stepped": stepped,
+                "touched_down": touched_down,
+                "returned_to_squat": returned_to_squat,
+                "step_recovery_succeeded": bool(
+                    stepped and touched_down and returned_to_squat and recovered
+                ),
+                "unnecessary_liftoff": bool(
+                    np.sum(unnecessary_liftoff[: last_idx + 1, seed_idx]) > 0.5
+                ),
+                "final_recovery_phase": int(recovery_phase[last_idx, seed_idx]),
                 "fell": fell,
                 "hardware_tilt_limit_exceeded": bool(
                     np.any(np.abs(valid_pitch) > np.deg2rad(10.0))
@@ -355,6 +384,15 @@ def _summarize_rollout(
             [item["corrective_response"] for item in seed_results]
         ),
         "recovery": _rate_summary(values("recovered", bool)),
+        "stepped": _rate_summary(values("stepped", bool)),
+        "touchdown": _rate_summary(values("touched_down", bool)),
+        "returned_to_squat": _rate_summary(values("returned_to_squat", bool)),
+        "step_recovery_success": _rate_summary(
+            values("step_recovery_succeeded", bool)
+        ),
+        "unnecessary_liftoff": _rate_summary(
+            values("unnecessary_liftoff", bool)
+        ),
         "fall": _rate_summary(values("fell", bool)),
         "hardware_tilt_limit_exceeded": _rate_summary(
             values("hardware_tilt_limit_exceeded", bool)
@@ -429,7 +467,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--foot-stagger-m",
         type=_parse_csv_floats,
-        default=_parse_csv_floats("0"),
+        default=_parse_csv_floats("-0.04,0,0.04"),
         help="Positive means the left foot is ahead of the right foot",
     )
     parser.add_argument("--num-seeds", type=int, default=32)
@@ -551,6 +589,19 @@ def main() -> int:
                 "both_loaded": metrics[:, METRIC_INDEX["support/both_loaded"]],
                 "torque_abs_max": metrics[:, METRIC_INDEX["debug/torque_abs_max"]],
                 "action_abs_max": jnp.max(jnp.abs(action), axis=-1),
+                "recovery_phase": metrics[:, METRIC_INDEX["recovery/phase"]],
+                "recovery_step_count": metrics[
+                    :, METRIC_INDEX["recovery/step_count"]
+                ],
+                "recovery_touchdown": metrics[
+                    :, METRIC_INDEX["recovery/touchdown_event"]
+                ],
+                "squat_recovered": metrics[
+                    :, METRIC_INDEX["recovery/squat_recovered_event"]
+                ],
+                "unnecessary_liftoff": metrics[
+                    :, METRIC_INDEX["recovery/unnecessary_liftoff_event"]
+                ],
             }
             alive = alive & ~(next_state.done > 0.5)
             return (next_state, scan_rng, alive), output

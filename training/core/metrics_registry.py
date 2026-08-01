@@ -2102,6 +2102,59 @@ METRIC_SPECS.extend(
     ]
 )
 
+# v0.22.6 reactive-step and squat-return diagnostics (append-only).
+METRIC_SPECS.extend(
+    [
+        MetricSpec(name="reward/recovery_swing_track", reducer=Reducer.MEAN),
+        MetricSpec(name="reward/recovery_stance_contact", reducer=Reducer.MEAN),
+        MetricSpec(name="reward/recovery_touchdown", reducer=Reducer.MEAN),
+        MetricSpec(name="reward/recovery_squat", reducer=Reducer.MEAN),
+        MetricSpec(name="reward/unnecessary_step", reducer=Reducer.MEAN),
+        MetricSpec(
+            name="recovery/active",
+            reducer=Reducer.MEAN,
+            log_prefix="recovery",
+            description="Fraction of samples in swing or post-touchdown settling",
+        ),
+        MetricSpec(
+            name="recovery/phase",
+            reducer=Reducer.MEAN,
+            log_prefix="recovery",
+            description="Recovery phase id: 0 hold, 1 swing, 2 settle",
+        ),
+        MetricSpec(
+            name="recovery/step_count",
+            reducer=Reducer.MAX,
+            log_prefix="recovery",
+            description="Maximum number of recovery steps initiated per episode",
+        ),
+        MetricSpec(
+            name="recovery/touchdown_event",
+            reducer=Reducer.SUM,
+            log_prefix="recovery",
+            description="Selected recovery-foot touchdown events",
+        ),
+        MetricSpec(
+            name="recovery/swing_error_m",
+            reducer=Reducer.MEAN,
+            log_prefix="recovery",
+            description="Recovery swing-foot task-space tracking error",
+        ),
+        MetricSpec(
+            name="recovery/squat_recovered_event",
+            reducer=Reducer.SUM,
+            log_prefix="recovery",
+            description="Settling-to-squat completion events",
+        ),
+        MetricSpec(
+            name="recovery/unnecessary_liftoff_event",
+            reducer=Reducer.SUM,
+            log_prefix="recovery",
+            description="Foot liftoff events while the planner requested quiet squat",
+        ),
+    ]
+)
+
 # =============================================================================
 # Derived constants
 # =============================================================================

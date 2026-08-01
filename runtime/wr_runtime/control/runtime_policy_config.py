@@ -11,7 +11,7 @@ schema and the JAX/``control`` stack.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -130,6 +130,7 @@ class StandingRuntimePolicyConfig:
     control_hz: float
     action_delay_steps: int
     action_filter_alpha: float
+    recovery: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, path: str | Path) -> "StandingRuntimePolicyConfig":
@@ -150,4 +151,5 @@ class StandingRuntimePolicyConfig:
             control_hz=float(data.get("control_hz", 1.0 / ctrl_dt)),
             action_delay_steps=int(data.get("action_delay_steps", 0)),
             action_filter_alpha=float(data.get("action_filter_alpha", 0.0)),
+            recovery=dict(data.get("recovery", {}) or {}),
         )

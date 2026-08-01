@@ -27,6 +27,7 @@ def build_observation_from_components(
     # v8 layout appends ``velocity_cmd_lateral_yaw`` after the
     # proprio_history block (see _build_obs_layout).
     velocity_cmd_lateral_yaw: jnp.ndarray | None = None,
+    standing_recovery_command: jnp.ndarray | None = None,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
     loc_ref_phase_sin_cos: jnp.ndarray | None = None,
@@ -54,6 +55,7 @@ def build_observation_from_components(
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v9_standing",
+        "wr_obs_v10_standing_recovery",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
         # v0.21.0 P7: see spec.py SUPPORTED_LAYOUT_IDS for the
@@ -108,6 +110,11 @@ def build_observation_from_components(
         if loc_ref_history is None
         else loc_ref_history.reshape(4)
     )
+    recovery = (
+        jnp.zeros((7,), dtype=jnp.float32)
+        if standing_recovery_command is None
+        else jnp.asarray(standing_recovery_command, dtype=jnp.float32).reshape(7)
+    )
 
     # v0.20.1 wr_obs_v6_offline_ref_history reference-window channels.
     # Defaults are zero arrays of the right shape so the v6 branch
@@ -160,7 +167,9 @@ def build_observation_from_components(
         joint_pos_normalized.reshape(-1),
         joint_vel_normalized.reshape(-1),
     ]
-    if spec.observation.layout_id != "wr_obs_v9_standing":
+    if spec.observation.layout_id not in {
+        "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+    }:
         parts.append(foot_switches.reshape(4))
     parts.extend([
         prev_action.reshape(-1),
@@ -175,6 +184,8 @@ def build_observation_from_components(
     ])
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
+    if spec.observation.layout_id == "wr_obs_v10_standing_recovery":
+        parts.extend([recovery[:1], recovery[1:3], recovery[3:5], recovery[5:7]])
     if spec.observation.layout_id == "wr_obs_v3":
         parts.append(clock)
     if spec.observation.layout_id == "wr_obs_v4":
@@ -248,6 +259,7 @@ def build_observation(
     velocity_cmd: jnp.ndarray,
     # v0.21.0 P7 — see ``build_observation_from_components`` docstring.
     velocity_cmd_lateral_yaw: jnp.ndarray | None = None,
+    standing_recovery_command: jnp.ndarray | None = None,
     capture_point_error: jnp.ndarray | None = None,
     gait_clock: jnp.ndarray | None = None,
     loc_ref_phase_sin_cos: jnp.ndarray | None = None,
@@ -284,6 +296,7 @@ def build_observation(
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
         velocity_cmd_lateral_yaw=velocity_cmd_lateral_yaw,
+        standing_recovery_command=standing_recovery_command,
         capture_point_error=capture_point_error,
         gait_clock=gait_clock,
         loc_ref_phase_sin_cos=loc_ref_phase_sin_cos,

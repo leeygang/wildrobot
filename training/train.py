@@ -678,6 +678,9 @@ def start_training(
             "ppo.eval.post_training_task must be 'walking' or 'standing'; "
             f"got {post_training_task!r}"
         )
+    post_training_requires_recovery = (
+        policy_spec.observation.layout_id == "wr_obs_v10_standing_recovery"
+    )
     post_training_strict_lateral_drift = bool(
         getattr(training_cfg.ppo.eval, "post_training_strict_lateral_drift", False)
     )
@@ -982,6 +985,34 @@ def start_training(
                             jnp.float32(0.0),
                         )
 
+                    # Count recovery outcomes from each environment's first
+                    # episode only. Eval environments auto-reset after done;
+                    # including later episodes would overstate recovery.
+                    first_episode = (
+                        jnp.cumsum(rollout["done"], axis=0) - rollout["done"]
+                    ) < 0.5
+
+                    def _first_episode_event(name: str) -> jnp.ndarray:
+                        values = rollout["metrics_vec"][..., METRIC_INDEX[name]]
+                        return jnp.any((values > 0.5) & first_episode, axis=0)
+
+                    recovery_step_env = _first_episode_event(
+                        "recovery/step_count"
+                    )
+                    recovery_touchdown_env = _first_episode_event(
+                        "recovery/touchdown_event"
+                    )
+                    recovery_squat_return_env = _first_episode_event(
+                        "recovery/squat_recovered_event"
+                    )
+                    recovery_unnecessary_liftoff_env = _first_episode_event(
+                        "recovery/unnecessary_liftoff_event"
+                    )
+                    recovery_step_count = jnp.sum(recovery_step_env)
+                    recovery_rate_denominator = jnp.maximum(
+                        recovery_step_count, jnp.float32(1.0)
+                    )
+
                     eps_touchdown = jnp.float32(1e-6)
                     td_left = _mean("tracking/touchdown_rate_left_count")
                     td_right = _mean("tracking/touchdown_rate_right_count")
@@ -1008,6 +1039,20 @@ def start_training(
                         ),
                         "torque_sat_frac": _mean("debug/torque_sat_frac"),
                         "action_sat_frac": _mean("debug/action_sat_frac"),
+                        "recovery_step_rate": jnp.mean(
+                            recovery_step_env.astype(jnp.float32)
+                        ),
+                        "recovery_touchdown_given_step_rate": (
+                            jnp.sum(recovery_touchdown_env & recovery_step_env)
+                            / recovery_rate_denominator
+                        ),
+                        "recovery_squat_return_given_step_rate": (
+                            jnp.sum(recovery_squat_return_env & recovery_step_env)
+                            / recovery_rate_denominator
+                        ),
+                        "recovery_unnecessary_liftoff_rate": jnp.mean(
+                            recovery_unnecessary_liftoff_env.astype(jnp.float32)
+                        ),
                         "lateral_velocity_abs": _mean(
                             "tracking/lateral_velocity_abs"
                         ),
@@ -1208,6 +1253,18 @@ def start_training(
                         ),
                         "torque_sat_frac": float(eval_result["torque_sat_frac"]),
                         "action_sat_frac": float(eval_result["action_sat_frac"]),
+                        "recovery_step_rate": float(
+                            eval_result["recovery_step_rate"]
+                        ),
+                        "recovery_touchdown_given_step_rate": float(
+                            eval_result["recovery_touchdown_given_step_rate"]
+                        ),
+                        "recovery_squat_return_given_step_rate": float(
+                            eval_result["recovery_squat_return_given_step_rate"]
+                        ),
+                        "recovery_unnecessary_liftoff_rate": float(
+                            eval_result["recovery_unnecessary_liftoff_rate"]
+                        ),
                         # smoke15 deploy-facing eval metrics — exposed
                         # so the gate (lateral cap) and the JSON summary
                         # can show sideways-walk / heading-drift even
@@ -1269,6 +1326,7 @@ def start_training(
                         decision = deterministic_standing_eval_gate(
                             eval_metrics=eval_metrics,
                             eval_num_steps=post_training_num_steps,
+                            require_recovery=post_training_requires_recovery,
                         )
                     else:
                         decision = deterministic_eval_gate(
@@ -1449,22 +1507,40 @@ def start_training(
                 print()
                 print("Deterministic eval results:")
                 if post_training_task == "standing":
-                    print(
-                        "rank  checkpoint                      eval_ep_len  "
-                        "both_loaded  imbalance  body_err  torque_sat  pass"
-                    )
+                    if post_training_requires_recovery:
+                        print(
+                            "rank  checkpoint                      eval_ep_len  "
+                            "step_rate  td/step  squat/step  false_lift  pass"
+                        )
+                    else:
+                        print(
+                            "rank  checkpoint                      eval_ep_len  "
+                            "both_loaded  imbalance  body_err  torque_sat  pass"
+                        )
                     for row in eval_rows:
                         eval_metrics = row["eval_metrics"]
-                        print(
-                            f"{row['rank']:<5} "
-                            f"{row['checkpoint_name']:<30} "
-                            f"{eval_metrics['mean_episode_length']:>11.0f}  "
-                            f"{eval_metrics['both_loaded']:>11.3f}  "
-                            f"{eval_metrics['load_imbalance']:>9.3f}  "
-                            f"{eval_metrics['body_quat_err_deg']:>8.2f}  "
-                            f"{eval_metrics['torque_sat_frac']:>10.3f}  "
-                            f"{'✓' if row['passed'] else '✗'}"
-                        )
+                        if post_training_requires_recovery:
+                            print(
+                                f"{row['rank']:<5} "
+                                f"{row['checkpoint_name']:<30} "
+                                f"{eval_metrics['mean_episode_length']:>11.0f}  "
+                                f"{eval_metrics['recovery_step_rate']:>9.3f}  "
+                                f"{eval_metrics['recovery_touchdown_given_step_rate']:>7.3f}  "
+                                f"{eval_metrics['recovery_squat_return_given_step_rate']:>10.3f}  "
+                                f"{eval_metrics['recovery_unnecessary_liftoff_rate']:>10.3f}  "
+                                f"{'✓' if row['passed'] else '✗'}"
+                            )
+                        else:
+                            print(
+                                f"{row['rank']:<5} "
+                                f"{row['checkpoint_name']:<30} "
+                                f"{eval_metrics['mean_episode_length']:>11.0f}  "
+                                f"{eval_metrics['both_loaded']:>11.3f}  "
+                                f"{eval_metrics['load_imbalance']:>9.3f}  "
+                                f"{eval_metrics['body_quat_err_deg']:>8.2f}  "
+                                f"{eval_metrics['torque_sat_frac']:>10.3f}  "
+                                f"{'✓' if row['passed'] else '✗'}"
+                            )
                 else:
                     print(
                         "rank  checkpoint                      eval_vx  eval_cmd_err  "
@@ -1491,7 +1567,7 @@ def start_training(
                 def _eval_select_score(row: dict[str, Any]) -> float:
                     eval_metrics = row["eval_metrics"]
                     if post_training_task == "standing":
-                        return (
+                        score = (
                             float(eval_metrics["mean_episode_length"])
                             / float(max(1, post_training_num_steps))
                             + float(eval_metrics["both_loaded"])
@@ -1500,6 +1576,25 @@ def start_training(
                             - float(eval_metrics["torque_sat_frac"])
                             - float(eval_metrics["action_sat_frac"])
                         )
+                        if post_training_requires_recovery:
+                            score += (
+                                float(
+                                    eval_metrics[
+                                        "recovery_touchdown_given_step_rate"
+                                    ]
+                                )
+                                + float(
+                                    eval_metrics[
+                                        "recovery_squat_return_given_step_rate"
+                                    ]
+                                )
+                                - float(
+                                    eval_metrics[
+                                        "recovery_unnecessary_liftoff_rate"
+                                    ]
+                                )
+                            )
+                        return score
                     step = (
                         float(eval_metrics["step_length_touchdown_event_m"])
                         if eval_metrics["step_length_touchdown_event_m"] is not None

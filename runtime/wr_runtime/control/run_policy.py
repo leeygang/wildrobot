@@ -81,7 +81,9 @@ _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 _STARTUP_POSE_BLEND_S = 2.0
 _STARTUP_POSE_HOLD_S = 5.0
-_STANDING_LAYOUT_IDS = {"wr_obs_v1", "wr_obs_v9_standing"}
+_STANDING_LAYOUT_IDS = {
+    "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+}
 _WALKING_LAYOUT_ID = "wr_obs_v8_cmd3d"
 _RUNTIME_FIXED_HOME_KEY = "runtime_fixed_home"
 

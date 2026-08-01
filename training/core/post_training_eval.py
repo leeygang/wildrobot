@@ -90,6 +90,13 @@ STANDING_BODY_QUAT_ERR_DEG_FINAL_MAX = 10.0
 STANDING_TORQUE_SAT_FRAC_MAX = 0.05
 STANDING_ACTION_SAT_FRAC_MAX = 0.05
 
+# v0.22.6 recovery-policy promotion thresholds. These are conditional on an
+# environment having initiated a recovery step, except for unnecessary
+# liftoff, which is measured across every first episode.
+STANDING_RECOVERY_TOUCHDOWN_RATE_MIN = 0.90
+STANDING_RECOVERY_SQUAT_RETURN_RATE_MIN = 0.80
+STANDING_RECOVERY_UNNECESSARY_LIFTOFF_RATE_MAX = 0.05
+
 # walking_training.md Appendix C (v0.21.0+) lateral / yaw cmd
 # tracking pass-criterion thresholds.  Both require the SIGNED ratio
 # ``achieved / commanded`` to clear 0.5 at the probe cmd point, with
@@ -670,6 +677,7 @@ def deterministic_standing_eval_gate(
     eval_metrics: Mapping[str, Any],
     *,
     eval_num_steps: int,
+    require_recovery: bool = False,
 ) -> DeterministicEvalDecision:
     """Grade the exact deterministic standing policy used for deployment."""
     episode_length = _metric(eval_metrics, "mean_episode_length")
@@ -725,6 +733,39 @@ def deterministic_standing_eval_gate(
             and action_sat_frac <= STANDING_ACTION_SAT_FRAC_MAX
         ),
     }
+    if require_recovery:
+        recovery_step_rate = _metric(eval_metrics, "recovery_step_rate")
+        recovery_touchdown_rate = _metric(
+            eval_metrics, "recovery_touchdown_given_step_rate"
+        )
+        recovery_squat_return_rate = _metric(
+            eval_metrics, "recovery_squat_return_given_step_rate"
+        )
+        recovery_unnecessary_liftoff_rate = _metric(
+            eval_metrics, "recovery_unnecessary_liftoff_rate"
+        )
+        gates.update(
+            {
+                "recovery_step_observed": (
+                    recovery_step_rate is not None and recovery_step_rate > 0.0
+                ),
+                "recovery_touchdown_given_step": (
+                    recovery_touchdown_rate is not None
+                    and recovery_touchdown_rate
+                    >= STANDING_RECOVERY_TOUCHDOWN_RATE_MIN
+                ),
+                "recovery_squat_return_given_step": (
+                    recovery_squat_return_rate is not None
+                    and recovery_squat_return_rate
+                    >= STANDING_RECOVERY_SQUAT_RETURN_RATE_MIN
+                ),
+                "recovery_unnecessary_liftoff": (
+                    recovery_unnecessary_liftoff_rate is not None
+                    and recovery_unnecessary_liftoff_rate
+                    <= STANDING_RECOVERY_UNNECESSARY_LIFTOFF_RATE_MAX
+                ),
+            }
+        )
     return DeterministicEvalDecision(
         passed=all(gates.values()),
         step_metric_available=False,

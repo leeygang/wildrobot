@@ -1,8 +1,7 @@
 """Runtime runner for the legacy standing policy contract.
 
 The walking runner is intentionally specific to ``wr_obs_v8_cmd3d`` and its
-phase/reference history.  Standing policies use ``wr_obs_v1`` or the
-foot-switch-free actor contract ``wr_obs_v9_standing``.
+phase/reference history. Standing policies use a dedicated standing contract.
 
 This runner also supports the ToddlerBot-style active-action subset used by the
 home stabilizer: the policy can control a subset of actuators while runtime
@@ -25,9 +24,37 @@ from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicySpec
 from wr_runtime.control.runtime_policy_config import StandingRuntimePolicyConfig
+from wr_runtime.control.standing_recovery_planner import (
+    StandingRecoveryPlannerConfig,
+    StandingRecoveryPlannerState,
+    advance_recovery_planner,
+    encode_recovery_command,
+    roll_pitch_from_quat_wxyz,
+)
 
 
-_SUPPORTED_LAYOUTS = {"wr_obs_v1", "wr_obs_v9_standing"}
+_SUPPORTED_LAYOUTS = {
+    "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+}
+_LEG_LENGTH_M = 0.21
+
+
+def _estimate_sagittal_foot_x(
+    joint_pos_by_name: Mapping[str, float],
+) -> tuple[float, float]:
+    """Estimate foot x relative to the pelvis in world-forward convention."""
+    left_hip = -float(joint_pos_by_name["left_hip_pitch"])
+    right_hip = float(joint_pos_by_name["right_hip_pitch"])
+    left_knee = float(joint_pos_by_name["left_knee_pitch"])
+    right_knee = float(joint_pos_by_name["right_knee_pitch"])
+    # LegIKConfig uses +x opposite to the assembled MuJoCo/world +x axis.
+    left_x = -_LEG_LENGTH_M * (
+        np.sin(left_hip) + np.sin(left_hip + left_knee)
+    )
+    right_x = -_LEG_LENGTH_M * (
+        np.sin(right_hip) + np.sin(right_hip + right_knee)
+    )
+    return float(left_x), float(right_x)
 
 
 @dataclass
@@ -35,6 +62,7 @@ class StandingRunnerState:
     step_idx: int
     pending_action: np.ndarray
     last_applied_action: np.ndarray
+    recovery: StandingRecoveryPlannerState
 
 
 class StandingPolicyRunner:
@@ -63,6 +91,17 @@ class StandingPolicyRunner:
         self._policy = policy
         self._robot_io = robot_io
         self._runtime_config = runtime_config
+        self._recovery_config = StandingRecoveryPlannerConfig.from_mapping(
+            None if runtime_config is None else runtime_config.recovery
+        )
+        if (
+            layout == "wr_obs_v10_standing_recovery"
+            and not self._recovery_config.enabled
+        ):
+            raise ValueError(
+                "wr_obs_v10_standing_recovery requires recovery.enabled=true in "
+                "the standing runtime policy config"
+            )
         self._zero_cmd_hold_home_deadzone = zero_cmd_hold_home_deadzone
         self._action_dim = int(spec.model.action_dim)
         self._policy_actuator_names = list(spec.robot.actuator_names)
@@ -130,6 +169,7 @@ class StandingPolicyRunner:
             step_idx=0,
             pending_action=zeros.copy(),
             last_applied_action=zeros.copy(),
+            recovery=StandingRecoveryPlannerState(),
         )
 
     def _init_joint_ranges(self) -> None:
@@ -218,11 +258,41 @@ class StandingPolicyRunner:
         )
 
     def build_obs(self, signals: Signals, velocity_cmd: np.ndarray) -> np.ndarray:
+        recovery_command = None
+        if self._spec.observation.layout_id == "wr_obs_v10_standing_recovery":
+            recovery_command = encode_recovery_command(
+                self._state.recovery, self._recovery_config
+            )
         return build_observation(
             spec=self._spec,
             state=PolicyState(prev_action=self._state.last_applied_action),
             signals=signals,
             velocity_cmd=_velocity_cmd_scalar(velocity_cmd),
+            standing_recovery_command=recovery_command,
+        )
+
+    def _advance_recovery(self, signals: Signals) -> None:
+        if not self._recovery_config.enabled:
+            return
+        roll, pitch = roll_pitch_from_quat_wxyz(signals.quat_wxyz)
+        joint_pos = np.asarray(signals.joint_pos_rad, dtype=np.float32)
+        by_name = {
+            name: float(joint_pos[idx])
+            for idx, name in enumerate(self._policy_actuator_names)
+        }
+        left_x, right_x = _estimate_sagittal_foot_x(by_name)
+        switches = np.asarray(signals.foot_switches, dtype=np.float32).reshape(4)
+        self._state.recovery = advance_recovery_planner(
+            self._state.recovery,
+            self._recovery_config,
+            roll_rad=roll,
+            pitch_rad=pitch,
+            roll_rate_rad_s=float(signals.gyro_rad_s[0]),
+            pitch_rate_rad_s=float(signals.gyro_rad_s[1]),
+            left_foot_x_m=float(left_x),
+            right_foot_x_m=float(right_x),
+            left_loaded=bool(np.max(switches[:2]) > 0.5),
+            right_loaded=bool(np.max(switches[2:]) > 0.5),
         )
 
     def compose_and_apply(
@@ -280,6 +350,7 @@ class StandingPolicyRunner:
 
         obs_t0 = time.monotonic()
         signals = self._slice_active_signals(full_signals)
+        self._advance_recovery(signals)
         obs = self.build_obs(signals, velocity_cmd)
         obs_s = time.monotonic() - obs_t0
 
@@ -338,7 +409,12 @@ class StandingPolicyRunner:
             "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
-            "obs_debug": {"velocity_cmd": _as_three_vec(velocity_cmd)},
+            "obs_debug": {
+                "velocity_cmd": _as_three_vec(velocity_cmd),
+                "standing_recovery_command": encode_recovery_command(
+                    self._state.recovery, self._recovery_config
+                ),
+            },
             "action_scale": _sanitize_action_scale(action_scale),
         }
 

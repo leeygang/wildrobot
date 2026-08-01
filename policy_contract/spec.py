@@ -14,6 +14,10 @@ SUPPORTED_LAYOUT_IDS = {
     # Contact remains available to the training critic/rewards and runtime
     # safety supervisor.
     "wr_obs_v9_standing",
+    # v0.22.6 reactive standing recovery.  Extends the contact-free v9
+    # contract with a planner command: recovery active, swing-foot one-hot,
+    # swing phase sin/cos, and normalized relative foothold target.
+    "wr_obs_v10_standing_recovery",
     # v0.20.1 (high-confidence prep): the active locomotion contract.
     # Strict superset of the deprecated wr_obs_v5_offline_ref (which
     # was the same channel set without the proprio-history stack).
@@ -412,6 +416,28 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
         if got != expected:
             raise ValueError(
                 "observation.layout mismatch for layout_id='wr_obs_v9_standing':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v10_standing_recovery":
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("recovery_active", 1),
+            ("recovery_swing_foot", 2),
+            ("recovery_phase_sin_cos", 2),
+            ("recovery_foothold_xy", 2),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for "
+                "layout_id='wr_obs_v10_standing_recovery':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )

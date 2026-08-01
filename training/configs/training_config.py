@@ -706,6 +706,48 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         reset_torso_pitch_range=env.get(
             "reset_torso_pitch_range", [0.0, 0.0]
         ),
+        reset_torso_roll_rate_range=env.get(
+            "reset_torso_roll_rate_range", [0.0, 0.0]
+        ),
+        reset_torso_pitch_rate_range=env.get(
+            "reset_torso_pitch_rate_range", [0.0, 0.0]
+        ),
+        reset_foot_stagger_range_m=env.get(
+            "reset_foot_stagger_range_m", [0.0, 0.0]
+        ),
+        standing_recovery_enabled=bool(
+            env.get("standing_recovery_enabled", False)
+        ),
+        standing_recovery_trigger_angle_rad=float(
+            env.get("standing_recovery_trigger_angle_rad", 0.0872665)
+        ),
+        standing_recovery_lookahead_s=float(
+            env.get("standing_recovery_lookahead_s", 0.25)
+        ),
+        standing_recovery_capture_gain=float(
+            env.get("standing_recovery_capture_gain", 1.0)
+        ),
+        standing_recovery_max_step_m=float(
+            env.get("standing_recovery_max_step_m", 0.10)
+        ),
+        standing_recovery_swing_height_m=float(
+            env.get("standing_recovery_swing_height_m", 0.05)
+        ),
+        standing_recovery_swing_duration_steps=int(
+            env.get("standing_recovery_swing_duration_steps", 20)
+        ),
+        standing_recovery_settle_min_steps=int(
+            env.get("standing_recovery_settle_min_steps", 25)
+        ),
+        standing_recovery_settle_max_steps=int(
+            env.get("standing_recovery_settle_max_steps", 75)
+        ),
+        standing_recovery_settle_angle_rad=float(
+            env.get("standing_recovery_settle_angle_rad", 0.0523599)
+        ),
+        standing_recovery_settle_rate_rad_s=float(
+            env.get("standing_recovery_settle_rate_rad_s", 0.10)
+        ),
         # v0.20.1 TB-active alignment Phase 2/3 (walking_training.md Appendix B).
         penalty_pose_weights_per_joint=dict(
             env.get("penalty_pose_weights_per_joint", {}) or {}
@@ -963,6 +1005,15 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         standing_support_balance_alpha=rewards.get(
             "standing_support_balance_alpha", 4.0
         ),
+        recovery_swing_track=rewards.get("recovery_swing_track", 0.0),
+        recovery_swing_track_alpha=rewards.get(
+            "recovery_swing_track_alpha", 400.0
+        ),
+        recovery_stance_contact=rewards.get("recovery_stance_contact", 0.0),
+        recovery_touchdown=rewards.get("recovery_touchdown", 0.0),
+        recovery_touchdown_alpha=rewards.get("recovery_touchdown_alpha", 400.0),
+        recovery_squat=rewards.get("recovery_squat", 0.0),
+        unnecessary_step=rewards.get("unnecessary_step", 0.0),
         lin_vel_z=rewards.get("lin_vel_z", 0.0),
         ang_vel_xy=rewards.get("ang_vel_xy", 0.0),
         cmd_forward_velocity_track=rewards.get("cmd_forward_velocity_track", 0.0),

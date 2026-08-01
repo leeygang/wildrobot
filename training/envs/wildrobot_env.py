@@ -47,6 +47,7 @@ from policy_contract.jax.action import postprocess_action
 from policy_contract.jax.obs import build_observation
 from policy_contract.jax.signals import Signals
 from policy_contract.jax.state import PolicyState
+from control.kinematics.leg_ik import LegIkConfig, solve_leg_sagittal_ik_jax
 
 from training.cal.cal import ControlAbstractionLayer
 from training.cal.types import CoordinateFrame
@@ -79,6 +80,14 @@ from training.envs.env_info import (
     PROPRIO_HISTORY_FRAMES,
     WR_INFO_KEY,
     WildRobotInfo,
+)
+from training.envs.standing_recovery import (
+    HOLD as RECOVERY_HOLD,
+    SETTLE as RECOVERY_SETTLE,
+    SWING as RECOVERY_SWING,
+    advance_recovery_planner,
+    desired_swing_foot_position,
+    encode_recovery_command,
 )
 from training.policy_spec_utils import (
     build_policy_spec_from_training_config,
@@ -237,6 +246,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # same home-residual action path with optional active actuator mask.
             "wr_obs_v1",
             "wr_obs_v9_standing",
+            "wr_obs_v10_standing_recovery",
             "wr_obs_v6_offline_ref_history",
             "wr_obs_v7_phase_proprio",
             # v0.21.0 P7 (lateral+yaw prior): superset of v7 that
@@ -246,7 +256,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
-                "{'wr_obs_v1', 'wr_obs_v9_standing', 'wr_obs_v6_offline_ref_history', "
+                "{'wr_obs_v1', 'wr_obs_v9_standing', 'wr_obs_v10_standing_recovery', "
+                "'wr_obs_v6_offline_ref_history', "
                 "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
                 "high-confidence prep (proprio history is now always wired); "
                 "v7 (smoke11) drops every reference-trajectory channel from "
@@ -700,6 +711,32 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._reset_torso_pitch_range = jp.asarray(
             reset_pitch_range, dtype=jp.float32
         )
+        self._reset_torso_roll_rate_range = jp.asarray(
+            self._config.env.reset_torso_roll_rate_range, dtype=jp.float32
+        )
+        self._reset_torso_pitch_rate_range = jp.asarray(
+            self._config.env.reset_torso_pitch_rate_range, dtype=jp.float32
+        )
+        self._reset_foot_stagger_range = jp.asarray(
+            self._config.env.reset_foot_stagger_range_m, dtype=jp.float32
+        )
+        for name, values in (
+            ("reset_torso_roll_rate_range", self._config.env.reset_torso_roll_rate_range),
+            ("reset_torso_pitch_rate_range", self._config.env.reset_torso_pitch_rate_range),
+            ("reset_foot_stagger_range_m", self._config.env.reset_foot_stagger_range_m),
+        ):
+            if len(values) != 2 or float(values[0]) > float(values[1]):
+                raise ValueError(f"{name} must be a two-element [low, high] range")
+        self._recovery_enabled = bool(self._config.env.standing_recovery_enabled)
+        if (
+            str(self._config.env.actor_obs_layout_id)
+            == "wr_obs_v10_standing_recovery"
+            and not self._recovery_enabled
+        ):
+            raise ValueError(
+                "wr_obs_v10_standing_recovery requires standing_recovery_enabled=true"
+            )
+        self._leg_ik_config = LegIkConfig()
 
         # PolicySpec → MJ ctrl-order bridge.  Use this for ALL ctrl writes.
         # Touch the JAX permutation eagerly so its lazy-init doesn't leak a
@@ -1935,6 +1972,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         v4_compat: Dict[str, jax.Array],
         signals=None,
         proprio_history: Optional[jax.Array] = None,
+        standing_recovery_command: Optional[jax.Array] = None,
     ) -> jax.Array:
         """v5 layout dispatch.  All v4 + v5 ``loc_ref_*`` slots are
         populated from the offline window."""
@@ -1973,6 +2011,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             signals=signals,
             velocity_cmd=velocity_cmd_for_obs,
             velocity_cmd_lateral_yaw=lateral_yaw,
+            standing_recovery_command=standing_recovery_command,
             loc_ref_phase_sin_cos=v4_compat["phase_sin_cos"],
             loc_ref_stance_foot=v4_compat["stance"],
             loc_ref_next_foothold=v4_compat["next_foothold"],
@@ -2056,7 +2095,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         q_actual = data.qpos[self._actuator_qpos_addrs]
         actuator_force = data.actuator_force.astype(jp.float32)
 
-        if self._policy_spec.observation.layout_id == "wr_obs_v9_standing":
+        if self._policy_spec.observation.layout_id in {
+            "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+        }:
             # The current offline library is a walking reference with an
             # alternating contact mask.  The v9 task is stationary standing,
             # so its critic target is the home pose with both feet expected
@@ -2153,6 +2194,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_foot_pos: jax.Array,
         right_foot_pos: jax.Array,
         feet_height_init: jax.Array,
+        recovery_phase: jax.Array,
+        recovery_next_phase: jax.Array,
+        recovery_swing_foot: jax.Array,
+        recovery_phase_step: jax.Array,
+        recovery_target_xy: jax.Array,
+        recovery_swing_start_pos: jax.Array,
+        unnecessary_liftoff: jax.Array,
     ) -> Dict[str, jax.Array]:
         """v0.20.1 imitation-dominant reward family.
 
@@ -2661,6 +2709,47 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.float32(0.0),
         ).astype(jp.float32)
 
+        recovery_swing_active = (recovery_phase == RECOVERY_SWING).astype(jp.float32)
+        recovery_static_gate = jp.float32(1.0) - recovery_swing_active
+        selected_foot_pos = jp.where(
+            recovery_swing_foot == 0, left_foot_pos, right_foot_pos
+        )
+        desired_swing_pos = desired_swing_foot_position(
+            swing_start_pos=recovery_swing_start_pos,
+            target_xy=recovery_target_xy,
+            phase_step=recovery_phase_step,
+            swing_duration_steps=self._config.env.standing_recovery_swing_duration_steps,
+            swing_height_m=self._config.env.standing_recovery_swing_height_m,
+        )
+        swing_err_sq = jp.sum((selected_foot_pos - desired_swing_pos) ** 2)
+        r_recovery_swing_track = recovery_swing_active * jp.exp(
+            -jp.float32(weights.recovery_swing_track_alpha) * swing_err_sq
+        )
+        stance_loaded = jp.where(
+            recovery_swing_foot == 0, right_loaded, left_loaded
+        ).astype(jp.float32)
+        r_recovery_stance_contact = recovery_swing_active * stance_loaded
+        touchdown_event = (
+            (recovery_phase == RECOVERY_SWING)
+            & (recovery_next_phase == RECOVERY_SETTLE)
+        ).astype(jp.float32)
+        landing_target_xy = recovery_swing_start_pos[:2] + recovery_target_xy
+        touchdown_err_sq = jp.sum((selected_foot_pos[:2] - landing_target_xy) ** 2)
+        selected_loaded = jp.where(
+            recovery_swing_foot == 0, left_loaded, right_loaded
+        ).astype(jp.float32)
+        r_recovery_touchdown = touchdown_event * selected_loaded * jp.exp(
+            -jp.float32(weights.recovery_touchdown_alpha) * touchdown_err_sq
+        )
+        settle_active = (recovery_next_phase == RECOVERY_SETTLE).astype(jp.float32)
+        squat_height_err = root_pose.height - jp.float32(self._config.env.target_height)
+        squat_rate_sq = gyro_rad_s[0] ** 2 + gyro_rad_s[1] ** 2
+        r_recovery_squat = settle_active * both_loaded.astype(jp.float32) * jp.exp(
+            -jp.float32(20.0) * body_quat_angle * body_quat_angle
+            -jp.float32(2.0) * squat_rate_sq
+            -jp.float32(100.0) * squat_height_err * squat_height_err
+        )
+
         return dict(
             r_q_track=r_q_track,
             r_body_quat_track=r_body_quat,
@@ -2675,6 +2764,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_contact_match=r_contact,
             contact_phase_match_diag=contact_phase_match_diag,
             r_standing_support_balance=r_standing_support_balance,
+            recovery_static_gate=recovery_static_gate,
+            r_recovery_swing_track=r_recovery_swing_track.astype(jp.float32),
+            r_recovery_stance_contact=r_recovery_stance_contact.astype(jp.float32),
+            r_recovery_touchdown=r_recovery_touchdown.astype(jp.float32),
+            r_recovery_squat=r_recovery_squat.astype(jp.float32),
+            penalty_unnecessary_step=unnecessary_liftoff.astype(jp.float32),
+            recovery_touchdown_event=(touchdown_event * selected_loaded).astype(
+                jp.float32
+            ),
+            recovery_swing_err_m=jp.sqrt(swing_err_sq).astype(jp.float32),
             support_left_loaded=left_loaded.astype(jp.float32),
             support_right_loaded=right_loaded.astype(jp.float32),
             support_both_loaded=both_loaded.astype(jp.float32),
@@ -2810,14 +2909,25 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ref_q_track=jp.float32(w.ref_q_track) * terms["r_q_track"],
             ref_body_quat_track=jp.float32(w.ref_body_quat_track)
             * terms["r_body_quat_track"],
-            torso_pos_xy=jp.float32(w.torso_pos_xy) * terms["r_torso_pos_xy"],
+            torso_pos_xy=jp.float32(w.torso_pos_xy) * terms["r_torso_pos_xy"]
+            * terms["recovery_static_gate"],
             # v0.20.2 smoke6: TB-aligned continuous phase signals.
             lin_vel_z=jp.float32(w.lin_vel_z) * terms["r_lin_vel_z"],
             ang_vel_xy=jp.float32(w.ang_vel_xy) * terms["r_ang_vel_xy"],
             ref_contact_match=jp.float32(w.ref_contact_match)
             * terms["r_contact_match"],
             standing_support_balance=jp.float32(w.standing_support_balance)
-            * terms["r_standing_support_balance"],
+            * terms["r_standing_support_balance"] * terms["recovery_static_gate"],
+            recovery_swing_track=jp.float32(w.recovery_swing_track)
+            * terms["r_recovery_swing_track"],
+            recovery_stance_contact=jp.float32(w.recovery_stance_contact)
+            * terms["r_recovery_stance_contact"],
+            recovery_touchdown=jp.float32(w.recovery_touchdown)
+            * terms["r_recovery_touchdown"],
+            recovery_squat=jp.float32(w.recovery_squat)
+            * terms["r_recovery_squat"],
+            unnecessary_step=jp.float32(w.unnecessary_step)
+            * terms["penalty_unnecessary_step"],
             cmd_forward_velocity_track=jp.float32(w.cmd_forward_velocity_track)
             * terms["r_cmd_forward_velocity_track"],
             # v0.21.0 smoke10 — axis-split standalone lateral command tracking.
@@ -2851,14 +2961,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # are 0 so existing v0.19.x / v0.20.0 configs are unaffected.
             ref_feet_z_track=jp.float32(w.ref_feet_z_track)
             * terms["r_feet_z_track"],
-            penalty_pose=jp.float32(w.penalty_pose) * terms["penalty_pose"],
+            penalty_pose=jp.float32(w.penalty_pose) * terms["penalty_pose"]
+            * terms["recovery_static_gate"],
             penalty_feet_ori=jp.float32(w.penalty_feet_ori)
             * terms["penalty_feet_ori"],
             # v0.20.1 smoke9 — TB walk.gin reward terms.  Defaults 0 so
             # existing smokes are unaffected.
             penalty_close_feet_xy=jp.float32(w.penalty_close_feet_xy)
             * terms["r_close_feet_xy"],
-            feet_phase=jp.float32(w.feet_phase) * terms["r_feet_phase"],
+            feet_phase=jp.float32(w.feet_phase) * terms["r_feet_phase"]
+            * terms["recovery_static_gate"],
         )
         # Apply the * dt rescale uniformly so the per-term contributions
         # logged at reward/* are exactly what each term contributes to
@@ -3053,6 +3165,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if perturb_pose and self._reset_perturbation_enabled():
             qpos = self._apply_reset_perturbation(key_pert, qpos)
 
+        if perturb_pose and self._recovery_enabled:
+            stagger_key = jax.random.fold_in(key_pert, 1)
+            rate_key = jax.random.fold_in(key_pert, 2)
+            stagger = jax.random.uniform(
+                stagger_key,
+                (),
+                minval=self._reset_foot_stagger_range[0],
+                maxval=self._reset_foot_stagger_range[1],
+            ).astype(jp.float32)
+            qpos = self._apply_reset_foot_stagger(qpos, stagger)
+            if rsi_qvel is None:
+                rsi_qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
+            rate_roll_key, rate_pitch_key = jax.random.split(rate_key)
+            reset_roll_rate = jax.random.uniform(
+                rate_roll_key,
+                (),
+                minval=self._reset_torso_roll_rate_range[0],
+                maxval=self._reset_torso_roll_rate_range[1],
+            ).astype(jp.float32)
+            reset_pitch_rate = jax.random.uniform(
+                rate_pitch_key,
+                (),
+                minval=self._reset_torso_pitch_rate_range[0],
+                maxval=self._reset_torso_pitch_rate_range[1],
+            ).astype(jp.float32)
+            rsi_qvel = rsi_qvel.at[3].set(reset_roll_rate)
+            rsi_qvel = rsi_qvel.at[4].set(reset_pitch_rate)
+
         push_schedule = sample_push_schedule(
             key_push, self._config.env, self._push_body_ids
         )
@@ -3163,6 +3303,53 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos = qpos.at[3:7].set(new_wxyz)
 
         return qpos
+
+    def _apply_reset_foot_stagger(
+        self, qpos: jax.Array, foot_stagger_m: jax.Array
+    ) -> jax.Array:
+        """Move feet fore/aft symmetrically while retaining squat height."""
+        leg_q = qpos[self._leg_pitch_qpos_addrs]
+        left_hip = -leg_q[0]
+        right_hip = leg_q[3]
+        l1 = jp.float32(self._leg_ik_config.upper_leg_length_m)
+        l2 = jp.float32(self._leg_ik_config.lower_leg_length_m)
+
+        def fk(hip, knee):
+            return (
+                l1 * jp.sin(hip) + l2 * jp.sin(hip + knee),
+                -l1 * jp.cos(hip) - l2 * jp.cos(hip + knee),
+            )
+
+        left_x, left_z = fk(left_hip, leg_q[1])
+        right_x, right_z = fk(right_hip, leg_q[4])
+        center_x = 0.5 * (left_x + right_x)
+        common_z = 0.5 * (left_z + right_z)
+        common_foot_pitch = 0.5 * (
+            left_hip + leg_q[1] + leg_q[2]
+            + right_hip + leg_q[4] + leg_q[5]
+        )
+        # IK +x maps to -world-x in the assembled model.
+        half = -0.5 * foot_stagger_m
+        left = solve_leg_sagittal_ik_jax(
+            target_x_m=center_x + half,
+            target_z_m=common_z,
+            config=self._leg_ik_config,
+        )
+        right = solve_leg_sagittal_ik_jax(
+            target_x_m=center_x - half,
+            target_z_m=common_z,
+            config=self._leg_ik_config,
+        )
+        new_leg_q = jp.stack(
+            [
+                -left[0], left[1], left[2] + common_foot_pitch,
+                right[0], right[1], right[2] + common_foot_pitch,
+            ]
+        )
+        new_leg_q = jp.clip(
+            new_leg_q, self._leg_pitch_joint_mins, self._leg_pitch_joint_maxs
+        )
+        return qpos.at[self._leg_pitch_qpos_addrs].set(new_leg_q)
 
     @staticmethod
     def _euler_xyz_to_quat_wxyz(
@@ -3739,6 +3926,53 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
         )
 
+        recovery_state = (
+            jp.int32(RECOVERY_HOLD),
+            jp.int32(-1),
+            jp.int32(0),
+            jp.int32(0),
+            jp.zeros(2, dtype=jp.float32),
+            jp.zeros(3, dtype=jp.float32),
+            jp.int32(0),
+        )
+        if self._recovery_enabled:
+            roll_init, pitch_init, _ = root_pose.euler_angles()
+            recovery_state = advance_recovery_planner(
+                phase=recovery_state[0],
+                swing_foot=recovery_state[1],
+                phase_step=recovery_state[2],
+                settle_count=recovery_state[3],
+                target_xy=recovery_state[4],
+                swing_start_pos=recovery_state[5],
+                step_count=recovery_state[6],
+                roll_rad=roll_init,
+                pitch_rad=pitch_init,
+                roll_rate_rad_s=signals_raw.gyro_rad_s[0],
+                pitch_rate_rad_s=signals_raw.gyro_rad_s[1],
+                left_foot_pos=left_foot_pos,
+                right_foot_pos=right_foot_pos,
+                left_loaded=left_force > self._config.env.contact_threshold_force,
+                right_loaded=right_force > self._config.env.contact_threshold_force,
+                trigger_angle_rad=self._config.env.standing_recovery_trigger_angle_rad,
+                lookahead_s=self._config.env.standing_recovery_lookahead_s,
+                com_height_m=self._config.env.target_height,
+                capture_gain=self._config.env.standing_recovery_capture_gain,
+                max_step_m=self._config.env.standing_recovery_max_step_m,
+                swing_duration_steps=self._config.env.standing_recovery_swing_duration_steps,
+                settle_min_steps=self._config.env.standing_recovery_settle_min_steps,
+                settle_max_steps=self._config.env.standing_recovery_settle_max_steps,
+                settle_angle_rad=self._config.env.standing_recovery_settle_angle_rad,
+                settle_rate_rad_s=self._config.env.standing_recovery_settle_rate_rad_s,
+            )
+        recovery_command = encode_recovery_command(
+            phase=recovery_state[0],
+            swing_foot=recovery_state[1],
+            phase_step=recovery_state[2],
+            target_xy=recovery_state[4],
+            swing_duration_steps=self._config.env.standing_recovery_swing_duration_steps,
+            max_step_m=self._config.env.standing_recovery_max_step_m,
+        )
+
         wr_info = WildRobotInfo(
             step_count=jp.zeros((), dtype=jp.int32),
             prev_action=default_action,
@@ -3769,6 +4003,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_left_touchdown_x=left_foot_pos[0].astype(jp.float32),
             last_right_touchdown_x=right_foot_pos[0].astype(jp.float32),
             last_step_length=jp.float32(0.0),
+            recovery_phase=recovery_state[0],
+            recovery_swing_foot=recovery_state[1],
+            recovery_phase_step=recovery_state[2],
+            recovery_settle_count=recovery_state[3],
+            recovery_target_xy=recovery_state[4],
+            recovery_swing_start_pos=recovery_state[5],
+            recovery_step_count=recovery_state[6],
             critic_obs=critic_obs,
             critic_obs_history=critic_obs_history,
             # v3 offline playback state — primary read/write fields.
@@ -3819,6 +4060,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             v4_compat=v4_compat,
             signals=signals_override,
             proprio_history=proprio_history_init,
+            standing_recovery_command=recovery_command,
         )
 
         roll_init, pitch_init, _ = root_pose.euler_angles()
@@ -4159,6 +4401,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if self._policy_spec.observation.layout_id in (
             "wr_obs_v1",
             "wr_obs_v9_standing",
+            "wr_obs_v10_standing_recovery",
         ):
             applied_target_q = JaxCalibOps.action_to_ctrl(
                 spec=self._policy_spec,
@@ -4234,6 +4477,57 @@ class WildRobotEnv(mjx_env.MjxEnv):
         contact_thresh = self._config.env.contact_threshold_force
         left_toe_switch = (left_force > contact_thresh).astype(jp.float32)
         right_toe_switch = (right_force > contact_thresh).astype(jp.float32)
+        left_liftoff = (wr.prev_left_loaded > 0.5) & (left_toe_switch < 0.5)
+        right_liftoff = (wr.prev_right_loaded > 0.5) & (right_toe_switch < 0.5)
+        unnecessary_liftoff = (
+            (wr.recovery_phase == RECOVERY_HOLD) & (left_liftoff | right_liftoff)
+        ).astype(jp.float32)
+
+        recovery_state = (
+            wr.recovery_phase,
+            wr.recovery_swing_foot,
+            wr.recovery_phase_step,
+            wr.recovery_settle_count,
+            wr.recovery_target_xy,
+            wr.recovery_swing_start_pos,
+            wr.recovery_step_count,
+        )
+        if self._recovery_enabled:
+            recovery_state = advance_recovery_planner(
+                phase=wr.recovery_phase,
+                swing_foot=wr.recovery_swing_foot,
+                phase_step=wr.recovery_phase_step,
+                settle_count=wr.recovery_settle_count,
+                target_xy=wr.recovery_target_xy,
+                swing_start_pos=wr.recovery_swing_start_pos,
+                step_count=wr.recovery_step_count,
+                roll_rad=roll_post,
+                pitch_rad=pitch_post,
+                roll_rate_rad_s=signals_raw.gyro_rad_s[0],
+                pitch_rate_rad_s=signals_raw.gyro_rad_s[1],
+                left_foot_pos=left_foot_pos,
+                right_foot_pos=right_foot_pos,
+                left_loaded=left_toe_switch > 0.5,
+                right_loaded=right_toe_switch > 0.5,
+                trigger_angle_rad=self._config.env.standing_recovery_trigger_angle_rad,
+                lookahead_s=self._config.env.standing_recovery_lookahead_s,
+                com_height_m=self._config.env.target_height,
+                capture_gain=self._config.env.standing_recovery_capture_gain,
+                max_step_m=self._config.env.standing_recovery_max_step_m,
+                swing_duration_steps=self._config.env.standing_recovery_swing_duration_steps,
+                settle_min_steps=self._config.env.standing_recovery_settle_min_steps,
+                settle_max_steps=self._config.env.standing_recovery_settle_max_steps,
+                settle_angle_rad=self._config.env.standing_recovery_settle_angle_rad,
+                settle_rate_rad_s=self._config.env.standing_recovery_settle_rate_rad_s,
+            )
+        recovery_command = encode_recovery_command(
+            phase=recovery_state[0],
+            swing_foot=recovery_state[1],
+            phase_step=recovery_state[2],
+            target_xy=recovery_state[4],
+            swing_duration_steps=self._config.env.standing_recovery_swing_duration_steps,
+            max_step_m=self._config.env.standing_recovery_max_step_m,
+        )
 
         # G4 step-length-on-touchdown (walking_training.md v0.20.1 §, line 979).
         # Touchdown event = loaded transition (prev=0 → curr=1).  Step length =
@@ -4323,6 +4617,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             left_foot_pos=left_foot_pos,
             right_foot_pos=right_foot_pos,
             feet_height_init=wr.feet_height_init,
+            recovery_phase=wr.recovery_phase,
+            recovery_next_phase=recovery_state[0],
+            recovery_swing_foot=wr.recovery_swing_foot,
+            recovery_phase_step=wr.recovery_phase_step,
+            recovery_target_xy=wr.recovery_target_xy,
+            recovery_swing_start_pos=wr.recovery_swing_start_pos,
+            unnecessary_liftoff=unnecessary_liftoff,
         )
         reward_contrib = self._aggregate_reward(reward_terms, terminated)
         reward = reward_contrib["total"]
@@ -4427,6 +4728,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             last_left_touchdown_x=new_last_left_touchdown_x,
             last_right_touchdown_x=new_last_right_touchdown_x,
             last_step_length=new_step_length,
+            recovery_phase=recovery_state[0],
+            recovery_swing_foot=recovery_state[1],
+            recovery_phase_step=recovery_state[2],
+            recovery_settle_count=recovery_state[3],
+            recovery_target_xy=recovery_state[4],
+            recovery_swing_start_pos=recovery_state[5],
+            recovery_step_count=recovery_state[6],
             critic_obs=critic_obs,
             critic_obs_history=new_critic_obs_history,
             loc_ref_offline_step_idx=next_step_idx,
@@ -4466,6 +4774,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # comment on new_proprio_history above for why this isn't
             # the rolled buffer.
             proprio_history=wr.proprio_history,
+            standing_recovery_command=recovery_command,
         )
 
         # Live diagnostics.  forward_velocity / phase_progress / pitch /
@@ -4720,6 +5029,39 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/standing_support_balance"] = reward_contrib[
             "standing_support_balance"
         ]
+        terminal_metrics_dict["reward/recovery_swing_track"] = reward_contrib[
+            "recovery_swing_track"
+        ]
+        terminal_metrics_dict["reward/recovery_stance_contact"] = reward_contrib[
+            "recovery_stance_contact"
+        ]
+        terminal_metrics_dict["reward/recovery_touchdown"] = reward_contrib[
+            "recovery_touchdown"
+        ]
+        terminal_metrics_dict["reward/recovery_squat"] = reward_contrib[
+            "recovery_squat"
+        ]
+        terminal_metrics_dict["reward/unnecessary_step"] = reward_contrib[
+            "unnecessary_step"
+        ]
+        terminal_metrics_dict["recovery/active"] = (
+            recovery_state[0] != RECOVERY_HOLD
+        ).astype(jp.float32)
+        terminal_metrics_dict["recovery/phase"] = recovery_state[0].astype(jp.float32)
+        terminal_metrics_dict["recovery/step_count"] = recovery_state[6].astype(jp.float32)
+        terminal_metrics_dict["recovery/touchdown_event"] = reward_terms[
+            "recovery_touchdown_event"
+        ]
+        terminal_metrics_dict["recovery/swing_error_m"] = reward_terms[
+            "recovery_swing_err_m"
+        ] * (wr.recovery_phase == RECOVERY_SWING).astype(jp.float32)
+        terminal_metrics_dict["recovery/squat_recovered_event"] = (
+            (wr.recovery_phase == RECOVERY_SETTLE)
+            & (recovery_state[0] == RECOVERY_HOLD)
+        ).astype(jp.float32)
+        terminal_metrics_dict["recovery/unnecessary_liftoff_event"] = (
+            unnecessary_liftoff
+        )
         terminal_metrics_dict["support/left_loaded"] = reward_terms[
             "support_left_loaded"
         ]

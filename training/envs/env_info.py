@@ -141,6 +141,15 @@ try:
         last_right_touchdown_x: jnp.ndarray  # ()
         last_step_length: jnp.ndarray        # ()
 
+        # v0.22.6 reactive standing recovery planner.
+        recovery_phase: jnp.ndarray          # () int32: 0 hold, 1 swing, 2 settle
+        recovery_swing_foot: jnp.ndarray     # () int32: -1 none, 0 left, 1 right
+        recovery_phase_step: jnp.ndarray     # () int32
+        recovery_settle_count: jnp.ndarray   # () int32 consecutive stable steps
+        recovery_target_xy: jnp.ndarray      # (2,) relative heading-frame target
+        recovery_swing_start_pos: jnp.ndarray  # (3,) world position
+        recovery_step_count: jnp.ndarray     # () int32
+
         # Privileged critic obs (sim-only fields the actor doesn't see).
         # Shape: (PRIVILEGED_OBS_DIM,) under legacy single-frame mode;
         # (env.critic_obs_history_frames * PRIVILEGED_OBS_DIM,) under
@@ -257,6 +266,13 @@ except ImportError:
         last_left_touchdown_x: jnp.ndarray
         last_right_touchdown_x: jnp.ndarray
         last_step_length: jnp.ndarray
+        recovery_phase: jnp.ndarray
+        recovery_swing_foot: jnp.ndarray
+        recovery_phase_step: jnp.ndarray
+        recovery_settle_count: jnp.ndarray
+        recovery_target_xy: jnp.ndarray
+        recovery_swing_start_pos: jnp.ndarray
+        recovery_step_count: jnp.ndarray
         critic_obs: jnp.ndarray
         critic_obs_history: jnp.ndarray
         loc_ref_offline_step_idx: jnp.ndarray
@@ -325,6 +341,13 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "last_left_touchdown_x": (),
         "last_right_touchdown_x": (),
         "last_step_length": (),
+        "recovery_phase": (),
+        "recovery_swing_foot": (),
+        "recovery_phase_step": (),
+        "recovery_settle_count": (),
+        "recovery_target_xy": (2,),
+        "recovery_swing_start_pos": (3,),
+        "recovery_step_count": (),
         # critic_obs shape varies with env.critic_obs_history_frames:
         # (PRIVILEGED_OBS_DIM,) at depth 1, (N*PRIVILEGED_OBS_DIM,) at
         # depth N>1.  Skip the strict shape check; the history buffer

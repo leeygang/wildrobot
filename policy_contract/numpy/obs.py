@@ -26,6 +26,7 @@ def build_observation_from_components(
     # ``velocity_cmd`` is passed.  The v8 layout appends this 2-vec
     # immediately after ``proprio_history`` (see body below).
     velocity_cmd_lateral_yaw: np.ndarray | None = None,
+    standing_recovery_command: np.ndarray | None = None,
     capture_point_error: np.ndarray | None = None,
     gait_clock: np.ndarray | None = None,
     loc_ref_phase_sin_cos: np.ndarray | None = None,
@@ -50,6 +51,7 @@ def build_observation_from_components(
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
         "wr_obs_v9_standing",
+        "wr_obs_v10_standing_recovery",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
         # v0.21.0 P11: strict superset of v7 — same base + phase +
@@ -103,6 +105,11 @@ def build_observation_from_components(
         if loc_ref_history is None
         else np.asarray(loc_ref_history, dtype=np.float32).reshape(4)
     )
+    recovery = (
+        np.zeros((7,), dtype=np.float32)
+        if standing_recovery_command is None
+        else np.asarray(standing_recovery_command, dtype=np.float32).reshape(7)
+    )
 
     # v0.20.1 wr_obs_v6_offline_ref_history reference-window channels —
     # mirrors policy_contract/jax/obs.py.  Defaults are zero arrays so
@@ -155,7 +162,9 @@ def build_observation_from_components(
         np.asarray(joint_pos_normalized, dtype=np.float32).reshape(-1),
         np.asarray(joint_vel_normalized, dtype=np.float32).reshape(-1),
     ]
-    if spec.observation.layout_id != "wr_obs_v9_standing":
+    if spec.observation.layout_id not in {
+        "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+    }:
         parts.append(np.asarray(foot_switches, dtype=np.float32).reshape(4))
     parts.extend([
         np.asarray(prev_action, dtype=np.float32).reshape(-1),
@@ -169,6 +178,8 @@ def build_observation_from_components(
     ])
     if spec.observation.layout_id == "wr_obs_v2":
         parts.append(cp_error)
+    if spec.observation.layout_id == "wr_obs_v10_standing_recovery":
+        parts.extend([recovery[:1], recovery[1:3], recovery[3:5], recovery[5:7]])
     if spec.observation.layout_id == "wr_obs_v3":
         parts.append(clock)
     if spec.observation.layout_id == "wr_obs_v4":
@@ -237,6 +248,7 @@ def build_observation(
     velocity_cmd: np.ndarray,
     # v0.21.0 P11 — see ``build_observation_from_components`` docstring.
     velocity_cmd_lateral_yaw: np.ndarray | None = None,
+    standing_recovery_command: np.ndarray | None = None,
     capture_point_error: np.ndarray | None = None,
     gait_clock: np.ndarray | None = None,
     loc_ref_phase_sin_cos: np.ndarray | None = None,
@@ -273,6 +285,7 @@ def build_observation(
         prev_action=state.prev_action,
         velocity_cmd=velocity_cmd,
         velocity_cmd_lateral_yaw=velocity_cmd_lateral_yaw,
+        standing_recovery_command=standing_recovery_command,
         capture_point_error=capture_point_error,
         gait_clock=gait_clock,
         loc_ref_phase_sin_cos=loc_ref_phase_sin_cos,

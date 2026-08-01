@@ -223,9 +223,10 @@ def export_deployment_bundle(
         if standing_spec["observation"]["layout_id"] not in {
             "wr_obs_v1",
             "wr_obs_v9_standing",
+            "wr_obs_v10_standing_recovery",
         }:
             raise ValueError(
-                "Standing policy must use wr_obs_v1 or wr_obs_v9_standing"
+                "Standing policy must use a supported standing observation layout"
             )
         if walking_spec["observation"]["layout_id"] != "wr_obs_v8_cmd3d":
             raise ValueError("Walking policy must use wr_obs_v8_cmd3d")

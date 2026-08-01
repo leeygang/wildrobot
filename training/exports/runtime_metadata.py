@@ -242,11 +242,13 @@ def build_runtime_policy_config(
     spec: PolicySpec,
 ) -> Dict[str, Any]:
     """Full build: reference phase table (heavy) + metadata assembly."""
-    if spec.observation.layout_id in ("wr_obs_v1", "wr_obs_v9_standing"):
+    if spec.observation.layout_id in (
+        "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+    ):
         ctrl_dt = float(_env_get(env, "ctrl_dt", 0.02))
         if ctrl_dt <= 0.0:
             raise ValueError(f"ctrl_dt must be positive; got {ctrl_dt!r}")
-        return {
+        metadata = {
             "schema_version": 1,
             "policy_role": "standing",
             "actor_obs_layout_id": spec.observation.layout_id,
@@ -257,5 +259,38 @@ def build_runtime_policy_config(
             "action_filter_alpha": float(_env_get(env, "action_filter_alpha", 0.0)),
             "default_velocity_cmd": [0.0, 0.0, 0.0],
         }
+        if spec.observation.layout_id == "wr_obs_v10_standing_recovery":
+            metadata["recovery"] = {
+                "enabled": bool(_env_get(env, "standing_recovery_enabled", False)),
+                "trigger_angle_rad": float(
+                    _env_get(env, "standing_recovery_trigger_angle_rad", 0.0872665)
+                ),
+                "lookahead_s": float(
+                    _env_get(env, "standing_recovery_lookahead_s", 0.25)
+                ),
+                "com_height_m": float(_env_get(env, "target_height", 0.46)),
+                "capture_gain": float(
+                    _env_get(env, "standing_recovery_capture_gain", 1.0)
+                ),
+                "max_step_m": float(
+                    _env_get(env, "standing_recovery_max_step_m", 0.10)
+                ),
+                "swing_duration_steps": int(
+                    _env_get(env, "standing_recovery_swing_duration_steps", 20)
+                ),
+                "settle_min_steps": int(
+                    _env_get(env, "standing_recovery_settle_min_steps", 25)
+                ),
+                "settle_max_steps": int(
+                    _env_get(env, "standing_recovery_settle_max_steps", 75)
+                ),
+                "settle_angle_rad": float(
+                    _env_get(env, "standing_recovery_settle_angle_rad", 0.0523599)
+                ),
+                "settle_rate_rad_s": float(
+                    _env_get(env, "standing_recovery_settle_rate_rad_s", 0.10)
+                ),
+            }
+        return metadata
     reference = build_reference_phase_table(env)
     return build_runtime_metadata(env=env, spec=spec, reference=reference)

@@ -809,6 +809,28 @@ class EnvConfig(Freezable):
         default_factory=lambda: [0.0, 0.0]
     )
 
+    # v0.22.6 reactive recovery. Defaults preserve all earlier tasks.
+    reset_torso_roll_rate_range: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
+    reset_torso_pitch_rate_range: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
+    reset_foot_stagger_range_m: List[float] = field(
+        default_factory=lambda: [0.0, 0.0]
+    )
+    standing_recovery_enabled: bool = False
+    standing_recovery_trigger_angle_rad: float = 0.0872665
+    standing_recovery_lookahead_s: float = 0.25
+    standing_recovery_capture_gain: float = 1.0
+    standing_recovery_max_step_m: float = 0.10
+    standing_recovery_swing_height_m: float = 0.05
+    standing_recovery_swing_duration_steps: int = 20
+    standing_recovery_settle_min_steps: int = 25
+    standing_recovery_settle_max_steps: int = 75
+    standing_recovery_settle_angle_rad: float = 0.0523599
+    standing_recovery_settle_rate_rad_s: float = 0.10
+
     # Phase 3 of walking_training.md Appendix B.2: TB-style smooth
     # backlash domain randomization.  Per-joint deadband magnitude
     # sampled uniformly per episode in [low, high] rad, applied at obs
@@ -1128,6 +1150,13 @@ class RewardWeightsConfig(Freezable):
     # exp(-alpha * imbalance^2), where imbalance=|FL-FR|/(FL+FR).
     standing_support_balance: float = 0.0
     standing_support_balance_alpha: float = 4.0
+    recovery_swing_track: float = 0.0
+    recovery_swing_track_alpha: float = 400.0
+    recovery_stance_contact: float = 0.0
+    recovery_touchdown: float = 0.0
+    recovery_touchdown_alpha: float = 400.0
+    recovery_squat: float = 0.0
+    unnecessary_step: float = 0.0
     cmd_forward_velocity_track: float = 0.0
 
     # DeepMimic Gaussian kernel widths (numerator-α convention,
