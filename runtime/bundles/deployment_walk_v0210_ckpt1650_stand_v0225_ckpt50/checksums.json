@@ -1,0 +1,16 @@
+{
+  "bundle_manifest.json": "2343723efd6f630c32ecd369e2103a54dfc15afc2ec17f5e9a0f976dd15f4988",
+  "hardware_config.json": "71b8966cc5e1e7f69cc063b253cab5e9e1b9f0fbccc75d2d83f81a6a1019ee90",
+  "mujoco_robot_config.json": "769ba46618e4fc5405e4caf9effff3f5936014080e06e5f2acb15f0ac617b2e2",
+  "policies/standing/checkpoint.pkl": "e653716a18ce36fcff0225e085461ccd4d40e295e0fe4a271540ed99386506f0",
+  "policies/standing/policy.onnx": "79d0f4bdc29f24deaa194b55457630dd58bdec0093bd16893dc52892726d23ae",
+  "policies/standing/policy_spec.json": "3d829008c1a98a5a7144b7c4131acf3a9d67f4777d9f3b013812ac6dd3d788c0",
+  "policies/standing/runtime_policy_config.json": "02e2ad4da3b867f1dddcf482ad64f6f069f543e122860f4e896102088cf17afd",
+  "policies/standing/training_config.yaml": "ba3ba4baab0c379274b41f1add0396bcc34549132581da67eda810ab5ce54593",
+  "policies/walking/checkpoint.pkl": "b9bd1428fb118678d4d6f23cc5800e146fca062d44e19f96f15892246a1b82c1",
+  "policies/walking/policy.onnx": "b7dc47565eb858559e2785b6ec35379f2e7fe9ec7f4b3f1ccf4b99c5ad1bb63c",
+  "policies/walking/policy_spec.json": "0d98803cb33f1e83f00d48767e74d60db97d6e566fd38b3bc8e9917ba8f2bac2",
+  "policies/walking/runtime_policy_config.json": "2ff883a9328574fcce24a7195ef7304bef8aa445cd1e0a33a409f93c31b2170c",
+  "policies/walking/training_config.yaml": "3be9b47884b505c01810acbcfa5dfd7817174d6ed32524b7f59a16d6b437d520",
+  "wildrobot.xml": "0629958f06326a0be2386cb62948e3b2f19cccafda55093340a69c6f903aa60b"
+}
