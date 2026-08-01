@@ -90,6 +90,14 @@ def _pitch_from_quat_wxyz(quat: jax.Array) -> jax.Array:
     return jnp.arcsin(sin_pitch).astype(jnp.float32)
 
 
+def _roll_from_quat_wxyz(quat: jax.Array) -> jax.Array:
+    w, x, y, z = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+    return jnp.arctan2(
+        2.0 * (w * x + y * z),
+        1.0 - 2.0 * (x * x + y * y),
+    ).astype(jnp.float32)
+
+
 def _stagger_leg_pitch_values(
     leg_q: jax.Array, foot_stagger_m: jax.Array
 ) -> jax.Array:
@@ -152,8 +160,10 @@ def _apply_recovery_condition(
     pitch_rad: jax.Array,
     pitch_rate_rad_s: jax.Array,
     foot_stagger_m: jax.Array,
+    roll_rad: jax.Array | float = 0.0,
+    roll_rate_rad_s: jax.Array | float = 0.0,
 ):
-    """Rebuild one reset state with a prescribed sagittal condition."""
+    """Rebuild one reset state with a prescribed standing condition."""
     wr = base_state.info[WR_INFO_KEY]
     qpos = base_state.data.qpos
 
@@ -163,7 +173,9 @@ def _apply_recovery_condition(
     rng_pitch, rng_hip, rng_knee, rng_imu = jax.random.split(base_state.rng, 4)
     del rng_pitch  # Pitch is prescribed rather than sampled for this evaluator.
     base_pitch = _pitch_from_quat_wxyz(qpos[3:7])
+    base_roll = _roll_from_quat_wxyz(qpos[3:7])
     pitch_delta = jnp.asarray(pitch_rad, dtype=jnp.float32) - base_pitch
+    roll_delta = jnp.asarray(roll_rad, dtype=jnp.float32) - base_roll
     pitch_abs = jnp.abs(pitch_delta)
     hip_delta = jax.random.uniform(rng_hip, (), minval=0.0, maxval=pitch_abs)
     knee_delta = jax.random.uniform(
@@ -181,7 +193,7 @@ def _apply_recovery_condition(
     )
     qpos = qpos.at[env._leg_pitch_qpos_addrs].set(pitched_leg_q)
     delta_quat = env._euler_xyz_to_quat_wxyz(
-        jnp.float32(0.0), pitch_delta, jnp.float32(0.0)
+        roll_delta, pitch_delta, jnp.float32(0.0)
     )
     root_quat = env._quat_mul_wxyz(delta_quat, qpos[3:7])
     qpos = qpos.at[3:7].set(jax_frames.normalize_quat_wxyz(root_quat))
@@ -224,6 +236,7 @@ def _apply_recovery_condition(
     qpos, _ = candidate_for_ik_stagger(ik_stagger)
 
     qvel = jnp.zeros(env.mj_model.nv, dtype=jnp.float32)
+    qvel = qvel.at[3].set(jnp.asarray(roll_rate_rad_s, dtype=jnp.float32))
     qvel = qvel.at[4].set(jnp.asarray(pitch_rate_rad_s, dtype=jnp.float32))
     dr_params = {
         "friction_scale": wr.domain_rand_friction_scale,
