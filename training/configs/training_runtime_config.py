@@ -859,6 +859,10 @@ class EnvConfig(Freezable):
     # Empty dict ⇒ uniform default weight on all actuators.
     penalty_pose_weights_per_joint: Dict[str, float] = field(default_factory=dict)
     penalty_pose_weight_default: float = 0.0
+    # Symmetric per-joint tolerance before ``penalty_pose`` becomes active.
+    # Zero preserves ToddlerBot's exact quadratic default-pose penalty. WR's
+    # standing stabilizer can opt into a small deployment posture tolerance.
+    penalty_pose_deadzone_rad: float = 0.0
 
 
 # =============================================================================

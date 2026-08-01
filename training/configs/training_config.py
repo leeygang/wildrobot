@@ -755,6 +755,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         penalty_pose_weight_default=float(
             env.get("penalty_pose_weight_default", 0.0)
         ),
+        penalty_pose_deadzone_rad=float(
+            env.get("penalty_pose_deadzone_rad", 0.0)
+        ),
         domain_rand_backlash_range=env.get(
             "domain_rand_backlash_range", [0.0, 0.0]
         ),

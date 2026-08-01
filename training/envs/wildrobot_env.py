@@ -851,6 +851,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         scalar_default = float(
             getattr(self._config.env, "penalty_pose_weight_default", 0.0)
         )
+        self._penalty_pose_deadzone_rad = float(
+            getattr(self._config.env, "penalty_pose_deadzone_rad", 0.0)
+        )
+        if self._penalty_pose_deadzone_rad < 0.0:
+            raise ValueError("env.penalty_pose_deadzone_rad must be non-negative")
         per_joint_arr = np.array(
             [
                 float(per_joint_overrides.get(name, scalar_default))
@@ -2578,7 +2583,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             q_err_pp = q_actual - self._home_q_rad
         else:
             q_err_pp = q_err
-        penalty_pose = jp.sum(self._pose_weights_per_joint * q_err_pp * q_err_pp)
+        q_err_pp_excess = jp.maximum(
+            jp.abs(q_err_pp) - jp.float32(self._penalty_pose_deadzone_rad),
+            jp.float32(0.0),
+        )
+        penalty_pose = jp.sum(
+            self._pose_weights_per_joint * q_err_pp_excess * q_err_pp_excess
+        )
 
         # ---- penalty_feet_ori (anti-tippy-toe) ----------------------
         # Penalize foot rotation away from flat using projected gravity
