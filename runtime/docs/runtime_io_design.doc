@@ -36,14 +36,13 @@ Current policy runtime uses `HiwonderCachedActuators` with `ServoIOWorker` and
 the raw TTL bus backend. The old LSC-controller path is not accepted by
 `wildrobot-run-policy`.
 
-The current walking bundle expects:
+The native walking runtime contract expects:
 
 - `ctrl_dt = 0.02` / `control_hz = 50`.
-- `action_dim = 21`.
-- A 21-joint actuator order from `policy_spec.json`.
+- `action_dim = 17`.
+- The native 17-joint actuator order from `policy_spec.json`.
 
-So the runtime must preserve the 21D policy interface unless we retrain/export a
-new policy.
+Historical 21D bundles are archival and are not accepted by the native runtime.
 
 ## Evidence
 
@@ -116,19 +115,17 @@ every 20 ms policy step:
   read one scheduled servo group
   update full joint-position cache
   estimate velocities from cache update timestamps
-  build the full 21D policy observation from cached actuator state
+  build the full 17D policy observation from cached actuator state
   run policy
-  write all 21 servo targets
+  write all 17 servo targets
 ```
 
-The policy still receives a full 21-joint observation vector every step. Some
+The policy receives a full 17-joint observation vector every step. Some
 joint entries may be cached from earlier steps, but their age must be tracked.
 
 ## Non-Goals
 
-- Do not change the ONNX policy input/output shape.
-- Do not remove joints from `policy_spec.json` for this change.
-- Do not retrain for 17 actuators or 20 Hz as part of this design.
+- Do not reintroduce wrist feedback or action compatibility channels.
 - Do not hide stale feedback. Cache age must be measured and bounded.
 
 ## Proposed Servo Read Schedule
@@ -166,13 +163,9 @@ torso_arms:
   left_shoulder_pitch
   left_shoulder_roll
   left_elbow_pitch
-  left_wrist_yaw
-  left_wrist_pitch
   right_shoulder_pitch
   right_shoulder_roll
   right_elbow_pitch
-  right_wrist_yaw
-  right_wrist_pitch
 ```
 
 At 50 Hz this gives approximately:
@@ -245,7 +238,6 @@ Suggested initial limits:
 ```text
 leg joint max cache age:       0.12 s
 waist/arm max cache age:       0.75 s
-wrist max cache age:           1.00 s
 read failure warning streak:   1 group failure
 read failure abort threshold:  cache age limit exceeded
 ```
@@ -308,30 +300,18 @@ IMU freshness no worse than current baseline
 
 ## Configuration
 
-Add this as an opt-in runtime config section first:
+The board assignments define the read sets; configuration only defines cache
+age limits:
 
 ```json
 "servo_read_schedule": {
-  "mode": "staggered",
-  "groups": [
-    ["left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch", "left_ankle_roll"],
-    ["right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch", "right_ankle_roll"],
-    ["left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch", "left_ankle_roll"],
-    ["right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch", "right_ankle_roll"],
-    ["waist_yaw", "left_shoulder_pitch", "left_shoulder_roll", "left_elbow_pitch", "left_wrist_yaw", "left_wrist_pitch",
-     "right_shoulder_pitch", "right_shoulder_roll", "right_elbow_pitch", "right_wrist_yaw", "right_wrist_pitch"]
-  ],
   "max_cache_age_s": {
     "leg": 0.12,
     "arm": 0.75,
-    "wrist": 1.00,
     "default": 0.75
   }
 }
 ```
-
-Default behavior should remain current full-read mode until the staggered path is
-tested.
 
 ## Implementation Plan
 
@@ -358,9 +338,6 @@ tested.
 
 ## Open Questions
 
-- Should wrist joints be physically removed or only deprioritized in the read
-  schedule?
-- Should wrist action writes be kept at 50 Hz, held at home, or masked?
 - Should arm readback be split from waist readback if the combined group is too
   slow?
 - Should stale joint velocity decay to zero instead of holding the previous

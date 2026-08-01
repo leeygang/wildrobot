@@ -109,14 +109,12 @@ class HiwonderCachedActuators(Actuators):
         self._cache_age_limit_s = self._build_cache_age_limits(cache_age_limits_s or {})
 
     def _build_cache_age_limits(self, limits: Dict[str, float]) -> np.ndarray:
-        defaults = {"leg": 0.12, "arm": 0.75, "wrist": 1.00, "default": 0.75}
+        defaults = {"leg": 0.12, "arm": 0.75, "default": 0.75}
         merged = {**defaults, **{str(k): float(v) for k, v in limits.items()}}
         age_limits = []
         for name in self.actuator_names:
             if any(part in name for part in ("hip", "knee", "ankle")):
                 key = "leg"
-            elif "wrist" in name:
-                key = "wrist"
             elif any(part in name for part in ("shoulder", "elbow")):
                 key = "arm"
             else:
@@ -250,7 +248,6 @@ class HiwonderCachedActuators(Actuators):
             ],
             dtype=bool,
         )
-        wrist_mask = np.asarray(["wrist" in name for name in self.actuator_names], dtype=bool)
 
         def _masked_max(mask: np.ndarray) -> float:
             vals = age[mask & np.isfinite(age)]
@@ -270,7 +267,6 @@ class HiwonderCachedActuators(Actuators):
             "servo_cache_age_max_s": max_age,
             "servo_cache_age_leg_max_s": _masked_max(leg_mask),
             "servo_cache_age_arm_max_s": _masked_max(arm_mask),
-            "servo_cache_age_wrist_max_s": _masked_max(wrist_mask),
             "servo_cache_stale_joint_count": int(np.count_nonzero(age > self._cache_age_limit_s)),
             "servo_cache_uninitialized_count": int(np.count_nonzero(~np.isfinite(age))),
             "servo_read_fail_count_total": int(np.sum(fail_count)),

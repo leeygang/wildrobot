@@ -548,7 +548,6 @@ class ServoReadScheduleConfig:
         default_factory=lambda: {
             "leg": 0.12,
             "arm": 1.25,
-            "wrist": 1.25,
             "default": 1.25,
         }
     )
@@ -597,7 +596,6 @@ class WrRuntimeConfig:
     servo_read_schedule: ServoReadScheduleConfig
     bno085: BNO085Config
     foot_switches: FootSwitchConfig
-    externally_managed_actuator_names: Tuple[str, ...] = field(default_factory=tuple)
 
     # Store config directory for resolving relative paths
     _config_dir: Path = field(default=Path("."), repr=False, compare=False)
@@ -679,6 +677,11 @@ class WrRuntimeConfig:
 
         # Load JSON
         data = json.loads(path.read_text())
+        if "externally_managed_actuator_names" in data:
+            raise ValueError(
+                "externally_managed_actuator_names was removed; hardware config "
+                "must contain only the native 17 locomotion servos"
+            )
 
         # Resolve robot_config_path
         # Priority:
@@ -744,9 +747,6 @@ class WrRuntimeConfig:
         control = cls._parse_control_config(data)
         servo_controller = cls._parse_servo_controller_config(data, joint_specs)
         servo_read_schedule = cls._parse_servo_read_schedule_config(data)
-        externally_managed_actuator_names = (
-            cls._parse_externally_managed_actuator_names(data)
-        )
         bno085 = cls._parse_bno085_config(data)
         foot_switches = cls._parse_foot_switch_config(data)
 
@@ -762,7 +762,6 @@ class WrRuntimeConfig:
             servo_read_schedule=servo_read_schedule,
             bno085=bno085,
             foot_switches=foot_switches,
-            externally_managed_actuator_names=externally_managed_actuator_names,
             _config_dir=config_dir,
         )
 
@@ -969,24 +968,6 @@ class WrRuntimeConfig:
         return ServoReadScheduleConfig(max_cache_age_s=limits)
 
     @staticmethod
-    def _parse_externally_managed_actuator_names(data: dict) -> Tuple[str, ...]:
-        raw = data.get("externally_managed_actuator_names", [])
-        if raw is None:
-            raw = []
-        if not isinstance(raw, list):
-            raise ValueError("externally_managed_actuator_names must be a list")
-        names = tuple(str(name).strip() for name in raw)
-        if any(not name for name in names):
-            raise ValueError(
-                "externally_managed_actuator_names contains an empty joint name"
-            )
-        if len(set(names)) != len(names):
-            raise ValueError(
-                "externally_managed_actuator_names contains duplicate joint names"
-            )
-        return names
-
-    @staticmethod
     def _validate_motor_signs(motor_signs: Dict[str, float]) -> None:
         invalid = {k: v for k, v in motor_signs.items() if abs(abs(v) - 1.0) > 1e-3}
         if invalid:
@@ -1173,15 +1154,6 @@ class WrRuntimeConfig:
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
             "foot_switches": self.foot_switches.get_all_pins(),
-            **(
-                {
-                    "externally_managed_actuator_names": list(
-                        self.externally_managed_actuator_names
-                    )
-                }
-                if self.externally_managed_actuator_names
-                else {}
-            ),
             "servo_read_schedule": {
                 "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
             },

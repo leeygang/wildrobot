@@ -953,6 +953,7 @@ def train(
     eval_env_reset_fn: Optional[Callable] = None,
     *,
     policy_init_action: Optional[jnp.ndarray] = None,
+    initial_policy_params: Optional[Any] = None,
 ) -> TrainingState:
     """Main PPO training function.
 
@@ -963,10 +964,16 @@ def train(
         callback: Optional callback for logging/checkpointing
         resume_checkpoint: Optional checkpoint data to resume from (from load_checkpoint)
         eval_env_step_fn_no_push: Optional eval step fn with disturbances disabled
+        initial_policy_params: Optional actor-only initialization for a fresh run
 
     Returns:
         Final training state
     """
+    if resume_checkpoint is not None and initial_policy_params is not None:
+        raise ValueError(
+            "resume_checkpoint and initial_policy_params are mutually exclusive"
+        )
+
     robot_config = get_robot_config()
     spec = build_policy_spec_from_training_config(
         training_cfg=config,
@@ -1058,6 +1065,25 @@ def train(
         policy_init_action=policy_init_action,
         policy_init_std=policy_init_std,
     )
+    if initial_policy_params is not None:
+        try:
+            initial_logits = ppo_network.policy_network.apply(
+                (),
+                initial_policy_params,
+                jnp.zeros((obs_dim,), dtype=jnp.float32),
+            )
+        except Exception as exc:
+            raise ValueError(
+                "Initial actor parameters are incompatible with the current "
+                f"{obs_dim}D observation contract"
+            ) from exc
+        if tuple(initial_logits.shape) != (2 * action_dim,):
+            raise ValueError(
+                "Initial actor output shape mismatch: expected "
+                f"{(2 * action_dim,)}, got {tuple(initial_logits.shape)}"
+            )
+        policy_params = initial_policy_params
+        print("✓ Initialized actor from migration checkpoint; critic is fresh")
 
     # Create optimizers
     total_schedule_updates = max(

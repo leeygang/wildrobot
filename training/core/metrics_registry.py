@@ -58,15 +58,12 @@ class MetricSpec(NamedTuple):
 # Canonical full WildRobot actuator order.  Per-actuator torque metrics use
 # names rather than opaque indices so a saturation finding is immediately
 # actionable on hardware.  A regression test pins this list to the v2 robot
-# config.  All physical channels are reported, including fixed-home joints
-# excluded from the policy action vector.
+# config.
 TORQUE_ACTUATOR_NAMES: tuple[str, ...] = (
     "waist_yaw",
     "left_shoulder_pitch",
     "left_shoulder_roll",
     "left_elbow_pitch",
-    "left_wrist_yaw",
-    "left_wrist_pitch",
     "left_hip_pitch",
     "left_hip_roll",
     "left_knee_pitch",
@@ -75,8 +72,6 @@ TORQUE_ACTUATOR_NAMES: tuple[str, ...] = (
     "right_shoulder_pitch",
     "right_shoulder_roll",
     "right_elbow_pitch",
-    "right_wrist_yaw",
-    "right_wrist_pitch",
     "right_hip_pitch",
     "right_hip_roll",
     "right_knee_pitch",

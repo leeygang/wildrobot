@@ -40,11 +40,11 @@ def _runner(v8_spec, runtime_policy_config):
     )
 
 
-def test_obs_shape_is_1129(v8_spec, runtime_policy_config):
+def test_obs_shape_is_937(v8_spec, runtime_policy_config):
     runner = _runner(v8_spec, runtime_policy_config)
     obs = runner.build_obs(_signals(v8_spec), np.array([0.13, 0.065, 0.0]))
     assert obs.shape == (v8_spec.model.obs_dim,)
-    assert obs.shape == (1129,)  # 21-actuator v8 contract
+    assert obs.shape == (937,)  # native 17-actuator v8 contract
 
 
 def _slot_offsets(action_dim: int) -> dict:

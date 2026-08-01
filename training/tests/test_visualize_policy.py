@@ -72,11 +72,12 @@ def test_visualizer_expands_home_stabilizer_controls_to_all_mjcf_actuators() -> 
     assert full_ctrl.shape == (mj_model.nu,)
     for active_index, name in enumerate(spec.robot.actuator_names):
         assert full_ctrl[mjcf_names.index(name)] == active_ctrl[active_index]
-    metadata = spec.provenance["runtime_fixed_home"]
-    for name, target in zip(
-        metadata["fixed_actuator_names"], metadata["fixed_home_ctrl_rad"]
-    ):
-        assert full_ctrl[mjcf_names.index(name)] == pytest.approx(target)
+    home_data = mujoco.MjData(mj_model)
+    mujoco.mj_resetDataKeyframe(mj_model, home_data, 0)
+    active = set(spec.robot.actuator_names)
+    for actuator_id, name in enumerate(mjcf_names):
+        if name not in active:
+            assert full_ctrl[actuator_id] == pytest.approx(home_data.ctrl[actuator_id])
 
 
 def test_visualizer_threads_actor_activation_from_training_config() -> None:

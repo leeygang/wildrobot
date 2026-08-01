@@ -144,7 +144,7 @@ env:
   # byte-equal to pre-smoke14 behavior).
   #
   # Effect on the value head input: critic_obs_dim grows from
-  # PRIVILEGED_OBS_DIM (52) under depth=1 to 15 * 52 = 780 under
+  # PRIVILEGED_OBS_DIM (44) under depth=1 to 15 * 44 = 660 under
   # depth=15.  The training_loop reads this multiplier when sizing
   # the value MLP, so no other config knob changes.
   # =========================================================================

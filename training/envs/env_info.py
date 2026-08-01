@@ -42,22 +42,22 @@ IMU_MAX_LATENCY = 4
 IMU_HIST_LEN = IMU_MAX_LATENCY + 1
 # Privileged critic obs (sim-only fields the actor doesn't see).
 # v0.20.1 TB-active alignment Phase 3 (walking_training.md Appendix B.2):
-# bumped 12 → 52 to mirror TB's privileged obs content
+# bumped 12 → 44 to mirror TB's privileged obs content
 # (toddlerbot/locomotion/mjx_config.py:86 num_single_privileged_obs):
 # motor_pos_error + lin_vel + actuator_force + ref_stance.
-# Layout (52 dims):
+# Layout (44 dims):
 #   [0:3]   root linear velocity (heading-frame)
 #   [3:6]   root angular velocity (heading-frame)
 #   [6:8]   per-foot aggregated contact force (left, right)
-#   [8:29]  motor_pos_error  = q_actual - nominal_q_ref  (21 actuators)
-#   [29:50] data.actuator_force                          (21 actuators)
-#   [50:52] ref_stance       = win["contact_mask"]       (left, right)
+#   [8:25]  motor_pos_error  = q_actual - nominal_q_ref  (17 actuators)
+#   [25:42] data.actuator_force                          (17 actuators)
+#   [42:44] ref_stance       = win["contact_mask"]       (left, right)
 # Pre-Phase-3 layout was 12 dims (lin_vel + ang_vel + contacts + 4-dim
 # zero pad).  Bumping invalidates the value-network params from the
 # 12-dim-pad checkpoints, but those were trained with
 # critic_privileged_enabled=False (asymmetric path was unused), so
 # there is no migration burden — only the actor params transfer.
-PRIVILEGED_OBS_DIM = 52
+PRIVILEGED_OBS_DIM = 44
 
 # v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
 # rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
@@ -126,6 +126,15 @@ try:
         # by ``_apply_imu_noise_and_delay``).
         imu_quat_hist: jnp.ndarray         # (IMU_HIST_LEN, 4)
         imu_gyro_hist: jnp.ndarray         # (IMU_HIST_LEN, 3)
+
+        # Runtime-matched asynchronous joint-feedback cache.  The actor does
+        # not observe age/period directly; it sees the held position and the
+        # velocity computed between successful cache refreshes.
+        joint_feedback_cached_pos: jnp.ndarray    # (action_size,)
+        joint_feedback_cached_vel: jnp.ndarray    # (action_size,)
+        joint_feedback_age_steps: jnp.ndarray     # (action_size,) int32
+        joint_feedback_period_steps: jnp.ndarray  # (action_size,) int32
+        joint_feedback_phase_steps: jnp.ndarray   # (action_size,) int32
 
         # Aggregated foot state
         foot_contacts: jnp.ndarray         # (4,) [L_toe, L_heel, R_toe, R_heel]
@@ -259,6 +268,11 @@ except ImportError:
         prev_right_foot_pos: jnp.ndarray
         imu_quat_hist: jnp.ndarray
         imu_gyro_hist: jnp.ndarray
+        joint_feedback_cached_pos: jnp.ndarray
+        joint_feedback_cached_vel: jnp.ndarray
+        joint_feedback_age_steps: jnp.ndarray
+        joint_feedback_period_steps: jnp.ndarray
+        joint_feedback_phase_steps: jnp.ndarray
         foot_contacts: jnp.ndarray
         root_height: jnp.ndarray
         prev_left_loaded: jnp.ndarray
@@ -334,6 +348,11 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "prev_right_foot_pos": (3,),
         "imu_quat_hist": (IMU_HIST_LEN, 4),
         "imu_gyro_hist": (IMU_HIST_LEN, 3),
+        "joint_feedback_cached_pos": (action_size,),
+        "joint_feedback_cached_vel": (action_size,),
+        "joint_feedback_age_steps": (action_size,),
+        "joint_feedback_period_steps": (action_size,),
+        "joint_feedback_phase_steps": (action_size,),
         "foot_contacts": (4,),
         "root_height": (),
         "prev_left_loaded": (),

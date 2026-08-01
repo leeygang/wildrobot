@@ -87,18 +87,6 @@
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
-      "left_wrist_yaw": {
-        "id": 24,
-        "servo_offset_unit": 0,
-        "motor_unit_direction": -1,
-        "joint_angle_at_zero_unit_deg": 0
-      },
-      "left_wrist_pitch": {
-        "id": 25,
-        "servo_offset_unit": 0,
-        "motor_unit_direction": -1,
-        "joint_angle_at_zero_unit_deg": 0
-      },
       "right_shoulder_pitch": {
         "id": 31,
         "servo_offset_unit": 3,
@@ -113,18 +101,6 @@
       },
       "right_elbow_pitch": {
         "id": 33,
-        "servo_offset_unit": 0,
-        "motor_unit_direction": -1,
-        "joint_angle_at_zero_unit_deg": 0
-      },
-      "right_wrist_yaw": {
-        "id": 34,
-        "servo_offset_unit": 0,
-        "motor_unit_direction": -1,
-        "joint_angle_at_zero_unit_deg": 0
-      },
-      "right_wrist_pitch": {
-        "id": 35,
         "servo_offset_unit": 0,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
@@ -161,28 +137,17 @@
           21,
           22,
           23,
-          24,
-          25,
           31,
           32,
-          33,
-          34,
-          35
+          33
         ]
       }
     ]
   },
-  "externally_managed_actuator_names": [
-    "left_wrist_yaw",
-    "left_wrist_pitch",
-    "right_wrist_yaw",
-    "right_wrist_pitch"
-  ],
   "servo_read_schedule": {
     "max_cache_age_s": {
       "leg": 0.16,
       "arm": 1.25,
-      "wrist": 1.25,
       "default": 1.25
     }
   },

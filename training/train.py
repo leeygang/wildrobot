@@ -220,12 +220,24 @@ def parse_args():
         help="Run quick verification (10 iterations, 4 envs)",
     )
 
-    # Resume training from checkpoint
-    parser.add_argument(
+    # Resume and actor-only initialization are intentionally distinct.  Resume
+    # restores the complete same-contract optimizer state; init-policy starts a
+    # fresh critic/optimizer under the current contract.
+    checkpoint_start = parser.add_mutually_exclusive_group()
+    checkpoint_start.add_argument(
         "--resume",
         type=str,
         default=None,
         help="Path to checkpoint to resume training from (e.g., checkpoints/best_checkpoint.pkl)",
+    )
+    checkpoint_start.add_argument(
+        "--init-policy",
+        type=str,
+        default=None,
+        help=(
+            "Path to an actor checkpoint used to initialize a fresh PPO run. "
+            "The critic and optimizer states are newly initialized."
+        ),
     )
 
     # Checkpoint settings
@@ -456,6 +468,7 @@ def start_training(
     wandb_tracker: Optional[WandbTracker] = None,
     checkpoint_dir: Optional[str] = None,
     resume_checkpoint_path: Optional[str] = None,
+    initial_policy_checkpoint_path: Optional[str] = None,
     config_name: Optional[str] = None,
     skip_gpu_check: bool = False,
 ):
@@ -466,6 +479,7 @@ def start_training(
         wandb_tracker: Optional W&B tracker for logging
         checkpoint_dir: Directory for saving checkpoints (overrides config if provided)
         resume_checkpoint_path: Path to checkpoint to resume training from
+        initial_policy_checkpoint_path: Actor checkpoint for a fresh PPO run
         config_name: Name of the config file (without extension), e.g., "ppo_walking"
         skip_gpu_check: Continue on CPU only when explicitly requested via CLI
     """
@@ -759,11 +773,30 @@ def start_training(
                 policy_spec=policy_spec_dict,
             )
 
+    if (
+        resume_checkpoint_path is not None
+        and initial_policy_checkpoint_path is not None
+    ):
+        raise ValueError("--resume and --init-policy are mutually exclusive")
+
     # Load checkpoint for resuming if provided
     resume_checkpoint = None
     if resume_checkpoint_path is not None:
         print(f"\nLoading checkpoint for resume: {resume_checkpoint_path}")
         resume_checkpoint = load_checkpoint(resume_checkpoint_path)
+
+    initial_policy_params = None
+    if initial_policy_checkpoint_path is not None:
+        print(
+            "\nLoading actor initialization checkpoint: "
+            f"{initial_policy_checkpoint_path}"
+        )
+        initial_policy_checkpoint = load_checkpoint(initial_policy_checkpoint_path)
+        if "policy_params" not in initial_policy_checkpoint:
+            raise ValueError(
+                "--init-policy checkpoint is missing required policy_params"
+            )
+        initial_policy_params = initial_policy_checkpoint["policy_params"]
 
     print("\n" + "=" * 60)
     print("Starting PPO training...")
@@ -775,6 +808,7 @@ def start_training(
         config=training_cfg,
         callback=callback,
         resume_checkpoint=resume_checkpoint,
+        initial_policy_params=initial_policy_params,
         eval_env_step_fn=batched_eval_step_fn,
         eval_env_step_fn_no_push=batched_eval_clean_step_fn,
         eval_env_reset_fn=batched_eval_reset_fn,
@@ -789,7 +823,7 @@ def start_training(
         # the v0.19.5c standing path where action = absolute pose; under
         # the residual contract it injects a non-zero residual at iter 0.
         policy_init_action=jnp.zeros(env.action_size, dtype=jnp.float32)
-        if resume_checkpoint is None
+        if resume_checkpoint is None and initial_policy_params is None
         else None,
     )
 
@@ -1956,6 +1990,7 @@ def main():
             wandb_tracker=wandb_tracker,
             checkpoint_dir=args.checkpoint_dir,
             resume_checkpoint_path=args.resume,
+            initial_policy_checkpoint_path=args.init_policy,
             config_name=config_name,
             skip_gpu_check=bool(args.skip_gpu_check),
         )

@@ -1,6 +1,7 @@
 # assets/v2 (WildRobot full body with arms)
 
-This folder is the **v2** robot asset variant (full body with arms).
+This folder is the **v2** robot asset variant (full body with arms). Wrist
+meshes and inertial bodies remain, but wrist joints are fixed and unactuated.
 
 - Onshape document (assembly): `WildRobot`
   - Link: https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/5c6acb3ff696b03bdf018f3b
@@ -35,7 +36,7 @@ generated `mujoco_robot_config.json`.
 
 ## Actuator order (ABI)
 
-The actuator order in `wildrobot.xml` must be deterministic for policy/action index stability.
+The 17-actuator order in `wildrobot.xml` must be deterministic for policy/action index stability.
 
 - Canonical order lives in `assets/v2/actuator_order.txt` (one name per line).
 - After Onshape export, run:

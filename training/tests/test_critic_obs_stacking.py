@@ -4,10 +4,10 @@ Spec: /tmp/smoke14_critic_obs_stacking_prompt.md.
 
 What this test file pins:
 
-  1. Default is legacy single-frame (depth=1), critic_obs shape (52,);
+  1. Default is legacy single-frame (depth=1), critic_obs shape (44,);
      smoke12b loads with depth=1.
 
-  2. Smoke14 enables depth=15, critic_obs shape (780,).
+  2. Smoke14 enables depth=15, critic_obs shape (660,).
 
   3. Reset initializes the rolling history to zeros and writes the
      reset frame at the newest slot; under depth=15 the older slots
@@ -21,7 +21,7 @@ What this test file pins:
      critic obs appears at only 1/15 of the stacked vector at that
      step, then transitions smoothly as the buffer rolls.
 
-  6. ``create_networks(critic_obs_dim=780, ...)`` accepts the stacked
+  6. ``create_networks(critic_obs_dim=660, ...)`` accepts the stacked
      dim and produces a finite scalar on a forward pass.
 
   7. Smoke12b regression: critic_obs is still (PRIVILEGED_OBS_DIM,)
@@ -101,11 +101,11 @@ def test_smoke12b_critic_obs_shape_unchanged(smoke12b_env) -> None:
     )
 
 
-def test_smoke14_critic_obs_is_stacked_780(smoke14_env) -> None:
+def test_smoke14_critic_obs_is_stacked_660(smoke14_env) -> None:
     state = smoke14_env.reset(jax.random.PRNGKey(0))
     wr = state.info[WR_INFO_KEY]
     assert wr.critic_obs.shape == (15 * PRIVILEGED_OBS_DIM,)
-    assert wr.critic_obs.shape == (780,)
+    assert wr.critic_obs.shape == (660,)
     assert wr.critic_obs_history.shape == (
         PRIVILEGED_OBS_HISTORY_FRAMES,
         PRIVILEGED_OBS_DIM,
@@ -258,10 +258,10 @@ def test_smoke12b_helper_returns_single_frame() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. create_networks accepts 780-dim critic obs.
+# 7. create_networks accepts 660-dim critic obs.
 # ---------------------------------------------------------------------------
 def test_create_networks_accepts_stacked_critic_dim() -> None:
-    """Pin: create_networks(critic_obs_dim=780, ...) returns a value
+    """Pin: create_networks(critic_obs_dim=660, ...) returns a value
     head whose input width matches the stacked critic obs.  Mirrors
     the init/apply call pattern in
     ``training/algos/ppo/ppo_core.py::init_network_params`` and
@@ -275,11 +275,11 @@ def test_create_networks_accepts_stacked_critic_dim() -> None:
         action_dim=action_dim,
         policy_hidden_dims=(512, 256, 128),
         value_hidden_dims=(512, 256, 128),
-        critic_obs_dim=780,
+        critic_obs_dim=660,
         activation="elu",
     )
     value_params = network.value_network.init(jax.random.PRNGKey(0))
-    critic_input = jax.random.normal(jax.random.PRNGKey(1), (780,))
+    critic_input = jax.random.normal(jax.random.PRNGKey(1), (660,))
     # Empty preprocessor_params matches init_network_params (no obs
     # normalization by default).
     value = network.value_network.apply((), value_params, critic_input)
@@ -295,10 +295,10 @@ def test_training_loop_derives_stacked_critic_dim(smoke14_cfg) -> None:
     """Confirm the multiplier the training_loop applies matches what
     the env actually puts on the critic_obs vector — guards against
     a future refactor that introduces a mismatch (NN expecting
-    52 while env emits 780)."""
+    44 while env emits 660)."""
     frames = int(smoke14_cfg.env.critic_obs_history_frames)
     derived = PRIVILEGED_OBS_DIM * frames
-    assert derived == 780
+    assert derived == 660
 
 
 # =============================================================================

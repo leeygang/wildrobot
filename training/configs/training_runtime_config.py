@@ -126,10 +126,6 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
-    # Optional policy action/observation mask.  Excluded actuators remain in the
-    # robot hardware model but are held at fixed home targets by runtime export
-    # metadata.
-    policy_excluded_actuator_names: Tuple[str, ...] = field(default_factory=tuple)
     # Reference implementation selector.  v0.20.1 deleted v1/v2; the
     # only supported value is "v3_offline_library", which loads the
     # offline ZMP ReferenceLibrary (requires
@@ -658,6 +654,15 @@ class EnvConfig(Freezable):
     # v0.17.3b: Action delay (disabled by default, 0 = no delay)
     action_delay_steps: int = 0  # 1 = apply prev_action instead of current
 
+    # Asynchronous servo-feedback cache model.  The hardware runtime reads one
+    # servo at a time and exposes the last cached position plus a finite-
+    # difference velocity.  Training can reproduce that sample-and-hold
+    # behavior with independently phased, episode-randomized refresh periods.
+    # Periods are expressed in policy control steps and are inclusive ranges.
+    joint_feedback_sample_hold_enabled: bool = False
+    joint_feedback_leg_period_steps_range: Tuple[int, int] = (1, 1)
+    joint_feedback_upper_period_steps_range: Tuple[int, int] = (1, 1)
+
     # =========================================================================
     # v0.20.1 ToddlerBot-alignment additions (walking_training.md Appendix A)
     # =========================================================================
@@ -853,7 +858,7 @@ class EnvConfig(Freezable):
     #   - hip_pitch / knee_pitch → 0.01 (light; main propulsion DOFs)
     #   - hip_roll              → 1.0  (medium)
     #   - ankle_pitch / ankle_roll → 5.0 (heavy; drift-prone)
-    # WR has no hip_yaw; arms / waist / wrist get 0.0 by default (smoke
+    # WR has no hip_yaw; arms / waist get 0.0 by default (smoke
     # uses leg-only penalty pose, matching TB's action_parts=['leg']).
     # Joints absent from this dict default to ``penalty_pose_weight_default``.
     # Empty dict ⇒ uniform default weight on all actuators.
@@ -903,7 +908,7 @@ class PPOConfig(Freezable):
     # privileged_obs_history alone.  Standard asymmetric actor-critic
     # pattern; mirrors TB whose ``num_single_privileged_obs = 151``
     # ALREADY includes the noiseless actor obs (84) + privileged extras
-    # (67).  WR's privileged_obs (52 dims with history -> 780) is a
+    # (67).  WR's privileged_obs (44 dims with history -> 660) is a
     # concise privileged-ONLY payload that omits cmd / phase / quat /
     # absolute motor_pos -- signals the critic needs to estimate V(s)
     # accurately at the standing local minimum.  Default False preserves

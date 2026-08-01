@@ -1722,7 +1722,7 @@ blocking parity**.
 | **Network** | activation | elu | elu | ✅ |
 | **Network** | log_std_init / init_noise_std | -1.0 → std≈0.37 (`yaml:309`) | log(0.5) ≈ -0.69 → std≈0.5 | (a) Bounded-residual contract: prior is policy at init, narrow exploration. |
 | **Network** | distribution / std type | normal log | normal log | ✅ |
-| **Network** | asymmetric actor-critic (privileged critic) | **enabled** ✓ FIXED (`yaml:ppo.critic_privileged_enabled`); critic obs = lin_vel + ang_vel + contacts + motor_pos_error + actuator_force + ref_stance (52 dims) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ✅ Phase 3 landed.  WR critic obs is a TB-aligned subset (52 vs TB 151; remaining gap is push/orientation noise channels covered by WR env_info instead). |
+| **Network** | asymmetric actor-critic (privileged critic) | **enabled** ✓ FIXED (`yaml:ppo.critic_privileged_enabled`); critic obs = lin_vel + ang_vel + contacts + motor_pos_error + actuator_force + ref_stance (44 dims) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ✅ Phase 3 landed. WR critic obs is a TB-aligned subset (44 vs TB 151; remaining gap is push/orientation noise channels covered by WR env_info instead). |
 | **Obs** | paradigm | preview-conditioned + 15-frame history (`yaml:159-167`) | sin/cos phase + 15-frame `c_frame_stack` | (a) WR has explicit ZMP prior; TB does not. |
 | **Obs** | frame stack | 15 | 15 | ✅ |
 | **Action** | contract | `q = base_q + clip(action) · scale`; smoke7=`q_ref(t)`, smoke8=`home_q`, smoke9c=`ref_init_q` (`wildrobot_env.py::_compose_target_q_from_residual`, `yaml:139-147,190-209`) | `q = default_q + action · 0.25` | (a) Bounded residual vs direct. |
@@ -1824,7 +1824,7 @@ older alive=10 weight).  Touches `wildrobot_env.py:_aggregate_reward`.
 **Phase 3 — PPO algo + DR (commit `85e42c0`):**
 
 1. Asymmetric critic: privileged obs payload bumped from 12 dims
-   (lin_vel + ang_vel + contacts + 4-dim zero pad) to **52 dims**
+   (lin_vel + ang_vel + contacts + 4-dim zero pad) to **44 dims**
    (lin_vel + ang_vel + contacts + motor_pos_error + actuator_force
    + ref_stance).  Mirror TB `num_single_privileged_obs=151`
    (`mjx_config.py:86`, `walk.gin:25-28`).  Yaml flips

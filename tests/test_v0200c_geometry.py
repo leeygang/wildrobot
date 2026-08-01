@@ -82,14 +82,13 @@ def _setup():
     R_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g)
                for g in ("right_heel", "right_toe")]
 
-    return model, data, mapper, act_to_qpos, L_geoms, R_geoms
+    policy_to_qpos = act_to_qpos[mapper.policy_to_mj_order]
+    return model, data, policy_to_qpos, L_geoms, R_geoms
 
 
-def _apply_frame(model, data, mapper, act_to_qpos, traj, idx: int) -> None:
-    mj_q = np.zeros(len(mapper.policy_to_mj_order))
-    mj_q[mapper.policy_to_mj_order] = traj.q_ref[idx]
-    for ai in range(len(act_to_qpos)):
-        data.qpos[act_to_qpos[ai]] = mj_q[ai]
+def _apply_frame(model, data, policy_to_qpos, traj, idx: int) -> None:
+    data.qpos[:] = model.qpos0
+    data.qpos[policy_to_qpos] = traj.q_ref[idx]
     data.qpos[0] = float(traj.pelvis_pos[idx, 0])
     data.qpos[1] = float(traj.pelvis_pos[idx, 1])
     data.qpos[2] = float(traj.pelvis_pos[idx, 2])
@@ -103,7 +102,7 @@ def _collect_failures(vx_bins=_VX_BINS) -> list[str]:
     pytest test functions (which pass ``_VX_BINS_INSCOPE``) and the
     standalone ``main()`` CLI entry point (which uses the full
     ``_VX_BINS`` matrix for diagnostic visibility)."""
-    model, data, mapper, act_to_qpos, L_geoms, R_geoms = _setup()
+    model, data, policy_to_qpos, L_geoms, R_geoms = _setup()
     gen = ZMPWalkGenerator()
     failures: list[str] = []
     for vx in vx_bins:
@@ -111,7 +110,7 @@ def _collect_failures(vx_bins=_VX_BINS) -> list[str]:
         for f in _PROBE_FRAMES:
             if f >= traj.n_steps:
                 continue
-            _apply_frame(model, data, mapper, act_to_qpos, traj, f)
+            _apply_frame(model, data, policy_to_qpos, traj, f)
             Lz = min(_box_min_z(model, data, g) for g in L_geoms)
             Rz = min(_box_min_z(model, data, g) for g in R_geoms)
             for side, z, contact in (("L", Lz, traj.contact_mask[f, 0]),

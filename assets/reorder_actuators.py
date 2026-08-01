@@ -59,6 +59,7 @@ def reorder_actuators(
     order_path: Path,
     out_path: Path | None = None,
     check_only: bool = False,
+    allow_unlisted: bool = False,
 ) -> None:
     if not xml_path.exists():
         raise FileNotFoundError(xml_path)
@@ -78,14 +79,15 @@ def reorder_actuators(
 
     missing = [name for name in canonical_order if name not in mapping]
     extra = [name for name in mapping.keys() if name not in canonical_order]
-    if missing or extra:
+    if missing or (extra and not allow_unlisted):
         raise ValueError(
             f"Actuator list mismatch for {xml_path} vs {order_path}: "
             + _format_mismatch(missing, extra)
         )
 
+    target_order = canonical_order + (extra if allow_unlisted else [])
     current_order = [child.get("name") or "" for child in children]
-    if current_order == canonical_order:
+    if current_order == target_order:
         if check_only:
             print("Actuator order OK")
         return
@@ -94,13 +96,13 @@ def reorder_actuators(
         raise SystemExit(
             "Actuator order mismatch:\n"
             f"  current:   {', '.join(current_order)}\n"
-            f"  canonical: {', '.join(canonical_order)}"
+            f"  canonical: {', '.join(target_order)}"
         )
 
     for child in children:
         actuator_elem.remove(child)
 
-    for name in canonical_order:
+    for name in target_order:
         actuator_elem.append(mapping[name])
 
     ET.indent(tree, space="  ", level=0)
@@ -118,6 +120,11 @@ def main() -> int:
         action="store_true",
         help="Validate ordering and exit nonzero if mismatch",
     )
+    parser.add_argument(
+        "--allow-unlisted",
+        action="store_true",
+        help="Append unlisted actuators after the canonical order",
+    )
     args = parser.parse_args()
 
     reorder_actuators(
@@ -125,6 +132,7 @@ def main() -> int:
         order_path=args.order,
         out_path=args.out,
         check_only=bool(args.check),
+        allow_unlisted=bool(args.allow_unlisted),
     )
     return 0
 

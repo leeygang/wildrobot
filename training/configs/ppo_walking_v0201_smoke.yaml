@@ -83,7 +83,7 @@ env:
   # joints (hip_pitch, knee_pitch ≈ 0.01), medium on hip_roll (1.0),
   # heavy on the drift-prone joints (ankle_pitch, ankle_roll ≈ 5.0).
   # WR has no hip_yaw (TB has it heavy at 5.0; not applicable here).
-  # Arms / waist / wrist default to 0 since TB's action_parts=['leg']
+  # Arms / waist default to 0 since TB's action_parts=['leg']
   # only — extending pose-anchor coverage to arms is a v0.20.x+1 lever.
   penalty_pose_weight_default: 0.0
   penalty_pose_weights_per_joint:
@@ -327,7 +327,7 @@ ppo:
   # v0.20.1 TB-active alignment Phase 3 (walking_training.md App. B.2):
   # Asymmetric actor-critic with TB-style privileged obs.  Critic head
   # consumes motor_pos_error + base lin_vel + actuator_force + ref_stance
-  # in addition to lin_vel/ang_vel/contacts (PRIVILEGED_OBS_DIM=52).
+  # in addition to lin_vel/ang_vel/contacts (PRIVILEGED_OBS_DIM=44).
   # Mirrors TB's num_single_privileged_obs=151 architecture
   # (toddlerbot/locomotion/mjx_config.py:86, walk.gin:25-28).  Sample-
   # efficiency win for locomotion PPO (Pinto et al. 2017 "Asymmetric

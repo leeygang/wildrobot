@@ -26,7 +26,7 @@ These tests are the contract that the branch stays de-hybridized:
      (smoke10 1184 -> smoke11 1127).
   5. Zero-action under smoke11 still composes to ``_home_q_rad``
      (the home migration / basin-flip contract is preserved).
-  6. The privileged-critic obs is unaffected (still 52 dims and
+  6. The privileged-critic obs is unaffected (still 44 dims and
      still consumes ``nominal_q_ref`` + ``ref_contact_mask``) — the
      reference machinery remains load-bearing for the critic and
      reward terms; only the ACTOR input changed.
@@ -242,19 +242,19 @@ def test_v6_actor_obs_still_has_full_reference_window() -> None:
 # -----------------------------------------------------------------------------
 
 
-def test_v7_actor_obs_dim_is_57_smaller_than_v6() -> None:
-    """The 14 dropped reference channels total 57 dims:
-        21 (q_ref) + 3+3 (pelvis pos/vel) + 3+3+3+3 (foot pos/vel) +
+def test_v7_actor_obs_dim_is_53_smaller_than_v6() -> None:
+    """The 14 dropped reference channels total 53 dims:
+        17 (q_ref) + 3+3 (pelvis pos/vel) + 3+3+3+3 (foot pos/vel) +
         2 (contact_mask) + 1 (stance_foot) + 2 (next_foothold) +
         3+3 (swing pos/vel) + 3 (pelvis_targets) + 4 (loc_ref_history)
-        = 57.
+        = 53.
     Pin the exact obs-dim delta so any future addition (or accidental
     over-removal) trips a clear failure."""
     env_v7 = _maybe_build_env(_SMOKE11_CFG)
     env_v6 = _maybe_build_env(_SMOKE10_CFG)
     delta = env_v6._policy_spec.model.obs_dim - env_v7._policy_spec.model.obs_dim
-    assert delta == 57, (
-        f"v6 - v7 actor obs_dim = {delta}; expected 57 (the dropped "
+    assert delta == 53, (
+        f"v6 - v7 actor obs_dim = {delta}; expected 53 (the dropped "
         f"reference-trajectory channels).  v6={env_v6._policy_spec.model.obs_dim}, "
         f"v7={env_v7._policy_spec.model.obs_dim}."
     )
@@ -329,7 +329,7 @@ def test_smoke11_jit_reset_traces_under_perturbation_enabled() -> None:
 def test_v7_privileged_critic_obs_still_consumes_reference() -> None:
     """The reference machinery must remain load-bearing for the
     privileged critic + reward terms.  Concretely: the critic obs
-    layout (PRIVILEGED_OBS_DIM=52) still includes ``motor_pos_error``
+    layout (PRIVILEGED_OBS_DIM=44) still includes ``motor_pos_error``
     (= q_actual - nominal_q_ref) and ``ref_stance`` (= ref contact
     mask), proving that ``nominal_q_ref`` and ``ref_contact_mask`` are
     still threaded into the env's per-step pipeline even when the
@@ -338,7 +338,7 @@ def test_v7_privileged_critic_obs_still_consumes_reference() -> None:
     state = env.reset(jax.random.PRNGKey(0))
     # WildRobotInfo exposes the privileged critic obs as `critic_obs`
     # (see training/envs/env_info.py:122,214,276).  Shape must stay
-    # at PRIVILEGED_OBS_DIM=52 — that's how we know the critic still
+    # at PRIVILEGED_OBS_DIM=44 — that's how we know the critic still
     # consumes motor_pos_error (= q_actual - nominal_q_ref) and
     # ref_stance (= ref contact mask) per
     # _get_privileged_critic_obs's documented payload.

@@ -261,7 +261,7 @@ This layer owns runtime bus scheduling.
 Responsibilities:
 
 - Be the only thread that calls `RawServoBus`.
-- Accept latest 21D target commands from the policy thread.
+- Accept latest 17D target commands from the policy thread.
 - Prioritize writes over reads.
 - Poll one scheduled servo at a time when no write is pending.
 - Update full joint-state cache.
@@ -708,9 +708,8 @@ path still needs to change.
    multi-servo move path if available?
 2. Walking runtime uses only the raw TTL debug-board path; the old LSC
    controller path is legacy diagnostics only.
-3. What are the first cache-age limits for legs, arms, and wrists?
-4. Should wrist joints be write-only/cached-lower-rate if the bus is still tight?
-5. Do we need direct current/load/voltage reads for safety, or only position?
+3. What are the first cache-age limits for legs and arms?
+4. Do we need direct current/load/voltage reads for safety, or only position?
 
 ## Proposed First Implementation
 

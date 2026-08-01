@@ -86,12 +86,12 @@ class TestSchemaGeneration:
         - nq > 0 (qpos dimension)
         - nv > 0 (qvel dimension)
         - nu > 0 (actuator count)
-        - nu == 21 (WildRobot v2 has 21 actuated joints: legs + waist + arms)
+        - nu == 17 (WildRobot v2 locomotion joints: legs + waist + arms)
         """
         assert robot_schema.nq > 0, "nq should be positive"
         assert robot_schema.nv > 0, "nv should be positive"
         assert robot_schema.nu > 0, "nu should be positive"
-        assert robot_schema.nu == 21, f"Expected 21 actuators, got {robot_schema.nu}"
+        assert robot_schema.nu == 17, f"Expected 17 actuators, got {robot_schema.nu}"
 
 
 # =============================================================================
@@ -182,17 +182,17 @@ class TestSchemaContent:
         """
         Purpose: Verify actuator count matches expected joint count.
 
-        WildRobot v2 has 21 actuated joints:
-        - per-leg: hip_pitch, hip_roll, knee_pitch, ankle_pitch (4 x 2 = 8 leg joints)
+        WildRobot v2 has 17 actuated joints:
+        - per-leg: hip_pitch, hip_roll, knee_pitch, ankle_pitch,
+          ankle_roll (5 x 2 = 10 leg joints)
         - waist: waist_yaw
-        - per-arm: shoulder_pitch, shoulder_roll, shoulder_yaw,
-                   elbow_pitch, wrist_yaw, wrist_pitch (6 x 2 = 12 arm joints)
+        - per-arm: shoulder_pitch, shoulder_roll, elbow_pitch (3 x 2 = 6 arm joints)
 
         Assertions:
-        - 21 actuators present
+        - 17 actuators present
         - Each actuator has unique target joint
         """
-        assert len(robot_schema.actuators) == 21, f"Expected 21 actuators, got {len(robot_schema.actuators)}"
+        assert len(robot_schema.actuators) == 17, f"Expected 17 actuators, got {len(robot_schema.actuators)}"
 
         target_joints = [a.joint_name for a in robot_schema.actuators]
         assert len(target_joints) == len(set(target_joints)), "Duplicate actuator targets found"
@@ -351,11 +351,11 @@ class TestSchemaAccessors:
         Purpose: Verify qpos indices are returned correctly.
 
         Assertions:
-        - Returns list of 21 indices (one per actuator on WildRobot v2)
+        - Returns list of 17 indices (one per actuator on WildRobot v2)
         - All indices are valid (within nq)
         """
         indices = robot_schema.get_actuated_joint_qpos_indices()
-        assert len(indices) == 21, f"Expected 21 indices, got {len(indices)}"
+        assert len(indices) == 17, f"Expected 17 indices, got {len(indices)}"
         for idx in indices:
             assert 0 <= idx < robot_schema.nq, f"Invalid qpos index: {idx}"
 
@@ -365,11 +365,11 @@ class TestSchemaAccessors:
         Purpose: Verify dof indices are returned correctly.
 
         Assertions:
-        - Returns list of 21 indices (one per actuator on WildRobot v2)
+        - Returns list of 17 indices (one per actuator on WildRobot v2)
         - All indices are valid (within nv)
         """
         indices = robot_schema.get_actuated_joint_dof_indices()
-        assert len(indices) == 21, f"Expected 21 indices, got {len(indices)}"
+        assert len(indices) == 17, f"Expected 17 indices, got {len(indices)}"
         for idx in indices:
             assert 0 <= idx < robot_schema.nv, f"Invalid dof index: {idx}"
 

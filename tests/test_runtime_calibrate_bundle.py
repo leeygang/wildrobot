@@ -4,6 +4,7 @@ import argparse
 import inspect
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,7 @@ from runtime.configs.config import ServoConfig, WrRuntimeConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WALKING_BUNDLE = _REPO_ROOT / "runtime" / "bundles" / "walking_v0210_smoke6_ckpt1650"
+_HARDWARE_CONFIG = _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
 
 
 def test_resolve_config_path_defaults_to_bundle_runtime_config() -> None:
@@ -58,12 +60,21 @@ def test_resolve_config_path_defaults_to_bundle_runtime_config() -> None:
     assert resolve_config_path(args) == _WALKING_BUNDLE / "wildrobot_config.json"
 
 
-def test_resolve_joint_names_uses_bundle_actuator_order() -> None:
-    cfg = WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
-    joint_names = resolve_joint_names(args=argparse.Namespace(bundle=str(_WALKING_BUNDLE)), servo_cfgs=cfg.hiwonder_controller.servos)
-    bundle_names, _ = load_bundle_spec(_WALKING_BUNDLE)
-    assert joint_names == bundle_names
-    assert joint_names != list(cfg.hiwonder_controller.servos.keys())
+def test_resolve_joint_names_uses_native_hardware_order() -> None:
+    cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
+    joint_names = resolve_joint_names(
+        args=argparse.Namespace(bundle=None),
+        servo_cfgs=cfg.hiwonder_controller.servos,
+    )
+
+    assert joint_names == list(cfg.hiwonder_controller.servos)
+    assert len(joint_names) == 17
+    assert not any("wrist" in name for name in joint_names)
+
+
+def test_archived_walking_hardware_config_is_rejected() -> None:
+    with pytest.raises(ValueError, match="externally_managed_actuator_names was removed"):
+        WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
 
 
 def test_resolve_home_ctrl_reorders_bundle_home_to_requested_joint_names() -> None:
@@ -401,17 +412,15 @@ def test_full_axis_calibration_is_resumable() -> None:
 
 
 def test_axis_metadata_reads_local_and_init_world_axes() -> None:
-    cfg = WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
-    raw_config = json.loads((_WALKING_BUNDLE / "wildrobot_config.json").read_text())
+    cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
+    raw_config = json.loads(_HARDWARE_CONFIG.read_text())
     robot_cfg_path = resolve_robot_config_path(
         raw_config,
-        _WALKING_BUNDLE / "wildrobot_config.json",
-        bundle_dir=_WALKING_BUNDLE,
+        _HARDWARE_CONFIG,
     )
     robot_xml_path = resolve_robot_xml_path(
         robot_config_path=robot_cfg_path,
         config=cfg,
-        bundle_dir=_WALKING_BUNDLE,
     )
 
     axes = load_joint_axis_metadata(
@@ -443,7 +452,7 @@ def test_direction_prompt_includes_axis_labels_and_right_hand_rule() -> None:
 
 def test_policy_action_setup_uses_runtime_bundle_residual_scale() -> None:
     args = argparse.Namespace(bundle=str(_WALKING_BUNDLE))
-    cfg = WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
+    cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
     joint_names = ["left_hip_pitch", "left_hip_roll"]
 
     setup = load_policy_action_setup(args=args, config=cfg, joint_names=joint_names)
@@ -456,7 +465,10 @@ def test_policy_action_setup_uses_runtime_bundle_residual_scale() -> None:
 
 def test_policy_action_setup_infers_bundle_from_policy_path() -> None:
     args = argparse.Namespace(bundle=None)
-    cfg = WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
+    cfg = replace(
+        WrRuntimeConfig.load(_HARDWARE_CONFIG),
+        policy_onnx_path=str(_WALKING_BUNDLE / "policy.onnx"),
+    )
 
     setup = load_policy_action_setup(
         args=args,

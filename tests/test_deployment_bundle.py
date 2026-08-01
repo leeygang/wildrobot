@@ -20,7 +20,7 @@ _BUNDLE = Path(
 _CURRENT_BUNDLE = Path("runtime/bundles/standing_walk_v0222")
 
 
-def test_deployment_bundle_has_shared_hardware_and_two_policy_contracts() -> None:
+def test_historical_deployment_bundle_remains_an_archival_21d_artifact() -> None:
     deployment = DeploymentBundle.load(_BUNDLE)
     standing = deployment.policy_bundle("standing")
     walking = deployment.policy_bundle("walking")
@@ -36,6 +36,21 @@ def test_deployment_bundle_has_shared_hardware_and_two_policy_contracts() -> Non
     assert "velocity_cmd" not in hardware
     assert hardware["robot_config_path"] == "./mujoco_robot_config.json"
     assert len(hardware["externally_managed_actuator_names"]) == 4
+
+
+def test_canonical_hardware_config_is_natively_wrist_free() -> None:
+    hardware = json.loads(Path("runtime/configs/hardware_config.json").read_text())
+    servos = hardware["servo_controller"]["servos"]
+    board_ids = {
+        servo_id
+        for board in hardware["servo_controller"]["boards"]
+        for servo_id in board["servo_ids"]
+    }
+
+    assert len(servos) == 17
+    assert not any("wrist" in name for name in servos)
+    assert {servo["id"] for servo in servos.values()} == board_ids
+    assert "externally_managed_actuator_names" not in hardware
 
 
 def test_deployment_policy_timing_metadata_is_role_specific() -> None:

@@ -3,18 +3,13 @@
 The walking runner is intentionally specific to ``wr_obs_v8_cmd3d`` and its
 phase/reference history. Standing policies use a dedicated standing contract.
 
-This runner also supports the ToddlerBot-style active-action subset used by the
-home stabilizer: the policy can control a subset of actuators while runtime
-expands the command back to the hardware actuator vector and holds excluded
-servos at their home targets.
+The policy and hardware runtime share the same native 17-actuator order.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import time
-from typing import Mapping
-
 import numpy as np
 
 from policy_contract.calib import NumpyCalibOps
@@ -75,7 +70,6 @@ class StandingPolicyRunner:
         policy,
         robot_io,
         runtime_config: StandingRuntimePolicyConfig | None = None,
-        fixed_home_targets_rad: Mapping[str, float] | None = None,
         zero_cmd_hold_home_deadzone: float | None = None,
     ) -> None:
         layout = spec.observation.layout_id
@@ -108,10 +102,6 @@ class StandingPolicyRunner:
         self._hardware_actuator_names = list(
             getattr(robot_io, "actuator_names", self._policy_actuator_names)
         )
-        self._fixed_home_targets_rad = {
-            str(name): float(value)
-            for name, value in (fixed_home_targets_rad or {}).items()
-        }
         delay_steps = 0 if runtime_config is None else int(runtime_config.action_delay_steps)
         if delay_steps not in (0, 1):
             raise ValueError(f"standing action_delay_steps must be 0 or 1; got {delay_steps}")
@@ -156,10 +146,6 @@ class StandingPolicyRunner:
         return list(self._hardware_actuator_names)
 
     @property
-    def fixed_home_actuator_names(self) -> list[str]:
-        return list(self._fixed_home_targets_rad.keys())
-
-    @property
     def step_idx(self) -> int:
         return int(self._state.step_idx)
 
@@ -193,47 +179,14 @@ class StandingPolicyRunner:
         )
 
     def _init_hardware_mapping(self) -> None:
-        hw_by_name = {name: idx for idx, name in enumerate(self._hardware_actuator_names)}
-        missing_active = [
-            name for name in self._policy_actuator_names if name not in hw_by_name
-        ]
-        if missing_active:
+        if self._hardware_actuator_names != self._policy_actuator_names:
             raise ValueError(
-                f"hardware RobotIO is missing standing policy actuators: {missing_active}"
+                "standing policy and hardware actuator orders must match exactly: "
+                f"policy={self._policy_actuator_names}, "
+                f"hardware={self._hardware_actuator_names}"
             )
-        missing_fixed = [
-            name for name in self._fixed_home_targets_rad if name not in hw_by_name
-        ]
-        if missing_fixed:
-            raise ValueError(
-                f"hardware RobotIO is missing fixed-home actuators: {missing_fixed}"
-            )
-
-        self._active_to_hw = np.asarray(
-            [hw_by_name[name] for name in self._policy_actuator_names],
-            dtype=np.intp,
-        )
-        active_set = set(self._policy_actuator_names)
-        fixed_set = set(self._fixed_home_targets_rad)
-        unmapped = [
-            name
-            for name in self._hardware_actuator_names
-            if name not in active_set and name not in fixed_set
-        ]
-        if unmapped:
-            raise ValueError(
-                "standing runtime needs every hardware actuator to be policy-active "
-                f"or fixed-home; unmapped={unmapped}"
-            )
-
-        hardware_home = np.zeros(len(self._hardware_actuator_names), dtype=np.float32)
-        for name, idx in hw_by_name.items():
-            if name in active_set:
-                active_idx = self._policy_actuator_names.index(name)
-                hardware_home[idx] = self._home_q_rad[active_idx]
-            else:
-                hardware_home[idx] = np.float32(self._fixed_home_targets_rad[name])
-        self._hardware_home_q_rad = hardware_home
+        self._active_to_hw = np.arange(self._action_dim, dtype=np.intp)
+        self._hardware_home_q_rad = self._home_q_rad.copy()
 
     def _slice_active_signals(self, signals: Signals) -> Signals:
         joint_pos = np.asarray(signals.joint_pos_rad, dtype=np.float32).reshape(-1)
@@ -329,11 +282,9 @@ class StandingPolicyRunner:
         return self._home_q_rad.copy(), zeros
 
     def _expand_to_hardware_ctrl(self, active_target_q: np.ndarray) -> np.ndarray:
-        full = self._hardware_home_q_rad.copy()
-        full[self._active_to_hw] = np.asarray(active_target_q, dtype=np.float32).reshape(
+        return np.asarray(active_target_q, dtype=np.float32).reshape(
             self._action_dim
         )
-        return full.astype(np.float32)
 
     def step(
         self,

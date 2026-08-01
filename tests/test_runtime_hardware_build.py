@@ -50,12 +50,22 @@ def test_hardware_config_covers_all_v8_actuators() -> None:
     assert "right_ankle_roll" in servos
 
 
-def test_hardware_config_template_matches_current_deployment_calibration() -> None:
+def test_hardware_config_template_deprecates_archived_wrist_servos() -> None:
     template = json.loads(_HARDWARE_CONFIG.read_text())
     deployed = json.loads(_DEPLOYED_HARDWARE_CONFIG.read_text())
-    for payload in (template, deployed):
-        payload.pop("robot_config_path")
-    assert template == deployed
+
+    template_servos = template["servo_controller"]["servos"]
+    deployed_servos = deployed["servo_controller"]["servos"]
+    archived_only = set(deployed_servos) - set(template_servos)
+    assert archived_only == {
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch",
+    }
+    assert {name: deployed_servos[name] for name in template_servos} == template_servos
+    assert "externally_managed_actuator_names" not in template
+    assert "externally_managed_actuator_names" in deployed
 
     raw_template = json.loads(_HARDWARE_CONFIG.read_text())
     assert (

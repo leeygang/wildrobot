@@ -47,12 +47,6 @@ env:
   action_mapping_id: pos_target_home_025_v1
   action_filter_alpha: 0.6
   action_delay_steps: 1
-  policy_excluded_actuator_names:
-    - left_wrist_yaw
-    - left_wrist_pitch
-    - right_wrist_yaw
-    - right_wrist_pitch
-
   # Keep the existing v3 reference service alive for reset/reward plumbing, but
   # the wr_obs_v1 actor sees no reference channels.
   loc_ref_version: v3_offline_library

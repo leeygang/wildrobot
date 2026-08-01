@@ -388,8 +388,8 @@ def test_runtime_calibrate_scene_loader_returns_valid_home() -> None:
 def test_runtime_calibrate_keyframes_xml_loader_returns_valid_home() -> None:
     """The other runtime path — ``--keyframes-xml`` — reads
     ``qpos[7:7+joint_count]`` directly from keyframes.xml.  Verifies
-    that the new home keyframe still has 7+21 qpos values and that the
-    21 joint-slot values are all finite + within the union of MJCF
+    that the new home keyframe still has 7+17 qpos values and that the
+    17 joint-slot values are all finite + within the union of MJCF
     joint ranges.  (Note: the ordering this loader returns is
     qpos-address order, not actuator order — a pre-existing concern
     of that loader, unrelated to the home migration.)
@@ -399,16 +399,16 @@ def test_runtime_calibrate_keyframes_xml_loader_returns_valid_home() -> None:
     from runtime.scripts.calibrate import load_home_from_keyframes_xml
 
     keyframes_xml = _REPO_ROOT / "assets" / "v2" / "keyframes.xml"
-    values = load_home_from_keyframes_xml(keyframes_xml, joint_count=21)
-    assert len(values) == 21
+    values = load_home_from_keyframes_xml(keyframes_xml, joint_count=17)
+    assert len(values) == 17
     assert all(np.isfinite(v) for v in values)
 
     # Compare against the per-qpos-address pose recorded in the home
-    # keyframe — the loader must be returning exactly qpos[7:28] of the
+    # keyframe — the loader must be returning exactly qpos[7:24] of the
     # `home` entry.
     model = mujoco.MjModel.from_xml_path(str(_SCENE_XML))
     home_qpos = _key_qpos(model, "home")
-    np.testing.assert_allclose(np.asarray(values), home_qpos[7:28], atol=1e-6)
+    np.testing.assert_allclose(np.asarray(values), home_qpos[7:24], atol=1e-6)
 
 
 def test_export_bundle_home_loader_matches_env_home_q_rad() -> None:
@@ -431,7 +431,7 @@ def test_export_bundle_home_loader_matches_env_home_q_rad() -> None:
     )
     home_from_env = np.asarray(env._home_q_rad, dtype=np.float64)
     # Tolerance: 1e-4 rad (~0.006°).  Pre-existing JSON-vs-MJCF range
-    # mismatch on the near-zero wrist/elbow slots can produce up to
+    # mismatch on the near-zero elbow slots can produce up to
     # ~1 µrad of clamp differential between the env (clips to MJCF
     # jnt_range) and the export bundle (clips to robot_config.json
     # range_min/max).  1e-4 stays well below servo precision but is

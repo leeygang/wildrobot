@@ -55,14 +55,14 @@ class TestModelStability:
         WildRobot v2:
         - nq = 28 (7 floating base + 21 joint qpos)
         - nv = 27 (6 floating base + 21 joint qvel)
-        - nu = 21 (21 actuated joints: legs + waist + arms)
+        - nu = 17 (17 actuated joints: legs + waist + arms)
 
         Assertions:
         - Dimensions match expected values
         """
-        assert mj_model.nq == 28, f"Expected nq=28, got {mj_model.nq}"
-        assert mj_model.nv == 27, f"Expected nv=27, got {mj_model.nv}"
-        assert mj_model.nu == 21, f"Expected nu=21, got {mj_model.nu}"
+        assert mj_model.nq == 24, f"Expected nq=24, got {mj_model.nq}"
+        assert mj_model.nv == 23, f"Expected nv=23, got {mj_model.nv}"
+        assert mj_model.nu == 17, f"Expected nu=17, got {mj_model.nu}"
 
 
 # =============================================================================
@@ -178,8 +178,6 @@ class TestKinematicSanity:
             "right_shoulder_pitch": "+Y",
             "left_elbow_pitch": "-Y",
             "right_elbow_pitch": "-Y",
-            "left_wrist_pitch": "+Y",
-            "right_wrist_pitch": "+Y",
             "left_hip_pitch": "-Y",
             "right_hip_pitch": "+Y",
             "left_knee_pitch": "+Y",

@@ -19,7 +19,7 @@ class _ConstantPolicy:
         return self.action.copy()
 
 
-def test_standing_runner_expands_active_policy_to_fixed_home_hardware() -> None:
+def test_standing_runner_requires_direct_native_hardware_order() -> None:
     from policy_contract.spec_builder import build_policy_spec
     from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
     from runtime.wr_runtime.control.standing_policy_runner import StandingPolicyRunner
@@ -37,18 +37,8 @@ def test_standing_runner_expands_active_policy_to_fixed_home_hardware() -> None:
         mapping_id="pos_target_home_v1",
         home_ctrl_rad=[0.0, 0.1, -0.1],
     )
-    hardware_names = [
-        "waist_yaw",
-        "left_wrist_yaw",
-        "left_hip_pitch",
-        "right_wrist_yaw",
-        "right_hip_pitch",
-    ]
-    fixed_home = {
-        "left_wrist_yaw": 0.25,
-        "right_wrist_yaw": -0.25,
-    }
-    hardware_home = np.array([0.0, 0.25, 0.1, -0.25, -0.1], dtype=np.float32)
+    hardware_names = list(spec.robot.actuator_names)
+    hardware_home = np.array([0.0, 0.1, -0.1], dtype=np.float32)
     robot_io = MockRobotIO(
         actuator_names=hardware_names,
         control_dt=0.02,
@@ -59,7 +49,6 @@ def test_standing_runner_expands_active_policy_to_fixed_home_hardware() -> None:
         spec=spec,
         policy=policy,
         robot_io=robot_io,
-        fixed_home_targets_rad=fixed_home,
     )
 
     info = runner.step(np.array([0.0, 0.0, 0.0], dtype=np.float32))
@@ -67,15 +56,13 @@ def test_standing_runner_expands_active_policy_to_fixed_home_hardware() -> None:
     assert policy.last_obs is not None
     assert policy.last_obs.shape == (spec.model.obs_dim,)
     assert info["target_q_rad"].shape == (3,)
-    assert robot_io.written[-1].shape == (5,)
-    np.testing.assert_allclose(robot_io.written[-1][1], 0.25, atol=1e-6)
-    np.testing.assert_allclose(robot_io.written[-1][3], -0.25, atol=1e-6)
+    assert robot_io.written[-1].shape == (3,)
     np.testing.assert_allclose(robot_io.written[-1][0], 0.5, atol=1e-6)
-    np.testing.assert_allclose(robot_io.written[-1][2], -0.45, atol=1e-6)
-    np.testing.assert_allclose(robot_io.written[-1][4], 0.175, atol=1e-6)
+    np.testing.assert_allclose(robot_io.written[-1][1], -0.45, atol=1e-6)
+    np.testing.assert_allclose(robot_io.written[-1][2], 0.175, atol=1e-6)
 
 
-def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
+def test_standing_home_stabilizer_spec_is_natively_wrist_free() -> None:
     from assets.robot_config import get_robot_config, load_robot_config
     from runtime.wr_runtime.control.run_policy import _standing_runtime_plan
     from training.configs.training_config import load_training_config
@@ -102,26 +89,17 @@ def test_standing_home_stabilizer_spec_excludes_wrists() -> None:
     assert spec.model.action_dim == 17
     assert spec.model.obs_dim == 63
     assert wrists.isdisjoint(set(spec.robot.actuator_names))
-    metadata = spec.provenance["runtime_fixed_home"]
-    assert set(metadata["fixed_actuator_names"]) == wrists
-    assert metadata["active_actuator_names"] == spec.robot.actuator_names
-    assert len(metadata["full_actuator_names"]) == 21
-    assert len(metadata["fixed_home_ctrl_rad"]) == 4
-    assert set(metadata["fixed_joint_ranges_rad"]) == wrists
+    assert not spec.provenance or "runtime_fixed_home" not in spec.provenance
 
-    hardware_names, home, mins, maxs, fixed_home = _standing_runtime_plan(
-        spec, externally_managed_actuator_names=sorted(wrists)
-    )
+    hardware_names, home, mins, maxs = _standing_runtime_plan(spec)
     assert hardware_names == spec.robot.actuator_names
     assert home.shape == mins.shape == maxs.shape == (17,)
-    assert fixed_home == {}
 
 
 def test_stable_only_bundle_is_17_action_and_excludes_wrist_io() -> None:
     from runtime.wr_runtime.deployment_bundle import DeploymentBundle
     from runtime.wr_runtime.control.run_policy import (
         _resolve_run_bundle_path,
-        _standing_runtime_fixed_metadata,
         _standing_runtime_plan,
     )
 
@@ -130,23 +108,14 @@ def test_stable_only_bundle_is_17_action_and_excludes_wrist_io() -> None:
     )
     deployment = DeploymentBundle.load(bundle_path)
     bundle = deployment.policy_bundle("standing")
-    fixed_names = _standing_runtime_fixed_metadata(bundle.spec)[
-        "fixed_actuator_names"
-    ]
-    hardware_names, home, mins, maxs, fixed_home = _standing_runtime_plan(
-        bundle.spec,
-        externally_managed_actuator_names=fixed_names,
-    )
+    hardware_names, home, mins, maxs = _standing_runtime_plan(bundle.spec)
 
     assert bundle_path.name == "deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90"
     assert bundle.spec.observation.layout_id == "wr_obs_v1"
     assert bundle.spec.model.obs_dim == 63
     assert bundle.spec.model.action_dim == 17
-    assert len(fixed_names) == 4
-    assert all("wrist" in name for name in fixed_names)
     assert hardware_names == bundle.spec.robot.actuator_names
     assert home.shape == mins.shape == maxs.shape == (17,)
-    assert fixed_home == {}
 
 
 def test_stable_only_hardware_runs_without_step_limit() -> None:
@@ -384,7 +353,7 @@ def test_standing_home_stabilizer_v0222_is_tb_bounded_and_randomized() -> None:
     assert np.all(target - home <= 0.25 + 1e-6)
 
 
-def test_v0222_randomization_supports_excluded_actuators() -> None:
+def test_v0222_randomization_leaves_mujoco_only_actuators_unchanged() -> None:
     import jax
 
     from assets.robot_config import load_robot_config
@@ -409,7 +378,7 @@ def test_v0222_randomization_supports_excluded_actuators() -> None:
     )
 
 
-def test_runtime_compat_accepts_declared_fixed_home_subset() -> None:
+def test_runtime_compat_accepts_policy_subset_of_mujoco_actuators() -> None:
     from policy_contract.spec import validate_runtime_compat
     from policy_contract.spec_builder import build_policy_spec
 
@@ -423,20 +392,6 @@ def test_runtime_compat_accepts_declared_fixed_home_subset() -> None:
         layout_id="wr_obs_v1",
         mapping_id="pos_target_home_v1",
         home_ctrl_rad=[0.0, 0.1],
-        provenance={
-            "runtime_fixed_home": {
-                "full_actuator_names": [
-                    "waist_yaw",
-                    "left_wrist_yaw",
-                    "left_hip_pitch",
-                ],
-                "active_actuator_names": ["waist_yaw", "left_hip_pitch"],
-                "fixed_actuator_names": ["left_wrist_yaw"],
-                "fixed_home_ctrl_rad": [0.25],
-                "fixed_joint_ranges_rad": {"left_wrist_yaw": [-1.0, 1.0]},
-                "source": "test",
-            }
-        },
     )
 
     validate_runtime_compat(

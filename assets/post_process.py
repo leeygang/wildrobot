@@ -10,6 +10,43 @@ import numpy as np
 import trimesh
 
 
+DEPRECATED_WRIST_JOINT_NAMES = frozenset(
+    {
+        "left_wrist_yaw",
+        "left_wrist_pitch",
+        "right_wrist_yaw",
+        "right_wrist_pitch",
+    }
+)
+
+
+def remove_deprecated_wrist_dofs(xml_file: str | Path) -> None:
+    """Keep hand bodies fixed while removing wrist joints and actuators."""
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+    changed = False
+
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag != "joint":
+                continue
+            name = child.get("name")
+            if name in DEPRECATED_WRIST_JOINT_NAMES:
+                parent.remove(child)
+                changed = True
+
+    actuator = root.find("actuator")
+    if actuator is not None:
+        for child in list(actuator):
+            if child.get("name") in DEPRECATED_WRIST_JOINT_NAMES:
+                actuator.remove(child)
+                changed = True
+
+    if changed:
+        ET.indent(tree, space="  ", level=0)
+        tree.write(xml_file)
+
+
 def inject_additional_xml(
     xml_file: str,
     *,
@@ -41,7 +78,28 @@ def inject_additional_xml(
             print(f"[inject] missing additional XML, skipping: {aux_path}")
             continue
         aux_root = ET.parse(aux_path).getroot()
-        root.append(aux_root)
+        if aux_root.tag == "sensor" and root.find("sensor") is not None:
+            target = root.find("sensor")
+            assert target is not None
+            existing_names = {
+                child.get("name") for child in target if child.get("name")
+            }
+            for child in list(aux_root):
+                if child.get("name") not in existing_names:
+                    target.append(child)
+        elif aux_root.tag == "default" and root.find("default") is not None:
+            target = root.find("default")
+            assert target is not None
+            existing_classes = {
+                child.get("class")
+                for child in root.findall(".//default")
+                if child.get("class")
+            }
+            for child in list(aux_root):
+                if child.get("class") not in existing_classes:
+                    target.append(child)
+        else:
+            root.append(aux_root)
         print(f"[inject] injected <{aux_root.tag}> from {aux}")
 
     ET.indent(tree, space="  ", level=0)
@@ -1383,12 +1441,13 @@ def main() -> None:
     print(f"start post process... (xml={xml_file})")
     # add_common_includes(xml_file)
     inject_additional_xml(xml_file)
+    merge_default_blocks(xml_file)
     rename_legs_and_arms_to_semantic_names(xml_file)
+    remove_deprecated_wrist_dofs(xml_file)
     add_collision_names(xml_file)
     validate_foot_geoms(xml_file)
     ensure_root_body_pose(xml_file)
     add_option(xml_file)
-    merge_default_blocks(xml_file)
     fix_collision_default_geom(xml_file)
     replace_upper_leg_collision_with_capsule(xml_file)
     replace_finger_collision_with_capsule(xml_file)

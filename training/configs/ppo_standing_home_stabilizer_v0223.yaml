@@ -52,12 +52,6 @@ env:
   action_mapping_id: pos_target_home_025_v1
   action_filter_alpha: 0.6
   action_delay_steps: 1
-  policy_excluded_actuator_names:
-    - left_wrist_yaw
-    - left_wrist_pitch
-    - right_wrist_yaw
-    - right_wrist_pitch
-
   loc_ref_version: v3_offline_library
   loc_ref_residual_mode: absolute
   loc_ref_residual_base: home

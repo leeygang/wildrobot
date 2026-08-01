@@ -327,7 +327,6 @@ def test_servo_read_schedule_parses_and_serializes(tmp_path: Path) -> None:
         "max_cache_age_s": {
             "leg": 0.12,
             "arm": 1.25,
-            "wrist": 1.25,
             "default": 0.25,
         }
     }
@@ -346,41 +345,13 @@ def test_servo_read_schedule_rejects_obsolete_group_config(
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
-def test_externally_managed_actuators_parse_and_serialize(tmp_path: Path) -> None:
-    names = [
-        "left_wrist_yaw",
-        "left_wrist_pitch",
-        "right_wrist_yaw",
-        "right_wrist_pitch",
-    ]
+def test_externally_managed_actuators_are_rejected(tmp_path: Path) -> None:
     cfg_dict = _base_config() | {
         "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
-        "externally_managed_actuator_names": names,
+        "externally_managed_actuator_names": ["left_wrist_yaw"],
     }
 
-    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
-
-    assert cfg.externally_managed_actuator_names == tuple(names)
-    assert cfg.to_dict()["externally_managed_actuator_names"] == names
-
-
-@pytest.mark.parametrize(
-    "value,match",
-    [
-        ("left_wrist_yaw", "must be a list"),
-        (["left_wrist_yaw", "left_wrist_yaw"], "duplicate"),
-        ([""], "empty joint name"),
-    ],
-)
-def test_externally_managed_actuators_reject_invalid_values(
-    tmp_path: Path, value, match: str
-) -> None:
-    cfg_dict = _base_config() | {
-        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
-        "externally_managed_actuator_names": value,
-    }
-
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match="was removed"):
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 

@@ -413,8 +413,6 @@ _INIT_WORLD_AXIS_LABEL_BY_JOINT = {
     "right_shoulder_pitch": "+Y",
     "left_elbow_pitch": "-Y",
     "right_elbow_pitch": "-Y",
-    "left_wrist_pitch": "+Y",
-    "right_wrist_pitch": "+Y",
     "left_hip_pitch": "-Y",
     "right_hip_pitch": "+Y",
     "left_knee_pitch": "+Y",

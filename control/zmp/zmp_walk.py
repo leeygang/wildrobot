@@ -368,9 +368,19 @@ class ZMPWalkGenerator:
         "right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch",
     )
 
-    def __init__(self, config: ZMPWalkConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ZMPWalkConfig | None = None,
+        *,
+        scene_xml_path: str | Path | None = None,
+        robot_config_path: str | Path | None = None,
+    ) -> None:
         self.cfg = config or ZMPWalkConfig()
         self.planner = ZMPPlanner()
+        self._scene_xml_path = Path(scene_xml_path or self._DEFAULT_SCENE_XML)
+        self._robot_config_path = Path(
+            robot_config_path or self._DEFAULT_ROBOT_CONFIG
+        )
         # FK-replay assets are loaded lazily and cached.  Avoids paying
         # the MJCF parse cost when ``generate(0.0)`` is called repeatedly
         # for standing references.
@@ -404,7 +414,7 @@ class ZMPWalkGenerator:
         if self._actuator_layout is not None:
             return self._actuator_layout
 
-        config_path = Path(self._DEFAULT_ROBOT_CONFIG)
+        config_path = self._robot_config_path
         with open(config_path) as f:
             spec = json.load(f)
         actuator_specs = spec["actuated_joint_specs"]
@@ -445,8 +455,8 @@ class ZMPWalkGenerator:
         import mujoco  # noqa: WPS433  -- pulled in only when FK is needed
         from training.utils.ctrl_order import CtrlOrderMapper  # noqa: WPS433
 
-        scene = Path(self._DEFAULT_SCENE_XML)
-        config_path = Path(self._DEFAULT_ROBOT_CONFIG)
+        scene = self._scene_xml_path
+        config_path = self._robot_config_path
         model = mujoco.MjModel.from_xml_path(str(scene))
         data = mujoco.MjData(model)
         with open(config_path) as f:
@@ -456,6 +466,7 @@ class ZMPWalkGenerator:
         act_to_qpos = np.array(
             [model.jnt_qposadr[model.actuator_trnid[k, 0]] for k in range(model.nu)]
         )
+        policy_to_qpos = act_to_qpos[mapper.policy_to_mj_order]
         # Anchor at the home keyframe so the body stays at its nominal
         # pose (TB-style fixed-base FK semantics — matches
         # ``MuJoCoSim(robot, fixed_base=True)`` in TB's mujoco_replay).
@@ -482,8 +493,7 @@ class ZMPWalkGenerator:
         self._fk_assets = {
             "model": model,
             "data": data,
-            "mapper": mapper,
-            "act_to_qpos": act_to_qpos,
+            "policy_to_qpos": policy_to_qpos,
             "home_qpos": home_qpos,
             "body_names": body_names,
             "site_names": site_names,
@@ -511,8 +521,7 @@ class ZMPWalkGenerator:
         assets = self._load_fk_assets()
         model = assets["model"]
         data = assets["data"]
-        mapper = assets["mapper"]
-        act_to_qpos = assets["act_to_qpos"]
+        policy_to_qpos = assets["policy_to_qpos"]
         home_qpos = assets["home_qpos"]
         body_names = assets["body_names"]
         site_names = assets["site_names"]
@@ -525,13 +534,9 @@ class ZMPWalkGenerator:
         body_quat = np.zeros((n_steps, n_bodies, 4), dtype=np.float32)
         site_pos = np.zeros((n_steps, n_sites, 3), dtype=np.float32)
 
-        policy_to_mj = mapper.policy_to_mj_order
         for i in range(n_steps):
             data.qpos[:] = home_qpos
-            mj_q = np.zeros(len(policy_to_mj), dtype=np.float64)
-            mj_q[policy_to_mj] = q_ref[i]
-            for ai in range(model.nu):
-                data.qpos[act_to_qpos[ai]] = mj_q[ai]
+            data.qpos[policy_to_qpos] = q_ref[i]
             mujoco.mj_forward(model, data)
             body_pos[i] = data.xpos.astype(np.float32)
             body_quat[i] = data.xquat.astype(np.float32)

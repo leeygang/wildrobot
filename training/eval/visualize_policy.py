@@ -201,9 +201,8 @@ def _adapter_layout_enabled(layout_id: str) -> bool:
 def _build_mjcf_ctrl_expander(mj_model, policy_spec: PolicySpec):
     """Expand policy controls to MuJoCo actuator order.
 
-    Standing policies may omit actuators declared in ``runtime_fixed_home``.
-    The policy controls active actuators only; the omitted actuators must keep
-    their contract-provided home targets in native MuJoCo evaluation.
+    The policy controls the canonical 17 locomotion actuators. Mechanically
+    modeled MuJoCo-only actuators retain their home-keyframe controls.
     """
     mjcf_names = [
         mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id)
@@ -216,25 +215,12 @@ def _build_mjcf_ctrl_expander(mj_model, policy_spec: PolicySpec):
 
     active_names = list(policy_spec.robot.actuator_names)
     active_indices = [mjcf_by_name[name] for name in active_names]
-    fixed_home = policy_spec.provenance.get("runtime_fixed_home", {})
-    if not isinstance(fixed_home, dict):
-        fixed_home = {}
-    fixed_names = [str(name) for name in fixed_home.get("fixed_actuator_names", [])]
-    fixed_targets = np.asarray(
-        fixed_home.get("fixed_home_ctrl_rad", []), dtype=np.float32
-    )
-    if len(fixed_names) != fixed_targets.size:
-        raise ValueError(
-            "runtime_fixed_home fixed actuator names and targets must have equal length"
-        )
-    fixed_indices = [mjcf_by_name[name] for name in fixed_names]
-
-    if set(active_indices) | set(fixed_indices) != set(range(mj_model.nu)):
-        raise ValueError(
-            "Policy-active and fixed-home actuators must cover every MuJoCo actuator"
-        )
-    if set(active_indices) & set(fixed_indices):
-        raise ValueError("Active and fixed-home actuator sets must not overlap")
+    home_data = mujoco.MjData(mj_model)
+    if mj_model.nkey > 0:
+        mujoco.mj_resetDataKeyframe(mj_model, home_data, 0)
+    else:
+        mujoco.mj_resetData(mj_model, home_data)
+    full_home_ctrl = np.asarray(home_data.ctrl, dtype=np.float32).copy()
 
     def expand(active_ctrl: np.ndarray) -> np.ndarray:
         active_ctrl = np.asarray(active_ctrl, dtype=np.float32).reshape(-1)
@@ -243,9 +229,8 @@ def _build_mjcf_ctrl_expander(mj_model, policy_spec: PolicySpec):
                 f"Active control size {active_ctrl.size} != policy action dimension "
                 f"{len(active_indices)}"
             )
-        full_ctrl = np.empty(mj_model.nu, dtype=np.float32)
+        full_ctrl = full_home_ctrl.copy()
         full_ctrl[active_indices] = active_ctrl
-        full_ctrl[fixed_indices] = fixed_targets
         return full_ctrl
 
     return expand

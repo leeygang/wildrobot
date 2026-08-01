@@ -1,65 +1,64 @@
 # =============================================================================
-# WildRobot v0.21.0 PPO Smoke 8 — 2D SIGNED-vy: strengthen signed lateral
-# command ownership on the smoke6 home+RSI contract
+# WildRobot v0.21.0 native-17D latency fine-tune
 # =============================================================================
-# smoke7 proved the home+RSI 2D path is wired correctly but the policy learned a
-# ONE-SIDED lateral mode: probe [0.13,+0.03,0] achieved vy=+0.051 (pass) while
-# probe [0.13,-0.03,0] ALSO achieved vy=+0.052 (fail) — it ignored the command
-# sign and kept a fixed +y bias.  Root causes (code/data): (1) the cos(theta)
-# ellipse sampler shrank the effective |vy_cmd| to ~0.015 — smaller than the
-# learned ~0.05 lateral bias; (2) alpha_y=30 was too soft (wrong-sign cost only
-# ~17%).  smoke8 strengthens the SIGNED lateral signal; it is NOT a contract
-# reset and NOT a return to the q_ref base.
+# Inherits smoke6's learned walking task and ToddlerBot-aligned PPO contract.
+# Wrist bodies remain fixed in MuJoCo, while model, policy, and runtime are
+# natively 17D.
+# Start this config from a distilled 17D actor with training/train.py
+# --init-policy.  This is not checkpoint resume: critic and optimizers are new.
 #
-# RESUMES from the smoke6 60M selected checkpoint (NOT smoke7 — smoke7's late
-# checkpoints regressed).  Launch (resume is a CLI flag, not a config field):
-#   uv run python training/train.py \
-#     --config training/configs/ppo_walking_v0210_smoke8_2d_signed_vy.yaml \
-#     --resume training/checkpoints/ppo_walking_v0210_smoke6_home_rsi_v00210_20260601_074049-fayqouf3/eval_promoted/checkpoint_1900_38912000.pkl
+# Feedback cache bounds are calibrated from the 2026-07-19 115200-baud robot
+# run: leg max-cache age avg/p95/max = 83.6/112.6/126.7 ms.  At ctrl_dt=20 ms,
+# [4,7] steps covers that observed range.  Upper body uses provisional [12,24]
+# (240-480 ms) around the observed ~400 ms arm maximum.  Recalibrate these
+# ranges from per-joint cache-age histograms after the next hardware run.
 #
-# KEPT unchanged (smoke6/7 contract): loc_ref_residual_base=home,
-# loc_ref_rsi_enabled=true, coverage-1.1 symmetric scales, cmd_velocity_track_dim=2,
-# alpha_x=562.5, wz=0, cmd_yaw_rate_track=0, strict lateral-drift promotion gate.
+# Original smoke6 rationale follows for the unchanged task/reward settings.
+# -----------------------------------------------------------------------------
+# WildRobot v0.21.0 PPO Smoke 6 — TB-contract: build the gait from a STATIC
+# home base + RSI (ToddlerBot's recipe)
+# =============================================================================
+# smoke6 = smoke5 (RSI, forward-first 1D control) but switches the action base
+# from the time-varying q_ref to a STATIC `home` base — ToddlerBot's contract
+# (TB builds the gait from a static home base + RSI; mjx_env.py:1219-1225).
+# This is adopted on the TB recipe's MERITS (simpler base, no prior-anchoring),
+# NOT as failure-recovery: smoke5's q_ref base already produces a DETERMINISTIC
+# forward walk at cmd (fv 0.130, ratio 0.998, no falls) and is the proven
+# fallback.  See training/CHANGELOG.md [v0.21.0-smoke5-result + smoke6-plan].
 #
-# Levers vs smoke7:
-#   * env.min_velocity_y / max_velocity_y: -0.03/+0.03 -> -0.065/+0.065
-#       (widen so the command magnitude EXCEEDS the ~0.05 lateral bias -> the
-#        sign signal is no longer buried under the bias)
-#   * reward_weights.cmd_forward_velocity_alpha_y: 30.0 -> 120.0
-#       (30 was too soft; 120 makes correct-sign vs wrong-sign materially
-#        separate while staying live from the inherited ~0.15 bias — NOT TB's 1000)
-#   * env.eval_velocity_cmd_probes: [[0.13,+-0.03,0]] -> [[0.13,+-0.065,0]]
-#       (probe at the wider command so the signed-ratio criterion is meaningful)
-#   * NEW lateral diagnostics emitted: reward/cmd_lateral_velocity_track (the
-#       lateral FACTOR exp(-alpha_y*vy_err^2)) + tracking/cmd_vy_err
-#       (|vy-vy_cmd|) — so analysis can separate forward success from lateral-
-#       sign failure (smoke7's combined term hid it).
-#   * vy reference grid already includes +-0.065 (kept from smoke7).
+# Why it's viable now (the key enabler): the per-joint residual scales are
+# re-derived at COVERAGE 1.1 (was 0.75), so a static home base + ±scale can
+# REACH the prior's per-joint swing from home (knee 0.978 >= 0.889; hip_pitch
+# 0.567 >= 0.514).  At coverage 0.75 the home base could NOT hold the RSI reset
+# pose (step-0 snap) — which is why smoke5 needed the q_ref base.
+# Measured basis: a ≥0.030 m stride is reachable from home within ±0.353
+# hip_pitch (FK → 0.27 m); feet_phase ceiling is adequate (0.116/step weighted).
 #
-# ANISOTROPIC reward (unchanged form):
-#     reward = exp(-(alpha_x*vx_err^2 + alpha_y*vy_err^2)),
-#     alpha_x=562.5 (tight forward), alpha_y=120 (firmer lateral).
-#   Sign enforcement at the wider command: cmd -0.065 / achieved +0.05 -> err
-#   0.115 -> exp(-120*0.115^2) = exp(-1.6) ≈ 0.20 — wrong sign costs ~80%
-#   (vs smoke7's ~17% at alpha_y=30/±0.03).  Live from the 0.15 bias:
-#   exp(-120*0.0225)=exp(-2.7) ≈ 0.07 (small but non-dead gradient).
-#   (alpha_y=0 -> isotropic/legacy, byte-identical; smoke6 + older configs
-#   are unaffected.)
+# Levers vs smoke5:
+#   * env.loc_ref_residual_base: q_ref -> home   (THE lever — TB static base)
+#   * env.loc_ref_reset_base:    ref_init -> home
+#   * residual scales: coverage 0.75 -> 1.1, symmetric per L/R pair
+#       (hip_pitch 0.353/0.387 -> 0.567; knee 0.667 -> 0.978; ankle_p 0.25 -> 0.298)
+#   * env.loc_ref_rsi_enabled: true (kept from smoke5)
+# Judge smoke6 by the DETERMINISTIC eval (the smoke5 train→eval gap from high
+# action noise, std 0.63, made train rollouts misleading; entropy reduction is a
+# fast-follow, not folded into this run to keep the paradigm switch isolated).
+# Everything else identical to smoke5.
 #
-# TB rationale (local code, precise): TB's policy owns the motor target around a
-# default action; 2D XY velocity reward (mjx_env.py::_reward_lin_vel_xy) is
-# ISOTROPIC (sigma=1000) and TB trains under it from scratch.  WR is RESUMING
-# from a forward gait with an existing +y bias, so it cannot jump straight to
-# TB's tight isotropic kernel — alpha_y=120 is the bridge, not 1000.  Yaw deferred.
-#
-# EXPERIMENT OBJECTIVE: make WR own the SIGNED lateral command (track both +vy
-# and -vy), measured by the bidirectional ±0.065 probes.
-# NON-GOALS: add wz; enable cmd_yaw_rate_track; re-enable ref_q_track /
-# ref_contact_match / torso_pos_xy / lin_vel_z; change action clipping; return to
-# q_ref base; resume from smoke7; switch to TB's scalar isotropic kernel.
-# PROMOTION (strict, authoritative): forward gates + lateral-drift gates on the
-# straight eval AND both nonzero-vy probes must pass the signed-ratio criterion;
-# else selected_checkpoint_path stays null.
+# EXPERIMENT OBJECTIVE (read before interpreting results):
+#   This run answers ONE question: "can PPO build/own the forward gait from a
+#   STATIC home base + RSI (the TB contract)?"  It isolates the action-contract
+#   switch (q_ref base -> home base, coverage 0.75 -> 1.1).
+# NON-GOALS (do NOT judge smoke6 against these):
+#   - It does NOT fix smoke5's main remaining defect, the lateral/path DRIFT.
+#     The reward stack is deliberately unchanged on that front: cmd_velocity_
+#     track_dim stays 1, cmd_yaw_rate_track stays 0, and all path/reference terms
+#     stay OFF (ref_q_track / ref_contact_match / torso_pos_xy / lin_vel_z = 0).
+#     Lateral-drift correction (re-enable a path/orientation term or vy tracking)
+#     is a SEPARATE follow-up, intentionally not confounded into this run.
+#   - Success = the deterministic eval walks forward from home (fv >= 0.075,
+#     ratio in band, real steps, no falls).  Residual veer is expected and is the
+#     next experiment's target, not this one's pass/fail.
 # -----------------------------------------------------------------------------
 # --- smoke4A header (retained for context) -----------------------------------
 # WildRobot v0.21.0 PPO Smoke 4A — FORWARD-FIRST control (true 1D command)
@@ -334,8 +333,8 @@
 # -----------------------------------------------------------------------------
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
-version: "0.21.0"
-version_name: "v0.21.0 PPO smoke8 2D signed-vy (resume smoke6 ckpt_1900; keep home+RSI+coverage-1.1 scales + anisotropic 2D reward; STRENGTHEN signed lateral: vy range +-0.065, alpha_y 30->120, probes +-0.065; yaw off; strict lateral-drift + signed-probe HARD gates)"
+version: "0.21.0-17d1"
+version_name: "v0.21.0 native 17D walking latency fine-tune (smoke6 actor distillation; wrists fixed in MuJoCo and absent from policy/runtime locomotion IO)"
 
 seed: 42
 
@@ -408,10 +407,8 @@ env:
   # v0.21.0 P4 — lateral / yaw-rate command ranges for the branched
   # 3D sampler.  WR-scaled (see header comment on TB ratios).
   # smoke4A: no lateral / no yaw command — forward-first 1D control.
-  min_velocity_y:  -0.065  # smoke8: signed lateral range (was -0.03; cos(theta)
-  #   ellipse projection shrinks the effective |vy_cmd|, so widen so the command
-  #   magnitude exceeds the learned ~0.05 lateral bias and the sign signal matters)
-  max_velocity_y:  0.065   # smoke8: signed lateral range (see min_velocity_y)
+  min_velocity_y:  0.0
+  max_velocity_y:  0.0
   max_yaw_rate:    0.0
 
   cmd_resample_steps: 150
@@ -469,19 +466,14 @@ env:
   # ceiling is read from training metrics (``env/forward_velocity`` at the
   # sampled high commands); the primary ``eval_velocity_cmd=[0.13,0,0]``
   # gates G4.  A correctly-named forward-probe field can be added later.
-  # smoke7: nonzero-vy probes so the deterministic eval actually MEASURES 2D
-  # tracking (achieved vy vs commanded vy, Appendix C signed ratio >= 0.5).
-  # Under post_training_strict_lateral_drift these probes BLOCK promotion
-  # (train.py), so 'tracks tiny vy' is part of smoke7's acceptance contract
-  # — not just 'low drift when commanded straight'.
-  eval_velocity_cmd_probes: [[0.13, 0.065, 0.0], [0.13, -0.065, 0.0]]
+  eval_velocity_cmd_probes: []
 
   # v0.21.0 P4 — opt-in for the TB-branched 3D command sampler
   # (zero / pure-turn / ellipse-walk).  When false, env emits the
   # legacy (vx, 0, 0) sampler regardless of the lateral/yaw ranges.
   # smoke4A: FALSE -> legacy scalar sampler emits (vx, 0, 0) only.  This is
   # the forward-first control; smoke4B flips it back to true for tiny vy.
-  cmd_sampler_3d_branched: true   # smoke7: TB-branched (vx, vy, 0) sampler
+  cmd_sampler_3d_branched: false
   # smoke2 (C): clamp walk-branch vx >= 0.  Closes the contract mismatch
   # between TB's symmetric ellipse (emits negative vx via sin_theta<0)
   # and WR's positive-only reference library.  Restores smoke12b's
@@ -552,11 +544,7 @@ env:
   # in the [grid_max, sampler_max] band silently snap to grid_max in
   # the reference lookup, training the policy against a dishonest
   # prior in the upper ~23% of the cmd range.
-  # smoke7: ADD +-0.03 so the tiny-vy command (sampled vy in [-0.03, 0.03])
-  # maps to a MATCHING reference bin.  The 3D lookup is nearest-key L2
-  # (wildrobot_env.py ~1668); without a +-0.03 bin, vy=0.03 snaps to 0.0
-  # (|0.03-0|<|0.03-0.065|) -> forward-only reference + lateral-only reward.
-  loc_ref_offline_command_vy_grid: [-0.13, -0.065, -0.03, 0.0, 0.03, 0.065, 0.13]
+  loc_ref_offline_command_vy_grid: [-0.13, -0.065, 0.0, 0.065, 0.13]
   loc_ref_offline_command_yaw_rate_grid: [-0.25, -0.125, 0.0, 0.125, 0.25]
   # Note (vs spec): the v0.21 plan mentions a YAML knob
   # ``loc_ref_offline_command_vx_grid`` for explicitly listing the vx
@@ -609,19 +597,22 @@ env:
   domain_rand_backlash_activation: 0.1
 
   action_delay_steps: 1
+  joint_feedback_sample_hold_enabled: true
+  joint_feedback_leg_period_steps_range: [4, 7]
+  joint_feedback_upper_period_steps_range: [12, 24]
 
 ppo:
   num_envs: 1024
   rollout_steps: 20
-  # 30M run: 1500 * 1024 * 20 = 30,720,000 env-steps.  Matches smoke14.
-  iterations: 1500
+  # Actor-only fine-tune: 500 * 1024 * 20 = 10,240,000 env-steps.
+  iterations: 500
 
-  learning_rate: 3.0e-5
+  learning_rate: 1.0e-5
   gamma: 0.97
   gae_lambda: 0.95
 
   clip_epsilon: 0.2
-  entropy_coef: 5.0e-4
+  entropy_coef: 1.0e-4
   value_loss_coef: 0.5
 
   epochs: 4
@@ -669,8 +660,6 @@ ppo:
     # 500 -> 1000 horizon bump.
     post_training_num_steps: 1000
     post_training_checkpoint_label: eval_promoted
-    # smoke7: lateral drift blocks promotion (forward + tiny-vy run).
-    post_training_strict_lateral_drift: true
 
 networks:
   actor:
@@ -699,11 +688,6 @@ reward_weights:
   # smoke12b basin-break recipe (action_rate -1.0, vx-clamp, sampler bias)
   # to keep the policy in the gradient region.
   cmd_forward_velocity_alpha: 562.5
-  # smoke7 anisotropic lateral alpha (loose) — keeps the vy gradient LIVE at
-  # smoke6-scale |vy| errors where a shared tight alpha would be ~2e-7 (dead).
-  cmd_forward_velocity_alpha_y: 120.0   # smoke8: 30 was too soft (wrong-sign
-  #   probe cost only ~17%); 120 makes correct-vs-wrong sign materially separate
-  #   while staying live from the inherited ~0.15 lateral bias (NOT TB's 1000)
   # v0.21.0 — TB-parity 2D velocity tracking: penalize (vx_actual,
   # vy_actual) against (cmd_vx, cmd_vy).  Smoke14 used dim=1 because
   # WR had no vy_cmd; smoke1 introduces a real vy_cmd from the
@@ -714,7 +698,7 @@ reward_weights:
   # key would now fail at load (strict reward_weights validator).
   # smoke4A (THE main fix): 2 -> 1.  Forward reward exp(-alpha*(vx-cmd_vx)^2)
   # only; lateral error no longer saturates the reward to zero.  See header.
-  cmd_velocity_track_dim: 2   # smoke7: own (vx, vy)
+  cmd_velocity_track_dim: 1
   # v0.21.0 P6 — new yaw-rate tracking term.  Default 0.0 keeps
   # legacy configs byte-equivalent; smoke1 turns it on at TB-aligned
   # weight (1.5) and alpha (0.25).
@@ -767,7 +751,7 @@ wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.21.0, smoke8, tb_contract, rsi, ref_state_init, home_base_residual, coverage_1p1, resume_smoke6_1900, twod_signed_vy, cmd_track_dim2, anisotropic_alpha, alpha_x_562p5, alpha_y_120, branched_sampler, vy_pm0p065, no_yaw, strict_lateral_drift, signed_probe_gate, lateral_diagnostics, obs_v8_cmd3d, library_3d, ep_1000]
+  tags: [ppo, v0.21.0, native_17d, wrist_free_policy, actor_distillation, latency_finetune, sample_hold_feedback, domain_randomization, smoke6, tb_contract, rsi, home_base_residual, forward_first, obs_v8_cmd3d, ep_1000]
 
 video:
   enabled: false

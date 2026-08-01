@@ -39,7 +39,7 @@ identifies "foot lift" from a measured 1->0 contact transition on
 that foot.
 
 Per-step output: a modified copy of ``q_ref`` (length =
-``model.nu``, e.g. 21 for the post-merge WildRobot) with the
+``model.nu``, currently 17 for WildRobot) with the
 allowed offsets applied to the leg actuator slots resolved by name
 from ``mujoco_robot_config.json``.  The harness returns its
 clip-saturation flags so the closeout artifact can report

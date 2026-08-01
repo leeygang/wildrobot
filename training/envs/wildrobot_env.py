@@ -184,6 +184,43 @@ def _apply_imu_noise_and_delay(signals, rng, cfg, prev_hist_quat, prev_hist_gyro
     return signals_override, new_q_hist, new_g_hist, rng_out
 
 
+def _sample_hold_joint_feedback(
+    *,
+    current_pos: jax.Array,
+    current_vel: jax.Array,
+    cached_pos: jax.Array,
+    cached_vel: jax.Array,
+    age_steps: jax.Array,
+    period_steps: jax.Array,
+    phase_steps: jax.Array,
+    next_step_count: jax.Array,
+    ctrl_dt: float,
+    enabled: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Apply the runtime servo cache's asynchronous sample-and-hold model."""
+    if not enabled:
+        return (
+            current_pos,
+            current_vel,
+            current_pos,
+            current_vel,
+            jp.zeros_like(age_steps),
+        )
+
+    next_age = age_steps + jp.int32(1)
+    should_update = jp.equal(
+        jp.mod(next_step_count + phase_steps, period_steps), jp.int32(0)
+    )
+    sample_dt = next_age.astype(jp.float32) * jp.float32(ctrl_dt)
+    sampled_vel = (current_pos - cached_pos) / jp.maximum(
+        sample_dt, jp.float32(ctrl_dt)
+    )
+    output_pos = jp.where(should_update, current_pos, cached_pos)
+    output_vel = jp.where(should_update, sampled_vel, cached_vel)
+    output_age = jp.where(should_update, jp.int32(0), next_age)
+    return output_pos, output_vel, output_pos, output_vel, output_age
+
+
 # =============================================================================
 # State
 # =============================================================================
@@ -283,7 +320,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._assert_rsi_reachable_from_home()
 
         print("WildRobotEnv (v0.20.1 v3-only) initialized:")
-        print(f"  Actuators:    {self._mj_model.nu}")
+        print(f"  Mechanical actuators: {self._mj_model.nu}")
+        print(f"  Policy actuators:     {self.action_size}")
         print(f"  obs_dim:      {self._policy_spec.model.obs_dim}")
         print(f"  ctrl_dt:      {self.dt}s")
         print(f"  sim_dt:       {self.sim_dt}s")
@@ -534,29 +572,30 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         full_actuator_names = [
-            str(item["name"]) for item in self._robot_config.actuated_joints
+            str(self._mj_model.actuator(actuator_id).name)
+            for actuator_id in range(self._mj_model.nu)
         ]
         self._full_actuator_names = full_actuator_names
         self._full_actuator_count = len(full_actuator_names)
-        full_home_ctrl_list = clamp_home_ctrl(
-            home_ctrl=get_home_ctrl_from_mj_model(
-                mj_model=self._mj_model,
-                actuator_names=full_actuator_names,
-            ),
-            actuated_joint_specs=self._robot_config.actuated_joints,
+        full_home_ctrl_list = get_home_ctrl_from_mj_model(
+            mj_model=self._mj_model,
             actuator_names=full_actuator_names,
         )
         self._policy_spec = build_policy_spec_from_training_config(
             training_cfg=self._config,
             robot_cfg=self._robot_config,
         )
-        self._default_joint_qpos = jp.asarray(
-            self._policy_spec.robot.home_ctrl_rad, dtype=jp.float32
-        )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
         }
         full_name_to_idx = {name: idx for idx, name in enumerate(full_actuator_names)}
+        policy_home_ctrl_list = [
+            full_home_ctrl_list[full_name_to_idx[name]]
+            for name in self._policy_spec.robot.actuator_names
+        ]
+        self._default_joint_qpos = jp.asarray(
+            policy_home_ctrl_list, dtype=jp.float32
+        )
         self._policy_signal_indices = jp.asarray(
             [
                 full_name_to_idx[name]
@@ -591,7 +630,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # clips on every step anyway, so pre-clipping makes the cached
         # value byte-equal to what gets written under zero residual.
         self._home_q_rad = jp.clip(
-            jp.asarray(self._policy_spec.robot.home_ctrl_rad, dtype=jp.float32),
+            jp.asarray(policy_home_ctrl_list, dtype=jp.float32),
             self._joint_range_mins,
             self._joint_range_maxs,
         )
@@ -606,6 +645,54 @@ class WildRobotEnv(mjx_env.MjxEnv):
             actuator_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
         self._actuator_qpos_addrs = jp.asarray(actuator_qpos_addrs, dtype=jp.int32)
         self._actuator_dof_addrs = jp.asarray(actuator_dof_addrs, dtype=jp.int32)
+
+        self._joint_feedback_sample_hold_enabled = bool(
+            getattr(
+                self._config.env, "joint_feedback_sample_hold_enabled", False
+            )
+        )
+        self._joint_feedback_leg_mask = jp.asarray(
+            [
+                any(part in name for part in ("hip", "knee", "ankle"))
+                for name in self._policy_spec.robot.actuator_names
+            ],
+            dtype=jp.bool_,
+        )
+        self._joint_feedback_leg_period_range = tuple(
+            int(value)
+            for value in getattr(
+                self._config.env,
+                "joint_feedback_leg_period_steps_range",
+                (1, 1),
+            )
+        )
+        self._joint_feedback_upper_period_range = tuple(
+            int(value)
+            for value in getattr(
+                self._config.env,
+                "joint_feedback_upper_period_steps_range",
+                (1, 1),
+            )
+        )
+        for field_name, period_range in (
+            (
+                "joint_feedback_leg_period_steps_range",
+                self._joint_feedback_leg_period_range,
+            ),
+            (
+                "joint_feedback_upper_period_steps_range",
+                self._joint_feedback_upper_period_range,
+            ),
+        ):
+            if (
+                len(period_range) != 2
+                or period_range[0] < 1
+                or period_range[1] < period_range[0]
+            ):
+                raise ValueError(
+                    f"env.{field_name} must satisfy 1 <= low <= high; "
+                    f"got {period_range!r}"
+                )
 
         # smoke9c follow-up — leg-pitch actuator addrs + signs for TB-style
         # reset-time torso-pitch perturbation.  TB
@@ -1070,7 +1157,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     and len(vy_grid_cfg) > 0
                     and len(wz_grid_cfg) > 0
                 )
-                lib = ZMPWalkGenerator().build_library_for_3d_values(
+                lib = ZMPWalkGenerator(
+                    scene_xml_path=self._config.env.scene_xml_path,
+                    robot_config_path=self._config.env.robot_config_path,
+                ).build_library_for_3d_values(
                     vx_values=list(vx_grid),
                     vy_values=vy_grid_cfg,
                     yaw_rate_values=wz_grid_cfg,
@@ -1101,7 +1191,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_keys = [(float(vx), 0.0, 0.0) for vx in vx_grid]
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
-            lib = ZMPWalkGenerator().build_library_for_vx_values(list(vx_grid))
+            lib = ZMPWalkGenerator(
+                scene_xml_path=self._config.env.scene_xml_path,
+                robot_config_path=self._config.env.robot_config_path,
+            ).build_library_for_vx_values(list(vx_grid))
             stored_trajectories = None
             cmd_keys = [(float(vx), 0.0, 0.0) for vx in vx_grid]
 
@@ -1968,6 +2061,33 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ).astype(jp.float32),
         )
 
+    def _sample_joint_feedback_schedule(
+        self, rng: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        """Sample per-joint cache refresh period and phase for one episode."""
+        rng_period, rng_phase = jax.random.split(rng)
+        leg_low, leg_high = self._joint_feedback_leg_period_range
+        upper_low, upper_high = self._joint_feedback_upper_period_range
+        lows = jp.where(
+            self._joint_feedback_leg_mask, jp.int32(leg_low), jp.int32(upper_low)
+        )
+        widths = jp.where(
+            self._joint_feedback_leg_mask,
+            jp.int32(leg_high - leg_low + 1),
+            jp.int32(upper_high - upper_low + 1),
+        )
+        unit_period = jax.random.uniform(
+            rng_period, shape=(self.action_size,), dtype=jp.float32
+        )
+        period_steps = lows + jp.floor(unit_period * widths).astype(jp.int32)
+        unit_phase = jax.random.uniform(
+            rng_phase, shape=(self.action_size,), dtype=jp.float32
+        )
+        phase_steps = jp.floor(
+            unit_phase * period_steps.astype(jp.float32)
+        ).astype(jp.int32)
+        return period_steps, phase_steps
+
     def _get_obs(
         self,
         data: mjx.Data,
@@ -2051,13 +2171,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         (toddlerbot/locomotion/mjx_config.py:86, walk.gin:25-28):
             motor_pos_error + lin_vel + actuator_force + ref_stance.
 
-        Layout (PRIVILEGED_OBS_DIM=52):
+        Layout (PRIVILEGED_OBS_DIM=44):
             [0:3]   lin_vel (heading-frame)
             [3:6]   ang_vel (heading-frame)
             [6:8]   per-foot aggregated contact force (left, right)
-            [8:29]  motor_pos_error
-            [29:50] data.actuator_force
-            [50:52] ref_stance
+            [8:25]  motor_pos_error
+            [25:42] data.actuator_force
+            [42:44] ref_stance
 
         The two reference channels depend on
         ``env.critic_imitation_refs`` (see LocomotionEnvConfig docstring):
@@ -3095,9 +3215,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         velocity_cmd / v8 (vy, wz) / ref-window channels).  ``None``
         keeps the sampled-cmd behavior (training-side reset path).
         """
-        rng, key_vel, key_qnoise, key_push, key_dr, key_imu, key_cmd, key_pert = (
-            jax.random.split(rng, 8)
-        )
+        (
+            rng,
+            key_vel,
+            key_qnoise,
+            key_push,
+            key_dr,
+            key_imu,
+            key_cmd,
+            key_pert,
+            key_joint_feedback,
+        ) = jax.random.split(rng, 9)
 
         if velocity_cmd_override is None:
             velocity_cmd = self._sample_velocity_cmd(key_vel)
@@ -3216,6 +3344,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dr_params=dr_params,
             imu_init_rng=key_imu,
             cmd_rng=key_cmd,
+            joint_feedback_rng=key_joint_feedback,
             rsi_qvel=rsi_qvel,
             rsi_step_idx=rsi_step_idx,
         )
@@ -3812,6 +3941,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         dr_params: Dict[str, jax.Array],
         imu_init_rng: jax.Array,
         cmd_rng: jax.Array,
+        joint_feedback_rng: jax.Array,
         rsi_qvel: Optional[jax.Array] = None,
         rsi_step_idx: Optional[jax.Array] = None,
     ) -> WildRobotEnvState:
@@ -3882,6 +4012,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     )
                 ),
             )
+        )
+        joint_feedback_period_steps, joint_feedback_phase_steps = (
+            self._sample_joint_feedback_schedule(joint_feedback_rng)
         )
 
         root_pose = self._cal.get_root_pose(data)
@@ -4007,6 +4140,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=right_foot_pos.astype(jp.float32),
             imu_quat_hist=imu_quat_hist,
             imu_gyro_hist=imu_gyro_hist,
+            joint_feedback_cached_pos=signals_override.joint_pos_rad,
+            joint_feedback_cached_vel=signals_override.joint_vel_rad_s,
+            joint_feedback_age_steps=jp.zeros(
+                (self.action_size,), dtype=jp.int32
+            ),
+            joint_feedback_period_steps=joint_feedback_period_steps,
+            joint_feedback_phase_steps=joint_feedback_phase_steps,
             foot_contacts=foot_contacts,
             root_height=root_pose.height.astype(jp.float32),
             prev_left_loaded=(left_force > self._config.env.contact_threshold_force).astype(jp.float32),
@@ -4475,6 +4615,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 ),
             )
         )
+        (
+            feedback_pos,
+            feedback_vel,
+            joint_feedback_cached_pos,
+            joint_feedback_cached_vel,
+            joint_feedback_age_steps,
+        ) = _sample_hold_joint_feedback(
+            current_pos=signals_override.joint_pos_rad,
+            current_vel=signals_override.joint_vel_rad_s,
+            cached_pos=wr.joint_feedback_cached_pos,
+            cached_vel=wr.joint_feedback_cached_vel,
+            age_steps=wr.joint_feedback_age_steps,
+            period_steps=wr.joint_feedback_period_steps,
+            phase_steps=wr.joint_feedback_phase_steps,
+            next_step_count=wr.step_count + jp.int32(1),
+            ctrl_dt=self.dt,
+            enabled=self._joint_feedback_sample_hold_enabled,
+        )
+        signals_override = signals_override.replace(
+            joint_pos_rad=feedback_pos,
+            joint_vel_rad_s=feedback_vel,
+        )
 
         root_pose = self._cal.get_root_pose(data)
         root_vel_h = self._cal.get_root_velocity(data, frame=CoordinateFrame.HEADING_LOCAL)
@@ -4730,6 +4892,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=right_foot_pos.astype(jp.float32),
             imu_quat_hist=imu_quat_hist,
             imu_gyro_hist=imu_gyro_hist,
+            joint_feedback_cached_pos=joint_feedback_cached_pos,
+            joint_feedback_cached_vel=joint_feedback_cached_vel,
+            joint_feedback_age_steps=joint_feedback_age_steps,
             foot_contacts=jp.stack(
                 [left_force, jp.float32(0.0), right_force, jp.float32(0.0)]
             ).astype(jp.float32),
@@ -5011,7 +5176,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             (torque_ratio > jp.float32(0.95)).astype(jp.float32)
         )
         torque_metric_names = set(TORQUE_ACTUATOR_NAMES)
-        for actuator_idx, actuator_name in enumerate(self._full_actuator_names):
+        for actuator_idx, actuator_name in enumerate(
+            self._policy_spec.robot.actuator_names
+        ):
             if actuator_name not in torque_metric_names:
                 raise ValueError(
                     "Missing per-actuator torque metric registration for "

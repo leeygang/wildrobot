@@ -12,7 +12,6 @@ import sys
 import numpy as np
 import pytest
 
-from runtime.wr_runtime.control.external_actuator_io import ExternalActuatorRobotIO
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 from runtime.wr_runtime.control.run_policy import (
@@ -30,7 +29,7 @@ class _SmallPolicy:
         self._n = action_dim
 
     def predict(self, obs):
-        assert obs.shape == (1129,), f"unexpected obs shape {obs.shape}"
+        assert obs.shape == (937,), f"unexpected obs shape {obs.shape}"
         return np.full(self._n, 0.1, dtype=np.float32)
 
 
@@ -110,7 +109,7 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
         assert ctrl.shape == (action_dim,)
         assert np.all(np.isfinite(ctrl))
     assert logs, "expected at least one logged step"
-    assert logs[0]["obs"].shape == (1129,)
+    assert logs[0]["obs"].shape == (937,)
     assert logs[0]["timing_s"]["read"] >= 0.0
     assert logs[0]["timing_s"]["policy"] >= 0.0
     assert logs[0]["timing_s"]["write"] >= 0.0
@@ -139,34 +138,15 @@ def test_policy_loop_accepts_unbounded_execution_until_interrupt() -> None:
         )
 
 
-def test_walk_policy_keeps_21d_contract_while_locomotion_io_uses_17_servos(
+def test_walk_policy_uses_native_17d_contract_and_direct_hardware_io(
     v8_spec, runtime_policy_config
 ):
-    wrist_names = {
-        "left_wrist_yaw",
-        "left_wrist_pitch",
-        "right_wrist_yaw",
-        "right_wrist_pitch",
-    }
     policy_names = list(v8_spec.robot.actuator_names)
     policy_home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
-    policy_index = {name: idx for idx, name in enumerate(policy_names)}
-    locomotion_names = [name for name in policy_names if name not in wrist_names]
-    locomotion_home = np.asarray(
-        [policy_home[policy_index[name]] for name in locomotion_names],
-        dtype=np.float32,
-    )
-    hardware_io = MockRobotIO(
-        actuator_names=locomotion_names,
+    robot_io = MockRobotIO(
+        actuator_names=policy_names,
         control_dt=runtime_policy_config.ctrl_dt,
-        home_q_rad=locomotion_home,
-    )
-    robot_io = ExternalActuatorRobotIO(
-        robot_io=hardware_io,
-        policy_actuator_names=policy_names,
-        external_home_rad={
-            name: float(policy_home[policy_index[name]]) for name in wrist_names
-        },
+        home_q_rad=policy_home,
     )
     policy = _SmallPolicy(v8_spec.model.action_dim)
     runner = RuntimePolicyRunner(
@@ -177,17 +157,12 @@ def test_walk_policy_keeps_21d_contract_while_locomotion_io_uses_17_servos(
     )
 
     info = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
-    signals = robot_io.read()
-
-    assert v8_spec.model.action_dim == 21
-    assert len(hardware_io.actuator_names) == 17
-    assert info["obs"].shape == (1129,)
-    assert info["target_q_rad"].shape == (21,)
-    assert hardware_io.written[-1].shape == (17,)
-    for name in wrist_names:
-        idx = policy_index[name]
-        assert signals.joint_pos_rad[idx] == pytest.approx(policy_home[idx])
-        assert signals.joint_vel_rad_s[idx] == pytest.approx(0.0)
+    assert v8_spec.model.action_dim == 17
+    assert len(robot_io.actuator_names) == 17
+    assert not any("wrist" in name for name in policy_names)
+    assert info["obs"].shape == (937,)
+    assert info["target_q_rad"].shape == (17,)
+    assert robot_io.written[-1].shape == (17,)
 
 
 def test_loop_prints_partial_timing_summary_on_error(

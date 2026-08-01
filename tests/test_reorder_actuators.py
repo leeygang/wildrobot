@@ -50,3 +50,19 @@ def test_reorder_actuators_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         reorder_actuators(xml_path=xml_path, order_path=order_path)
+
+
+def test_reorder_actuators_can_append_raw_export_extras(tmp_path: Path) -> None:
+    xml_path = tmp_path / "model.xml"
+    order_path = tmp_path / "order.txt"
+    _write_xml(xml_path)
+    order_path.write_text("a\nb\n")
+
+    reorder_actuators(
+        xml_path=xml_path,
+        order_path=order_path,
+        allow_unlisted=True,
+    )
+
+    text = xml_path.read_text()
+    assert text.index('name="a"') < text.index('name="b"') < text.index('name="c"')

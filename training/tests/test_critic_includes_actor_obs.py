@@ -6,8 +6,8 @@ privileged_obs_history alone.  Standard asymmetric actor-critic pattern;
 mirrors TB whose num_single_privileged_obs (151) ALREADY includes the
 noiseless actor obs inline.
 
-WR's pre-Lever-7 critic saw ONLY the 52-dim privileged_obs (with 15
-history frames = 780 dims), missing cmd / phase / quat / abs motor_pos
+WR's pre-Lever-7 critic saw ONLY the 44-dim privileged_obs (with 15
+history frames = 660 dims), missing cmd / phase / quat / abs motor_pos
 that the actor sees.  At the standing local minimum that V(s) under-
 estimation contributed to the V(stand) > V(walk) inversion smoke1
 lblub15y converged to.

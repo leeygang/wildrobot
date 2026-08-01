@@ -8,6 +8,38 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [native-17d-policy-runtime] - 2026-08-01: remove wrist compatibility contracts
+
+Merged `17d_walk_policy` into the current wxyz/standing-recovery mainline and
+made 17 actuators the canonical locomotion contract. The four wrist joints and
+actuators are removed from the processed MuJoCo model, actuator order, and
+keyframe vectors. Palm/finger bodies, inertias, meshes, and collisions remain
+fixed to the forearms. Wrist channels no longer appear in the generated robot
+config, actor observations/actions, policy specs, torque metrics, hardware
+servo config, or runtime IO.
+
+`env.policy_excluded_actuator_names`, `runtime_fixed_home`, and
+`externally_managed_actuator_names` are removed rather than retained as
+compatibility switches. Configuration containing either exclusion key now
+fails fast. Historical 21D bundles are archival and must not be deployed by
+the native runtime.
+
+The walking migration follows Rusu et al., *Policy Distillation*
+(arXiv:1511.06295): collect deterministic rollouts from the archived 21D
+teacher, project every current/history actuator block to 17D, initialize the
+student from retained input/output weights, then fine-tune with a fresh critic
+and optimizer. The latency fine-tune retains the WR-specific asynchronous
+feedback model justified by the measured 115200-baud servo cache; ToddlerBot's
+static-home action base, RSI, randomization, and history contracts remain the
+reference design (Shi et al., arXiv:2502.00893).
+
+Verification on 2026-08-01 compiled and completed the three-iteration training
+smoke (`obs_dim=937`, `critic_obs_dim=1597`, `action_dim=17`), loaded the
+archived distillation teacher as `1129/21`, and completed a two-step standalone
+standing runtime dry run with 17 policy and 17 hardware actuators.
+
+---
+
 ## [v0.22.5-standing-quaternion-contract] - 2026-07-26: standardize wxyz IMU ordering and require tilted-reset recovery
 
 ### v0.22.4 hardware result and deployment decision
@@ -139,8 +171,9 @@ authoritative post-training summary are under
 `training/checkpoints/ppo_standing_home_stabilizer_v0224_v00224_20260726_095203-u0gjr7z4`.
 It completed 100 iterations and 13,107,200 environment steps in 5.03 hours.
 The deployed actor contract is `wr_obs_v9_standing` with 59 observations and
-17 actions; the four wrist joints remain in the model but are absent from the
-standing policy and locomotion I/O.
+17 actions. At training time the four wrist joints remained in the model but
+were absent from the standing policy and locomotion I/O; the current native
+model removes those DOFs entirely.
 
 Full 1,000-step episode completion was reached by iteration 20. Late training
 (iterations 40-100) was stable:

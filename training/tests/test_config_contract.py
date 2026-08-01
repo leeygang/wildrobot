@@ -142,20 +142,17 @@ class TestConfigConsistency:
     @pytest.mark.unit
     def test_action_dim_matches_actuators(self, training_config, robot_schema, robot_config):
         """
-        Purpose: Verify number of actuators is internally consistent.
+        Purpose: Verify policy actuators are represented in the mechanical model.
 
         Assertions:
-        - Schema actuator count is positive
-        - Schema actuator count matches robot_config actuator count
+        - Policy actuator count is positive
+        - Policy and mechanical actuator orders match exactly
         """
-        schema_actuators = len(robot_schema.actuators)
-        config_actuators = len(robot_config.actuator_names)
+        schema_names = [actuator.actuator_name for actuator in robot_schema.actuators]
+        config_names = list(robot_config.actuator_names)
 
-        assert schema_actuators > 0, "Schema reports zero actuators"
-        assert schema_actuators == config_actuators, (
-            f"Actuator count mismatch: schema={schema_actuators}, "
-            f"robot_config={config_actuators}"
-        )
+        assert config_names, "Robot config reports zero policy actuators"
+        assert config_names == schema_names
 
     @pytest.mark.unit
     def test_height_limits_valid(self, training_config):

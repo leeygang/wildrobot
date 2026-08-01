@@ -118,7 +118,8 @@ echo ""
 echo "Reordering actuators to canonical order..."
 $PYTHON_CMD "$SCRIPT_DIR/reorder_actuators.py" \
     --xml "$VARIANT_DIR/wildrobot.xml" \
-    --order "$VARIANT_DIR/actuator_order.txt"
+    --order "$VARIANT_DIR/actuator_order.txt" \
+    --allow-unlisted
 
 # --- 4. Post-process ---------------------------------------------------------
 

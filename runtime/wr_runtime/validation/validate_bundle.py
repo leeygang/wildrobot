@@ -107,10 +107,7 @@ def main() -> None:
                 robot_config_path=deployment.robot_config_path,
             )
             _print_pass(f"found {deployment.hardware_config_path.name}")
-            _print_pass(
-                "loaded shared hardware config "
-                f"(external={list(cfg.externally_managed_actuator_names)})"
-            )
+            _print_pass("loaded shared hardware config")
             for role in ("standing", "walking"):
                 step = f"validate {role} policy bundle"
                 validate_bundle(
