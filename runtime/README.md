@@ -243,6 +243,18 @@ standing/walking deployment is valid only after the walking policy is migrated
 and exported as `(937,17)`. No checked-in historical bundle satisfies the full
 native contract.
 
+For the paired hardware diagnostic, run the home hold and standing policy from
+the same foot placement with:
+
+```bash
+cd runtime
+uv run python scripts/run_paired_policy_trial.py
+```
+
+The runner prompts before each of three trials, writes paired logs under
+`_run_policy_logs`, stops policy control after 60 seconds or at 20 degrees of
+tilt, and preserves the loaded home pose only during the confirmed handoff.
+
 If you see servo cache initialization or position-read failures:
 - Confirm the USB TTL debug board is powered and servos have external power.
 - Rerun `calibrate.py --calibrate-servo-board` and confirm every board and servo ID is listed once.
