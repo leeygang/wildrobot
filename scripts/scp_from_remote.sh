@@ -10,7 +10,7 @@
 #   ./scp_from_remote.sh [--public [IP]] --logs               # List available wandb runs
 #   ./scp_from_remote.sh [--public [IP]] --run <run_name>     # Copy both checkpoint and wandb log for a run
 #   ./scp_from_remote.sh --latest-policy-log                  # Copy latest wrdev policy log
-#   ./scp_from_remote.sh --policy-log <filename>               # Copy named wrdev policy log
+#   ./scp_from_remote.sh --policy-log <name-glob-or-regex>     # Copy matching wrdev policy logs
 #
 # Options:
 #   --public         Use $LINUX_PUBLIC_IP instead of linux-pc.local
@@ -23,6 +23,8 @@
 #   ./scp_from_remote.sh --run run-20251228_011308-xw1fu3n6
 #   ./scp_from_remote.sh --run offline-run-20260104_213603-ajmyd9zz
 #   ./scp_from_remote.sh --policy-log standing_v0227.log
+#   ./scp_from_remote.sh --policy-log '*.log'
+#   ./scp_from_remote.sh --policy-log '^v0227_.*\.log$'
 
 set -e
 
@@ -93,6 +95,15 @@ else
         REMOTE_HOST="wrdev.local"
     fi
     echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
+fi
+
+if [ "${1:-}" = "--latest-policy-log" ] || [ "${1:-}" = "--policy-log" ]; then
+    SSH_CONTROL_DIR="${WILDROBOT_SSH_CONTROL_DIR:-/tmp/wrssh-$UID}"
+    mkdir -p "$SSH_CONTROL_DIR"
+    chmod 700 "$SSH_CONTROL_DIR"
+    SSH_REUSE_FLAGS="-o ControlMaster=auto -o ControlPersist=60 -o ControlPath=$SSH_CONTROL_DIR/%C"
+    SSH_PORT_FLAG="${SSH_PORT_FLAG:+$SSH_PORT_FLAG }$SSH_REUSE_FLAGS"
+    SCP_PORT_FLAG="${SCP_PORT_FLAG:+$SCP_PORT_FLAG }$SSH_REUSE_FLAGS"
 fi
 
 # Get script directory and move to wildrobot root
@@ -203,23 +214,71 @@ copy_latest_run_policy_log() {
 
 copy_run_policy_log() {
     REMOTE_HOST="wrdev.local"
-    local FILE_NAME="$1"
+    local PATTERN="$1"
     local REMOTE_LOG_DIR="$REMOTE_BASE/_run_policy_logs"
     local LOCAL_LOG_DIR="${WILDROBOT_RUN_POLICY_LOG_DIR:-_run_policy_logs}"
-    local REMOTE_PATH="$REMOTE_LOG_DIR/$FILE_NAME"
-    local LOCAL_PATH="$LOCAL_LOG_DIR/$FILE_NAME"
+    local AVAILABLE_LOGS
+    local REGEX_RC
+    local REGEX_VALID=true
+    local EXACT_MATCH=""
+    local FILE_NAME
+    local REMOTE_PATH
+    local LOCAL_PATH
+    local CANDIDATES=()
+    local MATCHES=()
 
-    if ! [[ "$FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-        echo -e "${RED}Error: --policy-log requires a filename without directory components${NC}"
+    if [ -z "$PATTERN" ] || [[ "$PATTERN" == */* ]] || [[ "$PATTERN" == *$'\n'* ]]; then
+        echo -e "${RED}Error: --policy-log requires a filename, glob, or regex without directory components${NC}"
+        return 1
+    fi
+
+    if [[ "" =~ $PATTERN ]]; then
+        REGEX_RC=0
+    else
+        REGEX_RC=$?
+    fi
+    if [ "$REGEX_RC" -eq 2 ]; then
+        REGEX_VALID=false
+    fi
+
+    AVAILABLE_LOGS=$(remote_ssh \
+        "find '$REMOTE_LOG_DIR' -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort")
+    while IFS= read -r FILE_NAME; do
+        [ -n "$FILE_NAME" ] || continue
+        [[ "$FILE_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || continue
+        CANDIDATES+=("$FILE_NAME")
+        if [ "$FILE_NAME" = "$PATTERN" ]; then
+            EXACT_MATCH="$FILE_NAME"
+        fi
+    done <<< "$AVAILABLE_LOGS"
+
+    if [ -n "$EXACT_MATCH" ]; then
+        MATCHES=("$EXACT_MATCH")
+    else
+        for FILE_NAME in "${CANDIDATES[@]}"; do
+            if [[ "$FILE_NAME" == $PATTERN ]]; then
+                MATCHES+=("$FILE_NAME")
+            elif [ "$REGEX_VALID" = true ] && [[ "$FILE_NAME" =~ $PATTERN ]]; then
+                MATCHES+=("$FILE_NAME")
+            fi
+        done
+    fi
+
+    if [ "${#MATCHES[@]}" -eq 0 ]; then
+        echo -e "${RED}No wildrobot-run-policy logs matched on wrdev.local:${NC} $PATTERN"
         return 1
     fi
 
     mkdir -p "$LOCAL_LOG_DIR"
-    echo -e "${YELLOW}Copying wildrobot-run-policy log:${NC}"
-    echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
-    echo -e "  Local:  $LOCAL_PATH"
-    remote_scp "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
-    echo -e "${GREEN}Transfer completed:${NC} $LOCAL_PATH"
+    echo -e "${YELLOW}Copying ${#MATCHES[@]} wildrobot-run-policy log(s):${NC}"
+    for FILE_NAME in "${MATCHES[@]}"; do
+        REMOTE_PATH="$REMOTE_LOG_DIR/$FILE_NAME"
+        LOCAL_PATH="$LOCAL_LOG_DIR/$FILE_NAME"
+        echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
+        echo -e "  Local:  $LOCAL_PATH"
+        remote_scp "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PATH"
+    done
+    echo -e "${GREEN}Transfer completed:${NC} ${#MATCHES[@]} log(s) copied to $LOCAL_LOG_DIR"
 }
 
 copy_checkpoint() {
@@ -397,14 +456,14 @@ copy_run() {
 
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--latest-policy-log|--policy-log <filename>|--logs|--run <name>|checkpoint_name>"
+    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--latest-policy-log|--policy-log <name-glob-or-regex>|--logs|--run <name>|checkpoint_name>"
     echo ""
     echo "Options:"
     echo "  <filename>       Copy specific file or directory from remote"
     echo "  --checkpoints    List available checkpoints on remote"
     echo "  --latest [N]     Copy latest N runs (W&B log + checkpoint), default N=1"
     echo "  --latest-policy-log  Copy latest policy log from wrdev.local"
-    echo "  --policy-log <filename>  Copy named policy log from wrdev.local"
+    echo "  --policy-log <name-glob-or-regex>  Copy matching policy logs from wrdev.local"
     echo "  --logs           List available W&B runs on remote"
     echo "  --run <name>     Copy both checkpoint and W&B log for a run"
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
@@ -416,6 +475,8 @@ if [ $# -eq 0 ]; then
     echo "  $0 --latest 3        # 3 most recent runs + checkpoints"
     echo "  $0 --latest-policy-log"
     echo "  $0 --policy-log standing_v0227.log"
+    echo "  $0 --policy-log '*.log'"
+    echo "  $0 --policy-log '^v0227_.*\.log$'"
     echo "  $0 --logs"
     echo "  $0 --run run-20251228_011308-xw1fu3n6"
     exit 1
@@ -427,8 +488,8 @@ case "$1" in
         ;;
     --policy-log)
         if [ -z "${2:-}" ]; then
-            echo -e "${RED}Error: --policy-log requires a filename${NC}"
-            echo "Usage: $0 --policy-log <filename>"
+            echo -e "${RED}Error: --policy-log requires a filename, glob, or regex${NC}"
+            echo "Usage: $0 --policy-log <name-glob-or-regex>"
             exit 1
         fi
         copy_run_policy_log "$2"
