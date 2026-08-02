@@ -144,11 +144,88 @@ over 2,427 hardware steps.
 
 **Decision:** reject v0.22.7 checkpoint 200 for unsupported hardware use. Before
 retraining, run (1) a mechanically fixed 60 s IMU drift test and (2) a tethered,
-same-pose 60 s home-hold-versus-policy A/B test. Compare pitch/yaw slopes, heel
-states, joint errors, and ankle targets. If both controllers drift, correct the
-hardware/model calibration first. If only the policy drifts, add a 2,500-step
-deterministic sustained-stability gate with persistent sagittal bias
-randomization, then ablate the ankle pose constraint before adding stepping.
+paired 60 s home-hold-versus-policy A/B test. Compare pitch/yaw slopes, heel
+states, joint errors, and ankle targets. Treat home-hold drift as a measurement
+of the hardware initial-state disturbance, not as a requirement that hardware
+must already be upright. Reproduce the measured bias in simulation and correct
+physical calibration only if it lies outside the intended or feasible recovery
+envelope. The deployed policy must recover the expected startup drift. Add a
+long-horizon deterministic sustained-stability gate with persistent sagittal
+bias randomization, then ablate the ankle pose constraint before adding
+stepping.
+
+### Paired home-hold/policy rerun (confirmed 2026-08-02)
+
+Three tethered paired trials were run with a 15 deg home-phase cutoff and a
+20 deg policy-phase cutoff. The authoritative logs are:
+
+- `_run_policy_logs/v0227_ckpt200_home_trial01_20260802_162220_201990.log`
+- `_run_policy_logs/v0227_ckpt200_policy_trial01_20260802_162338_545843.log`
+- `_run_policy_logs/v0227_ckpt200_home_trial02_20260802_162500_784240.log`
+- `_run_policy_logs/v0227_ckpt200_policy_trial02_20260802_162610_214773.log`
+- `_run_policy_logs/v0227_ckpt200_home_trial03_20260802_162642_579123.log`
+
+Trial 3 correctly omitted its policy phase because the home phase reached the
+safety cutoff.
+
+| Trial | Home phase | Policy phase | Support observation |
+|---|---|---|---|
+| 1 | pitch ended at +7.8 deg after a slow forward drift | started near +8.0 deg, rose to about +13.2 deg, and remained there for 59.8 s | right toe and heel remained open |
+| 2 | pitch settled near +12.4 deg | started near +12.5 deg and reached the +20.4 deg cutoff in 1.2 s | right toe and heel open; left heel opened during the fall |
+| 3 | pitch accelerated forward and reached the +15.1 deg cutoff at 9.34 s | not run | no policy-phase sample |
+
+The user's visual observation that the first two home holds leaned forward is
+therefore supported by the IMU. The home result also varied substantially with
+placement. However, this does **not** make an upright home pose a precondition
+for policy success. It defines the hardware initial-state and support-state
+distribution that the policy must capture if those states are accepted for
+deployment.
+
+Trial 1 is survival, not successful upright recovery: the policy moved farther
+from its configured +/-3 deg target band and held a roughly +13 deg equilibrium.
+Trial 2 shows that checkpoint 200 cannot capture another plausible startup
+state. A pitch-only recovery boundary cannot be inferred from two runs because
+the support geometry and COM state were not controlled. Both policy runs began
+with both right-foot switches open, and trial 2's switch state reduced to the
+left toe only. Foot switches remain diagnostics only; they are neither actor
+inputs nor runtime stop conditions.
+
+The code contract confirms that recovery from forward drift is intended:
+`ppo_standing_stabilizer_v0227.yaml` trains initial pitch over +/-10 deg,
+pitch rate over +/-0.6 rad/s, foot stagger over +/-0.04 m, and pushes, while
+rewarding return to the +/-3 deg torso band. `wr_obs_v9_standing` supplies
+projected gravity, body angular velocity, joint position/velocity, and previous
+action, so the actor has the proprioceptive information needed to react without
+footswitch input. The +12.5 deg trial-2 start exceeded the configured reset
+pitch range, but trial 1 began within it and still failed to return upright.
+Joint errors stayed below about 2.3 deg, there were no deadline misses or servo
+write failures, and the corrective action primarily increased knee flexion
+while adding little ankle-pitch correction. The result is therefore a policy
+recovery-envelope failure under a measured sim-to-real initial-state bias, not
+evidence that upright placement should be assumed.
+
+ToddlerBot uses the same principle: its actor observes torso orientation and
+angular velocity, and `toddlerbot/locomotion/mjx_env.py` contains persistent
+pitch/roll calibration-error randomization that offsets the physical motor
+targets while hiding that offset from encoder observations, forcing recovery
+from IMU feedback. Those ranges are optional and commented out in its current
+`walk.gin`, so ToddlerBot is a design reference rather than evidence that its
+released walking policy passes this WR disturbance.
+
+**Revised decision:** checkpoint 200 remains rejected. Do not require an
+upright home pose as the fix. First quantify the repeatable hardware pitch,
+pitch-rate, foot-placement, and switch-indicated support distribution;
+reproduce that distribution as persistent training randomization; and require
+the next policy to return from representative forward-biased starts to <=3 deg
+tilt and <=0.1 rad/s without a fall over a 60 s (3,000-step at 50 Hz)
+deterministic gate. Pitch and pitch rate need no morphology scaling; any
+translational foot/COM disturbance or push moment must use WR measurements and
+normalize by WR leg/foot geometry and `mass * gravity * leg length`, rather than
+copying ToddlerBot's absolute distances or forces. Keep the independent tilt
+unload cutoff. This follows ToddlerBot's IMU-based compensation pattern and the
+support-state/capture-region framing of Hof et al., *The condition for dynamic
+stability* (2005), and Pratt et al., *Capture Point: A Step toward Humanoid Push
+Recovery* (2006); see also Shi et al., *ToddlerBot*, arXiv:2502.00893.
 
 ToddlerBot remains a structural reference, not a demonstrated standing baseline:
 its MJX locomotion termination is height-based, while the real-robot demo uses
