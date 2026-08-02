@@ -218,7 +218,7 @@ Notes:
 The loop runs for `--max-steps` control steps and then exits, disabling
 actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
 To copy the newest hardware policy log from `wrdev.local` into the local
-repository, run `./scripts/scp_from_remote.sh --latest_run_policy_log` from the
+repository, run `./scripts/scp_from_remote.sh --latest-policy-log` from the
 repository root.
 
 ### Stable-only mode
