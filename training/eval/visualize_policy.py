@@ -1602,6 +1602,8 @@ def main():
             raise
 
     print(f"\nVisualization ended. {episode_count} episodes completed.")
+    if log_path is not None:
+        print(f"Log saved to: {log_path}")
     return 0
 
 
