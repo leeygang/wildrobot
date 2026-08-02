@@ -7,6 +7,7 @@ for a finite number of steps, with no servos/IMU attached.
 from __future__ import annotations
 
 from dataclasses import replace
+import datetime as dt
 import sys
 
 import numpy as np
@@ -15,6 +16,8 @@ import pytest
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 from runtime.wr_runtime.control.run_policy import (
+    _bundle_log_tokens,
+    _default_run_policy_log_path,
     _format_leg_targets_deg,
     _output_log_context,
     _print_timing_summary,
@@ -69,6 +72,22 @@ class _OpenRightFootRobotIO(MockRobotIO):
         )
 
 
+class _TiltedRobotIO(MockRobotIO):
+    def __init__(self, *, tilt_deg: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._tilt_rad = np.deg2rad(float(tilt_deg))
+
+    def read(self):
+        signals = super().read()
+        half = self._tilt_rad / 2.0
+        return replace(
+            signals,
+            quat_wxyz=np.array(
+                [np.cos(half), 0.0, np.sin(half), 0.0], dtype=np.float32
+            ),
+        )
+
+
 class _WaitableMockRobotIO(MockRobotIO):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -120,6 +139,57 @@ def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
 
     robot_io.close()
     assert robot_io.closed is True
+
+
+@pytest.mark.parametrize(
+    ("startup_home_hold_steps", "expected_policy_calls"),
+    [(0, 1), (5, 0)],
+)
+def test_policy_loop_aborts_when_tilt_exceeds_limit_at_any_phase(
+    v8_spec,
+    runtime_policy_config,
+    capsys,
+    startup_home_hold_steps,
+    expected_policy_calls,
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = _TiltedRobotIO(
+        tilt_deg=50.0,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match=r"tilt=50\.0deg.*pitch=50\.0deg.*45\.0deg",
+    ):
+        run_policy_loop(
+            runner=runner,
+            max_steps=5,
+            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+            log_steps=1,
+            ctrl_dt=runtime_policy_config.ctrl_dt,
+            realtime=False,
+            actuator_names=list(v8_spec.robot.actuator_names),
+            startup_home_hold_steps=startup_home_hold_steps,
+            fall_tilt_deg=45.0,
+        )
+
+    assert policy.calls == expected_policy_calls
+    assert len(robot_io.written) == 1
+    output = capsys.readouterr().out
+    if startup_home_hold_steps == 0:
+        assert "Timing summary: status=partial steps=1" in output
+    else:
+        assert "Startup home hold: steps=5" in output
 
 
 def test_policy_loop_accepts_unbounded_execution_until_interrupt() -> None:
@@ -662,3 +732,25 @@ def test_output_log_context_can_suppress_console(tmp_path, capsys):
     text = log_path.read_text()
     assert "file only" in text
     assert "hidden stderr" in text
+
+
+def test_default_policy_log_path_uses_bundle_checkpoint_mode_and_timestamp(tmp_path):
+    now = dt.datetime(2026, 8, 2, 14, 30, 0, 123456)
+
+    path = _default_run_policy_log_path(
+        "runtime/bundles/standing_v0227_ckpt200",
+        stable_only=True,
+        log_dir=tmp_path,
+        now=now,
+    )
+
+    assert path == tmp_path / "v0227_ckpt200_stable_20260802_143000_123456.log"
+    deployment = "deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90"
+    assert _bundle_log_tokens(deployment, stable_only=False) == (
+        "v0210",
+        "ckpt1650",
+    )
+    assert _bundle_log_tokens(deployment, stable_only=True) == (
+        "v0222",
+        "ckpt90",
+    )

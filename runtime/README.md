@@ -135,6 +135,11 @@ Flags:
 - `--dry-run`: run with mock IO (no servos/IMU/footswitches) — for smoke tests
   and safe validation on a dev machine. Never sleeps.
 - `--max-steps N` (default 500), `--log-steps N` (default 20, 0=off).
+- `--fall-tilt-deg DEG`: stop control and unload servos when body tilt exceeds
+  the limit (default 45 degrees).
+- Every run tees stdout/stderr to `_run_policy_logs/` at the repository root.
+  `--log PATH` overrides the automatic path; `--log-only PATH` also suppresses
+  console output.
 - `--velocity-cmd vx` or `--velocity-cmd vx,vy,wz` (default: bundle
   `default_velocity_cmd`, e.g. `0.13,0,0` for smoke9 straight walk).
 - `--no-realtime`: don't sleep to maintain `control_hz` (hardware only).
@@ -212,6 +217,9 @@ Notes:
 
 The loop runs for `--max-steps` control steps and then exits, disabling
 actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
+To copy the newest hardware policy log from `wrdev.local` into the local
+repository, run `./scripts/scp_from_remote.sh --latest_run_policy_log` from the
+repository root.
 
 ### Stable-only mode
 

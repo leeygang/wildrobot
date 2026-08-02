@@ -9,6 +9,7 @@
 #   ./scp_from_remote.sh [--public [IP]] <checkpoint_name>    # Copy specific checkpoint folder
 #   ./scp_from_remote.sh [--public [IP]] --logs               # List available wandb runs
 #   ./scp_from_remote.sh [--public [IP]] --run <run_name>     # Copy both checkpoint and wandb log for a run
+#   ./scp_from_remote.sh --latest_run_policy_log              # Copy latest wrdev policy log
 #
 # Options:
 #   --public         Use $LINUX_PUBLIC_IP instead of linux-pc.local
@@ -86,6 +87,9 @@ if [ "$USE_PUBLIC" = true ]; then
         echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
     fi
 else
+    if [ "${1:-}" = "--latest_run_policy_log" ]; then
+        REMOTE_HOST="wrdev.local"
+    fi
     echo -e "${YELLOW}Remote host:${NC} $REMOTE_HOST"
 fi
 
@@ -172,6 +176,27 @@ copy_file() {
         echo -e "\n${RED}✗ Transfer failed!${NC}"
         return 1
     fi
+}
+
+copy_latest_run_policy_log() {
+    REMOTE_HOST="wrdev.local"
+    local REMOTE_LOG_DIR="$REMOTE_BASE/_run_policy_logs"
+    local LOCAL_LOG_DIR="${WILDROBOT_RUN_POLICY_LOG_DIR:-_run_policy_logs}"
+    local LATEST_LOG
+
+    LATEST_LOG=$(remote_ssh \
+        "find '$REMOTE_LOG_DIR' -maxdepth 1 -type f -name '*.log' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-")
+    if [ -z "$LATEST_LOG" ]; then
+        echo -e "${RED}No wildrobot-run-policy logs found on wrdev.local:${NC} $REMOTE_LOG_DIR"
+        return 1
+    fi
+
+    mkdir -p "$LOCAL_LOG_DIR"
+    echo -e "${YELLOW}Copying latest wildrobot-run-policy log:${NC}"
+    echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$LATEST_LOG"
+    echo -e "  Local:  $LOCAL_LOG_DIR/$(basename "$LATEST_LOG")"
+    remote_scp "$REMOTE_USER@$REMOTE_HOST:$LATEST_LOG" "$LOCAL_LOG_DIR/"
+    echo -e "${GREEN}Transfer completed:${NC} $LOCAL_LOG_DIR/$(basename "$LATEST_LOG")"
 }
 
 copy_checkpoint() {
@@ -349,12 +374,13 @@ copy_run() {
 
 # Main
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--logs|--run <name>|checkpoint_name>"
+    echo "Usage: $0 <filename|--checkpoints|--latest [N]|--latest_run_policy_log|--logs|--run <name>|checkpoint_name>"
     echo ""
     echo "Options:"
     echo "  <filename>       Copy specific file or directory from remote"
     echo "  --checkpoints    List available checkpoints on remote"
     echo "  --latest [N]     Copy latest N runs (W&B log + checkpoint), default N=1"
+    echo "  --latest_run_policy_log  Copy latest policy log from wrdev.local"
     echo "  --logs           List available W&B runs on remote"
     echo "  --run <name>     Copy both checkpoint and W&B log for a run"
     echo "  <checkpoint>     Copy specific checkpoint folder by name"
@@ -364,12 +390,16 @@ if [ $# -eq 0 ]; then
     echo "  $0 --checkpoints"
     echo "  $0 --latest          # most recent run + checkpoint"
     echo "  $0 --latest 3        # 3 most recent runs + checkpoints"
+    echo "  $0 --latest_run_policy_log"
     echo "  $0 --logs"
     echo "  $0 --run run-20251228_011308-xw1fu3n6"
     exit 1
 fi
 
 case "$1" in
+    --latest_run_policy_log)
+        copy_latest_run_policy_log
+        ;;
     --checkpoints)
         list_checkpoints
         ;;

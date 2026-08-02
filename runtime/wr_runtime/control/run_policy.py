@@ -30,10 +30,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime as dt
 import faulthandler
 import itertools
 import json
 import math
+import re
 import signal
 import sys
 import time
@@ -80,6 +82,8 @@ _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 _STARTUP_POSE_BLEND_S = 2.0
 _STARTUP_POSE_HOLD_S = 5.0
+_DEFAULT_FALL_TILT_DEG = 45.0
+_RUN_POLICY_LOG_DIR = Path(__file__).resolve().parents[3] / "_run_policy_logs"
 _STANDING_LAYOUT_IDS = {
     "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
 }
@@ -169,6 +173,35 @@ def _output_log_context(log_path: Optional[str], *, mirror_console: bool):
         stderr = _LogStream(sys.stderr, log_stream, mirror_console=mirror_console)
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             yield
+
+
+def _bundle_log_tokens(bundle_path: str, *, stable_only: bool) -> tuple[str, str]:
+    stem = Path(bundle_path).expanduser().name.lower()
+    role = "stand(?:ing)?" if stable_only else "walk(?:ing)?"
+    match = re.search(rf"{role}[_-]?(v\d+)[_-](ckpt\d+)", stem)
+    if match is None:
+        match = re.search(r"(v\d+).*?(ckpt\d+)", stem)
+    if match is not None:
+        return match.group(1), match.group(2)
+
+    safe_stem = re.sub(r"[^a-z0-9]+", "-", stem).strip("-") or "bundle"
+    return safe_stem, "ckpt-unknown"
+
+
+def _default_run_policy_log_path(
+    bundle_path: str,
+    *,
+    stable_only: bool,
+    log_dir: Path | None = None,
+    now: dt.datetime | None = None,
+) -> Path:
+    version, checkpoint = _bundle_log_tokens(bundle_path, stable_only=stable_only)
+    mode = "stable" if stable_only else "walk"
+    timestamp = (now or dt.datetime.now().astimezone()).strftime(
+        "%Y%m%d_%H%M%S_%f"
+    )
+    root = _RUN_POLICY_LOG_DIR if log_dir is None else Path(log_dir)
+    return root / f"{version}_{checkpoint}_{mode}_{timestamp}.log"
 
 
 def _install_stack_dump_signal() -> None:
@@ -618,6 +651,30 @@ def _info_gyro_norm_rad_s(info: dict) -> float | None:
     if gyro.size != 3 or not np.all(np.isfinite(gyro)):
         return None
     return float(np.linalg.norm(gyro))
+
+
+def _abort_if_fallen(*, info: dict, step: int, max_tilt_deg: float) -> None:
+    tilt_deg = _info_tilt_deg(info)
+    if tilt_deg is None or tilt_deg <= float(max_tilt_deg):
+        return
+
+    signals = info.get("signals")
+    rpy = (
+        None
+        if signals is None
+        else _quat_wxyz_to_rpy_rad(getattr(signals, "quat_wxyz", []))
+    )
+    rpy_text = ""
+    if rpy is not None:
+        roll_deg, pitch_deg, yaw_deg = (math.degrees(value) for value in rpy)
+        rpy_text = (
+            f" roll={roll_deg:.1f}deg pitch={pitch_deg:.1f}deg "
+            f"yaw={yaw_deg:.1f}deg"
+        )
+    raise SystemExit(
+        f"Fall safety abort at policy step {int(step)}: tilt={tilt_deg:.1f}deg"
+        f"{rpy_text} > {float(max_tilt_deg):.1f}deg; unloading servos."
+    )
 
 
 def _format_base_orientation(signals) -> str:
@@ -1378,6 +1435,7 @@ def _run_startup_home_hold(
     confirm_before_walk: bool = False,
     confirm_imu_timeout_s: float = 3.0,
     input_fn: Callable[[str], str] | None = None,
+    fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
 ) -> None:
     """Command home before policy walking, then reset policy episode state."""
     hold_steps = max(0, int(steps))
@@ -1405,6 +1463,11 @@ def _run_startup_home_hold(
         info["timing_s"] = timing_s
         last_info = info
         hold_infos.append(info)
+        _abort_if_fallen(
+            info=info,
+            step=step,
+            max_tilt_deg=float(fall_tilt_deg),
+        )
 
         should_log = (
             step == 0
@@ -1492,6 +1555,11 @@ def _run_startup_home_hold(
             info["timing_s"] = timing_s
             last_info = info
             hold_infos.append(info)
+            _abort_if_fallen(
+                info=info,
+                step=len(hold_infos) - 1,
+                max_tilt_deg=float(fall_tilt_deg),
+            )
             if realtime:
                 remaining = ctrl_dt - (time.monotonic() - loop_start_s)
                 if remaining > 0:
@@ -1546,6 +1614,7 @@ def _run_standing_stabilization(
     stability_max_tilt_deg: float,
     confirm_before_walk: bool,
     confirm_imu_timeout_s: float,
+    fall_tilt_deg: float,
 ) -> dict:
     """Run the standing policy, optionally confirm, then verify a fresh window."""
     velocity_cmd = np.zeros(3, dtype=np.float32)
@@ -1559,6 +1628,11 @@ def _run_standing_stabilization(
             loop_start_s = time.monotonic()
             info = runner.step(velocity_cmd)
             infos.append(info)
+            _abort_if_fallen(
+                info=info,
+                step=step,
+                max_tilt_deg=float(fall_tilt_deg),
+            )
             if step == 0 or step == count - 1 or (
                 log_steps > 0 and step % log_steps == 0
             ):
@@ -1688,6 +1762,7 @@ def run_policy_loop(
     startup_confirm_before_walk: bool = False,
     startup_confirm_input_fn: Callable[[str], str] | None = None,
     startup_confirm_imu_timeout_s: float = 3.0,
+    fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
 ) -> List[dict]:
     """Run for ``max_steps`` iterations, or until interrupted when it is ``None``."""
     logs: List[dict] = []
@@ -1707,6 +1782,7 @@ def run_policy_loop(
         confirm_before_walk=bool(startup_confirm_before_walk),
         confirm_imu_timeout_s=float(startup_confirm_imu_timeout_s),
         input_fn=startup_confirm_input_fn,
+        fall_tilt_deg=float(fall_tilt_deg),
     )
     history_size = max(1, int(round(60.0 / max(float(ctrl_dt), 1e-9))))
     timing_samples = deque(maxlen=history_size) if max_steps is None else []
@@ -1749,6 +1825,11 @@ def run_policy_loop(
             servo_metrics = info.get("servo_metrics")
             if isinstance(servo_metrics, dict) and servo_metrics:
                 servo_metric_samples.append(servo_metrics)
+            _abort_if_fallen(
+                info=info,
+                step=int(step),
+                max_tilt_deg=float(fall_tilt_deg),
+            )
             is_last_step = max_steps is not None and step == int(max_steps) - 1
             if log_steps > 0 and (step % log_steps == 0 or is_last_step):
                 applied = info["applied_action"]
@@ -1772,6 +1853,9 @@ def run_policy_loop(
                     extra_parts.append(f"leg_err|max_deg={leg_err_max_deg:.1f}")
                 if foot_summary:
                     extra_parts.append(foot_summary)
+                orientation = _format_base_orientation(info["signals"])
+                if orientation:
+                    extra_parts.append(orientation)
                 if int(startup_command_ramp_steps) > 0:
                     extra_parts.append(
                         f"cmd_scale={float(info.get('command_ramp_scale', 1.0)):.3f}"
@@ -1872,7 +1956,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--log",
         type=str,
         default=None,
-        help="Write stdout/stderr to this file while still printing to the console.",
+        help=(
+            "Override the automatic _run_policy_logs path while still printing "
+            "to the console."
+        ),
     )
     log_group.add_argument(
         "--log-only",
@@ -1893,6 +1980,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=float,
         default=3.0,
         help="Hardware only: wait this long for the first valid IMU sample before starting control.",
+    )
+    parser.add_argument(
+        "--fall-tilt-deg",
+        type=float,
+        default=_DEFAULT_FALL_TILT_DEG,
+        help=(
+            "Stop policy control and unload servos when body tilt exceeds this "
+            f"angle (default: {_DEFAULT_FALL_TILT_DEG:.1f} degrees)."
+        ),
     )
     # Retain obsolete flags so existing launch commands continue to parse.
     footswitch_group = parser.add_mutually_exclusive_group()
@@ -2021,31 +2117,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    log_path = args.log if args.log is not None else args.log_only
-    if log_path is not None:
-        with _output_log_context(log_path, mirror_console=args.log is not None):
-            try:
-                return _run_policy_from_args(args)
-            except SystemExit as exc:
-                code = exc.code
-                if code is None:
-                    return 0
-                if isinstance(code, int):
-                    return int(code)
-                print(code, file=sys.stderr)
-                return 1
-            except KeyboardInterrupt:
-                print("Interrupted.", file=sys.stderr)
-                return 130
-            except BaseException:
-                traceback.print_exc()
-                return 1
+    if not math.isfinite(float(args.fall_tilt_deg)) or not (
+        0.0 < float(args.fall_tilt_deg) <= 180.0
+    ):
+        parser.error("--fall-tilt-deg must be finite and in (0, 180]")
 
-    try:
-        return _run_policy_from_args(args)
-    except KeyboardInterrupt:
-        print("Interrupted.", file=sys.stderr)
-        return 130
+    if args.log is not None:
+        log_path = Path(args.log).expanduser()
+    elif args.log_only is not None:
+        log_path = Path(args.log_only).expanduser()
+    else:
+        log_path = _default_run_policy_log_path(
+            args.bundle or "bundle",
+            stable_only=bool(args.stable_only),
+        )
+    mirror_console = args.log_only is None
+    with _output_log_context(str(log_path), mirror_console=mirror_console):
+        print(f"Policy log: {log_path}", flush=True)
+        try:
+            return _run_policy_from_args(args)
+        except SystemExit as exc:
+            code = exc.code
+            if code is None:
+                return 0
+            if isinstance(code, int):
+                return int(code)
+            print(code, file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("Interrupted.", file=sys.stderr)
+            return 130
+        except BaseException:
+            traceback.print_exc()
+            return 1
 
 
 def _load_runtime_onnx_policy(bundle: PolicyBundle) -> OnnxPolicy:
@@ -2231,6 +2335,7 @@ def _run_deployment_bundle_from_args(
         f"| walking=({walking_bundle.spec.model.obs_dim},"
         f"{walking_bundle.spec.model.action_dim}) "
         f"| stable_only={bool(args.stable_only)} "
+        f"| fall_tilt_deg={float(args.fall_tilt_deg):.1f} "
         f"| startup_pose_blend_steps={pose_blend_steps} "
         f"| startup_pose_hold_steps={pose_hold_steps}",
         flush=True,
@@ -2252,6 +2357,7 @@ def _run_deployment_bundle_from_args(
                 stability_max_tilt_deg=float(args.startup_stability_max_tilt_deg),
                 confirm_before_walk=False,
                 confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+                fall_tilt_deg=float(args.fall_tilt_deg),
             )
         if args.stable_only:
             if not args.dry_run:
@@ -2273,6 +2379,7 @@ def _run_deployment_bundle_from_args(
                     ),
                     confirm_before_walk=False,
                     confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+                    fall_tilt_deg=float(args.fall_tilt_deg),
                 )
             run_policy_loop(
                 runner=standing_runner,
@@ -2287,6 +2394,7 @@ def _run_deployment_bundle_from_args(
                 realtime=realtime,
                 actuator_names=standing_names,
                 diagnostic_log_policy=bool(args.diagnostic_log_policy),
+                fall_tilt_deg=float(args.fall_tilt_deg),
             )
         else:
             last_standing = _run_standing_stabilization(
@@ -2306,6 +2414,7 @@ def _run_deployment_bundle_from_args(
                     bool(args.confirm_before_walk) and not bool(args.dry_run)
                 ),
                 confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+                fall_tilt_deg=float(args.fall_tilt_deg),
             )
             blended_robot_io = _TargetBlendRobotIO(
                 base_robot_io,
@@ -2340,6 +2449,7 @@ def _run_deployment_bundle_from_args(
                 ),
                 startup_action_ramp_steps=blend_steps,
                 startup_stability_check=False,
+                fall_tilt_deg=float(args.fall_tilt_deg),
             )
     finally:
         base_robot_io.close()
@@ -2552,6 +2662,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| confirm_before_walk={bool(args.confirm_before_walk)} "
         f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "
         f"| startup_stability_max_tilt_deg={startup_stability_max_tilt_deg:.1f} "
+        f"| fall_tilt_deg={float(args.fall_tilt_deg):.1f} "
         f"| startup_command_ramp_steps={startup_command_ramp_steps} "
         f"| startup_action_ramp_steps={startup_action_ramp_steps}",
         flush=True,
@@ -2577,6 +2688,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_stability_max_tilt_deg=startup_stability_max_tilt_deg,
             startup_confirm_before_walk=bool(args.confirm_before_walk),
             startup_confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+            fall_tilt_deg=float(args.fall_tilt_deg),
         )
     finally:
         try:

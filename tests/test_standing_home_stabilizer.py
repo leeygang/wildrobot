@@ -133,16 +133,23 @@ def test_stable_only_hardware_runs_without_step_limit() -> None:
     ) == 500
 
 
-def test_policy_cli_handles_interrupt_without_log(monkeypatch, capsys) -> None:
+def test_policy_cli_automatically_logs_interrupt(monkeypatch, tmp_path, capsys) -> None:
     from runtime.wr_runtime.control import run_policy
 
     def _interrupt(args):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(run_policy, "_run_policy_from_args", _interrupt)
+    monkeypatch.setattr(run_policy, "_RUN_POLICY_LOG_DIR", tmp_path)
 
-    assert run_policy.main(["--bundle", "ignored"]) == 130
+    assert (
+        run_policy.main(["--bundle", "standing_v0227_ckpt200", "--stable-only"])
+        == 130
+    )
     assert "Interrupted." in capsys.readouterr().err
+    logs = list(tmp_path.glob("v0227_ckpt200_stable_*.log"))
+    assert len(logs) == 1
+    assert "Interrupted." in logs[0].read_text()
 
 
 def test_bundle_is_required_for_all_runtime_modes() -> None:
@@ -225,6 +232,7 @@ def test_startup_standing_honors_policy_diagnostics(capsys) -> None:
         stability_max_tilt_deg=10.0,
         confirm_before_walk=False,
         confirm_imu_timeout_s=1.0,
+        fall_tilt_deg=45.0,
     )
 
     output = capsys.readouterr().out
@@ -294,6 +302,7 @@ def test_startup_standing_aborts_on_first_unsafe_tilt() -> None:
             stability_max_tilt_deg=15.0,
             confirm_before_walk=False,
             confirm_imu_timeout_s=1.0,
+            fall_tilt_deg=45.0,
         )
 
     assert len(robot_io.written) == 1
