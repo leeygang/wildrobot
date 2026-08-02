@@ -741,9 +741,9 @@ def _startup_home_stability_errors(
     max_tilt_deg: float,
     max_gyro_rad_s: float,
     max_leg_error_deg: float,
-) -> tuple[List[str], List[str]]:
+) -> tuple[List[str], List[str], List[str]]:
     if not infos:
-        return ["no startup home samples were collected"], []
+        return ["no startup home samples were collected"], [], []
 
     window_steps = max(
         1,
@@ -754,6 +754,7 @@ def _startup_home_stability_errors(
     )
     window = infos[-window_steps:]
     errors: List[str] = []
+    warnings: List[str] = []
     summary: List[str] = [f"window_steps={window_steps}"]
 
     foot_rows = [
@@ -762,7 +763,9 @@ def _startup_home_stability_errors(
         if (values := _footswitch_values(info)) is not None
     ]
     if not foot_rows:
-        errors.append("footswitch samples unavailable during final startup home window")
+        warnings.append(
+            "footswitch samples unavailable during final startup home window"
+        )
     else:
         foot_matrix = np.asarray(foot_rows, dtype=np.float32)
         pressed_ratio = np.mean(foot_matrix >= 0.5, axis=0)
@@ -792,9 +795,9 @@ def _startup_home_stability_errors(
             )
         )
         if open_final:
-            errors.append(f"final footswitches open: {open_final}")
+            warnings.append(f"final footswitches open: {open_final}")
         if low_ratio:
-            errors.append(
+            warnings.append(
                 "footswitch pressed ratio below "
                 f"{float(min_footswitch_pressed_ratio):.2f}: {low_ratio}"
             )
@@ -841,7 +844,7 @@ def _startup_home_stability_errors(
                 f"{max_leg_error:.1f}deg > {float(max_leg_error_deg):.1f}deg"
             )
 
-    return errors, summary
+    return errors, warnings, summary
 
 
 def _format_lr_action_delta(
@@ -1137,7 +1140,6 @@ def _run_hardware_preflight(
     joint_min_rad: np.ndarray,
     joint_max_rad: np.ndarray,
     imu_startup_timeout_s: float,
-    require_all_footswitches: bool,
     home_tolerance_deg: float,
 ) -> None:
     """Print and validate hardware state before the policy writes commands."""
@@ -1162,7 +1164,6 @@ def _run_hardware_preflight(
     )
     _preflight_footswitches(
         robot_io=robot_io,
-        require_all_footswitches=require_all_footswitches,
         errors=errors,
         warnings=warnings,
     )
@@ -1329,7 +1330,6 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
 def _preflight_footswitches(
     *,
     robot_io,
-    require_all_footswitches: bool,
     errors: List[str],
     warnings: List[str],
 ) -> None:
@@ -1355,16 +1355,7 @@ def _preflight_footswitches(
         name for name, value in zip(_FOOT_SWITCH_LABELS, values) if value == 0
     ]
     if open_names:
-        if require_all_footswitches:
-            errors.append(
-                "footswitches open at walk start: "
-                f"{open_names}; use --allow-unpressed-footswitch for suspended tests"
-            )
-        else:
-            warnings.append(
-                "initial footswitches open at walk start: "
-                f"{open_names}; continuing because unpressed footswitches are allowed"
-            )
+        warnings.append(f"initial footswitches open at walk start: {open_names}")
 
 
 def _run_startup_home_hold(
@@ -1511,7 +1502,7 @@ def _run_startup_home_hold(
 
     print("Checking startup home stability before command.", flush=True)
     if stability_check:
-        errors, summary = _startup_home_stability_errors(
+        errors, warnings, summary = _startup_home_stability_errors(
             infos=hold_infos,
             ctrl_dt=ctrl_dt,
             leg_indices=leg_indices,
@@ -1522,6 +1513,8 @@ def _run_startup_home_hold(
             max_leg_error_deg=stability_max_leg_error_deg,
         )
         summary_text = " ".join(summary)
+        for warning in warnings:
+            print(f"  {_ANSI_YELLOW}WARNING: {warning}{_ANSI_RESET}", flush=True)
         if errors:
             print(f"Startup home stability FAILED: {summary_text}", flush=True)
             for error in errors:
@@ -1652,7 +1645,7 @@ def _run_standing_stabilization(
         infos = _run_steps(refresh_steps, label="standing_confirm")
 
     if stability_check:
-        errors, summary = _startup_home_stability_errors(
+        errors, warnings, summary = _startup_home_stability_errors(
             infos=infos,
             ctrl_dt=ctrl_dt,
             leg_indices=leg_indices,
@@ -1665,6 +1658,8 @@ def _run_standing_stabilization(
             max_leg_error_deg=_STARTUP_STABILITY_MAX_LEG_ERROR_DEG,
         )
         summary_text = " ".join(summary)
+        for warning in warnings:
+            print(f"  {_ANSI_YELLOW}WARNING: {warning}{_ANSI_RESET}", flush=True)
         if errors:
             raise SystemExit(
                 "Standing stability failed; refusing to switch to walking: "
@@ -1899,22 +1894,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=3.0,
         help="Hardware only: wait this long for the first valid IMU sample before starting control.",
     )
+    # Retain obsolete flags so existing launch commands continue to parse.
     footswitch_group = parser.add_mutually_exclusive_group()
     footswitch_group.add_argument(
         "--allow-unpressed-footswitch",
-        dest="allow_unpressed_footswitch",
         action="store_true",
-        default=True,
-        help=(
-            "Hardware preflight only: do not fail if one or more footswitches are "
-            "open (default)."
-        ),
+        help=argparse.SUPPRESS,
     )
     footswitch_group.add_argument(
         "--require-pressed-footswitch",
-        dest="allow_unpressed_footswitch",
-        action="store_false",
-        help="Hardware preflight only: fail if one or more footswitches are open.",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--preflight-home-tolerance-deg",
@@ -1964,8 +1954,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--disable-startup-stability-check",
         action="store_true",
         help=(
-            "Do not fail after startup home hold when footswitch/body stability "
-            "checks fail. Use only for suspended diagnostics."
+            "Do not fail after startup home hold when body stability checks fail. "
+            "Use only for suspended diagnostics."
         ),
     )
     parser.add_argument(
@@ -2160,9 +2150,6 @@ def _run_deployment_bundle_from_args(
                     joint_min_rad=hardware_min,
                     joint_max_rad=hardware_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
-                    require_all_footswitches=not bool(
-                        args.allow_unpressed_footswitch
-                    ),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
                 )
             except BaseException:
@@ -2481,9 +2468,6 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                     joint_min_rad=hardware_joint_min,
                     joint_max_rad=hardware_joint_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
-                    require_all_footswitches=not bool(
-                        args.allow_unpressed_footswitch
-                    ),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
                 )
             except BaseException:

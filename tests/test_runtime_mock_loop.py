@@ -356,7 +356,7 @@ def test_startup_home_hold_runs_before_policy_and_resets_state(
     assert "resetting policy state before command" in out
 
 
-def test_startup_home_hold_blocks_policy_when_final_footswitches_open(
+def test_startup_home_hold_warns_and_runs_policy_when_final_footswitches_open(
     v8_spec, runtime_policy_config, capsys
 ):
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
@@ -373,23 +373,23 @@ def test_startup_home_hold_blocks_policy_when_final_footswitches_open(
         robot_io=robot_io,
     )
 
-    with pytest.raises(SystemExit, match="Startup home stability failed"):
-        run_policy_loop(
-            runner=runner,
-            max_steps=2,
-            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
-            log_steps=1,
-            ctrl_dt=runtime_policy_config.ctrl_dt,
-            realtime=False,
-            actuator_names=list(v8_spec.robot.actuator_names),
-            startup_home_hold_steps=3,
-        )
+    run_policy_loop(
+        runner=runner,
+        max_steps=2,
+        velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+        log_steps=1,
+        ctrl_dt=runtime_policy_config.ctrl_dt,
+        realtime=False,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        startup_home_hold_steps=3,
+    )
 
-    assert policy.calls == 0
-    assert len(robot_io.written) == 3
+    assert policy.calls == 2
+    assert len(robot_io.written) == 5
     out = capsys.readouterr().out
-    assert "Startup home stability FAILED" in out
-    assert "final footswitches open" in out
+    assert "Startup home stability OK" in out
+    assert "\033[33mWARNING: final footswitches open" in out
+    assert "\033[33mWARNING: footswitch pressed ratio below 0.90" in out
     assert "right_toe" in out
     assert "right_heel" in out
 

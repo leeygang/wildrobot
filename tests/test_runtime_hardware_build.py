@@ -1277,7 +1277,6 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
         joint_min_rad=np.array([-1.0, -1.0], dtype=np.float32),
         joint_max_rad=np.array([1.0, 1.0], dtype=np.float32),
         imu_startup_timeout_s=0.1,
-        require_all_footswitches=True,
         home_tolerance_deg=25.0,
     )
 
@@ -1292,7 +1291,7 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
     assert "Hardware preflight OK." in out
 
 
-def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
+def test_hardware_preflight_warns_on_open_footswitch(capsys) -> None:
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
@@ -1329,24 +1328,23 @@ def test_hardware_preflight_fails_on_open_footswitch(capsys) -> None:
         def wait_for_valid_imu_sample(self, *, timeout_s):
             self._last_fresh_imu_sample = sample
 
-    with pytest.raises(SystemExit, match="right_heel"):
-        run_policy._run_hardware_preflight(
-            robot_io=_FakeRobotIO(),
-            actuator_names=["left_hip_pitch"],
-            home_q_rad=np.array([0.0], dtype=np.float32),
-            joint_min_rad=np.array([-1.0], dtype=np.float32),
-            joint_max_rad=np.array([1.0], dtype=np.float32),
-            imu_startup_timeout_s=0.1,
-            require_all_footswitches=True,
-            home_tolerance_deg=25.0,
-        )
+    run_policy._run_hardware_preflight(
+        robot_io=_FakeRobotIO(),
+        actuator_names=["left_hip_pitch"],
+        home_q_rad=np.array([0.0], dtype=np.float32),
+        joint_min_rad=np.array([-1.0], dtype=np.float32),
+        joint_max_rad=np.array([1.0], dtype=np.float32),
+        imu_startup_timeout_s=0.1,
+        home_tolerance_deg=25.0,
+    )
 
     out = capsys.readouterr().out
     assert "right_heel=0" in out
-    assert "footswitches open at walk start" in out
+    assert "\033[33mWARNING: initial footswitches open at walk start" in out
+    assert "Hardware preflight OK." in out
 
 
-def test_hardware_preflight_warns_on_open_footswitch_when_allowed(capsys) -> None:
+def test_hardware_preflight_fails_on_footswitch_read_failure(capsys) -> None:
     from wr_runtime.control import run_policy
 
     sample = ImuSample(
@@ -1367,7 +1365,7 @@ def test_hardware_preflight_warns_on_open_footswitch_when_allowed(capsys) -> Non
 
     class _FakeFootSwitches:
         def read(self):
-            return SimpleNamespace(switches=[True, True, False, True])
+            raise RuntimeError("GPIO unavailable")
 
     class _FakeRobotIO:
         actuators = _FakeActuators()
@@ -1383,21 +1381,21 @@ def test_hardware_preflight_warns_on_open_footswitch_when_allowed(capsys) -> Non
         def wait_for_valid_imu_sample(self, *, timeout_s):
             self._last_fresh_imu_sample = sample
 
-    run_policy._run_hardware_preflight(
-        robot_io=_FakeRobotIO(),
-        actuator_names=["left_hip_pitch"],
-        home_q_rad=np.array([0.0], dtype=np.float32),
-        joint_min_rad=np.array([-1.0], dtype=np.float32),
-        joint_max_rad=np.array([1.0], dtype=np.float32),
-        imu_startup_timeout_s=0.1,
-        require_all_footswitches=False,
-        home_tolerance_deg=25.0,
-    )
+    with pytest.raises(SystemExit, match="GPIO unavailable"):
+        run_policy._run_hardware_preflight(
+            robot_io=_FakeRobotIO(),
+            actuator_names=["left_hip_pitch"],
+            home_q_rad=np.array([0.0], dtype=np.float32),
+            joint_min_rad=np.array([-1.0], dtype=np.float32),
+            joint_max_rad=np.array([1.0], dtype=np.float32),
+            imu_startup_timeout_s=0.1,
+            home_tolerance_deg=25.0,
+        )
 
     out = capsys.readouterr().out
-    assert "right_toe=0" in out
-    assert "\033[33mWARNING: initial footswitches open at walk start" in out
-    assert "Hardware preflight OK." in out
+    assert "Footswitches: ERROR" in out
+    assert "GPIO unavailable" in out
+    assert "Hardware preflight FAILED" in out
 
 
 def test_hardware_preflight_warns_on_initial_servo_out_of_range(capsys) -> None:
@@ -1444,7 +1442,6 @@ def test_hardware_preflight_warns_on_initial_servo_out_of_range(capsys) -> None:
         joint_min_rad=np.array([-1.0], dtype=np.float32),
         joint_max_rad=np.array([1.0], dtype=np.float32),
         imu_startup_timeout_s=0.1,
-        require_all_footswitches=True,
         home_tolerance_deg=25.0,
     )
 
