@@ -1,0 +1,210 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 2,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 59,
+    "action_dim": 17
+  },
+  "robot": {
+    "robot_name": "WildRobot",
+    "actuator_names": [
+      "waist_yaw",
+      "left_shoulder_pitch",
+      "left_shoulder_roll",
+      "left_elbow_pitch",
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "left_ankle_roll",
+      "right_shoulder_pitch",
+      "right_shoulder_roll",
+      "right_elbow_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "right_ankle_roll"
+    ],
+    "joints": {
+      "waist_yaw": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 3.141592653589793,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_roll": {
+        "range_min_rad": -3.0543261909900767,
+        "range_max_rad": 0.4363323129985824,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.17453292519943295,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_pitch": {
+        "range_min_rad": -3.141592653589793,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_roll": {
+        "range_min_rad": -0.4363323129985824,
+        "range_max_rad": 3.0543261909900767,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.17453292519943295,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      }
+    },
+    "home_ctrl_rad": [
+      0.00329397,
+      -0.000935575,
+      0.00376767,
+      0.0,
+      0.221289,
+      -0.000686951,
+      0.488909,
+      -0.248439,
+      0.000485132,
+      0.00018508,
+      0.0192083,
+      0.0,
+      -0.221849,
+      -0.000561528,
+      0.490533,
+      -0.24789,
+      -0.00170573
+    ]
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v9_standing",
+    "layout": [
+      {
+        "name": "gravity_local",
+        "size": 3,
+        "frame": "local",
+        "units": "unit_vector"
+      },
+      {
+        "name": "angvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "rad_s"
+      },
+      {
+        "name": "joint_pos_normalized",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "joint_vel_normalized",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "prev_action",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "velocity_cmd",
+        "size": 1,
+        "frame": null,
+        "units": "m_s"
+      },
+      {
+        "name": "padding",
+        "size": 1,
+        "frame": null,
+        "units": "unused"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "lowpass_v1",
+    "postprocess_params": {
+      "alpha": 0.6
+    },
+    "mapping_id": "pos_target_home_025_v1"
+  },
+  "provenance": {
+    "created_at": "2026-08-02T16:12:28.289571+00:00",
+    "training_config": "/Users/ygli/projects/wildrobot/training/checkpoints/ppo_standing_stabilizer_v0227_v00227_20260801_110430-fli6735k/training_config.yaml",
+    "source_checkpoint": {
+      "format": "pkl",
+      "path": "/Users/ygli/projects/wildrobot/training/checkpoints/ppo_standing_stabilizer_v0227_v00227_20260801_110430-fli6735k/checkpoint_200_26214400.pkl"
+    },
+    "robot_config": "/Users/ygli/projects/wildrobot/assets/v2/mujoco_robot_config.json"
+  }
+}
