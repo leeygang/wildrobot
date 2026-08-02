@@ -19,6 +19,7 @@ from training.eval.visualize_policy import (
     _network_activation_name,
     _resolve_log_path,
     _validate_user_fixed_velocity_cmd,
+    parse_args,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.sim_adapter.mujoco_signals import MujocoSignalsAdapter
@@ -235,6 +236,19 @@ def test_resolve_log_path_with_directory_used_as_is() -> None:
     assert p == Path("/var/tmp/custom.log")
     rel = _resolve_log_path("subdir/x.log")
     assert rel == Path("subdir/x.log")
+
+
+@pytest.mark.parametrize("option", ["--episode", "--num-episodes"])
+def test_visualizer_episode_limit_aliases(option: str) -> None:
+    args = parse_args([option, "5"])
+
+    assert args.num_episodes == 5
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_visualizer_rejects_nonpositive_episode_limit(value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--episode", value])
 
 
 def test_make_tracking_camera_tracks_floating_base() -> None:

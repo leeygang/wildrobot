@@ -431,7 +431,17 @@ def _is_terminated_from_pose(
     return bool(terminated or truncated)
 
 
-def parse_args():
+def _positive_int(value: str, label: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{label} must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"{label} must be greater than zero")
+    return parsed
+
+
+def parse_args(argv: list[str] | None = None):
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="Visualize trained WildRobot policy",
@@ -526,10 +536,15 @@ def parse_args():
         help="Run without viewer (for recording or batch evaluation)",
     )
     parser.add_argument(
+        "--episode",
         "--num-episodes",
-        type=int,
+        dest="num_episodes",
+        type=lambda value: _positive_int(value, "episode count"),
         default=None,
-        help="Number of episodes to run (headless mode). Default: 1 for headless, unlimited for viewer",
+        help=(
+            "Stop after this many completed episodes in headless or interactive "
+            "mode. Default: 1 for headless, unlimited for viewer"
+        ),
     )
     parser.add_argument(
         "--log",
@@ -542,7 +557,7 @@ def parse_args():
             "placed under /tmp/; a path with a directory is used as-is."
         ),
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def resolve_checkpoint_path(checkpoint_arg: str | None) -> Path | None:
