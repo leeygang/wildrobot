@@ -46,6 +46,7 @@ def _home_command(
     config: Path,
     bundle: Path,
     seconds: float,
+    max_tilt_deg: float,
 ) -> list[str]:
     return [
         sys.executable,
@@ -66,7 +67,9 @@ def _home_command(
         "--home-after-s",
         "2",
         "--home-move-ms",
-        "800",
+        "2000",
+        "--max-tilt-deg",
+        str(max_tilt_deg),
     ]
 
 
@@ -254,6 +257,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Diagnostic policy cutoff in degrees (default: 20).",
     )
     parser.add_argument(
+        "--home-max-tilt-deg",
+        type=float,
+        default=15.0,
+        help="Home-phase tilt cutoff in degrees (default: 15).",
+    )
+    parser.add_argument(
         "--log-steps", type=int, default=5, help="Policy log interval (default: 5)."
     )
     parser.add_argument("--bundle", type=Path, default=_DEFAULT_BUNDLE)
@@ -266,6 +275,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--home-seconds and --policy-seconds must be positive")
     if not 0.0 < args.fall_tilt_deg <= 180.0:
         parser.error("--fall-tilt-deg must be in (0, 180]")
+    if not 0.0 < args.home_max_tilt_deg <= 180.0:
+        parser.error("--home-max-tilt-deg must be in (0, 180]")
     if args.log_steps <= 0:
         parser.error("--log-steps must be positive")
     return args
@@ -291,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"trials={args.trials} home_seconds={args.home_seconds:.1f} "
         f"policy_seconds={args.policy_seconds:.1f} "
+        f"home_max_tilt_deg={args.home_max_tilt_deg:.1f} "
         f"fall_tilt_deg={args.fall_tilt_deg:.1f}",
         flush=True,
     )
@@ -313,7 +325,12 @@ def main(argv: list[str] | None = None) -> int:
             home_log = log_dir / f"{prefix}_home_trial{trial_label}_{_timestamp()}.log"
             print(f"Home log: {home_log}", flush=True)
             home_result = _run_streaming(
-                _home_command(config=config, bundle=bundle, seconds=args.home_seconds),
+                _home_command(
+                    config=config,
+                    bundle=bundle,
+                    seconds=args.home_seconds,
+                    max_tilt_deg=args.home_max_tilt_deg,
+                ),
                 output_log=home_log,
             )
             if home_result.returncode != 0:

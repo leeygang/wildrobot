@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 
@@ -122,3 +123,14 @@ def test_home_command_thread_repeats_until_stopped() -> None:
     assert controller.calls[0] == ([(1, 500)], 20)
     assert stats["sent"] == len(controller.calls)
     assert stats["error"] is None
+
+
+def test_quat_tilt_reports_body_inclination() -> None:
+    symbols = _probe_symbols()
+    half_angle = np.deg2rad(30.0) / 2.0
+    quat = np.array([np.cos(half_angle), 0.0, np.sin(half_angle), 0.0])
+
+    tilt_rad = symbols["_quat_tilt_rad"](quat)
+
+    assert tilt_rad is not None
+    assert np.rad2deg(tilt_rad) == pytest.approx(30.0)

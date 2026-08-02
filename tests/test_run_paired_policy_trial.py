@@ -33,7 +33,12 @@ def test_paired_trial_commands_use_runtime_frame_cutoff_and_diagnostics(
     config = tmp_path / "hardware_config.json"
     policy_log = tmp_path / "v0227_ckpt200_policy_trial01.log"
 
-    home = module._home_command(config=config, bundle=bundle, seconds=60.0)
+    home = module._home_command(
+        config=config,
+        bundle=bundle,
+        seconds=60.0,
+        max_tilt_deg=15.0,
+    )
     policy = module._policy_command(
         config=config,
         bundle=bundle,
@@ -45,7 +50,8 @@ def test_paired_trial_commands_use_runtime_frame_cutoff_and_diagnostics(
     assert module._bundle_log_prefix(bundle) == "v0227_ckpt200"
     assert "--runtime-frame" in home
     assert "--background" in home
-    assert home[home.index("--home-move-ms") + 1] == "800"
+    assert home[home.index("--home-move-ms") + 1] == "2000"
+    assert home[home.index("--max-tilt-deg") + 1] == "15.0"
     assert "--stable-only" in policy
     assert "--diagnostic-log-policy" in policy
     assert policy[policy.index("--fall-tilt-deg") + 1] == "20.0"

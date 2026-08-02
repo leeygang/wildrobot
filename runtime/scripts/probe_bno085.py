@@ -49,6 +49,18 @@ def _quat_angle_delta_rad(q0: np.ndarray, q1: np.ndarray) -> float:
     return float(2.0 * np.arccos(dot))
 
 
+def _quat_tilt_rad(quat_wxyz: np.ndarray) -> float | None:
+    quat = np.asarray(quat_wxyz, dtype=np.float32).reshape(-1)
+    if quat.size != 4 or not np.all(np.isfinite(quat)):
+        return None
+    norm = float(np.linalg.norm(quat))
+    if norm < 1e-6:
+        return None
+    _, x, y, _ = (quat / norm).tolist()
+    body_z_world_z = 1.0 - 2.0 * (x * x + y * y)
+    return float(np.arccos(np.clip(body_z_world_z, -1.0, 1.0)))
+
+
 def _default_config_path() -> Path:
     return _RUNTIME_ROOT / "configs" / "hardware_config.json"
 
@@ -341,11 +353,25 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--max-tilt-deg",
+        type=float,
+        default=None,
+        help=(
+            "Stop the probe and unload home servos when a fresh IMU sample "
+            "exceeds this tilt; disabled by default."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Show verbose Adafruit BNO08x packet debug output.",
     )
     args = parser.parse_args()
+    if args.max_tilt_deg is not None and not (
+        np.isfinite(float(args.max_tilt_deg))
+        and 0.0 < float(args.max_tilt_deg) <= 180.0
+    ):
+        parser.error("--max-tilt-deg must be in (0, 180]")
 
     cfg = WrRuntimeConfig.load(args.config)
     transport = str(args.transport or cfg.bno085.transport).strip().lower()
@@ -390,7 +416,7 @@ def main() -> int:
         f"axis_map={axis_map} polling_mode={polling_mode} sampling_hz={sampling_hz} "
         f"enable_rotation_vector={enable_rotation_vector} i2c_frequency_hz={i2c_frequency_hz} "
         f"samples={total} dt={dt_s:.3f} hold_home={hold_home_requested} "
-        f"repeat_home_hz={repeat_home_hz:.1f}",
+        f"repeat_home_hz={repeat_home_hz:.1f} max_tilt_deg={args.max_tilt_deg}",
         flush=True,
     )
     print("Rotate the robot while samples print. Quat/gyro should change during motion.", flush=True)
@@ -472,19 +498,10 @@ def main() -> int:
     max_read_s = 0.0
     slow_read_count = 0
     very_slow_read_count = 0
+    tilt_safety_abort: tuple[int, float] | None = None
+    safety_unload_ok: bool | None = None
     last_ts = None
     start_s = time.monotonic()
-    if home_controller is not None:
-        home_stop_event = threading.Event()
-        home_thread, home_stats = _start_home_command_thread(
-            home_controller,
-            home_commands,
-            start_s=start_s,
-            home_after_s=home_after_s,
-            home_move_ms=home_move_ms,
-            repeat_home_hz=repeat_home_hz,
-            stop_event=home_stop_event,
-        )
 
     try:
         for i in range(total):
@@ -502,6 +519,39 @@ def main() -> int:
                 valid_count += 1
             if diag.get("payload_status") == "stale" or not sample_valid or not sample_fresh:
                 stale_count += 1
+            tilt_rad = _quat_tilt_rad(q)
+            if (
+                args.max_tilt_deg is not None
+                and sample_valid
+                and sample_fresh
+                and tilt_rad is not None
+                and float(np.degrees(tilt_rad)) > float(args.max_tilt_deg)
+            ):
+                tilt_deg = float(np.degrees(tilt_rad))
+                tilt_safety_abort = (i, tilt_deg)
+                print(
+                    f"Safety abort: IMU tilt={tilt_deg:.1f}deg exceeds "
+                    f"max_tilt_deg={float(args.max_tilt_deg):.1f} at sample {i}; "
+                    "cancelling home command and unloading servos.",
+                    flush=True,
+                )
+                break
+            if (
+                home_controller is not None
+                and home_thread is None
+                and sample_valid
+                and sample_fresh
+            ):
+                home_stop_event = threading.Event()
+                home_thread, home_stats = _start_home_command_thread(
+                    home_controller,
+                    home_commands,
+                    start_s=start_s,
+                    home_after_s=home_after_s,
+                    home_move_ms=home_move_ms,
+                    repeat_home_hz=repeat_home_hz,
+                    stop_event=home_stop_event,
+                )
             if prev_q is not None and not np.array_equal(q, prev_q):
                 quat_changes += 1
             if prev_g is not None and not np.array_equal(g, prev_g):
@@ -555,6 +605,19 @@ def main() -> int:
             home_stop_event.set()
         if home_thread is not None:
             home_thread.join(timeout=1.0)
+        if tilt_safety_abort is not None and home_controller is not None:
+            try:
+                safety_unload_ok = bool(
+                    home_controller.unload_servos(
+                        [int(servo_id) for servo_id, _ in home_commands]
+                    )
+                )
+            except Exception as exc:
+                safety_unload_ok = False
+                print(
+                    f"ERROR: tilt safety unload failed: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
         imu.close()
         if home_controller is not None:
             home_controller.close()
@@ -570,6 +633,10 @@ def main() -> int:
         print(f"  repeat_home_hz: {repeat_home_hz:.1f}", flush=True)
         if home_stats is not None and home_stats.get("error") is not None:
             print(f"  home_command_error: {home_stats['error']}", flush=True)
+    if tilt_safety_abort is not None:
+        print(f"  tilt_safety_abort_sample: {tilt_safety_abort[0]}", flush=True)
+        print(f"  tilt_safety_abort_deg: {tilt_safety_abort[1]:.3f}", flush=True)
+        print(f"  tilt_safety_unload_ok: {safety_unload_ok}", flush=True)
     print(f"  fresh_valid_samples: {valid_count}/{total}", flush=True)
     print(f"  nonfresh_or_invalid_samples: {stale_count}/{total}", flush=True)
     print(f"  timestamp_changes: {timestamp_changes}", flush=True)
@@ -602,6 +669,9 @@ def main() -> int:
     if home_stats is not None and home_stats.get("error") is not None:
         print(f"Result: Home command loop failed: {home_stats['error']}", flush=True)
         return 5
+    if tilt_safety_abort is not None:
+        print("Result: IMU tilt safety abort.", flush=True)
+        return 6
 
     valid_ratio = valid_count / float(total)
     if valid_count == 0 or timestamp_changes == 0:

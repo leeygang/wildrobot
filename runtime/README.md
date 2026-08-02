@@ -252,8 +252,10 @@ uv run python scripts/run_paired_policy_trial.py
 ```
 
 The runner prompts before each of three trials, writes paired logs under
-`_run_policy_logs`, stops policy control after 60 seconds or at 20 degrees of
-tilt, and preserves the loaded home pose only during the confirmed handoff.
+`_run_policy_logs`, rejects home startup or motion above 15 degrees, and stops
+policy control after 60 seconds or at 20 degrees of tilt. Its two-second home
+transition followed by a hold matches ToddlerBot's initial-stand preparation,
+and it preserves the loaded home pose only during the confirmed handoff.
 
 If you see servo cache initialization or position-read failures:
 - Confirm the USB TTL debug board is powered and servos have external power.
