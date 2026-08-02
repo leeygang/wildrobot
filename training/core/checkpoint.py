@@ -125,6 +125,9 @@ def save_checkpoint_from_cpu(
             "forward_velocity": float(env_metrics["forward_velocity"]),
             "robot_height": float(env_metrics["height"]),
             "episode_length": float(metrics.episode_length),
+            "debug/episode_completion_count": float(
+                env_metrics.get("debug/episode_completion_count", 0.0)
+            ),
             "policy_loss": float(metrics.policy_loss),
             "value_loss": float(metrics.value_loss),
             "tracking/cmd_vs_achieved_forward": cmd_err,

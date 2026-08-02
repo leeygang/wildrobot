@@ -8,6 +8,96 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.7-planner-free-stabilization-result] - 2026-08-01: checkpoint 200 is the bounded-envelope candidate
+
+### Training result
+
+The planner-free standing run is
+`training/wandb/offline-run-20260801_110425-fli6735k`; checkpoints and its
+saved configuration are under
+`training/checkpoints/ppo_standing_stabilizer_v0227_v00227_20260801_110430-fli6735k`.
+It completed 200 iterations and 26,214,400 environment steps in 9.59 hours.
+The actor contract is `wr_obs_v9_standing` with 59 observations and 17
+actions. The v0.22.6 recovery phase/foot/foothold command is absent.
+
+| Train-rollout metric | Iteration 1 | Iteration 200 |
+|---|---:|---:|
+| reward per step | 0.0792 | 0.1337 |
+| body orientation error | 7.76 deg | 5.35 deg |
+| roll/pitch angular-rate error | 0.583 rad/s | 0.245 rad/s |
+| both feet loaded | 0.8588 | 0.9901 |
+| normalized load imbalance | 0.3920 | 0.2319 |
+| applied action maximum | 0.4058 | 0.3658 |
+| torque saturation fraction | 0.000229 | 0 |
+
+Late PPO updates remained controlled (`approx_kl=0.0081`,
+`clip_fraction=0.105` at iteration 200). Touchdown rates and measured step
+lengths converged toward zero while support improved, so this run learned a
+planted-foot ankle/hip/squat response rather than a stepping strategy. That is
+the intended first response for the bounded disturbance envelope; it is not
+evidence of recovery from a capture-point state outside the support region.
+
+### Broad reset screen
+
+The automatic 64-environment deterministic screen rejected all five candidates
+that it evaluated under the full training reset range (up to about 10 deg
+pitch, 8 deg roll, and 0.6 rad/s per roll/pitch axis). Checkpoint 170 was the
+strongest screened candidate but reached 26.74 deg peak tilt and 15.64 deg
+worst final tilt. Its action and torque saturation gates passed and both-feet
+support was 0.9985, so the failure is a recovery-boundary failure, not actuator
+saturation or loss of contact.
+
+Checkpoint 200 was incorrectly omitted from that top-K screen. A 128-step
+training window with no episode boundary exported `episode_length=0`; the
+standing ranker interpreted that sentinel as an actual zero-length failure even
+though standing episodes last 1,000 steps. The ranker now logs an explicit
+`debug/episode_completion_count`, treats historical zero-without-count values
+as missing, and ranks standing candidates only by support, load balance, and
+reward. Re-ranking the actual saved checkpoints puts checkpoint 200 first,
+followed by 190 and 170. Survival remains an authoritative deterministic
+post-training gate.
+
+### Bounded stabilization screen
+
+Checkpoint 200 was rerun at the exact training commit before the native-17D
+merge, using 16 paired clean environments: maximum initial tilt 4 deg, angular
+rate 0.35 rad/s, foot stagger +/-0.04 m, and a continuous 0.5 s final gate of
+tilt <=3 deg, angular rate <=0.1 rad/s, maximum/RMS joint error <=8/4 deg, and
+both feet loaded.
+
+| Metric | Checkpoint 200 | Home hold |
+|---|---:|---:|
+| sustained pass | 16 / 16 | 16 / 16 |
+| falls | 0 / 16 | 0 / 16 |
+| mean / p95 settle time | 0.404 / 0.615 s | 1.275 / 2.115 s |
+| maximum peak tilt | 5.12 deg | 8.31 deg |
+| maximum final tilt | 1.56 deg | 2.90 deg |
+| maximum final angular rate | 0.0127 rad/s | 0.0026 rad/s |
+| maximum final joint error | 4.09 deg | 1.84 deg |
+| mean both-feet-loaded fraction | 0.9984 | 0.9988 |
+
+The policy reduced paired peak tilt in 15/16 environments and settled about
+three times faster than home hold. This reverses v0.22.6's persistent-motion
+failure and establishes checkpoint 200 as the next candidate. It is not yet a
+promotion result: 16/16 has only an 80.6% Wilson lower bound, configured pushes
+were not included, and the result predates the native-17D model merge.
+
+The native-17D merge added required joint-feedback reset RNG state but the
+standing recovery-grid helper did not forward it, breaking both recovery-grid
+and sustained-stabilization evaluation. The helper now derives and passes an
+independent `joint_feedback_rng`; regression coverage constructs the prescribed
+reset through the native-17D environment.
+
+**Decision:** do not retrain or deploy yet. First run checkpoint 200 through the
+128-environment native-17D clean-and-push sustained gate and inspect the hardest
+responses visually. ToddlerBot has no dedicated standing-recovery task and is
+therefore not used as the behavioral promotion baseline. The planted-versus-step
+interpretation follows Hof et al., *The condition for dynamic stability*
+(Journal of Biomechanics, 2005), and Pratt et al., *Capture Point: A Step toward
+Humanoid Push Recovery* (Humanoids, 2006).
+
+---
+
 ## [native-17d-policy-runtime] - 2026-08-01: remove wrist compatibility contracts
 
 Merged `17d_walk_policy` into the current wxyz/standing-recovery mainline and

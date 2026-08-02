@@ -853,6 +853,7 @@ def start_training(
                 "episode_reward",
                 "forward_velocity",
                 "episode_length",
+                "debug/episode_completion_count",
                 "tracking/cmd_vs_achieved_forward",
                 "tracking/step_length_touchdown_event_m",
                 "tracking/forward_velocity_cmd_ratio",
@@ -1380,6 +1381,9 @@ def start_training(
                                 "cmd_vs_achieved_forward": candidate.train_cmd_err,
                                 "step_length_touchdown_event_m": candidate.train_step_length,
                                 "episode_length": candidate.train_episode_length,
+                                "episode_completion_count": (
+                                    candidate.train_episode_completion_count
+                                ),
                                 "forward_velocity_cmd_ratio": candidate.train_cmd_ratio,
                                 "both_loaded": candidate.train_both_loaded,
                                 "load_imbalance": candidate.train_load_imbalance,

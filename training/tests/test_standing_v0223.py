@@ -311,6 +311,70 @@ def test_v0223_checkpoint_ranking_uses_standing_support_metrics() -> None:
     assert ranked[0].train_both_loaded == 0.98
 
 
+def test_standing_ranking_does_not_treat_no_completion_as_zero_length() -> None:
+    from training.core.post_training_eval import (
+        CheckpointMetricCandidate,
+        rank_checkpoint_candidates,
+    )
+
+    candidates = [
+        CheckpointMetricCandidate(
+            checkpoint_path="latest_no_boundary.pkl",
+            iteration=200,
+            total_steps=2000,
+            metrics={
+                "episode_reward": 300.0,
+                "episode_length": 0.0,
+                "debug/episode_completion_count": 0.0,
+                "support/both_loaded": 0.99,
+                "support/load_imbalance": 0.05,
+            },
+        ),
+        CheckpointMetricCandidate(
+            checkpoint_path="older_completed.pkl",
+            iteration=170,
+            total_steps=1700,
+            metrics={
+                "episode_reward": 300.0,
+                "episode_length": 1000.0,
+                "debug/episode_completion_count": 4.0,
+                "support/both_loaded": 0.95,
+                "support/load_imbalance": 0.10,
+            },
+        ),
+        # Historical logs do not contain the explicit completion count.
+        CheckpointMetricCandidate(
+            checkpoint_path="legacy_no_boundary.pkl",
+            iteration=190,
+            total_steps=1900,
+            metrics={
+                "episode_reward": 250.0,
+                "episode_length": 0.0,
+                "support/both_loaded": 0.98,
+                "support/load_imbalance": 0.08,
+            },
+        ),
+    ]
+
+    ranked, used_filter_fallback = rank_checkpoint_candidates(
+        candidates,
+        top_k=3,
+        task="standing",
+        episode_length_target=1000,
+    )
+
+    assert used_filter_fallback is False
+    assert ranked[0].checkpoint_path == "latest_no_boundary.pkl"
+    assert ranked[0].train_episode_length is None
+    assert ranked[0].train_episode_completion_count == 0.0
+    legacy = next(
+        candidate
+        for candidate in ranked
+        if candidate.checkpoint_path == "legacy_no_boundary.pkl"
+    )
+    assert legacy.train_episode_length is None
+
+
 def test_v0223_support_metrics_are_registered() -> None:
     from training.core.metrics_registry import METRIC_NAMES
 
@@ -346,6 +410,7 @@ def test_standing_support_metrics_are_saved_in_checkpoint(tmp_path) -> None:
             "support/right_loaded": 0.98,
             "support/both_loaded": 0.97,
             "support/load_imbalance": 0.12,
+            "debug/episode_completion_count": 4.0,
         },
     )
 
@@ -364,3 +429,4 @@ def test_standing_support_metrics_are_saved_in_checkpoint(tmp_path) -> None:
     assert saved_metrics["support/right_loaded"] == 0.98
     assert saved_metrics["support/both_loaded"] == 0.97
     assert saved_metrics["support/load_imbalance"] == 0.12
+    assert saved_metrics["debug/episode_completion_count"] == 4.0

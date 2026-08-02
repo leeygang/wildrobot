@@ -39,6 +39,7 @@ class RankedCheckpointCandidate:
     filter_fail_reasons: tuple[str, ...]
     train_both_loaded: Optional[float] = None
     train_load_imbalance: Optional[float] = None
+    train_episode_completion_count: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -322,16 +323,10 @@ def _train_walking_score(
 
 
 def _train_standing_filter_failures(
-    episode_length: Optional[float],
     both_loaded: Optional[float],
     load_imbalance: Optional[float],
-    *,
-    episode_length_target: int,
 ) -> list[str]:
     failures: list[str] = []
-    episode_floor = 0.95 * float(episode_length_target)
-    if episode_length is not None and episode_length < episode_floor:
-        failures.append(f"episode_length<{episode_floor:.0f}")
     if both_loaded is not None and both_loaded < STANDING_SUPPORT_RATIO_MIN:
         failures.append(f"both_loaded<{STANDING_SUPPORT_RATIO_MIN:.2f}")
     if (
@@ -343,17 +338,14 @@ def _train_standing_filter_failures(
 
 
 def _train_standing_score(
-    episode_length: Optional[float],
     both_loaded: Optional[float],
     load_imbalance: Optional[float],
     reward: Optional[float],
-    *,
-    episode_length_target: int,
 ) -> tuple[float, bool]:
     reward_tiebreak = 0.05 * math.tanh((reward or 0.0) / 100.0)
     rich_count = sum(
         metric is not None
-        for metric in (episode_length, both_loaded, load_imbalance)
+        for metric in (both_loaded, load_imbalance)
     )
     if rich_count == 0:
         return reward_tiebreak, True
@@ -368,12 +360,7 @@ def _train_standing_score(
         )
     )
     score = (
-        _norm_non_negative(
-            episode_length,
-            ref=float(episode_length_target),
-            cap=1.0,
-        )
-        + _norm_non_negative(both_loaded, ref=1.0, cap=1.0)
+        _norm_non_negative(both_loaded, ref=1.0, cap=1.0)
         + balance_score
         + reward_tiebreak
     )
@@ -401,27 +388,39 @@ def rank_checkpoint_candidates(
         cmd_err = _metric(metrics, "tracking/cmd_vs_achieved_forward")
         step_length = _metric(metrics, "tracking/step_length_touchdown_event_m")
         episode_length = _metric(metrics, "episode_length")
+        episode_completion_count = _metric(
+            metrics, "debug/episode_completion_count"
+        )
         cmd_ratio = _metric(metrics, "tracking/forward_velocity_cmd_ratio")
         both_loaded = _metric(metrics, "support/both_loaded")
         load_imbalance = _metric(metrics, "support/load_imbalance")
 
         if task == "standing":
+            # Train rollouts are shorter than standing episodes. No completion
+            # is therefore common and independent of policy quality. Historical
+            # logs lack the explicit count but use the impossible sentinel
+            # episode_length=0 for the same condition.
+            if (
+                episode_completion_count is not None
+                and episode_completion_count <= 0.0
+            ) or (
+                episode_completion_count is None
+                and episode_length is not None
+                and episode_length <= 0.0
+            ):
+                episode_length = None
             failures = _train_standing_filter_failures(
-                episode_length=episode_length,
                 both_loaded=both_loaded,
                 load_imbalance=load_imbalance,
-                episode_length_target=episode_length_target,
             )
             score, used_reward_fallback = _train_standing_score(
-                episode_length=episode_length,
                 both_loaded=both_loaded,
                 load_imbalance=load_imbalance,
                 reward=reward,
-                episode_length_target=episode_length_target,
             )
             rich_metric_count = sum(
                 metric is not None
-                for metric in (episode_length, both_loaded, load_imbalance)
+                for metric in (both_loaded, load_imbalance)
             )
         else:
             failures = _train_candidate_filter_failures(
@@ -467,6 +466,7 @@ def rank_checkpoint_candidates(
                 filter_fail_reasons=tuple(failures),
                 train_both_loaded=both_loaded,
                 train_load_imbalance=load_imbalance,
+                train_episode_completion_count=episode_completion_count,
             )
         )
 

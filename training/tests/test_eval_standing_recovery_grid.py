@@ -4,6 +4,7 @@ import numpy as np
 
 from control.kinematics.leg_ik import LegIkConfig, forward_leg_sagittal
 from training.eval.eval_standing_recovery_grid import (
+    _apply_recovery_condition,
     _conditions,
     _parse_csv_floats,
     _stagger_leg_pitch_values,
@@ -68,3 +69,31 @@ def test_summarize_rollout_marks_corrective_forward_response() -> None:
 def test_wilson_interval_contains_observed_fraction() -> None:
     low, high = _wilson_interval(8, 10)
     assert low < 0.8 < high
+
+
+def test_apply_recovery_condition_supports_native_joint_feedback_reset() -> None:
+    import jax
+
+    from assets.robot_config import load_robot_config
+    from training.configs.training_config import load_training_config
+    from training.envs.wildrobot_env import WildRobotEnv
+
+    cfg = load_training_config("training/configs/ppo_standing_stabilizer_v0227.yaml")
+    load_robot_config(cfg.env.robot_config_path)
+    env = WildRobotEnv(config=cfg)
+    base = env.reset_for_eval(
+        jax.random.PRNGKey(7),
+        cmd_override=np.zeros(3, dtype=np.float32),
+        perturb_pose=False,
+    )
+
+    state = _apply_recovery_condition(
+        env,
+        base,
+        pitch_rad=np.float32(0.04),
+        pitch_rate_rad_s=np.float32(-0.1),
+        foot_stagger_m=np.float32(0.02),
+    )
+
+    assert state.obs.shape == (59,)
+    assert np.isfinite(np.asarray(state.obs)).all()

@@ -170,7 +170,9 @@ def _apply_recovery_condition(
     # Match the training reset's structured pitch perturbation, but prescribe
     # the final world pitch. The home keyframe itself is not exactly zero pitch,
     # so applying ``pitch_rad`` as a delta would initialize the wrong state.
-    rng_pitch, rng_hip, rng_knee, rng_imu = jax.random.split(base_state.rng, 4)
+    rng_pitch, rng_hip, rng_knee, rng_imu, rng_joint_feedback = jax.random.split(
+        base_state.rng, 5
+    )
     del rng_pitch  # Pitch is prescribed rather than sampled for this evaluator.
     base_pitch = _pitch_from_quat_wxyz(qpos[3:7])
     base_roll = _roll_from_quat_wxyz(qpos[3:7])
@@ -254,6 +256,7 @@ def _apply_recovery_condition(
         dr_params=dr_params,
         imu_init_rng=rng_imu,
         cmd_rng=wr.cmd_rng,
+        joint_feedback_rng=rng_joint_feedback,
         rsi_qvel=qvel,
     )
 

@@ -729,6 +729,11 @@ def make_train_iteration_fn(
         # v0.10.4: Enrich agg_metrics with computed episode-level metrics
         # This replaces individual field unpacking with a single dict
         agg_metrics["episode_length"] = episode_length
+        # ``episode_length == 0`` means no episode boundary occurred in this
+        # fixed 128-step rollout, not that an episode failed at step zero.
+        # Preserve the denominator so checkpoint ranking can distinguish those
+        # cases without inferring completion from the length value.
+        agg_metrics["debug/episode_completion_count"] = total_done
         agg_metrics["success_rate"] = success_rate
         agg_metrics["term_height_low_frac"] = term_height_low_frac
         agg_metrics["term_height_high_frac"] = term_height_high_frac
