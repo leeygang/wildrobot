@@ -96,6 +96,67 @@ interpretation follows Hof et al., *The condition for dynamic stability*
 (Journal of Biomechanics, 2005), and Pratt et al., *Capture Point: A Step toward
 Humanoid Push Recovery* (Humanoids, 2006).
 
+### Hardware deployment result (confirmed 2026-08-02): rejected
+
+The native 17D checkpoint-200 bundle was tested on hardware in stable-only mode.
+The authoritative log is
+`_run_policy_logs/v0227_ckpt200_stable_20260802_101400_931326.log`. The runtime
+fall cutoff stopped control at policy step 2,427 (48.54 s), at 45.5 deg total
+tilt, 45.1 deg forward pitch, and -6.8 deg roll, then unloaded the servos.
+
+The failure was a long-horizon forward drift followed by loss of support, not
+an abrupt control-loop or joint-tracking failure:
+
+| Hardware metric | Result |
+|---|---:|
+| pitch at step 80 / 760 / 1,120 | 0.2 / 4.0 / 5.0 deg |
+| pitch at step 1,880 / 2,280 / 2,360 | 8.0 / 7.9 / 12.0 deg |
+| terminal pitch / tilt at step 2,427 | 45.1 / 45.5 deg |
+| forward pitch drift, steps 80--2,280 | 0.175 deg/s |
+| mean logged joint error, steps 1,800--2,360 | about 1.2 deg |
+| applied-action maximum near failure | 0.27--0.29 |
+| servo write failures | 0 |
+| servo read failures | 208 / 31,495 (0.66%) |
+
+The right heel first remained open in the logged samples at step 1,120, when
+pitch reached 5.0 deg. Both heels were intermittently open around step 1,900 at
+about 8 deg pitch. These switches are supporting load-transfer evidence only;
+they are not policy gates. Joint feedback continued to track the commanded
+pose while the body pitched forward. The actor increased knee flexion modestly
+but changed ankle targets very little, so it did not restore flat-foot support.
+Pitch accelerated from 12.0 to 45.1 deg during the final 1.34 s after the center
+of pressure approached the toe boundary.
+
+One right-hip-roll feedback cache expiry occurred during the terminal phase
+(167 ms age versus a 160 ms limit). It cannot explain the preceding 47 s drift;
+there were no servo write failures. Twenty-six isolated IMU freshness warnings
+each reused a 20 ms cached sample and likewise do not explain the slow trend.
+
+**Root-cause status:** the failure mechanism is established, but the persistent
+forward disturbance is not yet isolated. The remaining hypotheses are sagittal
+COM or servo-zero error, loaded servo/link compliance or backlash, foot/floor
+slip or sole deformation, IMU mounting drift, and a policy equilibrium bias.
+The current result cannot select among them. The policy-side limitation is
+nevertheless confirmed: it was trained in 1,000-step episodes with strict
+25 deg pitch termination, brief pushes at steps 40--250, no stepping recovery,
+and high ankle pose penalties. It did not arrest a disturbance that accumulated
+over 2,427 hardware steps.
+
+**Decision:** reject v0.22.7 checkpoint 200 for unsupported hardware use. Before
+retraining, run (1) a mechanically fixed 60 s IMU drift test and (2) a tethered,
+same-pose 60 s home-hold-versus-policy A/B test. Compare pitch/yaw slopes, heel
+states, joint errors, and ankle targets. If both controllers drift, correct the
+hardware/model calibration first. If only the policy drifts, add a 2,500-step
+deterministic sustained-stability gate with persistent sagittal bias
+randomization, then ablate the ankle pose constraint before adding stepping.
+
+ToddlerBot remains a structural reference, not a demonstrated standing baseline:
+its MJX locomotion termination is height-based, while the real-robot demo uses
+IMU orientation persistence before entering a recovery policy
+(`toddlerbot/policies/run_demo_policy.py`, Shi et al., arXiv:2502.00893). The WR
+runtime keeps the independent 45 deg unload cutoff while diagnosis and training
+remain incomplete.
+
 ---
 
 ## [native-17d-policy-runtime] - 2026-08-01: remove wrist compatibility contracts
