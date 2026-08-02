@@ -43,6 +43,7 @@ def export_policy_bundle(
     config_path: Path,
     output_dir: Path,
     robot_config_path: Path,
+    hardware_config_source: Path | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -99,7 +100,10 @@ def export_policy_bundle(
         onnx_action_dim=action_dim,
     )
 
-    hardware_config_path = _export_hardware_config(output_dir=output_dir)
+    hardware_config_path = _export_hardware_config(
+        output_dir=output_dir,
+        source_path=hardware_config_source,
+    )
 
     runtime_policy_config_path = _export_runtime_policy_config(
         output_dir=output_dir,
