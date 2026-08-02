@@ -61,6 +61,18 @@ def _quat_tilt_rad(quat_wxyz: np.ndarray) -> float | None:
     return float(np.arccos(np.clip(body_z_world_z, -1.0, 1.0)))
 
 
+def _quat_rpy_deg(quat_wxyz: np.ndarray) -> np.ndarray:
+    quat = np.asarray(quat_wxyz, dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm(quat))
+    if norm < 1e-9 or not np.all(np.isfinite(quat)):
+        return np.full(3, np.nan, dtype=np.float64)
+    w, x, y, z = (quat / norm).tolist()
+    roll = np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+    yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    return np.degrees(np.asarray([roll, pitch, yaw], dtype=np.float64))
+
+
 def _default_config_path() -> Path:
     return _RUNTIME_ROOT / "configs" / "hardware_config.json"
 
@@ -216,6 +228,172 @@ def _start_init_heartbeat(done: threading.Event, *, start_s: float) -> threading
     return thread
 
 
+def _run_home_state_diagnostics(
+    *,
+    config_path: Path,
+    cfg: WrRuntimeConfig,
+    bundle_dir: Path,
+    total: int,
+    dt_s: float,
+    home_after_s: float,
+    home_move_ms: int,
+    max_tilt_deg: float | None,
+    print_every: int,
+) -> int:
+    """Capture synchronized home-state observations through the runtime IO path."""
+    from wr_runtime.control.run_policy import _build_hardware_robot_io
+
+    actuator_names, home_ctrl_rad_list = _load_bundle_home(bundle_dir)
+    home_ctrl_rad = np.asarray(home_ctrl_rad_list, dtype=np.float32)
+    robot_io = _build_hardware_robot_io(
+        runtime_config_path=config_path,
+        actuator_names=actuator_names,
+        control_dt=dt_s,
+        loaded_runtime_config=cfg,
+    )
+    meta = {
+        "schema_version": 1,
+        "sample_hz": 1.0 / dt_s,
+        "home_after_s": home_after_s,
+        "home_move_ms": home_move_ms,
+        "max_tilt_deg": max_tilt_deg,
+        "actuator_names": actuator_names,
+        "home_target_rad": home_ctrl_rad.astype(float).tolist(),
+        "footswitch_order": [
+            "left_toe",
+            "left_heel",
+            "right_toe",
+            "right_heel",
+        ],
+    }
+    print(f"HOME_DIAGNOSTIC_META {json.dumps(meta, separators=(',', ':'))}", flush=True)
+    print(
+        "Home-state diagnostics use the runtime IMU, cached servo readback, and "
+        "footswitch path. Footswitches are observations only.",
+        flush=True,
+    )
+
+    status = "complete"
+    abort_sample: int | None = None
+    abort_tilt_deg: float | None = None
+    home_sent_s: float | None = None
+    previous_imu_timestamp: float | None = None
+    start_s = time.monotonic()
+    try:
+        robot_io.wait_for_valid_imu_sample(timeout_s=3.0)
+        wait_for_cache = getattr(robot_io.actuators, "wait_for_initial_cache", None)
+        if callable(wait_for_cache) and not wait_for_cache(timeout_s=3.0):
+            raise RuntimeError("servo cache did not become ready for home diagnostics")
+
+        start_s = time.monotonic()
+        for i in range(total):
+            elapsed_s = time.monotonic() - start_s
+            if home_sent_s is None and elapsed_s >= home_after_s:
+                robot_io.actuators.set_targets_rad(
+                    home_ctrl_rad,
+                    move_time_ms=home_move_ms,
+                )
+                home_sent_s = elapsed_s
+                print(
+                    f"[t={elapsed_s:.3f}] Commanding bundle home pose "
+                    f"({len(actuator_names)} servos, move_ms={home_move_ms}, once)",
+                    flush=True,
+                )
+
+            signals = robot_io.read()
+            quat = np.asarray(signals.quat_wxyz, dtype=np.float32)
+            gyro = np.asarray(signals.gyro_rad_s, dtype=np.float32)
+            joint_pos = np.asarray(signals.joint_pos_rad, dtype=np.float32)
+            footswitches = np.asarray(signals.foot_switches, dtype=np.int8)
+            rpy_deg = _quat_rpy_deg(quat)
+            tilt_rad = _quat_tilt_rad(quat)
+            tilt_deg = (
+                float(np.degrees(tilt_rad)) if tilt_rad is not None else float("nan")
+            )
+            joint_err_deg = np.degrees(joint_pos - home_ctrl_rad)
+            imu_timestamp_s = float(signals.timestamp_s)
+            imu_fresh = (
+                previous_imu_timestamp is None
+                or imu_timestamp_s != previous_imu_timestamp
+            )
+            previous_imu_timestamp = imu_timestamp_s
+            servo_metrics = dict(getattr(robot_io, "last_servo_metrics", {}) or {})
+            payload = {
+                "sample": i,
+                "elapsed_s": elapsed_s,
+                "imu_timestamp_s": imu_timestamp_s,
+                "imu_fresh": imu_fresh,
+                "quat_wxyz": quat.astype(float).tolist(),
+                "gyro_rad_s": gyro.astype(float).tolist(),
+                "rpy_deg": rpy_deg.astype(float).tolist(),
+                "tilt_deg": tilt_deg,
+                "joint_pos_rad": joint_pos.astype(float).tolist(),
+                "joint_error_deg": joint_err_deg.astype(float).tolist(),
+                "footswitches": footswitches.astype(int).tolist(),
+                "servo_cache_age_max_s": servo_metrics.get(
+                    "servo_cache_age_max_s"
+                ),
+                "servo_cache_age_leg_max_s": servo_metrics.get(
+                    "servo_cache_age_leg_max_s"
+                ),
+                "servo_read_fail_count": servo_metrics.get(
+                    "servo_read_fail_count"
+                ),
+            }
+            print(
+                f"HOME_DIAGNOSTIC_SAMPLE {json.dumps(payload, separators=(',', ':'))}",
+                flush=True,
+            )
+            if print_every > 0 and i % print_every == 0:
+                print(
+                    f"[{i:04d}] t={elapsed_s:.2f}s "
+                    f"rpy_deg={_fmt_vec(rpy_deg, digits=2)} tilt_deg={tilt_deg:.2f} "
+                    f"gyro={_fmt_vec(gyro, digits=4)} "
+                    f"joint_err_max_deg={float(np.max(np.abs(joint_err_deg))):.2f} "
+                    f"fs={footswitches.astype(int).tolist()}",
+                    flush=True,
+                )
+
+            if (
+                max_tilt_deg is not None
+                and np.isfinite(tilt_deg)
+                and tilt_deg > max_tilt_deg
+            ):
+                status = "tilt_abort"
+                abort_sample = i
+                abort_tilt_deg = tilt_deg
+                print(
+                    f"Safety abort: IMU tilt={tilt_deg:.1f}deg exceeds "
+                    f"max_tilt_deg={max_tilt_deg:.1f} at sample {i}; "
+                    "unloading servos.",
+                    flush=True,
+                )
+                break
+
+            next_tick_s = start_s + (i + 1) * dt_s
+            time.sleep(max(0.0, next_tick_s - time.monotonic()))
+    finally:
+        robot_io.close()
+
+    result = {
+        "status": status,
+        "samples": (abort_sample + 1) if abort_sample is not None else total,
+        "elapsed_s": time.monotonic() - start_s,
+        "home_command_sent_s": home_sent_s,
+        "tilt_abort_sample": abort_sample,
+        "tilt_abort_deg": abort_tilt_deg,
+        "servos_unloaded": True,
+    }
+    print(f"HOME_DIAGNOSTIC_RESULT {json.dumps(result, separators=(',', ':'))}", flush=True)
+    print(
+        "Result: home-state diagnostics tilt safety abort."
+        if status == "tilt_abort"
+        else "Result: home-state diagnostics complete.",
+        flush=True,
+    )
+    return 6 if status == "tilt_abort" else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Probe BNO085/BNO08x IMU samples and report whether quat/gyro payloads are changing."
@@ -362,11 +540,23 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--home-state-diagnostics",
+        action="store_true",
+        help=(
+            "Capture 50 Hz runtime-frame IMU, cached servo readback, home target, "
+            "and footswitch observations. Implies --hold-home and unloads on exit."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Show verbose Adafruit BNO08x packet debug output.",
     )
     args = parser.parse_args()
+    if args.dt is not None and not (
+        np.isfinite(float(args.dt)) and float(args.dt) > 0.0
+    ):
+        parser.error("--dt must be positive")
     if args.max_tilt_deg is not None and not (
         np.isfinite(float(args.max_tilt_deg))
         and 0.0 < float(args.max_tilt_deg) <= 180.0
@@ -401,10 +591,32 @@ def main() -> int:
         else max(1, int(args.samples))
     )
     repeat_home_hz = max(0.0, float(args.repeat_home_hz))
-    hold_home_requested = bool(args.hold_home) or repeat_home_hz > 0.0
+    hold_home_requested = (
+        bool(args.hold_home)
+        or repeat_home_hz > 0.0
+        or bool(args.home_state_diagnostics)
+    )
     bundle_dir = _resolve_bundle_dir(args.config, args.bundle) if hold_home_requested else None
     home_move_ms = max(0, int(args.home_move_ms))
     home_after_s = max(0.0, float(args.home_after_s))
+
+    if args.home_state_diagnostics:
+        assert bundle_dir is not None
+        return _run_home_state_diagnostics(
+            config_path=args.config,
+            cfg=cfg,
+            bundle_dir=bundle_dir,
+            total=total,
+            dt_s=dt_s,
+            home_after_s=home_after_s,
+            home_move_ms=home_move_ms,
+            max_tilt_deg=(
+                None
+                if args.max_tilt_deg is None
+                else float(args.max_tilt_deg)
+            ),
+            print_every=max(0, int(args.print_every)),
+        )
 
     print(
         "BNO085/BNO08x probe: "

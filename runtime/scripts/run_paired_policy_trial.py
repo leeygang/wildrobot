@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime
+import json
+import math
 import re
 import shlex
 import signal
@@ -41,14 +43,262 @@ def _timestamp() -> str:
     return datetime.now().astimezone().strftime("%Y%m%d_%H%M%S_%f")
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    ordered = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not ordered:
+        return float("nan")
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * float(percentile) / 100.0
+    low = int(math.floor(position))
+    high = int(math.ceil(position))
+    if low == high:
+        return ordered[low]
+    weight = position - low
+    return ordered[low] * (1.0 - weight) + ordered[high] * weight
+
+
+def _linear_slope(points: list[tuple[float, float]]) -> float:
+    finite = [
+        (float(x), float(y))
+        for x, y in points
+        if math.isfinite(float(x)) and math.isfinite(float(y))
+    ]
+    if len(finite) < 2:
+        return float("nan")
+    mean_x = sum(x for x, _ in finite) / len(finite)
+    mean_y = sum(y for _, y in finite) / len(finite)
+    denominator = sum((x - mean_x) ** 2 for x, _ in finite)
+    if denominator <= 0.0:
+        return float("nan")
+    return sum((x - mean_x) * (y - mean_y) for x, y in finite) / denominator
+
+
+def _load_home_diagnostic_log(log_path: Path) -> dict[str, object]:
+    meta: dict[str, object] = {}
+    result: dict[str, object] = {}
+    samples: list[dict[str, object]] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("HOME_DIAGNOSTIC_META "):
+            meta = json.loads(line.partition(" ")[2])
+        elif line.startswith("HOME_DIAGNOSTIC_SAMPLE "):
+            samples.append(json.loads(line.partition(" ")[2]))
+        elif line.startswith("HOME_DIAGNOSTIC_RESULT "):
+            result = json.loads(line.partition(" ")[2])
+    if not meta or not samples:
+        raise ValueError(f"Home diagnostic log is incomplete: {log_path}")
+
+    last_elapsed_s = float(samples[-1]["elapsed_s"])
+    settle_start_s = float(meta["home_after_s"]) + float(meta["home_move_ms"]) / 1000.0
+    final_window_start_s = max(settle_start_s, last_elapsed_s - 10.0)
+    drift_window_start_s = max(settle_start_s, last_elapsed_s - 30.0)
+    final_window = [
+        sample
+        for sample in samples
+        if float(sample["elapsed_s"]) >= final_window_start_s
+    ]
+    drift_window = [
+        sample
+        for sample in samples
+        if float(sample["elapsed_s"]) >= drift_window_start_s
+    ]
+    if not final_window:
+        final_window = samples[-1:]
+    if not drift_window:
+        drift_window = samples[-1:]
+
+    pitch = [float(sample["rpy_deg"][1]) for sample in final_window]
+    tilt = [float(sample["tilt_deg"]) for sample in final_window]
+    gyro_norm = [
+        math.sqrt(sum(float(value) ** 2 for value in sample["gyro_rad_s"]))
+        for sample in final_window
+    ]
+    abs_pitch_rate = [
+        abs(float(sample["gyro_rad_s"][1])) for sample in final_window
+    ]
+    joint_error_abs = [
+        abs(float(value))
+        for sample in final_window
+        for value in sample["joint_error_deg"]
+    ]
+    footswitch_order = [str(name) for name in meta["footswitch_order"]]
+    footswitch_pressed_ratio = {
+        name: sum(int(sample["footswitches"][index]) for sample in final_window)
+        / len(final_window)
+        for index, name in enumerate(footswitch_order)
+    }
+    elapsed = [float(sample["elapsed_s"]) for sample in samples]
+    sample_rate_hz = (
+        (len(elapsed) - 1) / (elapsed[-1] - elapsed[0])
+        if len(elapsed) > 1 and elapsed[-1] > elapsed[0]
+        else float("nan")
+    )
+    pitch_drift_slope = _linear_slope(
+        [
+            (float(sample["elapsed_s"]), float(sample["rpy_deg"][1]))
+            for sample in drift_window
+        ]
+    )
+    final_sample = samples[-1]
+    return {
+        "log": str(log_path),
+        "status": str(result.get("status", "incomplete")),
+        "sample_count": len(samples),
+        "duration_s": last_elapsed_s,
+        "sample_rate_hz": sample_rate_hz if math.isfinite(sample_rate_hz) else None,
+        "fresh_imu_ratio": sum(bool(sample["imu_fresh"]) for sample in samples)
+        / len(samples),
+        "final_pitch_deg": float(final_sample["rpy_deg"][1]),
+        "final_tilt_deg": float(final_sample["tilt_deg"]),
+        "final_window_pitch_mean_deg": sum(pitch) / len(pitch),
+        "final_window_pitch_p95_deg": _percentile(pitch, 95.0),
+        "final_window_tilt_max_deg": max(tilt),
+        "final_window_gyro_p95_rad_s": _percentile(gyro_norm, 95.0),
+        "final_window_abs_pitch_rate_p50_rad_s": _percentile(
+            abs_pitch_rate, 50.0
+        ),
+        "final_window_abs_pitch_rate_p95_rad_s": _percentile(
+            abs_pitch_rate, 95.0
+        ),
+        "pitch_drift_slope_deg_s": (
+            pitch_drift_slope if math.isfinite(pitch_drift_slope) else None
+        ),
+        "final_window_joint_error_rms_deg": math.sqrt(
+            sum(value * value for value in joint_error_abs) / len(joint_error_abs)
+        ),
+        "final_window_joint_error_max_deg": max(joint_error_abs),
+        "final_window_footswitch_pressed_ratio": footswitch_pressed_ratio,
+    }
+
+
+def _write_home_characterization_summary(
+    *,
+    log_paths: list[Path],
+    log_dir: Path,
+    prefix: str,
+) -> Path:
+    trials = [_load_home_diagnostic_log(path) for path in log_paths]
+    final_pitch = [float(trial["final_pitch_deg"]) for trial in trials]
+    final_tilt = [float(trial["final_tilt_deg"]) for trial in trials]
+    slopes = [
+        float(trial["pitch_drift_slope_deg_s"])
+        for trial in trials
+        if trial["pitch_drift_slope_deg_s"] is not None
+    ]
+    sample_rates = [
+        float(trial["sample_rate_hz"])
+        for trial in trials
+        if trial["sample_rate_hz"] is not None
+    ]
+    pitch_rate_p95 = [
+        float(trial["final_window_abs_pitch_rate_p95_rad_s"])
+        for trial in trials
+    ]
+    footswitch_names = list(
+        trials[0]["final_window_footswitch_pressed_ratio"].keys()
+    )
+    aggregate = {
+        "trial_count": len(trials),
+        "tilt_abort_count": sum(trial["status"] == "tilt_abort" for trial in trials),
+        "final_pitch_deg": {
+            "min": min(final_pitch),
+            "p50": _percentile(final_pitch, 50.0),
+            "p95": _percentile(final_pitch, 95.0),
+            "max": max(final_pitch),
+        },
+        "final_tilt_deg": {
+            "p50": _percentile(final_tilt, 50.0),
+            "p95": _percentile(final_tilt, 95.0),
+            "max": max(final_tilt),
+        },
+        "pitch_drift_slope_deg_s": {
+            "p50": _percentile(slopes, 50.0) if slopes else None,
+            "p95": _percentile(slopes, 95.0) if slopes else None,
+            "max": max(slopes) if slopes else None,
+        },
+        "sample_rate_hz": {
+            "min": min(sample_rates) if sample_rates else None,
+            "p50": _percentile(sample_rates, 50.0) if sample_rates else None,
+        },
+        "final_window_abs_pitch_rate_p95_rad_s": {
+            "p50": _percentile(pitch_rate_p95, 50.0),
+            "p95": _percentile(pitch_rate_p95, 95.0),
+            "max": max(pitch_rate_p95),
+        },
+        "final_window_footswitch_pressed_ratio": {
+            name: sum(
+                float(trial["final_window_footswitch_pressed_ratio"][name])
+                for trial in trials
+            )
+            / len(trials)
+            for name in footswitch_names
+        },
+        "final_window_joint_error_max_deg": max(
+            float(trial["final_window_joint_error_max_deg"]) for trial in trials
+        ),
+    }
+    summary = {
+        "schema_version": 1,
+        "description": "Natural-placement home-state characterization",
+        "aggregate": aggregate,
+        "trials": trials,
+    }
+    summary_path = (
+        log_dir / f"{prefix}_home_characterization_summary_{_timestamp()}.log"
+    )
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+    print("\nHome characterization summary:", flush=True)
+    print(
+        "  trial status       final_pitch final_tilt drift_deg_s "
+        "joint_err_max LT   LH   RT   RH",
+        flush=True,
+    )
+    for index, trial in enumerate(trials, start=1):
+        ratios = trial["final_window_footswitch_pressed_ratio"]
+        slope = trial["pitch_drift_slope_deg_s"]
+        slope_text = "n/a" if slope is None else f"{float(slope):+11.3f}"
+        print(
+            f"  {index:02d}    {str(trial['status']):<12} "
+            f"{float(trial['final_pitch_deg']):+10.2f} "
+            f"{float(trial['final_tilt_deg']):10.2f} "
+            f"{slope_text:>11} "
+            f"{float(trial['final_window_joint_error_max_deg']):13.2f} "
+            f"{float(ratios['left_toe']):.2f} "
+            f"{float(ratios['left_heel']):.2f} "
+            f"{float(ratios['right_toe']):.2f} "
+            f"{float(ratios['right_heel']):.2f}",
+            flush=True,
+        )
+    drift_p50 = aggregate["pitch_drift_slope_deg_s"]["p50"]
+    drift_p95 = aggregate["pitch_drift_slope_deg_s"]["p95"]
+    drift_summary = (
+        "n/a"
+        if drift_p50 is None or drift_p95 is None
+        else f"{float(drift_p50):+.3f}/{float(drift_p95):+.3f}deg/s"
+    )
+    print(
+        f"  aggregate: tilt_aborts={aggregate['tilt_abort_count']}/{len(trials)} "
+        f"final_pitch_p50/p95={aggregate['final_pitch_deg']['p50']:+.2f}/"
+        f"{aggregate['final_pitch_deg']['p95']:+.2f}deg "
+        f"drift_p50/p95={drift_summary} "
+        f"abs_pitch_rate_p95="
+        f"{aggregate['final_window_abs_pitch_rate_p95_rad_s']['p95']:.3f}rad/s",
+        flush=True,
+    )
+    print(f"  summary log: {summary_path}", flush=True)
+    return summary_path
+
+
 def _home_command(
     *,
     config: Path,
     bundle: Path,
     seconds: float,
     max_tilt_deg: float,
+    home_state_diagnostics: bool = False,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(_PROBE_SCRIPT),
         "--config",
@@ -71,6 +321,9 @@ def _home_command(
         "--max-tilt-deg",
         str(max_tilt_deg),
     ]
+    if home_state_diagnostics:
+        command.append("--home-state-diagnostics")
+    return command
 
 
 def _policy_command(
@@ -105,6 +358,7 @@ def _run_streaming(
     *,
     output_log: Path | None = None,
     stop_after_first_step_s: float | None = None,
+    quiet_line_prefixes: tuple[str, ...] = (),
 ) -> ProcessResult:
     print(f"Command: {shlex.join(command)}", flush=True)
     process = subprocess.Popen(
@@ -129,7 +383,8 @@ def _run_streaming(
                 log_file.write(f"Command: {shlex.join(command)}\n")
                 log_file.flush()
             for line in process.stdout:
-                print(line, end="", flush=True)
+                if not line.startswith(quiet_line_prefixes):
+                    print(line, end="", flush=True)
                 if log_file is not None:
                     log_file.write(line)
                     log_file.flush()
@@ -231,12 +486,26 @@ def _abort_after_home(config_path: Path, message: str) -> int:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run paired home-hold and standing-policy hardware trials without "
-            "changing foot placement between phases."
+            "Run paired home-hold/policy trials or repeated natural-placement "
+            "home-state characterization."
         )
     )
     parser.add_argument(
-        "--trials", type=int, default=3, help="Number of paired trials (default: 3)."
+        "--trials",
+        type=int,
+        default=None,
+        help=(
+            "Number of trials. Defaults to 3 for paired mode and 10 for "
+            "--home-characterization."
+        ),
+    )
+    parser.add_argument(
+        "--home-characterization",
+        action="store_true",
+        help=(
+            "Run home-only natural-placement trials, capture 50 Hz IMU/joint/"
+            "footswitch diagnostics, and write an aggregate summary."
+        ),
     )
     parser.add_argument(
         "--home-seconds",
@@ -269,6 +538,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hardware-config", type=Path, default=_DEFAULT_CONFIG)
     parser.add_argument("--log-dir", type=Path, default=_DEFAULT_LOG_DIR)
     args = parser.parse_args(argv)
+    if args.trials is None:
+        args.trials = 10 if args.home_characterization else 3
     if args.trials <= 0:
         parser.error("--trials must be positive")
     if args.home_seconds <= 0.0 or args.policy_seconds <= 0.0:
@@ -294,19 +565,35 @@ def main(argv: list[str] | None = None) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     prefix = _bundle_log_prefix(bundle)
 
-    print(
-        "Paired hardware test: keep the slack tether attached and do not touch "
-        "the robot between home hold and policy.",
-        flush=True,
-    )
-    print(
-        f"trials={args.trials} home_seconds={args.home_seconds:.1f} "
-        f"policy_seconds={args.policy_seconds:.1f} "
-        f"home_max_tilt_deg={args.home_max_tilt_deg:.1f} "
-        f"fall_tilt_deg={args.fall_tilt_deg:.1f}",
-        flush=True,
-    )
+    if args.home_characterization:
+        print(
+            "Home-state characterization: use the normal placement process within "
+            "the marked deployment footprint. Exact foot placement should vary. "
+            "Keep the slack tether attached.",
+            flush=True,
+        )
+    else:
+        print(
+            "Paired hardware test: keep the slack tether attached and do not touch "
+            "the robot between home hold and policy.",
+            flush=True,
+        )
+    if args.home_characterization:
+        print(
+            f"trials={args.trials} home_seconds={args.home_seconds:.1f} "
+            f"home_max_tilt_deg={args.home_max_tilt_deg:.1f}",
+            flush=True,
+        )
+    else:
+        print(
+            f"trials={args.trials} home_seconds={args.home_seconds:.1f} "
+            f"policy_seconds={args.policy_seconds:.1f} "
+            f"home_max_tilt_deg={args.home_max_tilt_deg:.1f} "
+            f"fall_tilt_deg={args.fall_tilt_deg:.1f}",
+            flush=True,
+        )
 
+    home_characterization_logs: list[Path] = []
     try:
         for trial in range(1, int(args.trials) + 1):
             trial_label = f"{trial:02d}"
@@ -330,9 +617,31 @@ def main(argv: list[str] | None = None) -> int:
                     bundle=bundle,
                     seconds=args.home_seconds,
                     max_tilt_deg=args.home_max_tilt_deg,
+                    home_state_diagnostics=bool(args.home_characterization),
                 ),
                 output_log=home_log,
+                quiet_line_prefixes=(
+                    ("HOME_DIAGNOSTIC_SAMPLE ",)
+                    if args.home_characterization
+                    else ()
+                ),
             )
+            if args.home_characterization:
+                if home_result.returncode not in (0, 6):
+                    return _abort_after_home(
+                        config,
+                        f"Home diagnostics failed with exit code {home_result.returncode}.",
+                    )
+                home_characterization_logs.append(home_log)
+                outcome = (
+                    "tilt cutoff" if home_result.returncode == 6 else "completed"
+                )
+                print(
+                    f"Home trial {trial_label} {outcome}; servos are unloaded.\n"
+                    f"  home: {home_log}",
+                    flush=True,
+                )
+                continue
             if home_result.returncode != 0:
                 return _abort_after_home(
                     config,
@@ -387,6 +696,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  policy: {policy_log}", flush=True)
     except KeyboardInterrupt:
         return _abort_after_home(config, "Paired test interrupted.")
+
+    if args.home_characterization:
+        _write_home_characterization_summary(
+            log_paths=home_characterization_logs,
+            log_dir=log_dir,
+            prefix=prefix,
+        )
+        print("\nAll home characterization trials complete.", flush=True)
+        return 0
 
     print("\nAll paired trials complete.", flush=True)
     return 0

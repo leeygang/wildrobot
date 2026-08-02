@@ -257,6 +257,22 @@ policy control after 60 seconds or at 20 degrees of tilt. Its two-second home
 transition followed by a hold matches ToddlerBot's initial-stand preparation,
 and it preserves the loaded home pose only during the confirmed handoff.
 
+To characterize natural-placement home states without running the policy:
+
+```bash
+cd runtime
+uv run python scripts/run_paired_policy_trial.py --home-characterization
+```
+
+This mode defaults to ten operator-confirmed 60-second trials. Reposition the
+robot normally before each `READY`; exact foot placement is not expected to
+match. Each home log contains 50 Hz runtime-frame IMU, home target, cached joint
+readback/error, servo-cache age, and four footswitch observations. Footswitches
+are recorded but never gate a trial. Servos unload after every trial, the
+15-degree cutoff is retained, and a
+`vXXX_ckptYYY_home_characterization_summary_*.log` JSON summary reports pitch,
+tilt, drift slope, joint error, sample rate, and contact ratios across trials.
+
 If you see servo cache initialization or position-read failures:
 - Confirm the USB TTL debug board is powered and servos have external power.
 - Rerun `calibrate.py --calibrate-servo-board` and confirm every board and servo ID is listed once.
