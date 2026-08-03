@@ -11,7 +11,7 @@ policy on real hardware. Configuration is loaded from a JSON file that specifies
 Usage:
     from configs import WrRuntimeConfig
 
-    # Load from default path (~/.wildrobot/config.json)
+    # Load from runtime/configs/hardware_config.json
     config = WrRuntimeConfig.load()
 
     # Load from specific path
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -40,10 +39,7 @@ import yaml
 # Default paths
 # =============================================================================
 
-HOME_DIR = Path(os.path.expanduser("~"))
-DEFAULT_CONFIG_DIR = HOME_DIR / ".wildrobot"
-DEFAULT_HARDWARE_CONFIG_PATH = DEFAULT_CONFIG_DIR / "hardware_config.json"
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.json"
+DEFAULT_HARDWARE_CONFIG_PATH = Path(__file__).resolve().parent / "hardware_config.json"
 
 # Default robot_config path (joint ranges, mirror signs, etc.)
 # Current assets layout is v2.
@@ -637,10 +633,8 @@ class WrRuntimeConfig:
         """Load runtime configuration from JSON file.
 
         Args:
-            config_path: Path to JSON config file. If None, searches for:
-                1. ~/.wildrobot/hardware_config.json
-                2. ~/.wildrobot/config.json (legacy)
-                3. ~/wildrobot_config.json (legacy)
+            config_path: Path to JSON config file. If None, loads the canonical
+                in-repository ``runtime/configs/hardware_config.json``.
             robot_config_path: Path to robot_config.(json|yaml) for joint specs.
                 If None, uses a best-effort search (prefers assets/v2/mujoco_robot_config.json).
 
@@ -654,20 +648,7 @@ class WrRuntimeConfig:
         """
         # Resolve config path
         if config_path is None:
-            if DEFAULT_HARDWARE_CONFIG_PATH.exists():
-                config_path = DEFAULT_HARDWARE_CONFIG_PATH
-            elif DEFAULT_CONFIG_PATH.exists():
-                config_path = DEFAULT_CONFIG_PATH
-            elif (HOME_DIR / "wildrobot_config.json").exists():
-                config_path = HOME_DIR / "wildrobot_config.json"
-            else:
-                raise FileNotFoundError(
-                    f"Config file not found. Searched:\n"
-                    f"  - {DEFAULT_HARDWARE_CONFIG_PATH}\n"
-                    f"  - {DEFAULT_CONFIG_PATH}\n"
-                    f"  - {HOME_DIR / 'wildrobot_config.json'}\n"
-                    f"Please create a config file or specify path explicitly."
-                )
+            config_path = DEFAULT_HARDWARE_CONFIG_PATH
 
         path = Path(config_path)
         if not path.exists():

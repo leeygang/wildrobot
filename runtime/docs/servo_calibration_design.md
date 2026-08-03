@@ -11,7 +11,8 @@ WildRobot hardware runtime lives under `runtime/wr_runtime/` and assumes:
 Calibration is performed with the interactive script:
 - `runtime/scripts/calibrate.py`
 
-Calibration data is stored in the hardware JSON config. Copy `runtime/configs/hardware_config.json` to the robot, typically as `~/.wildrobot/hardware_config.json`.
+Calibration data is stored directly in the source-of-truth
+`runtime/configs/hardware_config.json`; policy bundles do not copy it.
 
 This doc describes the servo calibration model and the operator workflow for per-joint:
 1) motor_unit_direction correction
@@ -116,7 +117,7 @@ connected, detect the actual mapping:
 
 ```bash
 uv run python runtime/scripts/calibrate.py \
-  --config ~/.wildrobot/hardware_config.json \
+  --config runtime/configs/hardware_config.json \
   --calibrate-servo-board
 ```
 
@@ -363,5 +364,5 @@ Non-interactive mode (optional later):
 ## Open Questions
 
 - What is the canonical “neutral pose” definition for each joint (visual description / photos)?
-- Do we need a separate calibration history artifact in addition to `~/.wildrobot/hardware_config.json`?
+- Do we need a separate calibration history artifact in addition to the canonical `runtime/configs/hardware_config.json`?
 - Is servo readback reliable and stable enough to use as the source of truth for offsets, or should we plan for external angle measurement support?

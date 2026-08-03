@@ -9,8 +9,6 @@ from policy_contract.spec import PolicyBundle
 
 
 MANIFEST_NAME = "bundle_manifest.json"
-HARDWARE_CONFIG_NAME = "hardware_config.json"
-LEGACY_HARDWARE_CONFIG_NAME = "wildrobot_config.json"
 
 
 @dataclass(frozen=True)
@@ -43,7 +41,6 @@ class DeploymentBundle:
             PolicyBundle.load(policy_dir)
         bundle = cls(root=root, manifest=manifest)
         for shared_path in (
-            bundle.hardware_config_path,
             bundle.mjcf_path,
             bundle.robot_config_path,
         ):
@@ -75,10 +72,6 @@ class DeploymentBundle:
         return self._resolve_inside(self.root, str(shared[key]))
 
     @property
-    def hardware_config_path(self) -> Path:
-        return self._shared_path("hardware_config")
-
-    @property
     def mjcf_path(self) -> Path:
         return self._shared_path("mjcf")
 
@@ -96,13 +89,3 @@ def resolve_policy_dir(path: str | Path, *, role: str) -> Path:
     if is_deployment_bundle(path):
         return DeploymentBundle.load(path).policy_dir(role)
     return path
-
-
-def resolve_hardware_config_path(path: str | Path) -> Path:
-    path = Path(path)
-    if is_deployment_bundle(path):
-        return DeploymentBundle.load(path).hardware_config_path
-    canonical = path / HARDWARE_CONFIG_NAME
-    if canonical.exists():
-        return canonical
-    return path / LEGACY_HARDWARE_CONFIG_NAME

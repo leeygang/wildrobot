@@ -9,9 +9,11 @@ import pytest
 
 from runtime.scripts.calibrate import resolve_config_path
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
-from runtime.wr_runtime.control.run_policy import _TargetBlendRobotIO
+from runtime.wr_runtime.control.run_policy import (
+    _resolve_hardware_config_path,
+    _TargetBlendRobotIO,
+)
 from runtime.wr_runtime.deployment_bundle import DeploymentBundle
-from training.exports.export_policy_bundle import _export_hardware_config
 
 
 _BUNDLE = Path(
@@ -24,7 +26,6 @@ def test_historical_deployment_bundle_remains_an_archival_21d_artifact() -> None
     deployment = DeploymentBundle.load(_BUNDLE)
     standing = deployment.policy_bundle("standing")
     walking = deployment.policy_bundle("walking")
-    hardware = json.loads(deployment.hardware_config_path.read_text())
 
     assert standing.spec.model.obs_dim == 63
     assert standing.spec.model.action_dim == 17
@@ -32,10 +33,6 @@ def test_historical_deployment_bundle_remains_an_archival_21d_artifact() -> None
     assert walking.spec.model.action_dim == 21
     assert deployment.mjcf_path.name == "wildrobot.xml"
     assert deployment.robot_config_path.name == "mujoco_robot_config.json"
-    assert "policy_onnx_path" not in hardware
-    assert "velocity_cmd" not in hardware
-    assert hardware["robot_config_path"] == "./mujoco_robot_config.json"
-    assert len(hardware["externally_managed_actuator_names"]) == 4
 
 
 def test_canonical_hardware_config_is_natively_wrist_free() -> None:
@@ -71,14 +68,21 @@ def test_deployment_policy_timing_metadata_is_role_specific() -> None:
     assert walking["reference"]["n_steps"] == 1104
 
 
-def test_deployment_calibration_defaults_to_shared_hardware_config() -> None:
+def test_deployment_calibration_defaults_to_canonical_hardware_config() -> None:
     class _Args:
         config = None
         bundle = str(_BUNDLE)
 
-    assert resolve_config_path(_Args()).resolve() == (
-        _BUNDLE / "hardware_config.json"
+    assert resolve_config_path(_Args()).resolve() == Path(
+        "runtime/configs/hardware_config.json"
     ).resolve()
+
+
+def test_policy_runtime_defaults_to_canonical_hardware_config() -> None:
+    canonical = Path("runtime/configs/hardware_config.json").resolve()
+
+    assert _resolve_hardware_config_path(None).resolve() == canonical
+    assert _resolve_hardware_config_path("custom.json") == Path("custom.json")
 
 
 @pytest.mark.parametrize("bundle", [_BUNDLE, _CURRENT_BUNDLE])
@@ -92,26 +96,16 @@ def test_deployment_checksums_cover_every_artifact(bundle: Path) -> None:
     assert actual == expected
 
 
-def test_policy_export_uses_canonical_hardware_config(tmp_path: Path) -> None:
-    template = json.loads(Path("runtime/configs/hardware_config.json").read_text())
-    legacy_template = dict(template)
-    legacy_template["realism_profile_path"] = "./realism_profile.json"
-    source_path = tmp_path / "legacy_hardware_config.json"
-    source_path.write_text(json.dumps(legacy_template))
-    output_dir = tmp_path / "bundle"
-    output_dir.mkdir()
-
-    output = _export_hardware_config(
-        output_dir=output_dir,
-        source_path=source_path,
+def test_policy_bundles_do_not_contain_hardware_configuration() -> None:
+    bundled_configs = sorted(
+        path
+        for name in ("hardware_config.json", "wildrobot_config.json")
+        for path in Path("runtime/bundles").rglob(name)
     )
-    exported = json.loads(output.read_text())
-
-    assert exported["servo_controller"] == template["servo_controller"]
-    assert exported["servo_read_schedule"] == template["servo_read_schedule"]
-    assert exported["robot_config_path"] == "./mujoco_robot_config.json"
-    assert "realism_profile_path" not in exported
-    assert not (output_dir / "realism_profile.json").exists()
+    assert bundled_configs == []
+    for manifest_path in Path("runtime/bundles").rglob("bundle_manifest.json"):
+        manifest = json.loads(manifest_path.read_text())
+        assert "hardware_config" not in manifest["shared"]
 
 
 def test_walking_transition_blends_from_final_standing_target() -> None:

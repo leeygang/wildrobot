@@ -53,7 +53,7 @@ Any convenient ground works, for example:
 
 ## 4) Configure the runtime
 
-In your runtime JSON (default: `~/wildrobot_config.json`), set the `foot_switches` section:
+In `runtime/configs/hardware_config.json`, set the `foot_switches` section:
 
 ```json
 "foot_switches": {

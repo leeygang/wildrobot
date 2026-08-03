@@ -54,9 +54,9 @@ need to reinstall (unless dependencies changed — then rerun `uv sync`).
 
 ## Configuration
 
-Deployment bundles contain a shared `hardware_config.json`. Override it for a
-specific robot with `--hardware-config ~/.wildrobot/hardware_config.json`.
-Legacy `wildrobot_config.json` and `--runtime-config` remain readable aliases.
+`runtime/configs/hardware_config.json` is the hardware source of truth. Policy
+bundles do not contain hardware configuration. `--hardware-config` remains an
+explicit override, and `--runtime-config` remains its legacy alias.
 
 Minimal example:
 
@@ -108,11 +108,9 @@ Minimal example:
 Notes:
 - New deployment bundles keep `wildrobot.xml` and `mujoco_robot_config.json` at
   the root; `bundle_manifest.json` selects each policy ONNX/spec pair.
-- Legacy single-policy configs may still contain `mjcf_path` and
-  `policy_onnx_path`, but these fields do not belong in the canonical
-  `hardware_config.json`.
+- Policy/model paths do not belong in the canonical `hardware_config.json`.
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
-- `servo_controller.boards` assigns each globally unique servo ID to exactly one named USB TTL board. The required roles are `left_leg_board`, `right_leg_board`, and `upper_body_board`; calibration derives their ID sets from joint names. Run `uv run python runtime/scripts/calibrate.py --config ~/.wildrobot/hardware_config.json --calibrate-servo-board` to detect and write the real ports and assignments. The legacy single-board `servo_controller.port` field remains supported.
+- `servo_controller.boards` assigns each globally unique servo ID to exactly one named USB TTL board. The required roles are `left_leg_board`, `right_leg_board`, and `upper_body_board`; calibration derives their ID sets from joint names. Run `uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-servo-board` to detect and write the real ports and assignments. The legacy single-board `servo_controller.port` field remains supported.
 - `servo_read_schedule.max_cache_age_s` defines feedback freshness limits. Each board worker continuously round-robins all servos assigned to that board; read-group lists are no longer configured.
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
@@ -130,8 +128,8 @@ resetting and starting the walking policy.
 
 Flags:
 - `--bundle PATH` (required): deployment or legacy policy bundle.
-- `--hardware-config PATH`: override the bundle's shared physical hardware
-  configuration. `--runtime-config` remains a legacy alias.
+- `--hardware-config PATH`: explicitly override
+  `runtime/configs/hardware_config.json`. `--runtime-config` is a legacy alias.
 - `--dry-run`: run with mock IO (no servos/IMU/footswitches) — for smoke tests
   and safe validation on a dev machine. Never sleeps.
 - `--max-steps N` (default 500), `--log-steps N` (default 20, 0=off).
@@ -153,14 +151,12 @@ uv run wildrobot-run-policy --bundle bundles/deployment_walk_v0210_ckpt1650_stan
   --dry-run --max-steps 5 --velocity-cmd 0.13,0.0,0.0
 ```
 
-On the robot, with calibrated servo IDs/offsets/directions in a local config
-(recommended):
+On the robot, using the calibrated canonical hardware config:
 
 ```bash
 cd runtime
 uv run wildrobot-run-policy \
   --bundle bundles/deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90 \
-  --hardware-config ~/.wildrobot/hardware_config.json \
   --velocity-cmd 0.13,0,0 --confirm-before-walk
 ```
 
@@ -171,8 +167,7 @@ Assumptions:
 - The bundle directory exists under `training/checkpoints/` (exported via `training/exports/export_policy_bundle_cli.py`).
 
 Export one deployment bundle from the selected standing and walking
-checkpoints. `--hardware-config` snapshots the calibrated physical robot
-configuration at the root:
+checkpoints. Hardware configuration is intentionally excluded:
 
 ```bash
 uv run python training/exports/export_policy_bundle_cli.py \
@@ -180,7 +175,6 @@ uv run python training/exports/export_policy_bundle_cli.py \
   --training-config training/checkpoints/<walking-run>/training_config.yaml \
   --standing-checkpoint training/checkpoints/<standing-run>/checkpoint_NNNN.pkl \
   --standing-training-config training/checkpoints/<standing-run>/training_config.yaml \
-  --hardware-config ~/.wildrobot/hardware_config.json \
   --bundle-path /tmp/wr_bundle
 ```
 
@@ -203,17 +197,17 @@ uv run wildrobot-run-policy --bundle /tmp/wr_bundle --dry-run --max-steps 5
 # Run the control loop on hardware (Ctrl+C to stop; runtime disables actuators on exit)
 uv run wildrobot-run-policy --bundle /tmp/wr_bundle --confirm-before-walk
 
-# Calibrate the shared hardware configuration using walking or standing order.
+# Calibrate the canonical hardware configuration using walking or standing order.
 uv run python scripts/calibrate.py --bundle /tmp/wr_bundle \
-  --policy-role walking --calibrate
+  --config configs/hardware_config.json --policy-role walking --calibrate
 ```
 
 Notes:
-- `hardware_config.json`, `wildrobot.xml`, and `mujoco_robot_config.json` are
-  shared by both policies. Each `policies/<role>` directory owns its ONNX,
-  `policy_spec.json`, and `runtime_policy_config.json`.
-- If this device has different servo IDs, offsets, IMU mapping, or GPIO, pass
-  `--hardware-config ~/.wildrobot/hardware_config.json`.
+- `wildrobot.xml` and `mujoco_robot_config.json` are shared policy-model
+  snapshots. Each `policies/<role>` directory owns its ONNX, `policy_spec.json`,
+  and `runtime_policy_config.json`.
+- Servo IDs, offsets, board ports, IMU mapping, and GPIO live only in
+  `runtime/configs/hardware_config.json`.
 
 The loop runs for `--max-steps` control steps and then exits, disabling
 actuators via `robot_io.close()`.  Ctrl+C also stops it and unloads servos.
@@ -233,7 +227,6 @@ policy directory for standing-only operation.
 cd runtime
 uv run wildrobot-run-policy \
   --bundle bundles/<native-17d-standing-policy> \
-  --hardware-config configs/hardware_config.json \
   --stable-only \
   --log-steps 20
 ```

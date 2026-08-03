@@ -56,9 +56,9 @@ _WALKING_BUNDLE = _REPO_ROOT / "runtime" / "bundles" / "walking_v0210_smoke6_ckp
 _HARDWARE_CONFIG = _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
 
 
-def test_resolve_config_path_defaults_to_bundle_runtime_config() -> None:
+def test_resolve_config_path_defaults_to_canonical_hardware_config() -> None:
     args = argparse.Namespace(config=None, bundle=str(_WALKING_BUNDLE))
-    assert resolve_config_path(args) == _WALKING_BUNDLE / "wildrobot_config.json"
+    assert resolve_config_path(args) == _HARDWARE_CONFIG
 
 
 def test_resolve_joint_names_uses_native_hardware_order() -> None:
@@ -73,16 +73,11 @@ def test_resolve_joint_names_uses_native_hardware_order() -> None:
     assert not any("wrist" in name for name in joint_names)
 
 
-def test_archived_walking_hardware_config_is_rejected() -> None:
-    with pytest.raises(ValueError, match="externally_managed_actuator_names was removed"):
-        WrRuntimeConfig.load(_WALKING_BUNDLE / "wildrobot_config.json")
-
-
 def test_resolve_home_ctrl_reorders_bundle_home_to_requested_joint_names() -> None:
     args = argparse.Namespace(bundle=str(_WALKING_BUNDLE), scene_xml=None, keyframes_xml=None)
 
     cfg_order = list(
-        json.loads((_WALKING_BUNDLE / "wildrobot_config.json").read_text())["servo_controller"]["servos"].keys()
+        json.loads(_HARDWARE_CONFIG.read_text())["servo_controller"]["servos"].keys()
     )
     home_in_cfg_order = resolve_home_ctrl(args, cfg_order)
 

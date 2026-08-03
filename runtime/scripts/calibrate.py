@@ -39,7 +39,6 @@ from configs.config import (  # noqa: E402
 from wr_runtime.hardware.ttl_servo_controller import build_ttl_servo_controller  # noqa: E402
 from wr_runtime.deployment_bundle import (  # noqa: E402
     is_deployment_bundle,
-    resolve_hardware_config_path,
     resolve_policy_dir,
 )
 
@@ -1336,10 +1335,6 @@ def compose_policy_action_target_rad(
 def resolve_config_path(args: argparse.Namespace) -> Path:
     if args.config:
         return Path(args.config)
-    if args.bundle:
-        bundle_cfg = resolve_hardware_config_path(Path(args.bundle))
-        if bundle_cfg.exists():
-            return bundle_cfg
     return _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
 
 
@@ -4475,8 +4470,8 @@ Examples (copy/paste):
         "--config",
         default=None,
         help=(
-            "Input hardware config path (default: bundle's hardware_config.json, "
-            "with legacy wildrobot_config.json fallback)"
+            "Input hardware config path "
+            "(default: runtime/configs/hardware_config.json)"
         ),
     )
     parser.add_argument("--output", help="Optional output path; default is in-place update with backup")

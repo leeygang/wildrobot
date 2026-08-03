@@ -182,12 +182,6 @@ def main() -> None:
         help="Standing training config for standing-only or combined export.",
     )
     parser.add_argument(
-        "--hardware-config",
-        type=str,
-        default=None,
-        help="Calibrated hardware config to snapshot as hardware_config.json.",
-    )
-    parser.add_argument(
         "--bundle-path",
         type=str,
         required=True,
@@ -259,12 +253,6 @@ def main() -> None:
         asset=args.asset,
         config_path=asset_config_path,
     )
-    hardware_config_path = (
-        _resolve_repo_relative(Path(args.hardware_config))
-        if args.hardware_config
-        else None
-    )
-
     if checkpoint_path is not None and standing_checkpoint_path is not None:
         assert config_path is not None and standing_config_path is not None
         export_deployment_bundle(
@@ -274,7 +262,6 @@ def main() -> None:
             standing_config_path=standing_config_path,
             output_dir=output_dir,
             robot_config_path=robot_config_path,
-            hardware_config_source=hardware_config_path,
         )
         from wr_runtime.deployment_bundle import DeploymentBundle
 
@@ -290,7 +277,6 @@ def main() -> None:
             config_path=standalone_config,
             output_dir=output_dir,
             robot_config_path=robot_config_path,
-            hardware_config_source=hardware_config_path,
         )
         shutil.copy2(standalone_config, output_dir / "training_config.yaml")
 

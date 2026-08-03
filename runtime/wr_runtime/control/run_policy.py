@@ -1,8 +1,8 @@
 """``wildrobot-run-policy`` — deterministic control loop for the latest bundle.
 
-Loads a deployment bundle containing standing and walking policy contracts plus
-one shared hardware configuration. Supports a hardware-free ``--dry-run`` mode
-for smoke tests and safe validation on a developer machine.
+Loads a deployment bundle containing standing and walking policy contracts and
+uses the repository's canonical hardware configuration. Supports a hardware-free
+``--dry-run`` mode for smoke tests and safe validation on a developer machine.
 
 Examples
 --------
@@ -16,7 +16,6 @@ Hardware run (on the robot), forward walk for 500 control steps::
 
     uv run --project runtime wildrobot-run-policy \
       --bundle /path/to/bundle \
-      --hardware-config ~/.wildrobot/hardware_config.json \
       --max-steps 500 --velocity-cmd 0.13,0.0,0.0
 
 Stable-only run with the integrated standing stabilizer::
@@ -260,6 +259,14 @@ def _resolve_run_bundle_path(
     if bundle_arg is None:
         raise SystemExit("--bundle is required.")
     return Path(bundle_arg)
+
+
+def _resolve_hardware_config_path(hardware_config_arg: Optional[str]) -> Path:
+    from configs import DEFAULT_HARDWARE_CONFIG_PATH
+
+    if hardware_config_arg is not None:
+        return Path(hardware_config_arg)
+    return DEFAULT_HARDWARE_CONFIG_PATH
 
 
 def _policy_loop_max_steps(
@@ -1933,7 +1940,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         help=(
             "Physical robot configuration (servo IDs/calibration, IMU, GPIO). "
-            "Defaults to the deployment bundle's hardware_config.json; "
+            "Defaults to runtime/configs/hardware_config.json; "
             "--runtime-config is a legacy alias."
         ),
     )
@@ -2207,11 +2214,7 @@ def _run_deployment_bundle_from_args(
 
     from configs import WrRuntimeConfig
 
-    hardware_config_path = (
-        Path(args.hardware_config)
-        if args.hardware_config is not None
-        else deployment.hardware_config_path
-    )
+    hardware_config_path = _resolve_hardware_config_path(args.hardware_config)
     hardware_cfg = WrRuntimeConfig.load(
         hardware_config_path,
         robot_config_path=deployment.robot_config_path,
@@ -2467,11 +2470,10 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         return _run_deployment_bundle_from_args(args, bundle_path)
     bundle = PolicyBundle.load(bundle_path)
     validate_spec(bundle.spec)
-    loaded_hardware_config = None
-    if args.hardware_config is not None:
-        from configs import WrRuntimeConfig
+    from configs import WrRuntimeConfig
 
-        loaded_hardware_config = WrRuntimeConfig.load(Path(args.hardware_config))
+    hardware_config_path = _resolve_hardware_config_path(args.hardware_config)
+    loaded_hardware_config = WrRuntimeConfig.load(hardware_config_path)
 
     layout_id = str(bundle.spec.observation.layout_id)
     if stable_only:
@@ -2557,14 +2559,12 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         )
         realtime = False  # dry-run is a smoke test; never sleep
     else:
-        if args.hardware_config is None:
-            raise SystemExit("--hardware-config is required unless --dry-run is set.")
         if not args.skip_hardware_preflight and hardware_home is None:
             raise SystemExit(
                 "policy_spec.robot.home_ctrl_rad is required for hardware preflight"
             )
         robot_io = _build_hardware_robot_io(
-            runtime_config_path=Path(args.hardware_config),
+            runtime_config_path=hardware_config_path,
             actuator_names=hardware_actuator_names,
             control_dt=ctrl_dt,
             loaded_runtime_config=loaded_hardware_config,
@@ -2653,6 +2653,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"Running bundle {bundle_path} | layout={bundle.spec.observation.layout_id} "
         f"| {runtime_mode} "
         f"| control_hz={control_hz:.1f} "
+        f"| hardware_config={hardware_config_path} "
         f"| policy_actuators={len(actuator_names)} "
         f"| hardware_actuators={len(hardware_actuator_names)} "
         f"| cmd={velocity_cmd.tolist()} | dry_run={args.dry_run} "

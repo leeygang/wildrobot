@@ -4,6 +4,7 @@ Provides structured configuration classes for hardware deployment.
 """
 
 from configs.config import (
+    DEFAULT_HARDWARE_CONFIG_PATH,
     SERVO_BOARD_NAMES,
     BNO085Config,
     ControlConfig,
@@ -22,6 +23,7 @@ from configs.config import (
 )
 
 __all__ = [
+    "DEFAULT_HARDWARE_CONFIG_PATH",
     "SERVO_BOARD_NAMES",
     "BNO085Config",
     "ControlConfig",

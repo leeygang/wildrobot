@@ -43,7 +43,6 @@ def export_policy_bundle(
     config_path: Path,
     output_dir: Path,
     robot_config_path: Path,
-    hardware_config_source: Path | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -100,11 +99,6 @@ def export_policy_bundle(
         onnx_action_dim=action_dim,
     )
 
-    hardware_config_path = _export_hardware_config(
-        output_dir=output_dir,
-        source_path=hardware_config_source,
-    )
-
     runtime_policy_config_path = _export_runtime_policy_config(
         output_dir=output_dir,
         config_path=config_path,
@@ -117,46 +111,10 @@ def export_policy_bundle(
         spec_path,
         robot_snapshot_path,
         mjcf_snapshot_path,
-        hardware_config_path,
         runtime_policy_config_path,
     ]
     checksums = _build_checksums(checksum_paths)
     (output_dir / "checksums.json").write_text(json.dumps(checksums, indent=2))
-
-
-def _export_hardware_config(
-    *,
-    output_dir: Path,
-    source_path: Path | None = None,
-) -> Path:
-    """Write policy-independent physical I/O configuration."""
-    project_root = Path(__file__).parent.parent.parent
-    base_path = source_path or (
-        project_root / "runtime" / "configs" / "hardware_config.json"
-    )
-
-    if not base_path.exists():
-        raise FileNotFoundError(f"Hardware config base not found: {base_path}")
-
-    data = json.loads(base_path.read_text())
-    if not isinstance(data, dict):
-        raise ValueError(f"Hardware config base is not a JSON object: {base_path}")
-
-    for key in (
-        "policy_onnx_path",
-        "mjcf_path",
-        "action_scale_rad",
-        "control_hz",
-        "velocity_cmd",
-        "yaw_rate_cmd",
-        "realism_profile_path",
-    ):
-        data.pop(key, None)
-    data["robot_config_path"] = "./mujoco_robot_config.json"
-
-    out_path = output_dir / "hardware_config.json"
-    out_path.write_text(json.dumps(data, indent=2) + "\n")
-    return out_path
 
 
 def export_deployment_bundle(
@@ -167,7 +125,6 @@ def export_deployment_bundle(
     standing_config_path: Path,
     output_dir: Path,
     robot_config_path: Path,
-    hardware_config_source: Path | None = None,
 ) -> None:
     """Export compatible standing and walking policies into one deployment bundle."""
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -260,10 +217,6 @@ def export_deployment_bundle(
             staged["standing"] / "mujoco_robot_config.json",
             output_dir / "mujoco_robot_config.json",
         )
-        _export_hardware_config(
-            output_dir=output_dir,
-            source_path=hardware_config_source,
-        )
 
     manifest = {
         "schema_version": 1,
@@ -273,7 +226,6 @@ def export_deployment_bundle(
             "walking": {"path": "policies/walking"},
         },
         "shared": {
-            "hardware_config": "hardware_config.json",
             "mjcf": "wildrobot.xml",
             "robot_config": "mujoco_robot_config.json",
         },

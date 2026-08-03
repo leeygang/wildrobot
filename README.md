@@ -179,7 +179,7 @@ wildrobot/
 ├── runtime/                            # Hardware runtime and shared execution logs
 │   ├── README.md                       # Runtime install + run instructions
 │   ├── configs/                        # Runtime JSON config templates (hardware calibration source of truth)
-│   │   ├── hardware_config.json        # Calibrated hardware config template
+│   │   ├── hardware_config.json        # Canonical calibrated hardware config
 │   │   ├── walking_v0194.json          # Nominal-only walking deploy config (v0.19.4)
 │   │   └── walking_v0195.json          # Residual PPO walking deploy config (v0.19.5)
 │   ├── scripts/                        # Calibration tools (IMU/servo/footswitch)

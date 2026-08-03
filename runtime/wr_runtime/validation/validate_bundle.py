@@ -13,13 +13,11 @@ for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from configs import WildRobotRuntimeConfig
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 from wr_runtime.deployment_bundle import (
     DeploymentBundle,
     is_deployment_bundle,
-    resolve_hardware_config_path,
 )
 
 
@@ -73,19 +71,11 @@ def validate_bundle(
 
 
 def _default_mjcf_from_bundle(bundle_path: Path) -> Optional[Path]:
-    """Best-effort MJCF path discovery from a colocated runtime config in the bundle."""
+    """Return the policy bundle's model snapshot."""
     direct_mjcf = bundle_path / "wildrobot.xml"
     if direct_mjcf.exists():
         return direct_mjcf
-    cfg_path = resolve_hardware_config_path(bundle_path)
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"Bundle missing hardware configuration: {cfg_path}")
-    _print_pass(f"found {cfg_path.name}")
-    cfg = WildRobotRuntimeConfig.load(cfg_path)
-    mjcf_path = cfg.mjcf_resolved_path
-    if not mjcf_path.exists():
-        raise FileNotFoundError(f"MJCF not found at bundle-resolved path: {mjcf_path}")
-    return mjcf_path
+    raise FileNotFoundError(f"Bundle missing MJCF snapshot: {direct_mjcf}")
 
 
 def main() -> None:
@@ -102,12 +92,6 @@ def main() -> None:
             step = "load deployment bundle"
             deployment = DeploymentBundle.load(bundle_path)
             mjcf_path = deployment.mjcf_path
-            cfg = WildRobotRuntimeConfig.load(
-                deployment.hardware_config_path,
-                robot_config_path=deployment.robot_config_path,
-            )
-            _print_pass(f"found {deployment.hardware_config_path.name}")
-            _print_pass("loaded shared hardware config")
             for role in ("standing", "walking"):
                 step = f"validate {role} policy bundle"
                 validate_bundle(

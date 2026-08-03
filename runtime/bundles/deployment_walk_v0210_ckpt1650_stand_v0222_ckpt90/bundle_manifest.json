@@ -10,7 +10,6 @@
     }
   },
   "shared": {
-    "hardware_config": "hardware_config.json",
     "mjcf": "wildrobot.xml",
     "robot_config": "mujoco_robot_config.json"
   },

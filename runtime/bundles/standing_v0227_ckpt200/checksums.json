@@ -4,6 +4,5 @@
   "policy_spec.json": "92d82af2ed4f89119fb71b86f63bdd64ebd47a226355f04d322be3e0936cd2a1",
   "mujoco_robot_config.json": "177a413c221de527a83c2c2e0181c0b4549a041101a15072e46a723095a9fd6b",
   "wildrobot.xml": "2b28291a26c7fb86f5701d8a8baa8e76bf1978f4cdc807b8cdd3fef9f02c96a8",
-  "hardware_config.json": "1d6eaf7284594ace8142a8b3909ba9cb55c375e763d267fd3ae505bf7edd542f",
   "runtime_policy_config.json": "02e2ad4da3b867f1dddcf482ad64f6f069f543e122860f4e896102088cf17afd"
 }

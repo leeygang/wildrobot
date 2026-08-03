@@ -1,6 +1,5 @@
 {
-  "bundle_manifest.json": "2343723efd6f630c32ecd369e2103a54dfc15afc2ec17f5e9a0f976dd15f4988",
-  "hardware_config.json": "71b8966cc5e1e7f69cc063b253cab5e9e1b9f0fbccc75d2d83f81a6a1019ee90",
+  "bundle_manifest.json": "2d9d670cedfe4f9bce76dab904ecd555875fbb95a835015e5c4e25594767062a",
   "mujoco_robot_config.json": "769ba46618e4fc5405e4caf9effff3f5936014080e06e5f2acb15f0ac617b2e2",
   "policies/standing/checkpoint.pkl": "e653716a18ce36fcff0225e085461ccd4d40e295e0fe4a271540ed99386506f0",
   "policies/standing/policy.onnx": "79d0f4bdc29f24deaa194b55457630dd58bdec0093bd16893dc52892726d23ae",

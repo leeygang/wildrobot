@@ -25,13 +25,6 @@ from wr_runtime.hardware.robot_io import HardwareRobotIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _HARDWARE_CONFIG = _REPO_ROOT / "runtime" / "configs" / "hardware_config.json"
-_DEPLOYED_HARDWARE_CONFIG = (
-    _REPO_ROOT
-    / "runtime"
-    / "bundles"
-    / "standing_walk_v0222"
-    / "hardware_config.json"
-)
 _CALIBRATE = _REPO_ROOT / "runtime" / "scripts" / "calibrate.py"
 
 
@@ -51,22 +44,13 @@ def test_hardware_config_covers_all_v8_actuators() -> None:
     assert "right_ankle_roll" in servos
 
 
-def test_hardware_config_template_deprecates_archived_wrist_servos() -> None:
+def test_canonical_hardware_config_is_the_only_policy_hardware_config() -> None:
     template = json.loads(_HARDWARE_CONFIG.read_text())
-    deployed = json.loads(_DEPLOYED_HARDWARE_CONFIG.read_text())
-
     template_servos = template["servo_controller"]["servos"]
-    deployed_servos = deployed["servo_controller"]["servos"]
-    archived_only = set(deployed_servos) - set(template_servos)
-    assert archived_only == {
-        "left_wrist_yaw",
-        "left_wrist_pitch",
-        "right_wrist_yaw",
-        "right_wrist_pitch",
-    }
-    assert {name: deployed_servos[name] for name in template_servos} == template_servos
     assert "externally_managed_actuator_names" not in template
-    assert "externally_managed_actuator_names" in deployed
+    assert not any("wrist" in name for name in template_servos)
+    assert not list((_REPO_ROOT / "runtime" / "bundles").rglob("hardware_config.json"))
+    assert not list((_REPO_ROOT / "runtime" / "bundles").rglob("wildrobot_config.json"))
 
     raw_template = json.loads(_HARDWARE_CONFIG.read_text())
     assert (
@@ -434,6 +418,7 @@ def test_selected_servo_sa_applies_and_saves_proposed_offset(
 ) -> None:
     import builtins
     import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import WrRuntimeConfig
 
     class _FakeController:
         def read_servo_positions(self, servo_ids):
@@ -494,9 +479,18 @@ def test_selected_servo_sa_applies_and_saves_proposed_offset(
     ] == -36
     output = capsys.readouterr().out
     assert "Servo Zero-Reference Status" in output
-    assert "current_rad=+0.008378" in output
+    configured_servo = WrRuntimeConfig.load(_HARDWARE_CONFIG).hiwonder_controller.servos[
+        "left_hip_pitch"
+    ]
+    expected_current_rad = configured_servo.servo_elect_units_to_joint_target_rad(
+        464
+    )
+    assert f"current_rad={expected_current_rad:+.6f}" in output
     assert "suggested_servo_offset_unit=-36" in output
-    assert "Applied left_hip_pitch: servo_offset_unit -34 -> -36" in output
+    assert (
+        "Applied left_hip_pitch: servo_offset_unit "
+        f"{configured_servo.servo_offset_unit:+d} -> -36"
+    ) in output
     assert f"Saved calibration to {output_path}" in output
     assert any("Treat the current physical left_hip_pitch" in p for p in prompts)
     assert any("Press Enter to return to the joint menu" in p for p in prompts)
