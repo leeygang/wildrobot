@@ -67,6 +67,7 @@ DEFAULT_IMU_MAX_ATTEMPTS = 3
 DEFAULT_IMU_AXIS_ALIGN_COS = 0.85  # require inferred axis to align with expected sensor axis
 DEFAULT_IMU_MAX_ATTEMPTS_SINGLE_AXIS = 5
 CALIBRATION_IMU_SAMPLING_HZ = 20
+CALIBRATION_IMU_STATUS_TIMEOUT_S = 2.0
 
 POSITIVE_HINTS = {
     # These hints describe what POSITIVE MuJoCo radians look like physically.
@@ -2338,17 +2339,21 @@ def _report_calibration_imu(imu, *, label: str) -> None:
     if imu is None:
         return
     try:
-        deadline_s = time.monotonic() + 0.25
-        sample = imu.read()
-        last_valid = sample if bool(getattr(sample, "valid", False)) else None
-        while not bool(getattr(sample, "fresh", False)) and time.monotonic() < deadline_s:
-            time.sleep(0.01)
+        with _alarm_timeout(
+            CALIBRATION_IMU_STATUS_TIMEOUT_S,
+            message=f"Timed out reading IMU status after {label}",
+        ):
+            deadline_s = time.monotonic() + 0.25
             sample = imu.read()
-            if bool(getattr(sample, "valid", False)):
-                last_valid = sample
-        if not bool(getattr(sample, "valid", False)) and last_valid is not None:
-            sample = last_valid
-        status = _format_calibrate_home_imu_status(sample)
+            last_valid = sample if bool(getattr(sample, "valid", False)) else None
+            while not bool(getattr(sample, "fresh", False)) and time.monotonic() < deadline_s:
+                time.sleep(0.01)
+                sample = imu.read()
+                if bool(getattr(sample, "valid", False)):
+                    last_valid = sample
+            if not bool(getattr(sample, "valid", False)) and last_valid is not None:
+                sample = last_valid
+            status = _format_calibrate_home_imu_status(sample)
     except Exception as exc:
         print(f"  IMU after {label}: read_failed {type(exc).__name__}: {exc}")
         return
@@ -2682,19 +2687,20 @@ def _init_calibration_bno085(
     config: WrRuntimeConfig,
     upside_down: bool,
     axis_map: Optional[List[str]] = None,
+    polling_mode: bool = False,
 ):
     """Create a stable BNO08x reader for calibration.
 
-    Keep ToddlerBot's background-reader pattern, but use the proven WR Pi profile:
-    20 Hz with rotation-vector fallback enabled. This still gives roughly 60 fresh
-    samples per 3 second window and avoids the 200 Hz stream stalls seen on the Pi.
+    Dedicated IMU calibration keeps ToddlerBot's background-reader pattern for
+    continuous captures. Servo/home status uses polling mode so no worker runs
+    between explicit status reads.
     """
     kwargs = {
         "transport": config.bno085.transport,
         "i2c_address": config.bno085.i2c_address,
         "upside_down": upside_down,
         "sampling_hz": CALIBRATION_IMU_SAMPLING_HZ,
-        "polling_mode": False,
+        "polling_mode": bool(polling_mode),
         "suppress_debug": config.bno085.suppress_debug,
         "i2c_frequency_hz": config.bno085.i2c_frequency_hz,
         "spi_baudrate": config.bno085.spi_baudrate,
@@ -2745,6 +2751,7 @@ def _open_body_angle_imu(*, config: WrRuntimeConfig, purpose: str):
                 config=config,
                 upside_down=bool(getattr(config.bno085, "upside_down", False)),
                 axis_map=getattr(config.bno085, "axis_map", None),
+                polling_mode=True,
             )
         time.sleep(0.2)
         _report_calibration_imu(imu, label="initialization")

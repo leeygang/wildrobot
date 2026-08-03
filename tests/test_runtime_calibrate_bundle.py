@@ -25,6 +25,7 @@ from runtime.scripts.calibrate import (
     _init_calibration_bno085,
     _load_axis_map_measurements,
     _measure_axis_once,
+    _open_body_angle_imu,
     _resolve_single_axis_map_update,
     _select_axis_inference_result,
     _solve_axis_map_from_measurements,
@@ -222,19 +223,27 @@ def test_capture_imu_series_keeps_only_fresh_valid_samples(monkeypatch) -> None:
 def test_imu_axis_calibration_uses_background_reader() -> None:
     full_src = inspect.getsource(calibrate_imu_axis_map_full)
     sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
-    init_src = inspect.getsource(_init_calibration_bno085)
+    received = {}
+
+    class _FakeBNO085:
+        def __init__(self, **kwargs):
+            received.update(kwargs)
 
     assert CALIBRATION_IMU_SAMPLING_HZ == 20
-    assert "sampling_hz" in init_src
     assert "_init_calibration_bno085" in full_src
     assert "_init_calibration_bno085" in sign_src
-    assert "polling_mode\": False" in init_src
-    assert "enable_rotation_vector\": True" in init_src
+    _init_calibration_bno085(
+        _FakeBNO085,
+        config=WrRuntimeConfig.load(_HARDWARE_CONFIG),
+        upside_down=False,
+    )
+    assert received["polling_mode"] is False
+    assert received["enable_rotation_vector"] is True
     assert "polling_mode=True" not in full_src
     assert "polling_mode=True" not in sign_src
 
 
-def test_body_angle_imu_init_applies_runtime_axis_map() -> None:
+def test_body_angle_imu_uses_on_demand_polling_and_runtime_axis_map() -> None:
     cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
     received = {}
 
@@ -248,9 +257,12 @@ def test_body_angle_imu_init_applies_runtime_axis_map() -> None:
         config=cfg,
         upside_down=False,
         axis_map=axis_map,
+        polling_mode=True,
     )
 
     assert received["axis_map"] == axis_map
+    assert received["polling_mode"] is True
+    assert "polling_mode=True" in inspect.getsource(_open_body_angle_imu)
 
 
 def test_single_axis_calibration_reopens_imu_for_each_retry() -> None:
