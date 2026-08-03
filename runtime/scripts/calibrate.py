@@ -5085,6 +5085,10 @@ Examples (copy/paste):
                         break
 
                     if action == "p":
+                        _report_calibration_imu(
+                            body_angle_imu,
+                            label=f"{joint} manual status",
+                        )
                         print_joint_calibration_state(
                             controller,
                             joint=joint,
@@ -5094,6 +5098,13 @@ Examples (copy/paste):
                             policy_setup=policy_setup,
                             hint=hint,
                         )
+                        print_servo_zero_reference_status(
+                            controller,
+                            joint_names=[joint],
+                            servo_cfgs=servo_cfgs,
+                            states=states,
+                        )
+                        input("\nPress Enter to return to the joint menu...")
                         continue
 
                     if action in {"a", "sa"}:

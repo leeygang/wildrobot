@@ -365,7 +365,7 @@ def test_selected_servo_sa_applies_and_saves_proposed_offset(
 
     output_path = tmp_path / "hardware_config.json"
     prompts: list[str] = []
-    responses = iter(["n", "1", "sa", "y", "b", "q"])
+    responses = iter(["n", "1", "p", "", "sa", "y", "b", "q"])
 
     def _input(prompt: str = "") -> str:
         prompts.append(prompt)
@@ -405,9 +405,13 @@ def test_selected_servo_sa_applies_and_saves_proposed_offset(
         "servo_offset_unit"
     ] == -36
     output = capsys.readouterr().out
+    assert "Servo Zero-Reference Status" in output
+    assert "current_rad=+0.008378" in output
+    assert "suggested_servo_offset_unit=-36" in output
     assert "Applied left_hip_pitch: servo_offset_unit -34 -> -36" in output
     assert f"Saved calibration to {output_path}" in output
     assert any("Treat the current physical left_hip_pitch" in p for p in prompts)
+    assert any("Press Enter to return to the joint menu" in p for p in prompts)
 
 
 def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
