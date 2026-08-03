@@ -138,12 +138,15 @@ def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) 
     class _FakeController:
         def __init__(self):
             self.moves = []
+            self.reads = []
 
         def read_servo_positions(self, servo_ids):
-            servo_id = int(servo_ids[0])
-            if servo_id in missing_ids:
-                return None
-            return [(servo_id, 500)]
+            self.reads.append([int(servo_id) for servo_id in servo_ids])
+            return [
+                (int(servo_id), 500)
+                for servo_id in servo_ids
+                if int(servo_id) not in missing_ids
+            ]
 
         def move_servos(self, commands, move_ms):
             self.moves.append((list(commands), int(move_ms)))
@@ -184,11 +187,32 @@ def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) 
 
     calibrate_mod.main()
 
+    assert len(controller.reads) == 1
+    assert set(controller.reads[0]) == {
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        21,
+        22,
+        23,
+        31,
+        32,
+        33,
+        40,
+    }
     assert len(controller.moves) == 1
     moved_ids = {servo_id for servo_id, _ in controller.moves[0][0]}
     assert moved_ids.isdisjoint(missing_ids)
     assert moved_ids == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 40}
     output = capsys.readouterr().out
+    assert "Checking 17 configured servos before group move..." in output
     assert "WARNING: skipping unreadable servos in group move: #21, #22, #23, #31, #32, #33" in output
     assert "Step: move readable joints to calibrated zero with offset" in output
 

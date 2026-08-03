@@ -1832,14 +1832,20 @@ def _plan_group_move_20deg_per_s(
     min_ms: int = 1000,
 ) -> Tuple[List[Tuple[int, int]], int]:
     verified_commands: List[Tuple[int, int]] = []
-    skipped_servo_ids: List[int] = []
     max_move_ms = int(min_ms)
+    requested_servo_ids = [int(servo_id) for servo_id, _ in commands]
+    print(f"Checking {len(requested_servo_ids)} configured servos before group move...")
+    positions = controller.read_servo_positions(requested_servo_ids)
+    position_by_id = {
+        int(servo_id): int(position) for servo_id, position in positions or []
+    }
+    skipped_servo_ids: List[int] = []
     for servo_id, target_units in commands:
         servo = servo_cfg_by_id.get(int(servo_id))
         if servo is None:
             skipped_servo_ids.append(int(servo_id))
             continue
-        current_units = read_position(controller, int(servo_id))
+        current_units = position_by_id.get(int(servo_id))
         if current_units is None:
             skipped_servo_ids.append(int(servo_id))
             continue
