@@ -717,7 +717,7 @@ def test_calibrate_zero_centering_prompt(monkeypatch, raw: str, expected: str) -
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("z", "z"), ("r", "r"), ("q", "q"), ("", "z"), ("bad", "z")],
+    [("z", "z"), ("r", "r"), ("q", "q"), ("", "z")],
 )
 def test_calibrate_offset_reference_prompt(monkeypatch, raw: str, expected: str) -> None:
     import runtime.scripts.calibrate as calibrate_mod
@@ -726,6 +726,21 @@ def test_calibrate_offset_reference_prompt(monkeypatch, raw: str, expected: str)
     monkeypatch.setattr("builtins.input", lambda _prompt="": raw)
 
     assert calibrate_mod.prompt_offset_reference_mode(servo=ServoConfig(id=1), default="z") == expected
+
+
+def test_calibrate_offset_reference_prompt_reprompts_unknown_choice(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    responses = iter(["a", "z"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    assert calibrate_mod.prompt_offset_reference_mode(
+        servo=ServoConfig(id=1), default="z"
+    ) == "z"
+    assert "Unknown choice 'a'. No move was made" in capsys.readouterr().out
 
 
 def test_calibrate_offset_from_zero_degree_reference_handles_shoulder_center() -> None:

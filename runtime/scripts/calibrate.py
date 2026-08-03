@@ -764,14 +764,14 @@ def prompt_offset_reference_mode(*, servo: ServoConfig, default: str = "z") -> s
         f"  r = raw center/reference angle ({center_deg:+.1f} deg; old behavior)\n"
         "  q = quit this joint without saving"
     )
-    resp = input(f"[z/r/q, default {default}]: ").strip().lower()
-    if not resp:
-        return default
-    first = resp[0]
-    if first in {"z", "r", "q"}:
-        return first
-    print(f"Unknown choice '{resp}', using default '{default}'.")
-    return default
+    while True:
+        resp = input(f"[z/r/q, default {default}]: ").strip().lower()
+        if not resp:
+            return default
+        first = resp[0]
+        if first in {"z", "r", "q"}:
+            return first
+        print(f"Unknown choice '{resp}'. No move was made; enter z, r, or q.")
 
 
 def build_zero_pose_commands(
