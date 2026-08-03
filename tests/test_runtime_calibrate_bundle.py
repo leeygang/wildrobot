@@ -234,6 +234,25 @@ def test_imu_axis_calibration_uses_background_reader() -> None:
     assert "polling_mode=True" not in sign_src
 
 
+def test_body_angle_imu_init_applies_runtime_axis_map() -> None:
+    cfg = WrRuntimeConfig.load(_HARDWARE_CONFIG)
+    received = {}
+
+    class _FakeBNO085:
+        def __init__(self, **kwargs):
+            received.update(kwargs)
+
+    axis_map = ["+Y", "-X", "+Z"]
+    _init_calibration_bno085(
+        _FakeBNO085,
+        config=cfg,
+        upside_down=False,
+        axis_map=axis_map,
+    )
+
+    assert received["axis_map"] == axis_map
+
+
 def test_single_axis_calibration_reopens_imu_for_each_retry() -> None:
     sign_src = inspect.getsource(calibrate_imu_axis_sign_only)
 

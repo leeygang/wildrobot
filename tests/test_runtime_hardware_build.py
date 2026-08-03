@@ -404,6 +404,57 @@ def test_calibrate_home_imu_status_prints_body_angle() -> None:
     assert "gyro_norm_rad_s=0.000" in line
 
 
+def test_servo_offset_jog_reports_imu_after_each_move(monkeypatch, capsys) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    class _FakeController:
+        pass
+
+    class _FakeImu:
+        def read(self):
+            return SimpleNamespace(
+                valid=True,
+                fresh=True,
+                timestamp_s=12.5,
+                quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                gyro_rad_s=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+            )
+
+    responses = iter(["z", "d", "c"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_move_servo_units_20deg_per_s",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(calibrate_mod, "read_position", lambda *_args, **_kwargs: 500)
+
+    result = calibrate_mod.calibrate_offset(
+        _FakeController(),
+        ServoConfig(id=4),
+        "left_ankle_pitch",
+        calibrate_mod.JointState(offset=0, motor_sign=1),
+        all_servo_ids=[4],
+        move_ms=100,
+        step_units=5,
+        pause_s=0.0,
+        record_pos=False,
+        all_joint_names=["left_ankle_pitch"],
+        all_servo_cfgs={"left_ankle_pitch": ServoConfig(id=4)},
+        all_states={
+            "left_ankle_pitch": calibrate_mod.JointState(offset=0, motor_sign=1)
+        },
+        imu=_FakeImu(),
+    )
+
+    assert result[0] == 0
+    output = capsys.readouterr().out
+    assert "IMU after left_ankle_pitch offset-reference move:" in output
+    assert "IMU after left_ankle_pitch offset jog:" in output
+    assert "rpy_deg=[+0.0, +0.0, +0.0]" in output
+
+
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
     from wr_runtime.hardware.ttl_servo_controller import TtlServoController
 

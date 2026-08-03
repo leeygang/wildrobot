@@ -1348,6 +1348,7 @@ def calibrate_motor_sign(
     all_servo_ids: Iterable[int],
     move_ms: int,
     pause_s: float,
+    imu=None,
 ) -> int:
     print(f"\n-- Servo unit direction calibration for {joint} (servo {servo.id}) --")
     delta_rad_used = DEFAULT_DELTA_RAD
@@ -1366,6 +1367,7 @@ def calibrate_motor_sign(
             fallback_ms=max(int(move_ms), 1000),
             min_ms=1000,
         )
+        _report_calibration_imu(imu, label=f"{joint} direction-test center")
         # Direction calibration should be done in raw servo unit space:
         # start from mechanical center (500) and move +units. This avoids coupling
         # direction detection to any current joint_angle_at_zero_unit_deg or offset.
@@ -1384,6 +1386,7 @@ def calibrate_motor_sign(
             fallback_ms=max(int(move_ms), 1000),
             min_ms=1000,
         )
+        _report_calibration_imu(imu, label=f"{joint} direction-test positive delta")
         resp = input(motor_sign_prompt(joint, hint, delta_rad_used, axis) + "\n> ").strip().lower()
         if resp == PANIC_KEY:
             panic_and_exit(controller, all_servo_ids)
@@ -1400,6 +1403,7 @@ def calibrate_motor_sign(
                 fallback_ms=max(int(move_ms), 1000),
                 min_ms=1000,
             )
+            _report_calibration_imu(imu, label=f"{joint} direction-test return")
             return 1
         if resp.startswith("n"):
             print("servo_unit_direction / motor_unit_direction set to -1")
@@ -1414,6 +1418,7 @@ def calibrate_motor_sign(
                 fallback_ms=max(int(move_ms), 1000),
                 min_ms=1000,
             )
+            _report_calibration_imu(imu, label=f"{joint} direction-test return")
             return -1
         if resp.startswith("r"):
             try:
@@ -1440,6 +1445,7 @@ def calibrate_offset(
     all_joint_names: List[str],
     all_servo_cfgs: Dict[str, ServoConfig],
     all_states: Dict[str, JointState],
+    imu=None,
 ) -> Tuple[Optional[int], bool, bool, Optional[float], str]:
     """Calibrate offset for a joint.
 
@@ -1475,6 +1481,7 @@ def calibrate_offset(
         fallback_ms=max(int(move_ms), 1000),
         min_ms=1000,
     )
+    _report_calibration_imu(imu, label=f"{joint} offset-reference move")
     commands_msg = (
         f"Jog the joint until it matches {reference_label}. Commands:"
         "\n  a/d = -/+ step; A/D = -/+ 5x step; c or empty = confirm;"
@@ -1567,6 +1574,7 @@ def calibrate_offset(
             fallback_ms=max(int(move_ms), 1000),
             min_ms=1000,
         )
+        _report_calibration_imu(imu, label=f"{joint} offset jog")
         pos = read_position(controller, servo.id)
         if pos is not None:
             pos_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
@@ -1596,6 +1604,7 @@ def verify_zero(
     *,
     target_rad: Optional[float] = None,
     target_label: str = "center_rad",
+    imu=None,
 ) -> None:
     center_target_rad = float(servo.center_rad) if target_rad is None else float(target_rad)
     target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
@@ -1608,6 +1617,7 @@ def verify_zero(
         pause_s,
     )
     move_and_wait(controller, servo.id, target_units, move_ms)
+    _report_calibration_imu(imu, label=f"{joint} offset verification")
     pos = read_position(controller, servo.id)
     if pos is None:
         print("Verification readback failed.")
@@ -1809,6 +1819,7 @@ def evaluate_policy_action(
     state: JointState,
     policy_setup: PolicyActionSetup,
     move_ms_fallback: int,
+    imu=None,
 ) -> None:
     scale_rad = float(policy_setup.residual_scale_by_joint.get(joint, 0.0))
     home_rad = float(policy_setup.base_rad_by_joint.get(joint, 0.0))
@@ -1882,6 +1893,7 @@ def evaluate_policy_action(
             print("Current position read failed; using fallback move time.")
         print(f"Moving {joint} to policy home/base ({int(home_units)} units)...")
         move_and_wait(controller, int(servo.id), int(home_units), int(home_move_ms))
+        _report_calibration_imu(imu, label=f"{joint} policy-home move")
         home_pos = read_position(controller, int(servo.id))
         if home_pos is not None:
             print(f"Home readback elect unit={int(home_pos)} conceptual={int(home_pos) - int(state.offset)}")
@@ -1891,6 +1903,7 @@ def evaluate_policy_action(
         action_move_ms = _move_ms_for_speed_20deg_per_s(home_deg, target_deg)
         print(f"Moving {joint} to policy-action target ({int(target_units)} units)...")
         move_and_wait(controller, int(servo.id), int(target_units), int(action_move_ms))
+        _report_calibration_imu(imu, label=f"{joint} policy-action move")
         pos = read_position(controller, int(servo.id))
         if pos is not None:
             print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(state.offset)}")
@@ -1903,6 +1916,7 @@ def range_test_joint(
     *,
     state: Optional[JointState] = None,
     speed_deg_per_s: Optional[float] = None,
+    imu=None,
 ) -> None:
     """Run a joint through its full range: center -> min -> max -> min -> center."""
     print(f"\n-- Range test for {joint} (servo {servo.id}) --")
@@ -2002,6 +2016,7 @@ def range_test_joint(
             print(f"Moving to {label} ({target_units} units)...")
             controller.move_servos([(servo.id, int(target_units))], int(move_ms))
             time.sleep(int(move_ms) / 1000.0 + 0.1)
+            _report_calibration_imu(imu, label=f"{joint} range {label}")
             pos = read_position(controller, servo.id)
             if pos is None:
                 print("  Readback: failed")
@@ -2128,6 +2143,18 @@ def _format_calibrate_home_imu_status(sample) -> str:
     )
 
 
+def _report_calibration_imu(imu, *, label: str) -> None:
+    """Print the latest runtime-frame body angle after a calibration move."""
+    if imu is None:
+        return
+    try:
+        status = _format_calibrate_home_imu_status(imu.read())
+    except Exception as exc:
+        print(f"  IMU after {label}: read_failed {type(exc).__name__}: {exc}")
+        return
+    print(status.replace("  IMU body_angle:", f"  IMU after {label}:", 1))
+
+
 def _format_home_pose_line(
     *,
     joint: str,
@@ -2183,9 +2210,11 @@ def _move_joint_home_candidate(
     state: JointState,
     target_rad: float,
     move_ms: int,
+    imu=None,
 ) -> None:
     target_units = _home_pose_units(servo, state, target_rad)
     move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+    _report_calibration_imu(imu, label=f"{joint} home-pose adjustment")
     pos = read_position(controller, int(servo.id))
     if pos is None:
         print("Moved. Readback failed.")
@@ -2348,6 +2377,7 @@ def calibrate_home_pose(
                 state=state,
                 target_rad=current_rad,
                 move_ms=max(int(move_ms), 300),
+                imu=imu,
             )
 
 
@@ -2442,7 +2472,13 @@ def _apply_upside_down_quat(quat_wxyz: List[float]) -> List[float]:
     return [w, x, -y, -z]
 
 
-def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down: bool):
+def _init_calibration_bno085(
+    BNO085IMU,
+    *,
+    config: WrRuntimeConfig,
+    upside_down: bool,
+    axis_map: Optional[List[str]] = None,
+):
     """Create a stable BNO08x reader for calibration.
 
     Keep ToddlerBot's background-reader pattern, but use the proven WR Pi profile:
@@ -2465,6 +2501,7 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
         "spi_wake_pin": config.bno085.spi_wake_pin,
         "init_retries": config.bno085.init_retries,
         "enable_rotation_vector": True,
+        "axis_map": axis_map,
     }
     try:
         return BNO085IMU(**kwargs)
@@ -2480,10 +2517,37 @@ def _init_calibration_bno085(BNO085IMU, *, config: WrRuntimeConfig, upside_down:
             "spi_int_pin",
             "spi_reset_pin",
             "spi_wake_pin",
+            "axis_map",
         ):
             kwargs.pop(key, None)
         kwargs.pop("enable_rotation_vector", None)
         return BNO085IMU(**kwargs)
+
+
+def _open_body_angle_imu(*, config: WrRuntimeConfig, purpose: str):
+    """Open a best-effort runtime-frame IMU reader for servo calibration."""
+    try:
+        from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+
+        with _alarm_timeout(
+            10,
+            message=(
+                f"Timed out initializing BNO085 IMU for {purpose}. "
+                "Continuing without IMU body-angle reports."
+            ),
+        ):
+            imu = _init_calibration_bno085(
+                BNO085IMU,
+                config=config,
+                upside_down=bool(getattr(config.bno085, "upside_down", False)),
+                axis_map=getattr(config.bno085, "axis_map", None),
+            )
+        time.sleep(0.2)
+        _report_calibration_imu(imu, label="initialization")
+        return imu
+    except Exception as exc:
+        print(f"Warning: IMU body angle unavailable during {purpose}: {exc}")
+        return None
 
 
 def calibrate_imu_upside_down(
@@ -4503,8 +4567,15 @@ Examples (copy/paste):
         return
 
     controller = build_calibration_controller(config.hiwonder_controller)
+    body_angle_imu = None
     home_pose_commanded = False
     try:
+        if args.calibrate or args.calibrate_home:
+            body_angle_imu = _open_body_angle_imu(
+                config=config,
+                purpose="servo calibration",
+            )
+
         if args.go_home:
             home_ctrl = resolve_home_ctrl(args, joint_names)
             if len(home_ctrl) != len(joint_names):
@@ -4535,6 +4606,7 @@ Examples (copy/paste):
                     states=states,
                     target_rad_by_joint=dict(zip(joint_names, home_ctrl, strict=True)),
                 )
+                _report_calibration_imu(body_angle_imu, label="home-pose move")
 
         if args.range:
             # Range test mode: reset to center, then interactively test joints
@@ -4634,46 +4706,28 @@ Examples (copy/paste):
             bundle_dir_for_home = resolve_bundle_dir(args, config)
             if bundle_dir_for_home is None:
                 raise ValueError("calibrate_home requires --bundle or a config policy path next to policy_spec.json.")
-            imu = None
-            try:
-                from runtime.wr_runtime.hardware.bno085 import BNO085IMU
-
-                with _alarm_timeout(
-                    10,
-                    message=(
-                        "Timed out initializing BNO085 IMU for calibrate_home body-angle status. "
-                        "Continuing without IMU body angle."
-                    ),
-                ):
-                    imu = _init_calibration_bno085(
-                        BNO085IMU,
-                        config=config,
-                        upside_down=bool(getattr(config.bno085, "upside_down", False)),
-                    )
-                time.sleep(0.2)
-            except Exception as exc:
-                print(f"Warning: IMU body angle unavailable in calibrate_home: {exc}")
-                imu = None
-            try:
-                calibrate_home_pose(
-                    controller,
-                    bundle_dir=bundle_dir_for_home,
-                    joint_names=joint_names,
-                    servo_cfgs=servo_cfgs,
-                    states=states,
-                    move_ms=int(args.move_ms),
-                    pause_s=float(args.pause_s),
-                    imu=imu,
-                )
-            finally:
-                if imu is not None:
-                    with contextlib.suppress(Exception):
-                        imu.close()
+            calibrate_home_pose(
+                controller,
+                bundle_dir=bundle_dir_for_home,
+                joint_names=joint_names,
+                servo_cfgs=servo_cfgs,
+                states=states,
+                move_ms=int(args.move_ms),
+                pause_s=float(args.pause_s),
+                imu=body_angle_imu,
+            )
             return
 
         if args.calibrate:
             # Unified calibration mode
             print("\n-- Calibration Mode --")
+            print(
+                "Straight-leg zero calibration requires the robot to be fully supported "
+                "with the legs unloaded. MuJoCo's zero leg-pitch chain is upright with "
+                "flat soles; the arms may be moved clear of the torso. Align each joint "
+                "to its physical MuJoCo-zero reference; use IMU pitch only to validate "
+                "the assembled chain."
+            )
             if args.go_home:
                 print("Flow: keep home pose → select joint → choose action → calibrate → repeat")
             else:
@@ -4722,6 +4776,7 @@ Examples (copy/paste):
                 )
                 controller.move_servos(cmds, int(center_move_ms))
                 time.sleep(int(center_move_ms) / 1000.0 + 0.2)
+                _report_calibration_imu(body_angle_imu, label="global zero-pose move")
 
             calibrated: Dict[str, JointState] = {}
             save_on_exit = False
@@ -4850,6 +4905,10 @@ Examples (copy/paste):
                                 move_ms = int(max(args.move_ms, 100))
                                 print("Current position read failed; using fallback move time.")
                             move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+                            _report_calibration_imu(
+                                body_angle_imu,
+                                label=f"{joint} direct-target move",
+                            )
                             pos = read_position(controller, int(servo.id))
                             if pos is not None:
                                 print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
@@ -4863,6 +4922,7 @@ Examples (copy/paste):
                             state=current_state,
                             policy_setup=policy_setup,
                             move_ms_fallback=int(args.move_ms),
+                            imu=body_angle_imu,
                         )
                         continue
 
@@ -4877,6 +4937,7 @@ Examples (copy/paste):
                             all_servo_ids=servo_ids,
                             move_ms=args.move_ms,
                             pause_s=float(args.pause_s),
+                            imu=body_angle_imu,
                         )
                         states[joint].motor_sign = int(new_direction)
                         calibrated[joint] = states[joint]
@@ -4925,6 +4986,10 @@ Examples (copy/paste):
                                 move_ms = 1000
                                 print("Current position read failed; using fallback move time.")
                             move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+                            _report_calibration_imu(
+                                body_angle_imu,
+                                label=f"{joint} raw-unit move",
+                            )
                             pos = read_position(controller, int(servo.id))
                             if pos is not None:
                                 print(
@@ -4939,6 +5004,7 @@ Examples (copy/paste):
                             joint,
                             state=current_state,
                             speed_deg_per_s=20.0,
+                            imu=body_angle_imu,
                         )
                         continue
 
@@ -4972,6 +5038,10 @@ Examples (copy/paste):
                             print("Current position read failed; using fallback move time.")
 
                         move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
+                        _report_calibration_imu(
+                            body_angle_imu,
+                            label=f"{joint} zero move",
+                        )
                         pos = read_position(controller, int(servo.id))
                         if pos is not None:
                             print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
@@ -5009,6 +5079,7 @@ Examples (copy/paste):
                             all_joint_names=joint_names,
                             all_servo_cfgs=servo_cfgs,
                             all_states=states,
+                            imu=body_angle_imu,
                         )
                         if quit_joint_without_save:
                             states[joint] = state_before_offset
@@ -5025,6 +5096,7 @@ Examples (copy/paste):
                                 pause_s=float(args.pause_s),
                                 target_rad=verify_target_rad,
                                 target_label=verify_label or "center_rad",
+                                imu=body_angle_imu,
                             )
                         calibrated[joint] = states[joint]
                         if save_requested:
@@ -5051,6 +5123,9 @@ Examples (copy/paste):
                 print("Discarded calibration changes (not saved).")
 
     finally:
+        if body_angle_imu is not None:
+            with contextlib.suppress(Exception):
+                body_angle_imu.close()
         try:
             try:
                 controller.unload_servos(servo_ids)
