@@ -1824,36 +1824,37 @@ def _move_servo_units_20deg_per_s(
     move_and_wait(controller, int(servo.id), int(target_units), int(move_ms))
 
 
-def _group_move_ms_20deg_per_s(
+def _plan_group_move_20deg_per_s(
     controller,
     servo_cfg_by_id: Dict[int, ServoConfig],
     commands: List[Tuple[int, int]],
     *,
-    fallback_ms: int = 1000,
     min_ms: int = 1000,
-) -> int:
+) -> Tuple[List[Tuple[int, int]], int]:
+    verified_commands: List[Tuple[int, int]] = []
+    skipped_servo_ids: List[int] = []
     max_move_ms = int(min_ms)
-    read_failed = False
     for servo_id, target_units in commands:
         servo = servo_cfg_by_id.get(int(servo_id))
         if servo is None:
-            max_move_ms = max(max_move_ms, int(max(min_ms, fallback_ms)))
+            skipped_servo_ids.append(int(servo_id))
             continue
         current_units = read_position(controller, int(servo_id))
         if current_units is None:
-            read_failed = True
-            joint_move_ms = int(max(min_ms, fallback_ms))
-        else:
-            joint_move_ms = _move_ms_from_units_for_speed_20deg_per_s(
-                int(current_units),
-                int(target_units),
-                units_per_rad=float(servo.UNITS_PER_RAD),
-                min_ms=int(min_ms),
-            )
+            skipped_servo_ids.append(int(servo_id))
+            continue
+        verified_commands.append((int(servo_id), int(target_units)))
+        joint_move_ms = _move_ms_from_units_for_speed_20deg_per_s(
+            int(current_units),
+            int(target_units),
+            units_per_rad=float(servo.UNITS_PER_RAD),
+            min_ms=int(min_ms),
+        )
         max_move_ms = max(max_move_ms, int(joint_move_ms))
-    if read_failed:
-        print("Some current positions failed to read; using fallback move time for those joints.")
-    return int(max_move_ms)
+    if skipped_servo_ids:
+        skipped = ", ".join(f"#{servo_id}" for servo_id in skipped_servo_ids)
+        print(f"WARNING: skipping unreadable servos in group move: {skipped}")
+    return verified_commands, int(max_move_ms)
 
 
 def print_target_readback_summary(
@@ -4795,20 +4796,22 @@ Examples (copy/paste):
                     use_offset=use_offset,
                 )
                 servo_cfg_by_id = {int(servo_cfgs[j].id): servo_cfgs[j] for j in joint_names}
-                center_move_ms = _group_move_ms_20deg_per_s(
+                verified_cmds, center_move_ms = _plan_group_move_20deg_per_s(
                     controller,
                     servo_cfg_by_id,
                     cmds,
-                    fallback_ms=max(int(args.move_ms), 1000),
                     min_ms=1000,
                 )
                 mode_label = "calibrated zero with offset" if use_offset else "absolute zero without offset"
-                announce_and_pause(
-                    f"Step: move all joints to {mode_label} (duration {center_move_ms} ms)",
-                    float(args.pause_s),
-                )
-                controller.move_servos(cmds, int(center_move_ms))
-                time.sleep(int(center_move_ms) / 1000.0 + 0.1)
+                if verified_cmds:
+                    announce_and_pause(
+                        f"Step: move readable joints to {mode_label} (duration {center_move_ms} ms)",
+                        float(args.pause_s),
+                    )
+                    controller.move_servos(verified_cmds, int(center_move_ms))
+                    time.sleep(int(center_move_ms) / 1000.0 + 0.1)
+                else:
+                    print("WARNING: no readable servos; skipped the zero-pose group move.")
 
             while True:
                 print("\n" + "-" * 40)
@@ -4937,21 +4940,23 @@ Examples (copy/paste):
                     )
             if cmds:
                 servo_cfg_by_id = {int(servo_cfgs[j].id): servo_cfgs[j] for j in joint_names}
-                center_move_ms = _group_move_ms_20deg_per_s(
+                verified_cmds, center_move_ms = _plan_group_move_20deg_per_s(
                     controller,
                     servo_cfg_by_id,
                     cmds,
-                    fallback_ms=max(int(args.move_ms), 1000),
                     min_ms=1000,
                 )
                 mode_label = "calibrated zero with offset" if use_offset else "absolute zero without offset"
-                announce_and_pause(
-                    f"Step: move all joints to {mode_label} (duration {center_move_ms} ms, 20 deg/s, min 1s)",
-                    float(args.pause_s),
-                )
-                controller.move_servos(cmds, int(center_move_ms))
-                time.sleep(int(center_move_ms) / 1000.0 + 0.2)
-                _report_calibration_imu(body_angle_imu, label="global zero-pose move")
+                if verified_cmds:
+                    announce_and_pause(
+                        f"Step: move readable joints to {mode_label} (duration {center_move_ms} ms, 20 deg/s, min 1s)",
+                        float(args.pause_s),
+                    )
+                    controller.move_servos(verified_cmds, int(center_move_ms))
+                    time.sleep(int(center_move_ms) / 1000.0 + 0.2)
+                    _report_calibration_imu(body_angle_imu, label="global zero-pose move")
+                else:
+                    print("WARNING: no readable servos; skipped the zero-pose group move.")
 
             calibrated: Dict[str, JointState] = {}
             save_on_exit = False

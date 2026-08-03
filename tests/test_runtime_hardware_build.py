@@ -129,6 +129,70 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
     assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
 
 
+def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    missing_ids = {21, 22, 23, 31, 32, 33}
+
+    class _FakeController:
+        def __init__(self):
+            self.moves = []
+
+        def read_servo_positions(self, servo_ids):
+            servo_id = int(servo_ids[0])
+            if servo_id in missing_ids:
+                return None
+            return [(servo_id, 500)]
+
+        def move_servos(self, commands, move_ms):
+            self.moves.append((list(commands), int(move_ms)))
+
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    controller = _FakeController()
+    responses = iter(["o", "q"])
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "build_calibration_controller",
+        lambda config: controller,
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_open_body_angle_imu",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(responses))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_HARDWARE_CONFIG),
+            "--calibrate",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    assert len(controller.moves) == 1
+    moved_ids = {servo_id for servo_id, _ in controller.moves[0][0]}
+    assert moved_ids.isdisjoint(missing_ids)
+    assert moved_ids == {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 40}
+    output = capsys.readouterr().out
+    assert "WARNING: skipping unreadable servos in group move: #21, #22, #23, #31, #32, #33" in output
+    assert "Step: move readable joints to calibrated zero with offset" in output
+
+
 def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None:
     import builtins
     import runtime.scripts.calibrate as calibrate_mod
