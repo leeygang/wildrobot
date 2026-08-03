@@ -546,6 +546,55 @@ def print_all_joint_positions(
             print(f"  {joint}: id={servo.id} units={units}")
 
 
+def print_servo_zero_reference_status(
+    controller,
+    *,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+) -> None:
+    """Report current joint error and offset implied by a physical zero pose."""
+    servo_ids = [int(servo_cfgs[joint].id) for joint in joint_names]
+    positions = controller.read_servo_positions(servo_ids)
+    pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions or []}
+
+    print("\n-- Servo Zero-Reference Status --")
+    print(
+        "Expected joint angle is 0 rad. Apply a suggested offset only when that "
+        "joint is physically aligned to its MuJoCo-zero reference."
+    )
+    for joint in joint_names:
+        servo = servo_cfgs[joint]
+        state = states[joint]
+        raw_units = pos_by_id.get(int(servo.id))
+        if raw_units is None:
+            print(f"  #{int(servo.id):2d} {joint:22s} readback=missing")
+            continue
+
+        expected_rad = 0.0
+        current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+            raw_units,
+            motor_sign=int(state.motor_sign),
+            offset=int(state.offset),
+        )
+        delta_rad = float(current_rad) - expected_rad
+        suggested_offset = offset_from_reference_pose_units(
+            servo,
+            raw_units,
+            motor_sign=int(state.motor_sign),
+            target_rad=expected_rad,
+        )
+        print(
+            f"  #{int(servo.id):2d} {joint:22s} raw={raw_units:4d} "
+            f"raw_center_delta={raw_units - int(ServoConfig.UNITS_CENTER):+4d} "
+            f"current_rad={float(current_rad):+.6f} expected_rad={expected_rad:+.6f} "
+            f"delta_rad={delta_rad:+.6f} "
+            f"current_servo_offset_unit={int(state.offset):+d} "
+            f"suggested_servo_offset_unit={suggested_offset:+d} "
+            f"offset_change={suggested_offset - int(state.offset):+d}"
+        )
+
+
 def read_all_home_ctrl_rad(
     controller,
     *,
@@ -4836,7 +4885,7 @@ Examples (copy/paste):
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
-                print("  p = print current IMU status")
+                print("  p = print current IMU and servo zero-reference status")
 
                 # Step 2: User selects joint
                 raw = input(
@@ -4849,10 +4898,18 @@ Examples (copy/paste):
                     save_on_exit = True
                     break
                 if raw == "p":
+                    print("\n-- Current Calibration Status --")
                     if body_angle_imu is None:
                         print("  IMU current status: unavailable (IMU was not initialized)")
                     else:
                         _report_calibration_imu(body_angle_imu, label="manual status")
+                    print_servo_zero_reference_status(
+                        controller,
+                        joint_names=joint_names,
+                        servo_cfgs=servo_cfgs,
+                        states=states,
+                    )
+                    input("\nPress Enter to return to the joint list...")
                     continue
 
                 try:

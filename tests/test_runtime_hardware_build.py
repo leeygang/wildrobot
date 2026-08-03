@@ -134,6 +134,9 @@ def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None
     import runtime.scripts.calibrate as calibrate_mod
 
     class _FakeController:
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_id), 500) for servo_id in servo_ids]
+
         def unload_servos(self, servo_ids):
             pass
 
@@ -154,7 +157,7 @@ def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None
             pass
 
     prompts: list[str] = []
-    responses = iter(["n", "p", "q"])
+    responses = iter(["n", "p", "", "q"])
 
     def _input(prompt: str = "") -> str:
         prompts.append(prompt)
@@ -189,7 +192,46 @@ def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None
     output = capsys.readouterr().out
     assert "IMU after manual status:" in output
     assert "rpy_deg=[+0.0, +0.0, +0.0]" in output
+    assert "Servo Zero-Reference Status" in output
+    assert "current_rad=" in output
+    assert "suggested_servo_offset_unit=" in output
     assert any("'p' IMU" in prompt for prompt in prompts)
+    assert any("Press Enter to return to the joint list" in prompt for prompt in prompts)
+
+
+def test_servo_zero_reference_status_suggests_offset_from_raw_position(capsys) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    class _FakeController:
+        def read_servo_positions(self, servo_ids):
+            assert servo_ids == [1]
+            return [(1, 464)]
+
+    servo = ServoConfig(
+        id=1,
+        servo_offset_unit=-34,
+        motor_unit_direction=-1,
+        joint_angle_at_zero_unit_deg=0.0,
+    )
+    calibrate_mod.print_servo_zero_reference_status(
+        _FakeController(),
+        joint_names=["left_hip_pitch"],
+        servo_cfgs={"left_hip_pitch": servo},
+        states={
+            "left_hip_pitch": calibrate_mod.JointState(offset=-34, motor_sign=-1)
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "raw= 464" in output
+    assert "raw_center_delta= -36" in output
+    assert "current_rad=+0.008378" in output
+    assert "expected_rad=+0.000000" in output
+    assert "delta_rad=+0.008378" in output
+    assert "current_servo_offset_unit=-34" in output
+    assert "suggested_servo_offset_unit=-36" in output
+    assert "offset_change=-2" in output
 
 
 def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
