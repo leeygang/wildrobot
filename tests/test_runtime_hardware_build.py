@@ -10,6 +10,7 @@ classes with the right kwargs (mocked — no servos/IMU/GPIO required).
 from __future__ import annotations
 
 import json
+import math
 import runpy
 import sys
 from pathlib import Path
@@ -126,6 +127,69 @@ def test_calibrate_go_home_skips_global_zero_prompt(monkeypatch) -> None:
 
     assert any("Move all servos to home pose now?" in prompt for prompt in prompts)
     assert not any("Move all joints to MuJoCo joint_pos_deg 0" in prompt for prompt in prompts)
+
+
+def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    class _FakeImu:
+        def read(self):
+            return SimpleNamespace(
+                valid=True,
+                fresh=True,
+                timestamp_s=12.5,
+                quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                gyro_rad_s=np.array([0.0, 0.0, 0.0], dtype=np.float32),
+            )
+
+        def close(self):
+            pass
+
+    prompts: list[str] = []
+    responses = iter(["n", "p", "q"])
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "build_calibration_controller",
+        lambda config: _FakeController(),
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_open_body_angle_imu",
+        lambda **_kwargs: _FakeImu(),
+    )
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_HARDWARE_CONFIG),
+            "--calibrate",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    output = capsys.readouterr().out
+    assert "IMU after manual status:" in output
+    assert "rpy_deg=[+0.0, +0.0, +0.0]" in output
+    assert any("'p' IMU" in prompt for prompt in prompts)
 
 
 def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
@@ -402,6 +466,31 @@ def test_calibrate_home_imu_status_prints_body_angle() -> None:
     assert "rpy_deg=[+0.0, +0.0, +0.0]" in line
     assert "tilt_deg=0.0" in line
     assert "gyro_norm_rad_s=0.000" in line
+    assert "roll=level side-to-side" in line
+    assert "pitch=level front-to-back" in line
+
+
+def test_calibrate_imu_status_explains_roll_and_pitch_directions() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    roll = math.radians(24.5)
+    pitch = math.radians(0.2)
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    sample = SimpleNamespace(
+        valid=True,
+        fresh=True,
+        timestamp_s=12.5,
+        quat_wxyz=np.array([cr * cp, sr * cp, cr * sp, -sr * sp]),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+    )
+
+    line = calibrate_mod._format_calibrate_home_imu_status(sample)
+
+    assert "rpy_deg=[+24.5, +0.2, +0.0]" in line
+    assert "roll=lean right 24.5deg" in line
+    assert "pitch=lean forward 0.2deg" in line
+    assert "yaw=heading only" in line
 
 
 def test_servo_offset_jog_reports_imu_after_each_move(monkeypatch, capsys) -> None:

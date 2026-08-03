@@ -2136,10 +2136,28 @@ def _format_calibrate_home_imu_status(sample) -> str:
     gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float64).reshape(-1)
     gyro_norm = float(np.linalg.norm(gyro)) if gyro.size == 3 and np.all(np.isfinite(gyro)) else None
     gyro_part = f" gyro_norm_rad_s={gyro_norm:.3f}" if gyro_norm is not None else ""
+    age_part = ""
+    try:
+        if timestamp_s is not None:
+            age_part = f" age_s={max(0.0, time.monotonic() - float(timestamp_s)):.3f}"
+    except (TypeError, ValueError):
+        pass
+    roll_meaning = (
+        "level side-to-side"
+        if abs(rpy_deg[0]) < 0.05
+        else f"lean {'right' if rpy_deg[0] > 0.0 else 'left'} {abs(rpy_deg[0]):.1f}deg"
+    )
+    pitch_meaning = (
+        "level front-to-back"
+        if abs(rpy_deg[1]) < 0.05
+        else f"lean {'forward' if rpy_deg[1] > 0.0 else 'backward'} {abs(rpy_deg[1]):.1f}deg"
+    )
     return (
         f"  IMU body_angle: valid={valid} fresh={fresh} "
         f"rpy_deg=[{rpy_deg[0]:+.1f}, {rpy_deg[1]:+.1f}, {rpy_deg[2]:+.1f}] "
-        f"tilt_deg={float(math.degrees(tilt)):.1f}{gyro_part} timestamp_s={timestamp_s}"
+        f"tilt_deg={float(math.degrees(tilt)):.1f}{gyro_part} "
+        f"timestamp_s={timestamp_s}{age_part}\n"
+        f"    meaning: roll={roll_meaning}; pitch={pitch_meaning}; yaw=heading only"
     )
 
 
@@ -2148,7 +2166,17 @@ def _report_calibration_imu(imu, *, label: str) -> None:
     if imu is None:
         return
     try:
-        status = _format_calibrate_home_imu_status(imu.read())
+        deadline_s = time.monotonic() + 0.25
+        sample = imu.read()
+        last_valid = sample if bool(getattr(sample, "valid", False)) else None
+        while not bool(getattr(sample, "fresh", False)) and time.monotonic() < deadline_s:
+            time.sleep(0.01)
+            sample = imu.read()
+            if bool(getattr(sample, "valid", False)):
+                last_valid = sample
+        if not bool(getattr(sample, "valid", False)) and last_valid is not None:
+            sample = last_valid
+        status = _format_calibrate_home_imu_status(sample)
     except Exception as exc:
         print(f"  IMU after {label}: read_failed {type(exc).__name__}: {exc}")
         return
@@ -4808,15 +4836,24 @@ Examples (copy/paste):
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
+                print("  p = print current IMU status")
 
                 # Step 2: User selects joint
-                raw = input("\nSelect servo # (or 'q' quit, 's' save+quit): ").strip().lower()
+                raw = input(
+                    "\nSelect servo # (or 'p' IMU, 'q' quit, 's' save+quit): "
+                ).strip().lower()
                 if raw == "q" or raw == PANIC_KEY:
                     save_on_exit = False
                     break
                 if raw == "s":
                     save_on_exit = True
                     break
+                if raw == "p":
+                    if body_angle_imu is None:
+                        print("  IMU current status: unavailable (IMU was not initialized)")
+                    else:
+                        _report_calibration_imu(body_angle_imu, label="manual status")
+                    continue
 
                 try:
                     servo_id = int(raw.lstrip("#"))
@@ -4826,7 +4863,7 @@ Examples (copy/paste):
                         print(f"Invalid servo ID. Enter one of: {valid_servo_ids}.")
                         continue
                 except ValueError:
-                    print("Invalid input. Enter a number, 'q', or 's'.")
+                    print("Invalid input. Enter a number, 'p', 'q', or 's'.")
                     continue
 
                 servo = servo_cfgs[joint]
