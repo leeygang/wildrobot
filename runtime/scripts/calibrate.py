@@ -436,7 +436,11 @@ def calibrate_footswitches(*, config: WrRuntimeConfig) -> None:
 
     try:
         while True:
-            selected = prompt_select_footswitch_targets()
+            try:
+                selected = prompt_select_footswitch_targets()
+            except ValueError as exc:
+                print(f"Invalid selection: {exc}", flush=True)
+                continue
             if not selected:
                 return
             print(f"Selected targets: {', '.join(selected)}", flush=True)
@@ -727,30 +731,35 @@ def read_all_home_ctrl_rad(
 
 def yes_no(prompt: str, default: bool = False) -> bool:
     suffix = " [Y/n]: " if default else " [y/N]: "
-    resp = input(prompt + suffix).strip().lower()
-    if not resp:
-        return default
-    return resp.startswith("y")
+    while True:
+        resp = input(prompt + suffix).strip().lower()
+        if not resp:
+            return default
+        if resp.startswith("y"):
+            return True
+        if resp.startswith("n"):
+            return False
+        print("Unknown choice. Please answer y or n.")
 
 
 def prompt_zero_centering_mode(*, default: str = "o") -> str:
     default = str(default).strip().lower()
     if default not in {"a", "o", "n"}:
         default = "o"
-    print(
-        "Move all joints to MuJoCo joint_pos_deg 0 before continuing?\n"
-        "  a = absolute joint 0 deg (ignore servo_offset_unit)\n"
-        "  o = calibrated joint 0 deg (apply servo_offset_unit)\n"
-        "  n = no move"
-    )
-    resp = input(f"[a/o/n, default {default}]: ").strip().lower()
-    if not resp:
-        return default
-    first = resp[0]
-    if first in {"a", "o", "n"}:
-        return first
-    print(f"Unknown choice '{resp}', using default '{default}'.")
-    return default
+    while True:
+        print(
+            "Move all joints to MuJoCo joint_pos_deg 0 before continuing?\n"
+            "  a = absolute joint 0 deg (ignore servo_offset_unit)\n"
+            "  o = calibrated joint 0 deg (apply servo_offset_unit)\n"
+            "  n = no move"
+        )
+        resp = input(f"[a/o/n, default {default}]: ").strip().lower()
+        if not resp:
+            return default
+        first = resp[0]
+        if first in {"a", "o", "n"}:
+            return first
+        print(f"Unknown choice '{resp}'. No move was made; enter a, o, or n.")
 
 
 def prompt_offset_reference_mode(*, servo: ServoConfig, default: str = "z") -> str:
@@ -758,13 +767,13 @@ def prompt_offset_reference_mode(*, servo: ServoConfig, default: str = "z") -> s
     if default not in {"z", "r", "q"}:
         default = "z"
     center_deg = float(np.rad2deg(float(servo.center_rad)))
-    print(
-        "Offset calibration reference pose:\n"
-        "  z = MuJoCo joint_pos_deg 0 (useful when physical zero is easy to align)\n"
-        f"  r = raw center/reference angle ({center_deg:+.1f} deg; old behavior)\n"
-        "  q = quit this joint without saving"
-    )
     while True:
+        print(
+            "Offset calibration reference pose:\n"
+            "  z = MuJoCo joint_pos_deg 0 (useful when physical zero is easy to align)\n"
+            f"  r = raw center/reference angle ({center_deg:+.1f} deg; old behavior)\n"
+            "  q = quit this joint without saving"
+        )
         resp = input(f"[z/r/q, default {default}]: ").strip().lower()
         if not resp:
             return default
@@ -1446,8 +1455,8 @@ def panic_and_exit(controller, servo_ids: Iterable[int]) -> None:
 
 def wait_until_unload(controller, servo_ids: Iterable[int], *, prompt: str) -> None:
     """Keep servos loaded until the user requests unload."""
-    print(prompt)
     while True:
+        print(prompt)
         try:
             resp = input("> ").strip().lower()
         except KeyboardInterrupt:
@@ -1533,48 +1542,56 @@ def calibrate_motor_sign(
             min_ms=1000,
         )
         _report_calibration_imu(imu, label=f"{joint} direction-test positive delta")
-        resp = input(motor_sign_prompt(joint, hint, delta_rad_used, axis) + "\n> ").strip().lower()
-        if resp == PANIC_KEY:
-            panic_and_exit(controller, all_servo_ids)
-        if resp.startswith("y"):
-            print("servo_unit_direction / motor_unit_direction set to +1")
-            announce_and_pause(
-                f"Step: return {joint} to center units ({center_units})",
-                pause_s,
-            )
-            _move_servo_units_20deg_per_s(
-                controller,
-                servo,
-                center_units,
-                fallback_ms=max(int(move_ms), 1000),
-                min_ms=1000,
-            )
-            _report_calibration_imu(imu, label=f"{joint} direction-test return")
-            return 1
-        if resp.startswith("n"):
-            print("servo_unit_direction / motor_unit_direction set to -1")
-            announce_and_pause(
-                f"Step: return {joint} to center units ({center_units})",
-                pause_s,
-            )
-            _move_servo_units_20deg_per_s(
-                controller,
-                servo,
-                center_units,
-                fallback_ms=max(int(move_ms), 1000),
-                min_ms=1000,
-            )
-            _report_calibration_imu(imu, label=f"{joint} direction-test return")
-            return -1
-        if resp.startswith("r"):
-            try:
-                new_delta = input("Enter new delta in radians (blank to keep): ").strip()
-                if new_delta:
-                    delta_rad_used = float(new_delta)
-            except ValueError:
-                print("Invalid delta, keeping previous value.")
-            continue
-        print("Input not recognized; please respond with y, n, r, or panic key.")
+        while True:
+            resp = input(
+                motor_sign_prompt(joint, hint, delta_rad_used, axis) + "\n> "
+            ).strip().lower()
+            if resp == PANIC_KEY:
+                panic_and_exit(controller, all_servo_ids)
+            if resp.startswith("y"):
+                print("servo_unit_direction / motor_unit_direction set to +1")
+                announce_and_pause(
+                    f"Step: return {joint} to center units ({center_units})",
+                    pause_s,
+                )
+                _move_servo_units_20deg_per_s(
+                    controller,
+                    servo,
+                    center_units,
+                    fallback_ms=max(int(move_ms), 1000),
+                    min_ms=1000,
+                )
+                _report_calibration_imu(imu, label=f"{joint} direction-test return")
+                return 1
+            if resp.startswith("n"):
+                print("servo_unit_direction / motor_unit_direction set to -1")
+                announce_and_pause(
+                    f"Step: return {joint} to center units ({center_units})",
+                    pause_s,
+                )
+                _move_servo_units_20deg_per_s(
+                    controller,
+                    servo,
+                    center_units,
+                    fallback_ms=max(int(move_ms), 1000),
+                    min_ms=1000,
+                )
+                _report_calibration_imu(imu, label=f"{joint} direction-test return")
+                return -1
+            if resp.startswith("r"):
+                while True:
+                    new_delta = input(
+                        "Enter new delta in radians (blank to keep): "
+                    ).strip()
+                    if not new_delta:
+                        break
+                    try:
+                        delta_rad_used = float(new_delta)
+                        break
+                    except ValueError:
+                        print("Invalid delta. Enter a number or press Enter to keep it.")
+                break
+            print("Input not recognized; no move was made. Choose y, n, r, or q.")
 
 
 def calibrate_offset(
@@ -1681,6 +1698,7 @@ def calibrate_offset(
                 offset_units = int(raw)
             except ValueError:
                 print("Invalid integer offset.")
+                print(commands_msg)
                 continue
             print(f"Using manual offset {offset_units} (units).")
             return offset_units, False, False, reference_target_rad, reference_label
@@ -1711,6 +1729,7 @@ def calibrate_offset(
             delta = step_units * (5 if cmd == "D" else 1)
         else:
             print("Unknown command; use a/d/A/D to jog, c to confirm, s to save, q to quit.")
+            print(commands_msg)
             continue
         target_units = max(ServoConfig.UNITS_MIN, min(ServoConfig.UNITS_MAX, target_units + delta))
         _move_servo_units_20deg_per_s(
@@ -2913,6 +2932,31 @@ def _prompt_choice(prompt: str, *, default_yes: bool = True) -> str:
             return "n"
 
         print("Please answer with 'y', 'n', or 'q'.")
+
+
+def prompt_imu_calibration_step() -> str:
+    while True:
+        print(
+            "Choose one step to run (keeps output minimal and avoids long interactive sessions).",
+            flush=True,
+        )
+        print(
+            "\nOptions:\n"
+            "  1) Calibrate upside_down (mount inversion)\n"
+            "  2) Calibrate body_x axis (roll-right)\n"
+            "  3) Calibrate body_y axis (pitch-down)\n"
+            "  4) Calibrate body_z axis (yaw-left)\n"
+            "  5) Clear saved axis_map measurements\n"
+            "  q) Quit\n",
+            flush=True,
+        )
+        print("Enter choice:", flush=True)
+        choice = input().strip().lower()
+        if choice.startswith("q"):
+            return "q"
+        if choice in {"1", "2", "3", "4", "5"}:
+            return choice
+        print(f"Invalid choice '{choice}'. No calibration step was started.", flush=True)
 
 
 def _prompt_choice_strict(prompt: str, *, context: Optional[str] = None) -> str:
@@ -4566,20 +4610,8 @@ Examples (copy/paste):
     if args.calibrate_imu:
         output_path = Path(args.output) if args.output else config_path
         print("\n== IMU Calibration ==")
-        print("Choose one step to run (keeps output minimal and avoids long interactive sessions).", flush=True)
-        print(
-            "\nOptions:\n"
-            "  1) Calibrate upside_down (mount inversion)\n"
-            "  2) Calibrate body_x axis (roll-right)\n"
-            "  3) Calibrate body_y axis (pitch-down)\n"
-            "  4) Calibrate body_z axis (yaw-left)\n"
-            "  5) Clear saved axis_map measurements\n"
-            "  q) Quit\n",
-            flush=True,
-        )
-        print("Enter choice:", flush=True)
-        choice = input().strip().lower()
-        if choice.startswith("q"):
+        choice = prompt_imu_calibration_step()
+        if choice == "q":
             return
 
         if choice == "1":
@@ -4596,7 +4628,7 @@ Examples (copy/paste):
         config = WrRuntimeConfig.load(output_path)
         upside_down = bool(getattr(config.bno085, "upside_down", False))
 
-        if choice in {"5", "6"}:
+        if choice == "5":
             bno_cfg = raw_config.setdefault("bno085", {}) if isinstance(raw_config, dict) else {}
             bno_cfg.pop("axis_map_measurements", None)
             _write_json_with_retries(output_path, raw_config)
@@ -4630,9 +4662,6 @@ Examples (copy/paste):
                 body_axis="body_z",
             )
             return
-
-        print("Invalid choice.", flush=True)
-        return
 
     if args.calibrate_footswitch:
         try:
@@ -4846,7 +4875,7 @@ Examples (copy/paste):
             # Note: unreachable due to infinite loop above; user exits via Ctrl+C or 'q'
 
         if args.record_pos and not args.calibrate:
-            print(
+            pose_inspection_menu = (
                 "\n-- Pose Inspection --\n"
                 "Adjust the robot physically/joints as needed.\n"
                 "Commands:\n"
@@ -4854,6 +4883,7 @@ Examples (copy/paste):
                 "  c = record current pose as home_ctrl_rad\n"
                 f"  {PANIC_KEY} = unload and exit\n"
             )
+            print(pose_inspection_menu)
             while True:
                 cmd = input("(p/c/q) > ").strip().lower()
                 if cmd == PANIC_KEY:
@@ -4879,6 +4909,7 @@ Examples (copy/paste):
                     print(f"Wrote home_ctrl_rad to {output_path}")
                     continue
                 print("Unknown input; use p, c, or q.")
+                print(pose_inspection_menu)
 
         if args.go_home and not args.calibrate and not args.calibrate_home and not args.record_pos:
             wait_until_unload(

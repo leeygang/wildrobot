@@ -705,7 +705,7 @@ def test_calibrate_zero_pose_commands_can_ignore_or_apply_offset() -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("a", "a"), ("o", "o"), ("n", "n"), ("", "o"), ("bad", "o")],
+    [("a", "a"), ("o", "o"), ("n", "n"), ("", "o")],
 )
 def test_calibrate_zero_centering_prompt(monkeypatch, raw: str, expected: str) -> None:
     import runtime.scripts.calibrate as calibrate_mod
@@ -713,6 +713,20 @@ def test_calibrate_zero_centering_prompt(monkeypatch, raw: str, expected: str) -
     monkeypatch.setattr("builtins.input", lambda _prompt="": raw)
 
     assert calibrate_mod.prompt_zero_centering_mode(default="o") == expected
+
+
+def test_calibrate_zero_centering_prompt_reprints_unknown_choice(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    responses = iter(["bad", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    assert calibrate_mod.prompt_zero_centering_mode(default="o") == "n"
+    output = capsys.readouterr().out
+    assert "Unknown choice 'bad'. No move was made" in output
+    assert output.count("Move all joints to MuJoCo joint_pos_deg 0") == 2
 
 
 @pytest.mark.parametrize(
@@ -740,7 +754,87 @@ def test_calibrate_offset_reference_prompt_reprompts_unknown_choice(
     assert calibrate_mod.prompt_offset_reference_mode(
         servo=ServoConfig(id=1), default="z"
     ) == "z"
-    assert "Unknown choice 'a'. No move was made" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Unknown choice 'a'. No move was made" in output
+    assert output.count("Offset calibration reference pose:") == 2
+
+
+def test_yes_no_reprompts_unknown_choice(monkeypatch, capsys) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    prompts = []
+    responses = iter(["maybe", "y"])
+
+    def _input(prompt=""):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr("builtins.input", _input)
+
+    assert calibrate_mod.yes_no("Move now?", default=False)
+    assert prompts == ["Move now? [y/N]: ", "Move now? [y/N]: "]
+    assert "Unknown choice. Please answer y or n." in capsys.readouterr().out
+
+
+def test_wait_until_unload_reprints_prompt_after_unknown_input(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    responses = iter(["bad", "q"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    with pytest.raises(SystemExit, match="Panic unload requested"):
+        calibrate_mod.wait_until_unload(
+            _FakeController(),
+            [1],
+            prompt="Press q to unload.",
+        )
+
+    assert capsys.readouterr().out.count("Press q to unload.") == 2
+
+
+def test_footswitch_selection_reprints_after_invalid_input(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    import runtime.wr_runtime.hardware.foot_switches as footswitch_mod
+
+    class _FakeFootSwitches:
+        closed = False
+
+        def __init__(self, pins):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    calls = []
+
+    def _select():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("bad target")
+        return []
+
+    monkeypatch.setattr(footswitch_mod, "FootSwitches", _FakeFootSwitches)
+    monkeypatch.setattr(calibrate_mod, "prompt_select_footswitch_targets", _select)
+
+    calibrate_mod.calibrate_footswitches(
+        config=SimpleNamespace(
+            foot_switches=SimpleNamespace(get_all_pins=lambda: {})
+        )
+    )
+
+    assert len(calls) == 2
+    assert "Invalid selection: bad target" in capsys.readouterr().out
 
 
 def test_calibrate_offset_from_zero_degree_reference_handles_shoulder_center() -> None:
@@ -947,6 +1041,105 @@ def test_servo_offset_jog_reports_imu_after_each_move(monkeypatch, capsys) -> No
     assert "IMU after left_ankle_pitch offset-reference move:" in output
     assert "IMU after left_ankle_pitch offset jog:" in output
     assert "rpy_deg=[+0.0, +0.0, +0.0]" in output
+
+
+def test_offset_jog_reprints_commands_after_unknown_input(monkeypatch, capsys) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    responses = iter(["z", "bad", "q"])
+    moves = []
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_move_servo_units_20deg_per_s",
+        lambda *_args, **_kwargs: moves.append(1),
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_report_calibration_imu",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = calibrate_mod.calibrate_offset(
+        object(),
+        ServoConfig(id=7),
+        "right_knee_pitch",
+        calibrate_mod.JointState(offset=-9, motor_sign=-1),
+        all_servo_ids=[7],
+        move_ms=100,
+        step_units=5,
+        pause_s=0.0,
+        record_pos=False,
+        all_joint_names=["right_knee_pitch"],
+        all_servo_cfgs={"right_knee_pitch": ServoConfig(id=7)},
+        all_states={
+            "right_knee_pitch": calibrate_mod.JointState(
+                offset=-9, motor_sign=-1
+            )
+        },
+    )
+
+    assert result[2]
+    assert len(moves) == 1
+    output = capsys.readouterr().out
+    assert output.count("Jog the joint until it matches") == 2
+
+
+def test_motor_sign_unknown_input_reprints_without_replaying_motion(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    prompts = []
+    responses = iter(["bad", "y"])
+    moves = []
+
+    def _input(prompt=""):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr("builtins.input", _input)
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_move_servo_units_20deg_per_s",
+        lambda _controller, _servo, units, **_kwargs: moves.append(int(units)),
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_report_calibration_imu",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = calibrate_mod.calibrate_motor_sign(
+        object(),
+        ServoConfig(id=7),
+        "right_knee_pitch",
+        calibrate_mod.JointState(offset=-9, motor_sign=-1),
+        "positive motion",
+        None,
+        all_servo_ids=[7],
+        move_ms=100,
+        pause_s=0.0,
+    )
+
+    assert result == 1
+    assert moves == [500, 619, 500]
+    assert sum("Did the raw +servo-unit move" in prompt for prompt in prompts) == 2
+    assert "Input not recognized; no move was made" in capsys.readouterr().out
+
+
+def test_imu_calibration_menu_reprints_unknown_choice(monkeypatch, capsys) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    responses = iter(["bad", "4"])
+    monkeypatch.setattr("builtins.input", lambda: next(responses))
+
+    assert calibrate_mod.prompt_imu_calibration_step() == "4"
+    output = capsys.readouterr().out
+    assert "Invalid choice 'bad'. No calibration step was started." in output
+    assert output.count("1) Calibrate upside_down") == 2
 
 
 def test_ttl_calibration_controller_uses_per_servo_protocol() -> None:
