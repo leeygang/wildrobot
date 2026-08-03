@@ -97,6 +97,14 @@ class JointState:
 
 
 @dataclass(frozen=True)
+class ServoZeroReferenceStatus:
+    raw_units: int
+    current_rad: float
+    expected_rad: float
+    suggested_offset: int
+
+
+@dataclass(frozen=True)
 class JointAxisMetadata:
     local_axis: Optional[Tuple[float, float, float]]
     init_world_axis: Optional[Tuple[float, float, float]]
@@ -546,6 +554,45 @@ def print_all_joint_positions(
             print(f"  {joint}: id={servo.id} units={units}")
 
 
+def read_servo_zero_reference_status(
+    controller,
+    *,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+) -> Dict[str, ServoZeroReferenceStatus]:
+    """Read the offset each joint's current raw position implies at physical zero."""
+    servo_ids = [int(servo_cfgs[joint].id) for joint in joint_names]
+    positions = controller.read_servo_positions(servo_ids)
+    pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions or []}
+
+    status_by_joint: Dict[str, ServoZeroReferenceStatus] = {}
+    for joint in joint_names:
+        servo = servo_cfgs[joint]
+        state = states[joint]
+        raw_units = pos_by_id.get(int(servo.id))
+        if raw_units is None:
+            continue
+        expected_rad = 0.0
+        current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
+            raw_units,
+            motor_sign=int(state.motor_sign),
+            offset=int(state.offset),
+        )
+        status_by_joint[joint] = ServoZeroReferenceStatus(
+            raw_units=raw_units,
+            current_rad=float(current_rad),
+            expected_rad=expected_rad,
+            suggested_offset=offset_from_reference_pose_units(
+                servo,
+                raw_units,
+                motor_sign=int(state.motor_sign),
+                target_rad=expected_rad,
+            ),
+        )
+    return status_by_joint
+
+
 def print_servo_zero_reference_status(
     controller,
     *,
@@ -554,10 +601,12 @@ def print_servo_zero_reference_status(
     states: Dict[str, JointState],
 ) -> None:
     """Report current joint error and offset implied by a physical zero pose."""
-    servo_ids = [int(servo_cfgs[joint].id) for joint in joint_names]
-    positions = controller.read_servo_positions(servo_ids)
-    pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions or []}
-
+    status_by_joint = read_servo_zero_reference_status(
+        controller,
+        joint_names=joint_names,
+        servo_cfgs=servo_cfgs,
+        states=states,
+    )
     print("\n-- Servo Zero-Reference Status --")
     print(
         "Expected joint angle is 0 rad. Apply a suggested offset only when that "
@@ -566,33 +615,80 @@ def print_servo_zero_reference_status(
     for joint in joint_names:
         servo = servo_cfgs[joint]
         state = states[joint]
-        raw_units = pos_by_id.get(int(servo.id))
-        if raw_units is None:
+        status = status_by_joint.get(joint)
+        if status is None:
             print(f"  #{int(servo.id):2d} {joint:22s} readback=missing")
             continue
 
-        expected_rad = 0.0
-        current_rad = servo.servo_elect_units_to_joint_target_rad_for_calibrate(
-            raw_units,
-            motor_sign=int(state.motor_sign),
-            offset=int(state.offset),
-        )
-        delta_rad = float(current_rad) - expected_rad
-        suggested_offset = offset_from_reference_pose_units(
-            servo,
-            raw_units,
-            motor_sign=int(state.motor_sign),
-            target_rad=expected_rad,
-        )
+        delta_rad = status.current_rad - status.expected_rad
         print(
-            f"  #{int(servo.id):2d} {joint:22s} raw={raw_units:4d} "
-            f"raw_center_delta={raw_units - int(ServoConfig.UNITS_CENTER):+4d} "
-            f"current_rad={float(current_rad):+.6f} expected_rad={expected_rad:+.6f} "
+            f"  #{int(servo.id):2d} {joint:22s} raw={status.raw_units:4d} "
+            f"raw_center_delta={status.raw_units - int(ServoConfig.UNITS_CENTER):+4d} "
+            f"current_rad={status.current_rad:+.6f} "
+            f"expected_rad={status.expected_rad:+.6f} "
             f"delta_rad={delta_rad:+.6f} "
             f"current_servo_offset_unit={int(state.offset):+d} "
-            f"suggested_servo_offset_unit={suggested_offset:+d} "
-            f"offset_change={suggested_offset - int(state.offset):+d}"
+            f"suggested_servo_offset_unit={status.suggested_offset:+d} "
+            f"offset_change={status.suggested_offset - int(state.offset):+d}"
         )
+
+
+def apply_servo_zero_reference_offsets(
+    controller,
+    *,
+    joint_names: List[str],
+    servo_cfgs: Dict[str, ServoConfig],
+    states: Dict[str, JointState],
+    move_ms: int,
+    imu=None,
+) -> Dict[str, JointState]:
+    """Apply current physical-zero positions as in-memory offsets and command 0 rad."""
+    status_by_joint = read_servo_zero_reference_status(
+        controller,
+        joint_names=joint_names,
+        servo_cfgs=servo_cfgs,
+        states=states,
+    )
+    updates: Dict[str, JointState] = {}
+    commands: List[Tuple[int, int]] = []
+    for joint in joint_names:
+        status = status_by_joint.get(joint)
+        if status is None:
+            print(f"Skipped {joint}: servo position readback missing.")
+            continue
+        servo = servo_cfgs[joint]
+        old_offset = int(states[joint].offset)
+        states[joint].offset = int(status.suggested_offset)
+        updates[joint] = JointState(
+            offset=int(status.suggested_offset),
+            motor_sign=int(states[joint].motor_sign),
+        )
+        target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
+            status.expected_rad,
+            motor_sign=int(states[joint].motor_sign),
+            offset=int(states[joint].offset),
+        )
+        commands.append((int(servo.id), int(target_units)))
+        print(
+            f"Applied {joint}: servo_offset_unit {old_offset:+d} -> "
+            f"{int(status.suggested_offset):+d}; command={status.expected_rad:+.6f}rad "
+            f"raw={int(target_units)}"
+        )
+
+    if commands:
+        command_move_ms = max(300, int(move_ms))
+        controller.move_servos(commands, command_move_ms)
+        time.sleep(command_move_ms / 1000.0 + 0.1)
+        _report_calibration_imu(imu, label="proposed zero-offset apply")
+        print_target_readback_summary(
+            controller,
+            label="Proposed zero-offset apply",
+            joint_names=list(updates),
+            servo_cfgs=servo_cfgs,
+            states=states,
+            target_rad_by_joint={joint: 0.0 for joint in updates},
+        )
+    return updates
 
 
 def read_all_home_ctrl_rad(
@@ -4289,7 +4385,7 @@ Examples (copy/paste):
   # Adjust the deployed bundle policy_spec.json home_ctrl_rad interactively
   uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --bundle runtime/bundles/walking_v0210_smoke6_ckpt1650 --calibrate-home
 
-  # Interactive calibration mode (per-joint submenu: p/q/a/d/m/r/o/s/z/b/x)
+  # Interactive calibration mode (per-joint submenu: p/q/pa/a/sa/d/m/r/o/s/z/b/x)
   uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate
 
   # Detect USB TTL boards and save each board's connected servo IDs
@@ -4326,7 +4422,8 @@ Examples (copy/paste):
         action="store_true",
         help=(
             "Interactive calibration mode: select a joint, then use submenu "
-            "p(print state)/q(target deg)/a(policy action)/d(direction)/m(motor units)/r(range test)/o(offset)/s(save)."
+            "p(print state)/q(target deg)/pa(policy action)/a(apply proposed offset)/"
+            "sa(apply+save)/d(direction)/m(motor units)/r(range test)/o(offset)/s(save)."
         ),
     )
     parser.add_argument(
@@ -4811,7 +4908,8 @@ Examples (copy/paste):
                 print("Flow: center all joints → select joint → choose action → calibrate → repeat")
             print(
                 "Per-joint submenu:\n"
-                "  p=print state, q=target deg evaluator, a=policy action evaluator,\n"
+                "  p=print state, q=target deg evaluator, pa=policy action evaluator,\n"
+                "  a=apply proposed zero offset, sa=apply proposed offset and save,\n"
                 "  d=calibrate servo_unit_direction, r=single-joint range test (20 deg/s),\n"
                 "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
             )
@@ -4886,10 +4984,12 @@ Examples (copy/paste):
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
                 print("  p = print current IMU and servo zero-reference status")
+                print("  a = apply all proposed zero offsets in memory")
+                print("  sa = apply all proposed zero offsets and save")
 
                 # Step 2: User selects joint
                 raw = input(
-                    "\nSelect servo # (or 'p' IMU, 'q' quit, 's' save+quit): "
+                    "\nSelect servo # (or p/a/sa/q/s): "
                 ).strip().lower()
                 if raw == "q" or raw == PANIC_KEY:
                     save_on_exit = False
@@ -4911,6 +5011,33 @@ Examples (copy/paste):
                     )
                     input("\nPress Enter to return to the joint list...")
                     continue
+                if raw in {"a", "sa"}:
+                    print(
+                        "WARNING: this treats the current physical position of EVERY "
+                        "servo as MuJoCo 0 rad. Do not apply all while the arms or any "
+                        "other joint are intentionally away from zero."
+                    )
+                    if not yes_no(
+                        "Apply proposed zero offsets to all servos?",
+                        default=False,
+                    ):
+                        print("All-servo offset apply cancelled.")
+                        continue
+                    updates = apply_servo_zero_reference_offsets(
+                        controller,
+                        joint_names=joint_names,
+                        servo_cfgs=servo_cfgs,
+                        states=states,
+                        move_ms=int(args.move_ms),
+                        imu=body_angle_imu,
+                    )
+                    calibrated.update(updates)
+                    if raw == "sa" and updates:
+                        _save_calibration_updates(updates)
+                        for updated_joint in updates:
+                            calibrated.pop(updated_joint, None)
+                    input("\nPress Enter to return to the joint list...")
+                    continue
 
                 try:
                     servo_id = int(raw.lstrip("#"))
@@ -4920,7 +5047,7 @@ Examples (copy/paste):
                         print(f"Invalid servo ID. Enter one of: {valid_servo_ids}.")
                         continue
                 except ValueError:
-                    print("Invalid input. Enter a number, 'p', 'q', or 's'.")
+                    print("Invalid input. Enter a servo number, p, a, sa, q, or s.")
                     continue
 
                 servo = servo_cfgs[joint]
@@ -4935,7 +5062,9 @@ Examples (copy/paste):
                     print("\nJoint menu:")
                     print("  p = print state")
                     print("  q = evaluate direct target joint deg")
-                    print("  a = evaluate policy action residual")
+                    print("  pa = evaluate policy action residual")
+                    print("  a = apply proposed zero offset in memory")
+                    print("  sa = apply proposed zero offset and save")
                     print("  d = calibrate servo_unit_direction")
                     print("  m = set motor electric unit")
                     print("  r = run range test for this joint")
@@ -4945,7 +5074,9 @@ Examples (copy/paste):
                     print("  b = back to joint list")
                     print("  x = panic unload and exit")
 
-                    action = input("Choose action (p/q/a/d/m/r/o/s/z/b/x): ").strip().lower()
+                    action = input(
+                        "Choose action (p/q/pa/a/sa/d/m/r/o/s/z/b/x): "
+                    ).strip().lower()
 
                     if action == "x":
                         panic_and_exit(controller, servo_ids)
@@ -4963,6 +5094,28 @@ Examples (copy/paste):
                             policy_setup=policy_setup,
                             hint=hint,
                         )
+                        continue
+
+                    if action in {"a", "sa"}:
+                        if not yes_no(
+                            f"Treat the current physical {joint} position as "
+                            "MuJoCo 0 rad and apply its proposed offset?",
+                            default=False,
+                        ):
+                            print(f"Proposed offset apply cancelled for {joint}.")
+                            continue
+                        updates = apply_servo_zero_reference_offsets(
+                            controller,
+                            joint_names=[joint],
+                            servo_cfgs=servo_cfgs,
+                            states=states,
+                            move_ms=int(args.move_ms),
+                            imu=body_angle_imu,
+                        )
+                        calibrated.update(updates)
+                        if action == "sa" and updates:
+                            _save_calibration_updates(updates)
+                            calibrated.pop(joint, None)
                         continue
 
                     if action == "q":
@@ -5008,7 +5161,7 @@ Examples (copy/paste):
                                 print(f"Moved. Readback elect unit={int(pos)} conceptual={int(pos) - int(current_state.offset)}")
                         continue
 
-                    if action == "a":
+                    if action == "pa":
                         evaluate_policy_action(
                             controller,
                             joint=joint,
@@ -5204,7 +5357,7 @@ Examples (copy/paste):
                     if action == "o":
                         continue
 
-                    print("Unknown action. Use p/q/a/d/m/r/o/s/z/b/x.")
+                    print("Unknown action. Use p/q/pa/a/sa/d/m/r/o/s/z/b/x.")
 
                 # Loop back to step 1
 

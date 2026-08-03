@@ -195,7 +195,7 @@ def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None
     assert "Servo Zero-Reference Status" in output
     assert "current_rad=" in output
     assert "suggested_servo_offset_unit=" in output
-    assert any("'p' IMU" in prompt for prompt in prompts)
+    assert any("p/a/sa/q/s" in prompt for prompt in prompts)
     assert any("Press Enter to return to the joint list" in prompt for prompt in prompts)
 
 
@@ -232,6 +232,182 @@ def test_servo_zero_reference_status_suggests_offset_from_raw_position(capsys) -
     assert "current_servo_offset_unit=-34" in output
     assert "suggested_servo_offset_unit=-36" in output
     assert "offset_change=-2" in output
+
+
+def test_apply_servo_zero_reference_offset_updates_mapping_and_commands_zero(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    class _FakeController:
+        def __init__(self):
+            self.moves = []
+
+        def read_servo_positions(self, servo_ids):
+            assert servo_ids == [1]
+            return [(1, 464)]
+
+        def move_servos(self, commands, move_ms):
+            self.moves.append((list(commands), int(move_ms)))
+
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+    controller = _FakeController()
+    servo = ServoConfig(
+        id=1,
+        servo_offset_unit=-34,
+        motor_unit_direction=-1,
+        joint_angle_at_zero_unit_deg=0.0,
+    )
+    states = {
+        "left_hip_pitch": calibrate_mod.JointState(offset=-34, motor_sign=-1)
+    }
+
+    updates = calibrate_mod.apply_servo_zero_reference_offsets(
+        controller,
+        joint_names=["left_hip_pitch"],
+        servo_cfgs={"left_hip_pitch": servo},
+        states=states,
+        move_ms=100,
+    )
+
+    assert states["left_hip_pitch"].offset == -36
+    assert updates["left_hip_pitch"].offset == -36
+    assert controller.moves == [([(1, 464)], 300)]
+    output = capsys.readouterr().out
+    assert "Applied left_hip_pitch: servo_offset_unit -34 -> -36" in output
+    assert "Proposed zero-offset apply readback: max_err=0.0deg" in output
+
+
+def test_calibrate_servo_list_a_applies_all_without_saving(monkeypatch, capsys) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def __init__(self):
+            self.moves = []
+
+        def read_servo_positions(self, servo_ids):
+            return [(int(servo_id), 500) for servo_id in servo_ids]
+
+        def move_servos(self, commands, move_ms):
+            self.moves.append((list(commands), int(move_ms)))
+
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    controller = _FakeController()
+    prompts: list[str] = []
+    responses = iter(["n", "a", "y", "", "q"])
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "build_calibration_controller",
+        lambda config: controller,
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_open_body_angle_imu",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_HARDWARE_CONFIG),
+            "--calibrate",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    assert controller.moves
+    output = capsys.readouterr().out
+    assert "Apply proposed zero offsets to all servos?" in "\n".join(prompts)
+    assert "Applied left_hip_pitch:" in output
+    assert "Discarded calibration changes (not saved)." in output
+
+
+def test_selected_servo_sa_applies_and_saves_proposed_offset(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def read_servo_positions(self, servo_ids):
+            return [
+                (int(servo_id), 464 if int(servo_id) == 1 else 500)
+                for servo_id in servo_ids
+            ]
+
+        def move_servos(self, commands, move_ms):
+            pass
+
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    output_path = tmp_path / "hardware_config.json"
+    prompts: list[str] = []
+    responses = iter(["n", "1", "sa", "y", "b", "q"])
+
+    def _input(prompt: str = "") -> str:
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "build_calibration_controller",
+        lambda config: _FakeController(),
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_open_body_angle_imu",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_HARDWARE_CONFIG),
+            "--output",
+            str(output_path),
+            "--calibrate",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    saved = json.loads(output_path.read_text())
+    assert saved["servo_controller"]["servos"]["left_hip_pitch"][
+        "servo_offset_unit"
+    ] == -36
+    output = capsys.readouterr().out
+    assert "Applied left_hip_pitch: servo_offset_unit -34 -> -36" in output
+    assert f"Saved calibration to {output_path}" in output
+    assert any("Treat the current physical left_hip_pitch" in p for p in prompts)
 
 
 def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
