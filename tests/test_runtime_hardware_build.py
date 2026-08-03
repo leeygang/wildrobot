@@ -502,6 +502,86 @@ def test_selected_servo_sa_applies_and_saves_proposed_offset(
     assert any("Press Enter to return to the joint menu" in p for p in prompts)
 
 
+def test_selected_servo_offset_saves_after_verification(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    import builtins
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def read_servo_positions(self, servo_ids):
+            return [
+                (int(servo_id), 530 if int(servo_id) == 8 else 500)
+                for servo_id in servo_ids
+            ]
+
+        def move_servos(self, commands, move_ms):
+            pass
+
+        def unload_servos(self, servo_ids):
+            pass
+
+        def close(self):
+            pass
+
+    output_path = tmp_path / "hardware_config.json"
+    responses = iter(["n", "8", "o", "z", "s", "b", "q"])
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "build_calibration_controller",
+        lambda config: _FakeController(),
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_open_body_angle_imu",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(calibrate_mod.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(responses))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(_HARDWARE_CONFIG),
+            "--output",
+            str(output_path),
+            "--calibrate",
+            "--pause-s",
+            "0",
+        ],
+    )
+
+    calibrate_mod.main()
+
+    saved = json.loads(output_path.read_text())
+    assert saved["servo_controller"]["servos"]["right_ankle_pitch"][
+        "servo_offset_unit"
+    ] == 30
+    output = capsys.readouterr().out
+    assert "Verify MuJoCo joint_pos_deg 0: 530 units" in output
+    assert f"Saving calibration to {output_path}..." in output
+    assert f"Saved calibration to {output_path}" in output
+    assert "right_ankle_pitch: offset=+30" in output
+
+
+def test_config_fsync_timeout_is_not_swallowed(monkeypatch, tmp_path) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    def _timeout(_fd):
+        raise TimeoutError("test fsync timeout")
+
+    monkeypatch.setattr(calibrate_mod.os, "fsync", _timeout)
+
+    with pytest.raises(TimeoutError, match="test fsync timeout"):
+        calibrate_mod._write_json_with_retries(
+            tmp_path / "hardware_config.json",
+            {"servo_controller": {}},
+        )
+
+
 def test_calibrate_home_is_top_level_command(monkeypatch, tmp_path) -> None:
     import builtins
     import runtime.scripts.calibrate as calibrate_mod

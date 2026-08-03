@@ -50,6 +50,7 @@ DEFAULT_DELTA_RAD = 0.5
 VERIFY_TOL_RAD = 0.05
 PANIC_KEY = "q"
 DEFAULT_PAUSE_S = 3.0
+CONFIG_SAVE_TIMEOUT_S = 5.0
 POLICY_ACTION_HOME_PAUSE_S = 3.0
 RANGE_TEST_MS = 3000
 DEFAULT_IMU_SAMPLES = 100
@@ -2603,10 +2604,14 @@ def _write_json_with_retries(path: Path, data: dict, *, attempts: int = 3, delay
                     os.fsync(fd)
                 finally:
                     os.close(fd)
+            except TimeoutError:
+                raise
             except Exception:
                 pass
             _refresh_deployment_checksums(path)
             return
+        except TimeoutError:
+            raise
         except Exception as exc:
             last_exc = exc
             if attempt < attempts:
@@ -4967,9 +4972,18 @@ Examples (copy/paste):
             calibrated: Dict[str, JointState] = {}
             save_on_exit = False
 
-            def _save_calibration_updates(updates_to_save: Dict[str, JointState]) -> None:
+            def _save_calibration_updates(updates_to_save: Dict[str, JointState]) -> bool:
                 output_path = Path(args.output) if args.output else config_path
-                write_config(raw_config, output_path, updates_to_save)
+                print(f"Saving calibration to {output_path}...", flush=True)
+                try:
+                    with _alarm_timeout(
+                        CONFIG_SAVE_TIMEOUT_S,
+                        message=f"Calibration config save timed out: {output_path}",
+                    ):
+                        write_config(raw_config, output_path, updates_to_save)
+                except Exception as exc:
+                    print(f"ERROR: calibration was not confirmed saved: {exc}")
+                    return False
                 print(f"Saved calibration to {output_path}")
                 print("Saved joint calibration values:")
                 for saved_joint in sorted(updates_to_save.keys()):
@@ -4978,6 +4992,7 @@ Examples (copy/paste):
                         f"  {saved_joint}: offset={int(saved_state.offset):+d}, "
                         f"servo_unit_direction/motor_unit_direction={int(saved_state.motor_sign):+d}"
                     )
+                return True
 
             while True:
                 # Step 1: List joints with current status
@@ -5044,9 +5059,9 @@ Examples (copy/paste):
                     )
                     calibrated.update(updates)
                     if raw == "sa" and updates:
-                        _save_calibration_updates(updates)
-                        for updated_joint in updates:
-                            calibrated.pop(updated_joint, None)
+                        if _save_calibration_updates(updates):
+                            for updated_joint in updates:
+                                calibrated.pop(updated_joint, None)
                     input("\nPress Enter to return to the joint list...")
                     continue
 
@@ -5136,8 +5151,8 @@ Examples (copy/paste):
                         )
                         calibrated.update(updates)
                         if action == "sa" and updates:
-                            _save_calibration_updates(updates)
-                            calibrated.pop(joint, None)
+                            if _save_calibration_updates(updates):
+                                calibrated.pop(joint, None)
                         continue
 
                     if action == "q":
@@ -5319,9 +5334,9 @@ Examples (copy/paste):
                     if action == "s":
                         updates_to_save: Dict[str, JointState] = dict(calibrated)
                         updates_to_save[joint] = states[joint]
-                        _save_calibration_updates(updates_to_save)
-                        calibrated.clear()
-                        save_on_exit = False
+                        if _save_calibration_updates(updates_to_save):
+                            calibrated.clear()
+                            save_on_exit = False
                         continue
 
                     if action == "o":
@@ -5371,9 +5386,9 @@ Examples (copy/paste):
                         if save_requested:
                             updates_to_save: Dict[str, JointState] = dict(calibrated)
                             updates_to_save[joint] = states[joint]
-                            _save_calibration_updates(updates_to_save)
-                            calibrated.clear()
-                            save_on_exit = False
+                            if _save_calibration_updates(updates_to_save):
+                                calibrated.clear()
+                                save_on_exit = False
                             continue
 
                     if action == "o":
