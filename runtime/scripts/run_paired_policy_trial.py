@@ -128,11 +128,13 @@ def _load_home_diagnostic_log(log_path: Path) -> dict[str, object]:
         for index, name in enumerate(footswitch_order)
     }
     elapsed = [float(sample["elapsed_s"]) for sample in samples]
+    sample_indices = [int(sample["sample"]) for sample in samples]
     sample_rate_hz = (
-        (len(elapsed) - 1) / (elapsed[-1] - elapsed[0])
+        (sample_indices[-1] - sample_indices[0]) / (elapsed[-1] - elapsed[0])
         if len(elapsed) > 1 and elapsed[-1] > elapsed[0]
         else float("nan")
     )
+    expected_samples = int(result.get("samples", sample_indices[-1] + 1))
     pitch_drift_slope = _linear_slope(
         [
             (float(sample["elapsed_s"]), float(sample["rpy_deg"][1]))
@@ -144,6 +146,8 @@ def _load_home_diagnostic_log(log_path: Path) -> dict[str, object]:
         "log": str(log_path),
         "status": str(result.get("status", "incomplete")),
         "sample_count": len(samples),
+        "expected_sample_count": expected_samples,
+        "sample_capture_ratio": len(samples) / expected_samples,
         "duration_s": last_elapsed_s,
         "sample_rate_hz": sample_rate_hz if math.isfinite(sample_rate_hz) else None,
         "fresh_imu_ratio": sum(bool(sample["imu_fresh"]) for sample in samples)
@@ -190,6 +194,7 @@ def _write_home_characterization_summary(
         for trial in trials
         if trial["sample_rate_hz"] is not None
     ]
+    sample_capture_ratios = [float(trial["sample_capture_ratio"]) for trial in trials]
     pitch_rate_p95 = [
         float(trial["final_window_abs_pitch_rate_p95_rad_s"])
         for trial in trials
@@ -219,6 +224,10 @@ def _write_home_characterization_summary(
         "sample_rate_hz": {
             "min": min(sample_rates) if sample_rates else None,
             "p50": _percentile(sample_rates, 50.0) if sample_rates else None,
+        },
+        "sample_capture_ratio": {
+            "min": min(sample_capture_ratios),
+            "p50": _percentile(sample_capture_ratios, 50.0),
         },
         "final_window_abs_pitch_rate_p95_rad_s": {
             "p50": _percentile(pitch_rate_p95, 50.0),
@@ -283,7 +292,8 @@ def _write_home_characterization_summary(
         f"{aggregate['final_pitch_deg']['p95']:+.2f}deg "
         f"drift_p50/p95={drift_summary} "
         f"abs_pitch_rate_p95="
-        f"{aggregate['final_window_abs_pitch_rate_p95_rad_s']['p95']:.3f}rad/s",
+        f"{aggregate['final_window_abs_pitch_rate_p95_rad_s']['p95']:.3f}rad/s "
+        f"sample_capture_min={aggregate['sample_capture_ratio']['min']:.1%}",
         flush=True,
     )
     print(f"  summary log: {summary_path}", flush=True)
@@ -440,7 +450,9 @@ def _run_streaming(
         raise
     finally:
         process.wait()
-        output_thread.join(timeout=2.0)
+        # The diagnostic child can leave several MB buffered in stdout. Once the
+        # process exits the pipe reaches EOF, so drain it before parsing the log.
+        output_thread.join()
 
     return ProcessResult(
         returncode=int(process.returncode),

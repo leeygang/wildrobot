@@ -85,6 +85,26 @@ def test_streaming_runner_stops_after_first_policy_step() -> None:
     assert not result.fall_abort_seen
 
 
+def test_streaming_runner_drains_all_output_after_child_exit(tmp_path: Path) -> None:
+    module = _load_module()
+    output_log = tmp_path / "stream.log"
+    command = [
+        sys.executable,
+        "-u",
+        "-c",
+        "for i in range(5000): print(f'ROW {i:04d} ' + 'x' * 500)",
+    ]
+
+    result = module._run_streaming(
+        command,
+        output_log=output_log,
+        quiet_line_prefixes=("ROW ",),
+    )
+
+    assert result.returncode == 0
+    assert sum(line.startswith("ROW ") for line in output_log.read_text().splitlines()) == 5000
+
+
 def test_main_runs_home_then_policy_for_one_confirmed_trial(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -210,6 +230,19 @@ def test_home_diagnostic_summary_reports_distribution(tmp_path: Path) -> None:
     assert summary["aggregate"]["trial_count"] == 1
     assert summary["aggregate"]["final_pitch_deg"]["p95"] == 4.0
     assert summary["aggregate"]["final_window_abs_pitch_rate_p95_rad_s"]["p95"] == 0.1
+
+    dropped_log = tmp_path / "v0227_ckpt200_home_trial02.log"
+    dropped_log.write_text(
+        "\n".join(
+            line
+            for line in trial_log.read_text().splitlines()
+            if not (line.startswith("HOME_DIAGNOSTIC_SAMPLE ") and '"sample": 5' in line)
+        )
+        + "\n"
+    )
+    dropped = module._load_home_diagnostic_log(dropped_log)
+    assert dropped["sample_rate_hz"] == 1.0
+    assert dropped["sample_capture_ratio"] == 0.75
 
 
 def test_main_home_characterization_runs_home_only_and_writes_summary(
