@@ -9,7 +9,7 @@ import traceback
 from dataclasses import replace
 from queue import Queue
 from struct import pack_into, unpack_from
-from threading import Thread
+from threading import Thread, current_thread, main_thread
 from typing import Optional
 
 import numpy as np
@@ -1059,9 +1059,11 @@ class BNO085IMU(Imu):
         """Best-effort suppression for chatty library debug prints.
 
         Some BNO08X stacks print verbose packet dumps directly to stdout/stderr when
-        debug is enabled internally. We treat this as a hard runtime concern (timing/log noise).
+        debug is enabled internally. ``redirect_stdout`` changes process-global state,
+        so it must never run in the background reader thread or it can hide main-thread
+        prompts and logs. Worker reads rely on ``_try_disable_debug`` instead.
         """
-        if not self.suppress_debug:
+        if not self.suppress_debug or current_thread() is not main_thread():
             yield
             return
 

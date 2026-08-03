@@ -857,3 +857,31 @@ def test_bno_background_read_marks_cached_sample_not_fresh() -> None:
     assert sample.timestamp_s == 1.0
     assert imu.diag["payload_status"] == "stale"
     assert imu.diag["read_status"] == "cached"
+
+
+def test_bno_worker_does_not_redirect_process_stdout() -> None:
+    import sys
+    from threading import Event, Thread
+
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu.suppress_debug = True
+    entered = Event()
+    release = Event()
+    original_stdout = sys.stdout
+
+    def _worker() -> None:
+        with imu._maybe_silence_debug_output():
+            entered.set()
+            release.wait(timeout=1.0)
+
+    worker = Thread(target=_worker)
+    worker.start()
+    assert entered.wait(timeout=1.0)
+    try:
+        assert sys.stdout is original_stdout
+    finally:
+        release.set()
+        worker.join(timeout=1.0)
+    assert not worker.is_alive()
