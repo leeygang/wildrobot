@@ -1311,6 +1311,89 @@ def test_calibrate_servo_board_discovers_complete_mapping_and_writes_config(
     ]
 
 
+def test_calibrate_servo_board_allows_missing_servos_when_each_board_is_identified(
+    capsys,
+) -> None:
+    from runtime.scripts import calibrate
+
+    positions_by_port = {
+        "/dev/ttyUSB0": {1: 501},
+        "/dev/ttyUSB1": {5: 505},
+        "/dev/ttyUSB2": {21: 521},
+    }
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+
+        def read_servo_positions(self, servo_ids):
+            positions = positions_by_port[self.port]
+            return [
+                (int(servo_id), positions[int(servo_id)])
+                for servo_id in servo_ids
+                if int(servo_id) in positions
+            ] or None
+
+        def close(self):
+            pass
+
+    boards = calibrate.discover_servo_boards(
+        servo_ids_by_joint={
+            "left_hip_pitch": 1,
+            "left_hip_roll": 2,
+            "right_hip_pitch": 5,
+            "right_hip_roll": 6,
+            "left_shoulder_pitch": 21,
+            "left_shoulder_roll": 22,
+        },
+        controller_type="hiwonder_ttl_bus",
+        baudrate=115200,
+        ports=positions_by_port,
+        controller_factory=lambda cfg: _FakeController(cfg.port),
+    )
+
+    assert [(board.name, board.port, board.servo_ids) for board in boards] == [
+        ("left_leg_board", "/dev/ttyUSB0", (1, 2)),
+        ("right_leg_board", "/dev/ttyUSB1", (5, 6)),
+        ("upper_body_board", "/dev/ttyUSB2", (21, 22)),
+    ]
+    assert (
+        "WARNING: configured servo IDs did not respond during board discovery: "
+        "[2, 6, 22]" in capsys.readouterr().out
+    )
+
+
+def test_stable_serial_port_uses_by_path_when_usb_adapter_has_no_serial(
+    tmp_path,
+) -> None:
+    from runtime.scripts import calibrate
+
+    device_dir = tmp_path / "dev"
+    by_id_dir = device_dir / "serial" / "by-id"
+    by_path_dir = device_dir / "serial" / "by-path"
+    by_id_dir.mkdir(parents=True)
+    by_path_dir.mkdir(parents=True)
+    device = device_dir / "ttyUSB0"
+    device.touch()
+    by_id = by_id_dir / "usb-1a86_USB_Serial-if00-port0"
+    by_path = by_path_dir / "platform-usb-0:1.1:1.0-port0"
+    by_id.symlink_to(device)
+    by_path.symlink_to(device)
+
+    assert calibrate._stable_serial_port(
+        str(device),
+        serial_number=None,
+        by_id_dir=by_id_dir,
+        by_path_dir=by_path_dir,
+    ) == str(by_path)
+    assert calibrate._stable_serial_port(
+        str(device),
+        serial_number="adapter-serial",
+        by_id_dir=by_id_dir,
+        by_path_dir=by_path_dir,
+    ) == str(by_id)
+
+
 def test_calibrate_servo_board_detects_only_usb_serial_ports(monkeypatch) -> None:
     from serial.tools import list_ports
     from runtime.scripts import calibrate
@@ -1321,7 +1404,11 @@ def test_calibrate_servo_board_detects_only_usb_serial_ports(monkeypatch) -> Non
         SimpleNamespace(device="/dev/ttyACM0", vid=None, hwid="USB CDC"),
     ]
     monkeypatch.setattr(list_ports, "comports", lambda: ports)
-    monkeypatch.setattr(calibrate, "_stable_serial_port", lambda device: device)
+    monkeypatch.setattr(
+        calibrate,
+        "_stable_serial_port",
+        lambda device, **_kwargs: device,
+    )
 
     assert calibrate.detect_usb_serial_ports() == ["/dev/ttyACM0", "/dev/ttyUSB1"]
 

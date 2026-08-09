@@ -823,18 +823,36 @@ def build_calibration_controller(servo_controller_config):
     return build_ttl_servo_controller(servo_controller_config)
 
 
-def _stable_serial_port(device: str) -> str:
-    """Prefer Linux by-id symlinks when they resolve to the enumerated device."""
-    by_id_dir = Path("/dev/serial/by-id")
-    if not by_id_dir.is_dir():
-        return str(device)
+def _serial_symlink_for_device(device: str, directory: Path) -> Optional[str]:
+    if not directory.is_dir():
+        return None
     try:
         resolved_device = Path(device).resolve()
-        for candidate in sorted(by_id_dir.iterdir()):
+        for candidate in sorted(directory.iterdir()):
             if candidate.resolve() == resolved_device:
                 return str(candidate)
     except OSError:
         pass
+    return None
+
+
+def _stable_serial_port(
+    device: str,
+    *,
+    serial_number: Optional[str] = None,
+    by_id_dir: Path = Path("/dev/serial/by-id"),
+    by_path_dir: Path = Path("/dev/serial/by-path"),
+) -> str:
+    """Return a stable Linux serial path for one enumerated USB device."""
+    preferred_dirs = (
+        (by_id_dir, by_path_dir)
+        if str(serial_number or "").strip()
+        else (by_path_dir, by_id_dir)
+    )
+    for directory in preferred_dirs:
+        stable = _serial_symlink_for_device(device, directory)
+        if stable is not None:
+            return stable
     return str(device)
 
 
@@ -851,7 +869,10 @@ def detect_usb_serial_ports() -> List[str]:
         is_usb = getattr(info, "vid", None) is not None or "USB" in hwid
         if not is_usb:
             continue
-        stable = _stable_serial_port(device)
+        stable = _stable_serial_port(
+            device,
+            serial_number=getattr(info, "serial_number", None),
+        )
         if stable not in devices:
             devices.append(stable)
     return sorted(devices)
@@ -901,7 +922,7 @@ def discover_servo_boards(
     ports: Optional[Iterable[str]] = None,
     controller_factory=None,
 ) -> List[DetectedServoBoard]:
-    """Probe configured servo IDs and return one complete ID-to-port mapping."""
+    """Probe configured servo IDs and return one unambiguous board mapping."""
     configured_ids = {
         str(joint_name): int(servo_id)
         for joint_name, servo_id in servo_ids_by_joint.items()
@@ -912,6 +933,13 @@ def discover_servo_boards(
     if len(set(ordered_ids)) != len(ordered_ids):
         raise ValueError(
             "Configured servo IDs must be globally unique before board discovery"
+        )
+    expected_ids_by_name: Dict[str, Tuple[int, ...]] = {}
+    for joint_name, servo_id in configured_ids.items():
+        board_name = servo_board_name_for_joint(joint_name)
+        expected_ids_by_name[board_name] = (
+            *expected_ids_by_name.get(board_name, ()),
+            servo_id,
         )
     controller_factory = controller_factory or build_calibration_controller
     port_source = detect_usb_serial_ports() if ports is None else ports
@@ -957,7 +985,7 @@ def discover_servo_boards(
         for servo_id, found_ports in ports_by_servo_id.items()
         if len(found_ports) > 1
     }
-    if missing or duplicate:
+    if duplicate:
         detail = f"missing={missing}, duplicate={duplicate}"
         if failures:
             detail += f", port_errors={failures}"
@@ -966,19 +994,12 @@ def discover_servo_boards(
             + detail
         )
 
-    expected_ids_by_name: Dict[str, Tuple[int, ...]] = {}
-    for joint_name, servo_id in configured_ids.items():
-        board_name = servo_board_name_for_joint(joint_name)
-        expected_ids_by_name[board_name] = (
-            *expected_ids_by_name.get(board_name, ()),
-            servo_id,
-        )
     classified: List[DetectedServoBoard] = []
     for board in detected:
         matches = [
             board_name
             for board_name, expected_ids in expected_ids_by_name.items()
-            if set(board.servo_ids) == set(expected_ids)
+            if set(board.servo_ids).issubset(expected_ids)
         ]
         if len(matches) != 1:
             raise RuntimeError(
@@ -990,15 +1011,39 @@ def discover_servo_boards(
             DetectedServoBoard(
                 name=matches[0],
                 port=board.port,
-                servo_ids=board.servo_ids,
+                servo_ids=expected_ids_by_name[matches[0]],
             )
+        )
+    ports_by_name: Dict[str, List[str]] = {}
+    for board in classified:
+        ports_by_name.setdefault(board.name, []).append(board.port)
+    split_groups = {
+        name: ports for name, ports in ports_by_name.items() if len(ports) > 1
+    }
+    if split_groups:
+        raise RuntimeError(
+            "Detected one physical joint group on multiple ports: "
+            f"{split_groups}"
         )
     expected_names = set(expected_ids_by_name)
     detected_names = {board.name for board in classified}
     if detected_names != expected_names:
+        detail = ""
+        if missing:
+            detail += f", missing_servo_ids={missing}"
+        if failures:
+            detail += f", port_errors={failures}"
         raise RuntimeError(
             "Servo board discovery is missing a physical joint group: "
             f"expected={sorted(expected_names)}, detected={sorted(detected_names)}"
+            + detail
+        )
+    if missing:
+        print(
+            "WARNING: configured servo IDs did not respond during board discovery: "
+            f"{missing}. Continuing because every physical joint group was "
+            "uniquely identified.",
+            flush=True,
         )
     order = {name: idx for idx, name in enumerate(SERVO_BOARD_NAMES)}
     return sorted(classified, key=lambda board: order[board.name])
@@ -4602,7 +4647,7 @@ Examples (copy/paste):
         for board in boards:
             print(
                 f"  {board.name}: port={board.port} "
-                f"servo_ids={list(board.servo_ids)}",
+                f"configured_servo_ids={list(board.servo_ids)}",
                 flush=True,
             )
         write_servo_board_config(raw_config, output_path, boards)
