@@ -11,25 +11,25 @@
       },
       "left_hip_roll": {
         "id": 2,
-        "servo_offset_unit": 19,
+        "servo_offset_unit": 28,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_knee_pitch": {
         "id": 3,
-        "servo_offset_unit": 40,
+        "servo_offset_unit": 42,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_ankle_pitch": {
         "id": 4,
-        "servo_offset_unit": 40,
+        "servo_offset_unit": 30,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
       "left_ankle_roll": {
         "id": 9,
-        "servo_offset_unit": 4,
+        "servo_offset_unit": 23,
         "motor_unit_direction": -1,
         "joint_angle_at_zero_unit_deg": 0
       },
