@@ -171,8 +171,8 @@ def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) 
 
     calibrate_mod.main()
 
-    assert len(controller.reads) == 1
-    assert set(controller.reads[0]) == {
+    assert len(controller.reads) == 2
+    assert all(set(read_ids) == {
         1,
         2,
         3,
@@ -190,7 +190,7 @@ def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) 
         32,
         33,
         40,
-    }
+    } for read_ids in controller.reads)
     assert len(controller.moves) == 1
     moved_ids = {servo_id for servo_id, _ in controller.moves[0][0]}
     assert moved_ids.isdisjoint(missing_ids)
@@ -199,6 +199,133 @@ def test_calibrate_zero_group_move_skips_unreadable_servos(monkeypatch, capsys) 
     assert "Checking 17 configured servos before group move..." in output
     assert "WARNING: skipping unreadable servos in group move: #21, #22, #23, #31, #32, #33" in output
     assert "Step: move readable joints to calibrated zero with offset" in output
+
+
+def test_calibration_servo_refresh_reflects_reconnected_servos() -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _FakeController:
+        def __init__(self):
+            self.connected = {1}
+
+        def read_servo_positions(self, servo_ids):
+            return [
+                (int(servo_id), 500 + int(servo_id))
+                for servo_id in servo_ids
+                if int(servo_id) in self.connected
+            ]
+
+    controller = _FakeController()
+    assert calibrate_mod.read_servo_positions_best_effort(controller, [1, 5]) == [
+        (1, 501)
+    ]
+
+    controller.connected.add(5)
+    assert calibrate_mod.read_servo_positions_best_effort(controller, [1, 5]) == [
+        (1, 501),
+        (5, 505),
+    ]
+
+
+def test_calibration_board_port_refresh_detects_changed_ports_and_retains_missing_board(
+    monkeypatch,
+    capsys,
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+
+    class _OldController:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    old_controller = _OldController()
+    existing = [
+        calibrate_mod.DetectedServoBoard("left_leg_board", "/dev/old-left", (1,)),
+        calibrate_mod.DetectedServoBoard("right_leg_board", "/dev/old-right", (5,)),
+        calibrate_mod.DetectedServoBoard("upper_body_board", "/dev/old-upper", (40,)),
+    ]
+    detected = [
+        calibrate_mod.DetectedServoBoard("left_leg_board", "/dev/new-left", (1,)),
+        calibrate_mod.DetectedServoBoard("upper_body_board", "/dev/new-upper", (40,)),
+    ]
+    built_configs = []
+    new_controller = object()
+
+    monkeypatch.setattr(
+        calibrate_mod,
+        "detect_usb_serial_ports",
+        lambda: ["/dev/new-left", "/dev/new-upper", "/dev/unidentified"],
+    )
+    monkeypatch.setattr(
+        calibrate_mod,
+        "discover_servo_boards",
+        lambda **_kwargs: detected,
+    )
+
+    def _build(config):
+        built_configs.append(config)
+        return new_controller
+
+    monkeypatch.setattr(calibrate_mod, "build_calibration_controller", _build)
+    monkeypatch.setattr(
+        calibrate_mod,
+        "_yellow",
+        lambda text: f"<yellow>{text}</yellow>",
+    )
+
+    controller, merged = calibrate_mod.refresh_calibration_board_ports(
+        old_controller,
+        servo_controller_config=SimpleNamespace(
+            type="hiwonder_ttl_bus",
+            port="/dev/fallback",
+            baudrate=115200,
+        ),
+        servo_ids_by_joint={
+            "left_hip_pitch": 1,
+            "right_hip_pitch": 5,
+            "waist_yaw": 40,
+        },
+        existing_boards=existing,
+    )
+
+    assert controller is new_controller
+    assert old_controller.closed
+    assert [(board.name, board.port) for board in merged] == [
+        ("left_leg_board", "/dev/new-left"),
+        ("right_leg_board", "/dev/old-right"),
+        ("upper_body_board", "/dev/new-upper"),
+    ]
+    assert [
+        (board.name, board.port) for board in built_configs[0].boards
+    ] == [
+        ("left_leg_board", "/dev/new-left"),
+        ("right_leg_board", "/dev/old-right"),
+        ("upper_body_board", "/dev/new-upper"),
+    ]
+    assert (
+        "<yellow>  retained unverified right_leg_board: port=/dev/old-right; "
+        "a connected servo from this board is required to detect a new port</yellow>"
+        in capsys.readouterr().out
+    )
+
+    conflicting_existing = [
+        existing[0],
+        calibrate_mod.DetectedServoBoard(
+            "right_leg_board", "/dev/new-upper", (5,)
+        ),
+        existing[2],
+    ]
+    merged, missing = calibrate_mod.merge_servo_board_mappings(
+        conflicting_existing,
+        detected,
+    )
+    assert [board.name for board in merged] == [
+        "left_leg_board",
+        "upper_body_board",
+    ]
+    assert missing == ["right_leg_board"]
 
 
 def test_calibrate_servo_list_can_print_current_imu(monkeypatch, capsys) -> None:
@@ -1357,10 +1484,69 @@ def test_calibrate_servo_board_allows_missing_servos_when_each_board_is_identifi
         ("right_leg_board", "/dev/ttyUSB1", (5, 6)),
         ("upper_body_board", "/dev/ttyUSB2", (21, 22)),
     ]
-    assert (
-        "WARNING: configured servo IDs did not respond during board discovery: "
-        "[2, 6, 22]" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "left_leg_board: PARTIAL port=/dev/ttyUSB0" in output
+    assert "not detected servos: #2 left_hip_roll" in output
+    assert "not detected servos: #6 right_hip_roll" in output
+    assert "not detected servos: #22 left_shoulder_roll" in output
+
+
+def test_calibrate_servo_board_reports_missing_group_without_raising(
+    monkeypatch,
+    capsys,
+) -> None:
+    from runtime.scripts import calibrate
+
+    positions_by_port = {
+        "/dev/ttyUSB0": {1: 501, 2: 502},
+        "/dev/ttyUSB1": {},
+        "/dev/ttyUSB2": {40: 540},
+    }
+
+    class _FakeController:
+        def __init__(self, port):
+            self.port = port
+
+        def read_servo_positions(self, servo_ids):
+            positions = positions_by_port[self.port]
+            return [
+                (int(servo_id), positions[int(servo_id)])
+                for servo_id in servo_ids
+                if int(servo_id) in positions
+            ] or None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(calibrate, "_yellow", lambda text: f"<yellow>{text}</yellow>")
+    boards = calibrate.discover_servo_boards(
+        servo_ids_by_joint={
+            "left_hip_pitch": 1,
+            "left_hip_roll": 2,
+            "right_hip_pitch": 5,
+            "right_hip_roll": 6,
+            "waist_yaw": 40,
+            "left_shoulder_pitch": 21,
+        },
+        controller_type="hiwonder_ttl_bus",
+        baudrate=115200,
+        ports=positions_by_port,
+        controller_factory=lambda cfg: _FakeController(cfg.port),
     )
+
+    assert [(board.name, board.port) for board in boards] == [
+        ("left_leg_board", "/dev/ttyUSB0"),
+        ("upper_body_board", "/dev/ttyUSB2"),
+    ]
+    output = capsys.readouterr().out
+    assert "<yellow>  right_leg_board: NOT DETECTED</yellow>" in output
+    assert (
+        "<yellow>    not detected servos: #5 right_hip_pitch, "
+        "#6 right_hip_roll</yellow>" in output
+    )
+    assert "<yellow>  upper_body_board: PARTIAL port=/dev/ttyUSB2</yellow>" in output
+    assert "detected servos: #40 waist_yaw" in output
+    assert "<yellow>    not detected servos: #21 left_shoulder_pitch</yellow>" in output
 
 
 def test_stable_serial_port_uses_by_path_when_usb_adapter_has_no_serial(
@@ -1506,6 +1692,52 @@ def test_calibrate_servo_board_is_top_level_cli_mode(monkeypatch, tmp_path) -> N
     assert "port" not in saved
     assert len(saved["boards"]) == 3
     assert saved["boards"][2]["servo_ids"] == list(discovered[2].servo_ids)
+
+
+def test_calibrate_servo_board_partial_scan_does_not_fail_or_overwrite_config(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    from runtime.scripts import calibrate
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text(_HARDWARE_CONFIG.read_text())
+    original_boards = json.loads(config_path.read_text())["servo_controller"]["boards"]
+    discovered = [
+        calibrate.DetectedServoBoard(
+            "left_leg_board", "/dev/new-left", (1, 2, 3, 4, 9)
+        ),
+        calibrate.DetectedServoBoard(
+            "upper_body_board", "/dev/new-upper", (40, 21, 22, 23, 31, 32, 33)
+        ),
+    ]
+    monkeypatch.setattr(
+        calibrate,
+        "detect_usb_serial_ports",
+        lambda: [board.port for board in discovered],
+    )
+    monkeypatch.setattr(
+        calibrate,
+        "discover_servo_boards",
+        lambda **_kwargs: discovered,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate.py",
+            "--config",
+            str(config_path),
+            "--calibrate-servo-board",
+        ],
+    )
+
+    calibrate.main()
+
+    saved_boards = json.loads(config_path.read_text())["servo_controller"]["boards"]
+    assert saved_boards == original_boards
+    assert "Partial discovery completed without changing config" in capsys.readouterr().out
 
 
 def test_hardware_protocols_have_no_from_config() -> None:

@@ -492,12 +492,17 @@ def calibrate_footswitches(*, config: WrRuntimeConfig) -> None:
 def read_position(controller, servo_id: int, *, retries: int = 5, retry_delay_s: float = 0.1) -> Optional[int]:
     for attempt in range(1, retries + 1):
         try:
-            if hasattr(controller, "serial") and hasattr(controller.serial, "reset_input_buffer"):
+            if hasattr(controller, "serial") and hasattr(
+                controller.serial, "reset_input_buffer"
+            ):
                 controller.serial.reset_input_buffer()
         except Exception:
             pass
 
-        resp = controller.read_servo_positions([servo_id])
+        try:
+            resp = controller.read_servo_positions([servo_id])
+        except Exception:
+            resp = None
         if resp:
             for sid, pos in resp:
                 if int(sid) == int(servo_id):
@@ -506,6 +511,25 @@ def read_position(controller, servo_id: int, *, retries: int = 5, retry_delay_s:
         if attempt < retries:
             time.sleep(retry_delay_s)
     return None
+
+
+def read_servo_positions_best_effort(
+    controller,
+    servo_ids: Iterable[int],
+) -> List[Tuple[int, int]]:
+    """Read every available servo without one failed board hiding the others."""
+    requested = [int(servo_id) for servo_id in servo_ids]
+    try:
+        response = controller.read_servo_positions(requested)
+        return [(int(servo_id), int(position)) for servo_id, position in response or []]
+    except Exception:
+        # One missing USB board must not hide servos on the other boards.
+        positions: List[Tuple[int, int]] = []
+        for servo_id in requested:
+            position = read_position(controller, servo_id, retries=1, retry_delay_s=0.0)
+            if position is not None:
+                positions.append((servo_id, int(position)))
+        return positions
 
 
 def move_and_wait(
@@ -534,7 +558,7 @@ def print_all_joint_positions(
     include_rad: bool,
 ) -> None:
     servo_ids = [servo_cfgs[j].id for j in joint_names]
-    resp = controller.read_servo_positions(servo_ids)
+    resp = read_servo_positions_best_effort(controller, servo_ids)
     if not resp:
         print("Position readback failed (no response).")
         return
@@ -568,7 +592,7 @@ def read_servo_zero_reference_status(
 ) -> Dict[str, ServoZeroReferenceStatus]:
     """Read the offset each joint's current raw position implies at physical zero."""
     servo_ids = [int(servo_cfgs[joint].id) for joint in joint_names]
-    positions = controller.read_servo_positions(servo_ids)
+    positions = read_servo_positions_best_effort(controller, servo_ids)
     pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions or []}
 
     status_by_joint: Dict[str, ServoZeroReferenceStatus] = {}
@@ -704,7 +728,7 @@ def read_all_home_ctrl_rad(
     states: Dict[str, JointState],
 ) -> List[float]:
     servo_ids = [servo_cfgs[j].id for j in joint_names]
-    resp = controller.read_servo_positions(servo_ids)
+    resp = read_servo_positions_best_effort(controller, servo_ids)
     if not resp:
         raise RuntimeError("Failed to read servo positions for home recording.")
     pos_by_id = {int(sid): int(pos) for sid, pos in resp}
@@ -914,6 +938,52 @@ def _probe_servo_board(
     return DetectedServoBoard(name="", port=str(port), servo_ids=tuple(found))
 
 
+def print_servo_detection_summary(
+    *,
+    servo_ids_by_joint: Dict[str, int],
+    detected_servo_ids: Iterable[int],
+    ports_by_board: Optional[Dict[str, str]] = None,
+    heading: str = "Servo detection summary",
+) -> None:
+    """Print complete, partial, and missing servo status by physical board."""
+    detected_ids = {int(servo_id) for servo_id in detected_servo_ids}
+    ports = {str(name): str(port) for name, port in (ports_by_board or {}).items()}
+    expected_by_board: Dict[str, List[Tuple[int, str]]] = {
+        name: [] for name in SERVO_BOARD_NAMES
+    }
+    for joint_name, servo_id in servo_ids_by_joint.items():
+        expected_by_board[servo_board_name_for_joint(joint_name)].append(
+            (int(servo_id), str(joint_name))
+        )
+
+    print(f"\n== {heading} ==", flush=True)
+    for board_name in SERVO_BOARD_NAMES:
+        expected = expected_by_board[board_name]
+        detected = [item for item in expected if item[0] in detected_ids]
+        missing = [item for item in expected if item[0] not in detected_ids]
+        if expected and not missing:
+            status = "DETECTED"
+        elif detected:
+            status = "PARTIAL"
+        else:
+            status = "NOT DETECTED"
+        port_text = f" port={ports[board_name]}" if board_name in ports else ""
+        board_line = f"  {board_name}: {status}{port_text}"
+        print(board_line if status == "DETECTED" else _yellow(board_line), flush=True)
+
+        detected_text = ", ".join(
+            f"#{servo_id} {joint_name}" for servo_id, joint_name in detected
+        )
+        missing_text = ", ".join(
+            f"#{servo_id} {joint_name}" for servo_id, joint_name in missing
+        )
+        print(f"    detected servos: {detected_text or 'none'}", flush=True)
+        if missing:
+            print(_yellow(f"    not detected servos: {missing_text}"), flush=True)
+        else:
+            print("    not detected servos: none", flush=True)
+
+
 def discover_servo_boards(
     *,
     servo_ids_by_joint: Dict[str, int],
@@ -945,7 +1015,13 @@ def discover_servo_boards(
     port_source = detect_usb_serial_ports() if ports is None else ports
     candidate_ports = sorted(dict.fromkeys(str(port) for port in port_source))
     if not candidate_ports:
-        raise RuntimeError("No USB serial ports detected")
+        print_servo_detection_summary(
+            servo_ids_by_joint=configured_ids,
+            detected_servo_ids=(),
+            heading="Servo Board Detection Status",
+        )
+        print(_yellow("  No USB serial ports detected."), flush=True)
+        return []
 
     detected: List[DetectedServoBoard] = []
     failures: List[str] = []
@@ -995,6 +1071,7 @@ def discover_servo_boards(
         )
 
     classified: List[DetectedServoBoard] = []
+    detected_ids_by_name: Dict[str, Tuple[int, ...]] = {}
     for board in detected:
         matches = [
             board_name
@@ -1014,6 +1091,7 @@ def discover_servo_boards(
                 servo_ids=expected_ids_by_name[matches[0]],
             )
         )
+        detected_ids_by_name[matches[0]] = tuple(board.servo_ids)
     ports_by_name: Dict[str, List[str]] = {}
     for board in classified:
         ports_by_name.setdefault(board.name, []).append(board.port)
@@ -1025,26 +1103,20 @@ def discover_servo_boards(
             "Detected one physical joint group on multiple ports: "
             f"{split_groups}"
         )
-    expected_names = set(expected_ids_by_name)
-    detected_names = {board.name for board in classified}
-    if detected_names != expected_names:
-        detail = ""
-        if missing:
-            detail += f", missing_servo_ids={missing}"
-        if failures:
-            detail += f", port_errors={failures}"
-        raise RuntimeError(
-            "Servo board discovery is missing a physical joint group: "
-            f"expected={sorted(expected_names)}, detected={sorted(detected_names)}"
-            + detail
-        )
-    if missing:
-        print(
-            "WARNING: configured servo IDs did not respond during board discovery: "
-            f"{missing}. Continuing because every physical joint group was "
-            "uniquely identified.",
-            flush=True,
-        )
+    print_servo_detection_summary(
+        servo_ids_by_joint=configured_ids,
+        detected_servo_ids=(
+            servo_id
+            for detected_ids in detected_ids_by_name.values()
+            for servo_id in detected_ids
+        ),
+        ports_by_board={board.name: board.port for board in classified},
+        heading="Servo Board Detection Status",
+    )
+    if failures:
+        print(_yellow("  Port probe errors:"), flush=True)
+        for failure in failures:
+            print(_yellow(f"    {failure}"), flush=True)
     order = {name: idx for idx, name in enumerate(SERVO_BOARD_NAMES)}
     return sorted(classified, key=lambda board: order[board.name])
 
@@ -1069,6 +1141,111 @@ def write_servo_board_config(
         for board in board_list
     ]
     _write_json_with_retries(output_path, base_data)
+
+
+def configured_servo_boards(servo_controller_config) -> List[DetectedServoBoard]:
+    return [
+        DetectedServoBoard(
+            name=str(board.name),
+            port=str(board.port),
+            servo_ids=tuple(int(servo_id) for servo_id in board.servo_ids),
+        )
+        for board in tuple(getattr(servo_controller_config, "boards", ()) or ())
+    ]
+
+
+def merge_servo_board_mappings(
+    existing_boards: Iterable[DetectedServoBoard],
+    detected_boards: Iterable[DetectedServoBoard],
+) -> Tuple[List[DetectedServoBoard], List[str]]:
+    """Prefer freshly detected routes and retain unverified existing routes."""
+    existing_by_name = {board.name: board for board in existing_boards}
+    detected_by_name = {board.name: board for board in detected_boards}
+    detected_ports = {board.port for board in detected_by_name.values()}
+    merged: List[DetectedServoBoard] = []
+    missing_without_existing: List[str] = []
+    for board_name in SERVO_BOARD_NAMES:
+        board = detected_by_name.get(board_name)
+        if board is None:
+            existing = existing_by_name.get(board_name)
+            if existing is not None and existing.port not in detected_ports:
+                board = existing
+        if board is None:
+            missing_without_existing.append(board_name)
+            continue
+        merged.append(board)
+    return merged, missing_without_existing
+
+
+def refresh_calibration_board_ports(
+    controller,
+    *,
+    servo_controller_config,
+    servo_ids_by_joint: Dict[str, int],
+    existing_boards: Iterable[DetectedServoBoard],
+):
+    """Re-detect board ports and rebuild the calibration controller in memory."""
+    if controller is not None:
+        with contextlib.suppress(Exception):
+            controller.close()
+
+    ports = detect_usb_serial_ports()
+    print("\nRefreshing calibration servo-board ports...", flush=True)
+    print(f"USB serial ports: {ports}", flush=True)
+    try:
+        detected_boards = discover_servo_boards(
+            servo_ids_by_joint=servo_ids_by_joint,
+            controller_type=str(servo_controller_config.type),
+            baudrate=int(servo_controller_config.baudrate),
+            ports=ports,
+        )
+    except RuntimeError as exc:
+        print(
+            _yellow(
+                f"Board-port refresh could not resolve a safe new mapping: {exc}"
+            ),
+            flush=True,
+        )
+        detected_boards = []
+
+    existing_list = list(existing_boards)
+    merged_boards, missing_without_existing = merge_servo_board_mappings(
+        existing_list,
+        detected_boards,
+    )
+    detected_names = {board.name for board in detected_boards}
+    for board in merged_boards:
+        if board.name not in detected_names:
+            print(
+                _yellow(
+                    f"  retained unverified {board.name}: port={board.port}; "
+                    "a connected servo from this board is required to detect a new port"
+                ),
+                flush=True,
+            )
+    if missing_without_existing:
+        print(
+            _yellow(
+                "  no route is available for undetected boards: "
+                f"{missing_without_existing}"
+            ),
+            flush=True,
+        )
+
+    controller_config = SimpleNamespace(
+        type=str(servo_controller_config.type),
+        port=str(getattr(servo_controller_config, "port", "")),
+        baudrate=int(servo_controller_config.baudrate),
+        boards=tuple(
+            SimpleNamespace(
+                name=board.name,
+                port=board.port,
+                servo_ids=board.servo_ids,
+            )
+            for board in merged_boards
+        ),
+    )
+    return build_calibration_controller(controller_config), merged_boards
 
 
 @contextlib.contextmanager
@@ -1896,7 +2073,7 @@ def _plan_group_move_20deg_per_s(
     max_move_ms = int(min_ms)
     requested_servo_ids = [int(servo_id) for servo_id, _ in commands]
     print(f"Checking {len(requested_servo_ids)} configured servos before group move...")
-    positions = controller.read_servo_positions(requested_servo_ids)
+    positions = read_servo_positions_best_effort(controller, requested_servo_ids)
     position_by_id = {
         int(servo_id): int(position) for servo_id, position in positions or []
     }
@@ -2517,7 +2694,10 @@ def calibrate_home_pose(
         home_by_joint = dict(zip(actuator_names, home_ctrl_rad, strict=True))
         for joint in joint_names:
             requested_rad_by_joint.setdefault(joint, float(home_by_joint[joint]))
-        positions = controller.read_servo_positions([int(servo_cfgs[joint].id) for joint in joint_names])
+        positions = read_servo_positions_best_effort(
+            controller,
+            [int(servo_cfgs[joint].id) for joint in joint_names],
+        )
         pos_by_id = {int(servo_id): int(pos) for servo_id, pos in positions} if positions else {}
 
         print("\n-- Calibrate Home Pose --")
@@ -4638,18 +4818,47 @@ Examples (copy/paste):
         print("\n== Servo Board Discovery ==", flush=True)
         print(f"USB serial ports: {ports}", flush=True)
         print(f"Configured servo IDs: {configured_ids}", flush=True)
-        boards = discover_servo_boards(
-            servo_ids_by_joint=configured_ids,
-            controller_type=config.servo_controller.type,
-            baudrate=config.servo_controller.baudrate,
-            ports=ports,
-        )
+        try:
+            boards = discover_servo_boards(
+                servo_ids_by_joint=configured_ids,
+                controller_type=config.servo_controller.type,
+                baudrate=config.servo_controller.baudrate,
+                ports=ports,
+            )
+        except RuntimeError as exc:
+            print(
+                _yellow(
+                    f"Servo board discovery could not resolve a safe mapping: {exc}"
+                ),
+                flush=True,
+            )
+            print(
+                _yellow(
+                    "Config was not changed. Reconnect servos and run discovery again."
+                ),
+                flush=True,
+            )
+            return
         for board in boards:
             print(
-                f"  {board.name}: port={board.port} "
+                f"  refreshed {board.name}: port={board.port} "
                 f"configured_servo_ids={list(board.servo_ids)}",
                 flush=True,
             )
+        if not boards:
+            print(_yellow("No board mapping was refreshed; config was not changed."), flush=True)
+            return
+        missing_boards = sorted(set(SERVO_BOARD_NAMES) - {board.name for board in boards})
+        if missing_boards:
+            print(
+                _yellow(
+                    "Partial discovery completed without changing config; reconnect at least "
+                    f"one servo from each missing board and retry: {missing_boards}"
+                ),
+                flush=True,
+            )
+            return
+
         write_servo_board_config(raw_config, output_path, boards)
         print(f"Saved servo_controller.boards to {output_path}", flush=True)
         return
@@ -4724,6 +4933,10 @@ Examples (copy/paste):
         for j in joint_names
     }
     servo_ids = [servo_cfgs[j].id for j in joint_names]
+    configured_servo_ids = {
+        joint_name: int(servo_cfgs[joint_name].id)
+        for joint_name in joint_names
+    }
     bundle_dir = Path(args.bundle) if args.bundle else None
     robot_config_path = resolve_robot_config_path(
         raw_config,
@@ -4829,9 +5042,29 @@ Examples (copy/paste):
         return
 
     controller = build_calibration_controller(config.hiwonder_controller)
+    active_calibration_boards = configured_servo_boards(config.servo_controller)
+    active_servo_ids = list(servo_ids)
+
+    def _refresh_calibration_routes() -> None:
+        nonlocal controller, active_calibration_boards, active_servo_ids
+        controller, active_calibration_boards = refresh_calibration_board_ports(
+            controller,
+            servo_controller_config=config.servo_controller,
+            servo_ids_by_joint=configured_servo_ids,
+            existing_boards=active_calibration_boards,
+        )
+        active_servo_ids = [
+            servo_id
+            for board in active_calibration_boards
+            for servo_id in board.servo_ids
+        ]
+
     body_angle_imu = None
     home_pose_commanded = False
     try:
+        if args.calibrate:
+            _refresh_calibration_routes()
+
         if args.calibrate or args.calibrate_home:
             body_angle_imu = _open_body_angle_imu(
                 config=config,
@@ -5005,6 +5238,10 @@ Examples (copy/paste):
                 "  d=calibrate servo_unit_direction, r=single-joint range test (20 deg/s),\n"
                 "  m=set motor electric unit, o=calibrate offset, s=save to config, b=back to joint list, x=panic unload"
             )
+            print(
+                "Servo connections and USB board ports are re-detected before each "
+                "joint-list refresh."
+            )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
             cmds: List[Tuple[int, int]] = []
@@ -5074,6 +5311,14 @@ Examples (copy/paste):
 
             while True:
                 # Step 1: List joints with current status
+                _refresh_calibration_routes()
+                refreshed_positions = read_servo_positions_best_effort(
+                    controller,
+                    servo_ids,
+                )
+                detected_servo_ids = {
+                    int(servo_id) for servo_id, _ in refreshed_positions
+                }
                 print("\n" + "=" * 50)
                 print("Available joints:")
                 servo_id_to_joint: Dict[int, str] = {}
@@ -5081,9 +5326,15 @@ Examples (copy/paste):
                     state = states[joint]
                     servo = servo_cfgs[joint]
                     servo_id_to_joint[servo.id] = joint
+                    connection_status = (
+                        "detected"
+                        if int(servo.id) in detected_servo_ids
+                        else _yellow("NOT DETECTED")
+                    )
                     print(
                         f"  #{servo.id}: {joint} (id={servo.id}, servo_unit_direction/motor_unit_direction={state.motor_sign:+d}, "
-                        f"servo_offset_unit={state.offset:+d}, joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g})"
+                        f"servo_offset_unit={state.offset:+d}, joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g}, "
+                        f"connection={connection_status})"
                     )
                 print("\n  q = quit (discard changes)")
                 print("  s = save and quit")
@@ -5157,13 +5408,42 @@ Examples (copy/paste):
                 servo = servo_cfgs[joint]
                 state = states[joint]
                 hint = hints.get(joint, "positive motion")
+                selected_position = read_position(
+                    controller,
+                    int(servo.id),
+                    retries=2,
+                    retry_delay_s=0.05,
+                )
+                if selected_position is None:
+                    print(
+                        _yellow(
+                            f"Servo #{int(servo.id)} {joint} is not detected after refresh. "
+                            "Reconnect it; the board ports will refresh before the next selection."
+                        )
+                    )
+                    continue
 
                 print(f"\nSelected: {joint}")
                 print(f"  Hint (positive MuJoCo rad): {hint}")
 
                 while True:
                     current_state = states[joint]
+                    current_position = read_position(
+                        controller,
+                        int(servo.id),
+                        retries=2,
+                        retry_delay_s=0.05,
+                    )
+                    if current_position is None:
+                        print(
+                            _yellow(
+                                f"Servo #{int(servo.id)} {joint} disconnected; returning "
+                                "to the joint list to refresh board ports."
+                            )
+                        )
+                        break
                     print("\nJoint menu:")
+                    print(f"  connection: detected (raw position {int(current_position)})")
                     print("  p = print state")
                     print("  q = evaluate direct target joint deg")
                     print("  pa = evaluate policy action residual")
@@ -5183,10 +5463,26 @@ Examples (copy/paste):
                     ).strip().lower()
 
                     if action == "x":
-                        panic_and_exit(controller, servo_ids)
+                        panic_and_exit(controller, active_servo_ids)
 
                     if action == "b" or not action:
                         break
+
+                    if action in {"q", "pa", "a", "sa", "d", "m", "r", "o", "z"}:
+                        action_position = read_position(
+                            controller,
+                            int(servo.id),
+                            retries=2,
+                            retry_delay_s=0.05,
+                        )
+                        if action_position is None:
+                            print(
+                                _yellow(
+                                    f"Servo #{int(servo.id)} {joint} disconnected; returning "
+                                    "to the joint list to refresh board ports."
+                                )
+                            )
+                            break
 
                     if action == "p":
                         _report_calibration_imu(
@@ -5296,7 +5592,7 @@ Examples (copy/paste):
                             states[joint],
                             hint,
                             axis_metadata.get(joint),
-                            all_servo_ids=servo_ids,
+                            all_servo_ids=active_servo_ids,
                             move_ms=args.move_ms,
                             pause_s=float(args.pause_s),
                             imu=body_angle_imu,
@@ -5433,7 +5729,7 @@ Examples (copy/paste):
                             servo,
                             joint,
                             states[joint],
-                            all_servo_ids=servo_ids,
+                            all_servo_ids=active_servo_ids,
                             move_ms=args.move_ms,
                             step_units=args.step_units,
                             pause_s=float(args.pause_s),
@@ -5490,7 +5786,9 @@ Examples (copy/paste):
                 body_angle_imu.close()
         try:
             try:
-                controller.unload_servos(servo_ids)
+                controller.unload_servos(
+                    active_servo_ids if args.calibrate else servo_ids
+                )
             except Exception:
                 pass
         finally:
