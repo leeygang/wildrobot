@@ -26,7 +26,7 @@ servo config maps a MuJoCo/control joint angle in radians to Hiwonder electrical
 units:
 
 ```python
-center_rad = deg2rad(joint_angle_at_zero_unit_deg)
+center_rad = deg2rad(joint_angle_at_servo_center_deg)
 u_elec = clamp_0_1000(
     500 + servo_offset_unit + motor_unit_direction * (target_rad - center_rad) * units_per_rad
 )
@@ -46,8 +46,14 @@ Where:
 - `motor_unit_direction` is hardware direction: `+1` means increasing joint radians
   increases servo units, `-1` means increasing joint radians decreases servo
   units.
-- `joint_angle_at_zero_unit_deg` is the joint angle that corresponds to conceptual
+- `joint_angle_at_servo_center_deg` is the joint angle that corresponds to conceptual
   servo center `500` before `servo_offset_unit`.
+
+MuJoCo joint zero means `target_rad == 0`. It is passed through this same
+mapping, so it is generally **not** raw servo unit `500` when the configured
+servo-center angle is nonzero. For example, the left shoulder roll maps
+MuJoCo `0°` to raw unit `164` with center angle `-85°`, direction `-1`, and
+offset `+18`.
 
 ## Calibration Rule
 

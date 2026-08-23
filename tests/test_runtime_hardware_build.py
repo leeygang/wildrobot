@@ -411,7 +411,7 @@ def test_servo_zero_reference_status_suggests_offset_from_raw_position(capsys) -
         id=1,
         servo_offset_unit=-34,
         motor_unit_direction=-1,
-        joint_angle_at_zero_unit_deg=0.0,
+        joint_angle_at_servo_center_deg=0.0,
     )
     calibrate_mod.print_servo_zero_reference_status(
         _FakeController(),
@@ -456,7 +456,7 @@ def test_apply_servo_zero_reference_offset_updates_mapping_and_commands_zero(
         id=1,
         servo_offset_unit=-34,
         motor_unit_direction=-1,
-        joint_angle_at_zero_unit_deg=0.0,
+        joint_angle_at_servo_center_deg=0.0,
     )
     states = {
         "left_hip_pitch": calibrate_mod.JointState(offset=-34, motor_sign=-1)
@@ -682,7 +682,7 @@ def test_selected_servo_offset_saves_after_verification(
         "servo_offset_unit"
     ] == 30
     output = capsys.readouterr().out
-    assert "Verify MuJoCo joint_pos_deg 0: 530 units" in output
+    assert "Verify MuJoCo joint zero (0.0 deg): 530 units" in output
     assert f"Saving calibration to {output_path}..." in output
     assert f"Saved calibration to {output_path}" in output
     assert "right_ankle_pitch: offset=+30" in output
@@ -880,6 +880,28 @@ def test_calibrate_offset_reference_prompt_reprompts_unknown_choice(
     assert output.count("Offset calibration reference pose:") == 2
 
 
+def test_calibrate_offset_reference_prompt_explains_servo_midpoint(
+    monkeypatch, capsys
+) -> None:
+    import runtime.scripts.calibrate as calibrate_mod
+    from configs.config import ServoConfig
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "r")
+
+    servo = ServoConfig(id=22, joint_angle_at_servo_center_deg=-85.0)
+    assert calibrate_mod.prompt_offset_reference_mode(servo=servo) == "r"
+    output = capsys.readouterr().out
+    assert (
+        "z = MuJoCo joint zero (0.0 deg; mapped using center angle, "
+        "direction, and offset)" in output
+    )
+    assert (
+        "r = servo electrical midpoint (raw unit 500; current offset ignored)"
+        in output
+    )
+    assert "align the joint to MuJoCo -85.0 deg" in output
+
+
 def test_yes_no_reprompts_unknown_choice(monkeypatch, capsys) -> None:
     import runtime.scripts.calibrate as calibrate_mod
 
@@ -965,7 +987,7 @@ def test_calibrate_offset_from_zero_degree_reference_handles_shoulder_center() -
     servo = ServoConfig(
         id=21,
         motor_unit_direction=-1.0,
-        joint_angle_at_zero_unit_deg=90.0,
+        joint_angle_at_servo_center_deg=90.0,
     )
     offset = 14
     zero_deg_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
@@ -1028,7 +1050,7 @@ def test_home_pose_units_uses_current_servo_calibration() -> None:
         id=32,
         servo_offset_unit=-38,
         motor_unit_direction=-1.0,
-        joint_angle_at_zero_unit_deg=85.0,
+        joint_angle_at_servo_center_deg=85.0,
     )
     state = calibrate_mod.JointState(offset=-38, motor_sign=-1)
 
@@ -1043,7 +1065,7 @@ def test_home_pose_status_line_prints_current_requested_and_config() -> None:
     import runtime.scripts.calibrate as calibrate_mod
     from configs.config import ServoConfig
 
-    servo = ServoConfig(id=1, motor_unit_direction=1.0, joint_angle_at_zero_unit_deg=0.0)
+    servo = ServoConfig(id=1, motor_unit_direction=1.0, joint_angle_at_servo_center_deg=0.0)
     state = calibrate_mod.JointState(offset=10, motor_sign=1)
     requested_rad = float(np.deg2rad(5.0))
     home_rad = float(np.deg2rad(3.0))
@@ -1759,7 +1781,7 @@ def _fake_runtime_config() -> SimpleNamespace:
         default_move_time_ms=None,
         joint_servo_offset_units={"j": 3},
         joint_motor_unit_directions={"j": -1.0},
-        joint_angle_at_zero_unit_deg={"j": 0.0},
+        joint_angle_at_servo_center_deg={"j": 0.0},
     )
     bno085 = SimpleNamespace(
         transport="spi",
@@ -1951,7 +1973,7 @@ def test_build_hardware_robot_io_creates_one_parallel_worker_per_board(
         "j2": 1.0,
         "j3": 1.0,
     }
-    cfg.servo_controller.joint_angle_at_zero_unit_deg = {
+    cfg.servo_controller.joint_angle_at_servo_center_deg = {
         "j1": 0.0,
         "j2": 0.0,
         "j3": 0.0,

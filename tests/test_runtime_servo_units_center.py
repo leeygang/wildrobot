@@ -13,12 +13,12 @@ def test_rad_to_units_center_uses_center_rad_not_joint_range_mid() -> None:
     rad_range = (-1.0, 2.0)
     assert (rad_range[0] + rad_range[1]) / 2.0 == 0.5
 
-    # Keep joint_angle_at_zero_unit_deg at 0 so center_rad == 0.
+    # Keep joint_angle_at_servo_center_deg at 0 so center_rad == 0.
     servo = ServoConfig(
         id=1,
         servo_offset_unit=17,
         motor_unit_direction=1.0,
-        joint_angle_at_zero_unit_deg=0.0,
+        joint_angle_at_servo_center_deg=0.0,
         rad_range=rad_range,
     )
 
@@ -63,3 +63,15 @@ def test_vectorized_mapping_center_is_units_center_plus_offset() -> None:
         servo_model=servo_model,
     )
     assert np.allclose(back_rad, centers_rad)
+
+
+def test_mujoco_zero_uses_servo_center_angle_direction_and_offset() -> None:
+    servo = ServoConfig(
+        id=22,
+        servo_offset_unit=18,
+        motor_unit_direction=-1.0,
+        joint_angle_at_servo_center_deg=-85.0,
+    )
+
+    assert servo.joint_target_rad_to_elect_unit(servo.center_rad) == 518
+    assert servo.joint_target_rad_to_elect_unit(0.0) == 164

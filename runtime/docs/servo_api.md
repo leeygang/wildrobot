@@ -587,7 +587,7 @@ class HiwonderCachedActuators:
         joint_servo_offset_units: dict[str, int],
         servo_io: ServoIOWorker,
         joint_motor_unit_directions: dict[str, float] | None = None,
-        joint_angle_at_zero_unit_deg: dict[str, float] | None = None,
+        joint_angle_at_servo_center_deg: dict[str, float] | None = None,
         servo_model: ServoModel | None = None,
     ) -> None: ...
 
@@ -611,7 +611,7 @@ actuators = HiwonderCachedActuators(
     default_move_time_ms=20,
     joint_servo_offset_units=offsets,
     joint_motor_unit_directions=motor_signs,
-    joint_angle_at_zero_unit_deg=joint_zero_deg,
+    joint_angle_at_servo_center_deg=joint_servo_center_deg,
 )
 ```
 

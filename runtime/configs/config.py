@@ -97,7 +97,7 @@ class ServoConfig:
         id: Servo ID (1-254)
         servo_offset_unit: Calibration offset in servo units (default: 0)
         motor_unit_direction: Hardware motor direction correction (+1 or -1, default: +1)
-        joint_angle_at_zero_unit_deg: MuJoCo angle (deg) that maps to the servo-unit center
+        joint_angle_at_servo_center_deg: MuJoCo angle (deg) that maps to the servo-unit center
             (servo_unit == 500) when offset==0.
         rad_range: Joint range in radians (min, max) from mujoco_robot_config.json
         max_velocity: Maximum joint velocity in rad/s from mujoco_robot_config.json
@@ -106,7 +106,7 @@ class ServoConfig:
     id: int
     servo_offset_unit: int = 0
     motor_unit_direction: float = 1.0
-    joint_angle_at_zero_unit_deg: float = 0.0
+    joint_angle_at_servo_center_deg: float = 0.0
     rad_range: Tuple[float, float] = (0.0, 0.0)
     max_velocity: float = 10.0
 
@@ -140,11 +140,11 @@ class ServoConfig:
 
     @property
     def motor_center_mujoco_deg(self) -> float:
-        return float(self.joint_angle_at_zero_unit_deg)
+        return float(self.joint_angle_at_servo_center_deg)
 
     @property
     def center_rad(self) -> float:
-        return math.radians(float(self.joint_angle_at_zero_unit_deg))
+        return math.radians(float(self.joint_angle_at_servo_center_deg))
 
     def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units.
@@ -247,7 +247,7 @@ class ServoSpec:
     id: int
     servo_offset_unit: int = 0
     motor_unit_direction: float = 1.0
-    joint_angle_at_zero_unit_deg: float = 0.0
+    joint_angle_at_servo_center_deg: float = 0.0
 
     @property
     def offset_unit(self) -> int:
@@ -263,7 +263,7 @@ class ServoSpec:
 
     @property
     def motor_center_mujoco_deg(self) -> float:
-        return float(self.joint_angle_at_zero_unit_deg)
+        return float(self.joint_angle_at_servo_center_deg)
 
     def to_servo_config(self, joint_spec: Optional[dict] = None) -> ServoConfig:
         joint_spec = joint_spec or {}
@@ -271,7 +271,7 @@ class ServoSpec:
             id=int(self.id),
             servo_offset_unit=int(self.servo_offset_unit),
             motor_unit_direction=float(self.motor_unit_direction),
-            joint_angle_at_zero_unit_deg=float(self.joint_angle_at_zero_unit_deg),
+            joint_angle_at_servo_center_deg=float(self.joint_angle_at_servo_center_deg),
             rad_range=joint_spec.get("rad_range", (0.0, 0.0)),
             max_velocity=joint_spec.get("max_velocity", 10.0),
         )
@@ -452,11 +452,11 @@ class ServoControllerConfig:
 
     @property
     def joint_motor_center_mujoco_deg(self) -> Dict[str, float]:
-        return {k: float(v.joint_angle_at_zero_unit_deg) for k, v in self.servos.items()}
+        return {k: float(v.joint_angle_at_servo_center_deg) for k, v in self.servos.items()}
 
     @property
-    def joint_angle_at_zero_unit_deg(self) -> Dict[str, float]:
-        return {k: float(v.joint_angle_at_zero_unit_deg) for k, v in self.servos.items()}
+    def joint_angle_at_servo_center_deg(self) -> Dict[str, float]:
+        return {k: float(v.joint_angle_at_servo_center_deg) for k, v in self.servos.items()}
 
     def get_servo(self, joint_name: str) -> ServoConfig:
         """Get servo config for a joint, raising error if not configured."""
@@ -784,14 +784,36 @@ class WrRuntimeConfig:
                 motor_unit_direction = float(direction_raw)
                 WrRuntimeConfig._validate_motor_signs({joint_name: motor_unit_direction})
 
-                center_deg_raw = servo_data.get(
-                    "joint_angle_at_zero_unit_deg",
-                    servo_data.get("motor_center_mujoco_deg", 0.0),
-                )
-                joint_angle_at_zero_unit_deg = float(center_deg_raw)
+                # Accept earlier config names, but serialize only the canonical name.
+                center_values = {
+                    key: float(servo_data[key])
+                    for key in (
+                        "joint_angle_at_servo_center_deg",
+                        "joint_angle_at_zero_unit_deg",
+                        "motor_center_mujoco_deg",
+                    )
+                    if key in servo_data
+                }
+                if center_values:
+                    joint_angle_at_servo_center_deg = next(
+                        iter(center_values.values())
+                    )
+                    for key, value in center_values.items():
+                        if (
+                            abs(
+                                float(value)
+                                - float(joint_angle_at_servo_center_deg)
+                            )
+                            > 1e-9
+                        ):
+                            raise ValueError(
+                                f"{key_path}.{joint_name}.{key}={value} conflicts with servo center angle {joint_angle_at_servo_center_deg}"
+                            )
+                else:
+                    joint_angle_at_servo_center_deg = 0.0
                 rad_range = joint_spec.get("rad_range", (0.0, 0.0))
-                WrRuntimeConfig._validate_motor_center_mujoco_deg(
-                    motor_center_mujoco_deg=joint_angle_at_zero_unit_deg,
+                WrRuntimeConfig._validate_servo_center_angle(
+                    joint_angle_at_servo_center_deg=joint_angle_at_servo_center_deg,
                     rad_range=rad_range,
                     joint_name=joint_name,
                     key_path=key_path,
@@ -839,7 +861,7 @@ class WrRuntimeConfig:
                     id=int(servo_data["id"]),
                     servo_offset_unit=int(chosen_offset),
                     motor_unit_direction=motor_unit_direction,
-                    joint_angle_at_zero_unit_deg=joint_angle_at_zero_unit_deg,
+                    joint_angle_at_servo_center_deg=joint_angle_at_servo_center_deg,
                     rad_range=rad_range,
                     max_velocity=joint_spec.get("max_velocity", 10.0),
                 )
@@ -958,9 +980,9 @@ class WrRuntimeConfig:
             )
 
     @staticmethod
-    def _validate_motor_center_mujoco_deg(
+    def _validate_servo_center_angle(
         *,
-        motor_center_mujoco_deg: float,
+        joint_angle_at_servo_center_deg: float,
         rad_range: Tuple[float, float],
         joint_name: str,
         key_path: str,
@@ -970,11 +992,11 @@ class WrRuntimeConfig:
             return
         if range_min > range_max:
             range_min, range_max = range_max, range_min
-        center_rad = math.radians(float(motor_center_mujoco_deg))
+        center_rad = math.radians(float(joint_angle_at_servo_center_deg))
         if not (range_min - 1e-9 <= center_rad <= range_max + 1e-9):
             print(
                 "WARNING: "
-                f"{key_path}.{joint_name}.joint_angle_at_zero_unit_deg={motor_center_mujoco_deg} maps to {center_rad:.6f} rad, "
+                f"{key_path}.{joint_name}.joint_angle_at_servo_center_deg={joint_angle_at_servo_center_deg} maps to {center_rad:.6f} rad, "
                 f"outside joint range [{range_min:.6f}, {range_max:.6f}] rad",
                 flush=True,
             )
@@ -1073,7 +1095,7 @@ class WrRuntimeConfig:
                 "id": servo.id,
                 "servo_offset_unit": servo.servo_offset_unit,
                 "motor_unit_direction": servo.motor_unit_direction,
-                "joint_angle_at_zero_unit_deg": servo.joint_angle_at_zero_unit_deg,
+                "joint_angle_at_servo_center_deg": servo.joint_angle_at_servo_center_deg,
             }
             for joint_name, servo in self.servo_controller.servos.items()
         }

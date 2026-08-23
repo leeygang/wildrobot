@@ -72,15 +72,15 @@ Minimal example:
       { "name": "upper_body_board", "port": "/dev/serial/by-id/usb-board-upper", "servo_ids": [40] }
     ],
     "servos": {
-      "left_hip_pitch":  { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "left_hip_roll":   { "id": 2, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "left_knee_pitch": { "id": 3, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "left_ankle_pitch": { "id": 4, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "right_hip_pitch": { "id": 5, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "right_hip_roll":  { "id": 6, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "right_knee_pitch":{ "id": 7, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "right_ankle_pitch": { "id": 8, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 },
-      "waist_yaw": { "id": 40, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
+      "left_hip_pitch":  { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "left_hip_roll":   { "id": 2, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "left_knee_pitch": { "id": 3, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "left_ankle_pitch": { "id": 4, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "right_hip_pitch": { "id": 5, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "right_hip_roll":  { "id": 6, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "right_knee_pitch":{ "id": 7, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "right_ankle_pitch": { "id": 8, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 },
+      "waist_yaw": { "id": 40, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 }
     }
   },
 
@@ -114,7 +114,7 @@ Notes:
 - `servo_read_schedule.max_cache_age_s` defines feedback freshness limits. Each board worker continuously round-robins all servos assigned to that board; read-group lists are no longer configured.
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
-- `servo_controller.servos.<joint>.joint_angle_at_zero_unit_deg` (optional, default 0) shifts which MuJoCo angle maps to servo center (500). Most joints can keep this at 0.
+- `servo_controller.servos.<joint>.joint_angle_at_servo_center_deg` (optional, default 0) selects the MuJoCo angle represented by conceptual servo center unit 500. The electrical command at that angle is `500 + servo_offset_unit`. Most joints can keep this at 0. The former `joint_angle_at_zero_unit_deg` key remains load-compatible but is serialized using the new name.
 - Policy and hardware configurations use the same native 17-actuator order. Wrist
   servos are not part of locomotion configuration, feedback, or writes.
 - Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.

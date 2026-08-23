@@ -74,7 +74,7 @@ class HiwonderCachedActuators(Actuators):
         joint_servo_offset_units: Dict[str, int],
         servo_io: ServoIOWorker | MultiBoardServoIO,
         joint_motor_unit_directions: Optional[Dict[str, float]] = None,
-        joint_angle_at_zero_unit_deg: Optional[Dict[str, float]] = None,
+        joint_angle_at_servo_center_deg: Optional[Dict[str, float]] = None,
         servo_model: ServoModel | None = None,
         cache_age_limits_s: Optional[Dict[str, float]] = None,
         port: Optional[str] = None,
@@ -94,14 +94,14 @@ class HiwonderCachedActuators(Actuators):
         motor_signs: List[float] = []
         centers_rad: List[float] = []
         joint_motor_unit_directions = joint_motor_unit_directions or {}
-        joint_angle_at_zero_unit_deg = joint_angle_at_zero_unit_deg or {}
+        joint_angle_at_servo_center_deg = joint_angle_at_servo_center_deg or {}
         for name in self.actuator_names:
             if name not in servo_ids:
                 raise KeyError(f"Servo ID missing for joint '{name}'")
             self.servo_ids_list.append(int(servo_ids[name]))
             offsets.append(int(joint_servo_offset_units.get(name, 0)))
             motor_signs.append(float(joint_motor_unit_directions.get(name, 1.0)))
-            centers_rad.append(float(np.deg2rad(joint_angle_at_zero_unit_deg.get(name, 0.0))))
+            centers_rad.append(float(np.deg2rad(joint_angle_at_servo_center_deg.get(name, 0.0))))
 
         self.offsets_unit = np.asarray(offsets, dtype=np.float32)
         self.motor_signs = np.asarray(motor_signs, dtype=np.float32)

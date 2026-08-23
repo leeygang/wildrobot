@@ -470,7 +470,7 @@ def _build_hardware_robot_io(
         default_move_time_ms=default_move_time_ms,
         joint_servo_offset_units=sc.joint_servo_offset_units,
         joint_motor_unit_directions=sc.joint_motor_unit_directions,
-        joint_angle_at_zero_unit_deg=sc.joint_angle_at_zero_unit_deg,
+        joint_angle_at_servo_center_deg=sc.joint_angle_at_servo_center_deg,
         servo_io=servo_io,
         cache_age_limits_s=read_schedule_max_cache_age_s,
         port=port_label,

@@ -714,7 +714,7 @@ class ServoConfig:
     id: int
     servo_offset_unit: int             # in servo units
     motor_unit_direction: int              # +1 or -1
-    joint_angle_at_zero_unit_deg: float  # MuJoCo angle (deg) that maps to servo center (500)
+    joint_angle_at_servo_center_deg: float  # MuJoCo angle (deg) represented by conceptual servo center (500)
 
     # Servo model parameters (should be config-driven if hardware varies)
     # Defaults match Hiwonder HTD-45H: units in [0..1000], center at 500, ~240° total travel.
@@ -725,13 +725,13 @@ class ServoConfig:
 
     def joint_target_rad_to_elect_unit(self, target_rad: float) -> int:
         """Convert MuJoCo radians to servo units with calibration."""
-      center_rad = math.radians(self.joint_angle_at_zero_unit_deg)
+      center_rad = math.radians(self.joint_angle_at_servo_center_deg)
       units = self.UNITS_CENTER + self.servo_offset_unit + self.motor_unit_direction * ((target_rad - center_rad) * self.UNITS_PER_RAD)
         return clamp(units, self.UNITS_MIN, self.UNITS_MAX)
 
     def servo_elect_units_to_joint_target_rad(self, units: int) -> float:
         """Convert servo units to MuJoCo radians with calibration."""
-      center_rad = math.radians(self.joint_angle_at_zero_unit_deg)
+      center_rad = math.radians(self.joint_angle_at_servo_center_deg)
       return center_rad + self.motor_unit_direction * (units - self.UNITS_CENTER - self.servo_offset_unit) / self.UNITS_PER_RAD
 
 # HiwonderActuators delegates to ServoConfig (no conversion logic here)

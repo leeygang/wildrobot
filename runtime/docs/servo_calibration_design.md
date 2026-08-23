@@ -17,7 +17,7 @@ Calibration data is stored directly in the source-of-truth
 This doc describes the servo calibration model and the operator workflow for per-joint:
 1) motor_unit_direction correction
 2) center offset in servo units
-3) optional joint center angle (`joint_angle_at_zero_unit_deg`) used in the rad↔units mapping
+3) optional joint center angle (`joint_angle_at_servo_center_deg`) used in the rad↔units mapping
 
 For a consolidated reference on coordinate definitions and the end-to-end conversion chain
 (`policy_action ∈ [-1, 1]` ↔ `target_rad` ↔ servo units), see `docs/joints_angle.md`.
@@ -46,7 +46,7 @@ worked examples live in `docs/joints_angle.md`.
 - `servo_offset_unit`: per-joint integer offset between conceptual units and electrical units:
   - `u = u_elec - servo_offset_unit`
   - conceptual center is `u = 500`
-- `joint_angle_at_zero_unit_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
+- `joint_angle_at_servo_center_deg`: MuJoCo angle (deg) that corresponds to conceptual `u = 500`.
 - `motor_unit_direction ∈ {+1, -1}`: hardware sign correction for the rad↔units mapping.
 
 ## Runtime Mapping Model
@@ -56,7 +56,7 @@ The runtime uses the mapping implemented in `runtime/wr_runtime/hardware/actuato
 Per joint, calibration values are:
 - `motor_unit_direction ∈ {+1, -1}`
 - `servo_offset_unit ∈ ℤ`
-- `joint_angle_at_zero_unit_deg` (optional; default `0`)
+- `joint_angle_at_servo_center_deg` (optional; default `0`)
 
 ## Config Shape
 
@@ -72,7 +72,7 @@ Under `servo_controller.servos.<joint>`:
 {
   "servo_controller": {
     "servos": {
-      "left_hip_pitch": { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0 }
+      "left_hip_pitch": { "id": 1, "servo_offset_unit": 0, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0 }
     }
   }
 }
@@ -81,12 +81,13 @@ Under `servo_controller.servos.<joint>`:
 Where:
 - `servo_offset_unit` is an integer in servo units (default: `0`)
 - `motor_unit_direction` is `+1` or `-1` (default: `+1`)
-- `joint_angle_at_zero_unit_deg` is the MuJoCo angle (deg) that maps to `servo_unit == 500` (default: `0`)
+- `joint_angle_at_servo_center_deg` is the MuJoCo angle (deg) represented by conceptual servo center `u = 500` (default: `0`); its electrical command is `500 + servo_offset_unit`
 
 Defaults:
 - If `motor_unit_direction` is missing, runtime assumes `+1`.
 - If `servo_offset_unit` is missing, runtime assumes `0`.
-- If `joint_angle_at_zero_unit_deg` is missing, runtime assumes `0`.
+- If `joint_angle_at_servo_center_deg` is missing, runtime assumes `0`.
+- The former `joint_angle_at_zero_unit_deg` key is accepted when loading old configs, but serialization writes `joint_angle_at_servo_center_deg`.
 
 ### Multiple USB servo boards
 
@@ -140,17 +141,17 @@ Command (radians → *electrical* units):
 servo_electrical_unit_cmd = clamp_0_1000(
   units_center
   + servo_offset_unit
-  + motor_unit_direction * (target_rad - deg2rad(joint_angle_at_zero_unit_deg)) * (1000 / range_rad)
+  + motor_unit_direction * (target_rad - deg2rad(joint_angle_at_servo_center_deg)) * (1000 / range_rad)
 )
 ```
 
 Readback (electrical units → radians):
 ```
-pos_rad = deg2rad(joint_angle_at_zero_unit_deg)
+pos_rad = deg2rad(joint_angle_at_servo_center_deg)
           + motor_unit_direction * ((servo_electrical_unit_read - units_center - servo_offset_unit) * (range_rad / 1000))
 ```
 
-### Computing `servo_offset_unit` in the presence of `joint_angle_at_zero_unit_deg`
+### Computing `servo_offset_unit` in the presence of `joint_angle_at_servo_center_deg`
 
 If you want a particular reference joint angle `target_ref_rad` to match a measured readback `servo_electrical_unit_read`, rearrange the command equation:
 
@@ -159,8 +160,8 @@ offset\_unit = servo\_electrical\_unit\_read - units\_center - motor\_sign\cdot 
 $$
 
 Two common special cases:
-- If `joint_angle_at_zero_unit_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
-- If you choose `joint_angle_at_zero_unit_deg` such that `target_ref_rad == deg2rad(joint_angle_at_zero_unit_deg)` for your neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
+- If `joint_angle_at_servo_center_deg == 0` and you want `target_ref_rad == 0` at the neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
+- If you choose `joint_angle_at_servo_center_deg` such that `target_ref_rad == deg2rad(joint_angle_at_servo_center_deg)` for your neutral pose, this reduces to `servo_offset_unit = servo_electrical_unit_read - 500`.
 
 ## Calibration UX Overview
 
@@ -202,7 +203,7 @@ Home pose source precedence:
 1) If `--bundle` is provided: read `policy_spec.json` and use `spec.robot.home_ctrl_rad` (preferred; does not require MuJoCo installed on the robot).
 2) Else if `--scene-xml` is provided and MuJoCo is available: load the scene XML and read the `"home"` keyframe (or keyframe 0) to compute `home_ctrl_rad` in actuator order (matches training/export behavior).
 3) Else if `--keyframes-xml` is provided: parse the XML, find `<key name="home" qpos="...">`, and extract the actuated joint slice from `qpos`.
-4) Else fallback: `home_ctrl_rad = [0.0] * N` (servo centers).
+4) Else fallback: `home_ctrl_rad = [0.0] * N` (MuJoCo joint zeros).
 
 #### Reading `home_ctrl_rad` from `keyframes.xml` (no MuJoCo dependency)
 
@@ -289,14 +290,17 @@ Notes:
 ### Step C: Determine offset at neutral pose
 
 The script should:
-1) jog the joint to the user’s chosen “neutral pose” (physical alignment), using keyboard controls:
+1) choose one explicit reference:
+   - `z`: MuJoCo joint zero (`target_ref_rad = 0`), converted through the current servo mapping
+   - `r`: start from the servo electrical midpoint (raw unit `500`) and align the joint to `joint_angle_at_servo_center_deg`
+2) jog the joint to the user’s chosen “neutral pose” (physical alignment), using keyboard controls:
    - step left/right by configurable `step_units` (e.g., `a`/`d`)
    - optionally bigger steps (`A`/`D`)
-2) once the user confirms alignment, read `servo_electrical_unit_read` from the servo
-3) compute offset:
+3) once the user confirms alignment, read `servo_electrical_unit_read` from the servo
+4) compute offset:
 
 ```
-servo_offset_unit = servo_electrical_unit_read - units_center - motor_unit_direction * (target_ref_rad - deg2rad(joint_angle_at_zero_unit_deg)) * (1000 / range_rad)
+servo_offset_unit = servo_electrical_unit_read - units_center - motor_unit_direction * (target_ref_rad - deg2rad(joint_angle_at_servo_center_deg)) * (1000 / range_rad)
 ```
 
 Rationale: we want the chosen reference pose (at `target_ref_rad`) to be consistent with the mapping, so that commanding `target_ref_rad` returns to the same physical alignment.

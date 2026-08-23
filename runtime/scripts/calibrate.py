@@ -790,12 +790,15 @@ def prompt_offset_reference_mode(*, servo: ServoConfig, default: str = "z") -> s
     default = str(default).strip().lower()
     if default not in {"z", "r", "q"}:
         default = "z"
-    center_deg = float(np.rad2deg(float(servo.center_rad)))
+    center_deg = float(servo.joint_angle_at_servo_center_deg)
     while True:
         print(
             "Offset calibration reference pose:\n"
-            "  z = MuJoCo joint_pos_deg 0 (useful when physical zero is easy to align)\n"
-            f"  r = raw center/reference angle ({center_deg:+.1f} deg; old behavior)\n"
+            "  z = MuJoCo joint zero (0.0 deg; mapped using center angle, "
+            "direction, and offset)\n"
+            f"  r = servo electrical midpoint (raw unit {ServoConfig.UNITS_CENTER}; "
+            "current offset ignored)\n"
+            f"      align the joint to MuJoCo {center_deg:+.1f} deg\n"
             "  q = quit this joint without saving"
         )
         resp = input(f"[z/r/q, default {default}]: ").strip().lower()
@@ -1743,7 +1746,7 @@ def calibrate_motor_sign(
         _report_calibration_imu(imu, label=f"{joint} direction-test center")
         # Direction calibration should be done in raw servo unit space:
         # start from mechanical center (500) and move +units. This avoids coupling
-        # direction detection to any current joint_angle_at_zero_unit_deg or offset.
+        # direction detection to any current joint_angle_at_servo_center_deg or offset.
         delta_units = int(round(float(delta_rad_used) * float(servo.UNITS_PER_RAD)))
         if delta_units == 0:
             delta_units = 1
@@ -1840,12 +1843,15 @@ def calibrate_offset(
         return None, False, True, None, ""
     if reference_mode == "r":
         reference_target_rad = float(servo.center_rad)
-        reference_label = "raw center/reference angle"
-        # Raw-center calibration should not depend on any existing offset value.
+        reference_label = (
+            "servo midpoint reference "
+            f"(MuJoCo joint {float(servo.joint_angle_at_servo_center_deg):+.1f} deg)"
+        )
+        # Midpoint calibration starts at raw unit 500 and ignores the old offset.
         target_units = int(ServoConfig.UNITS_CENTER)
     else:
         reference_target_rad = 0.0
-        reference_label = "MuJoCo joint_pos_deg 0"
+        reference_label = "MuJoCo joint zero (0.0 deg)"
         target_units = servo.joint_target_rad_to_elect_unit_for_calibrate(
             reference_target_rad,
             motor_sign=state.motor_sign,
@@ -2164,7 +2170,7 @@ def print_joint_calibration_state(
     print(f"  ctrl_range_deg: [{min_deg:.3f}, {max_deg:.3f}]")
     print(f"  servo_offset_unit: {int(state.offset):+d}")
     print(f"  servo_unit_direction / motor_unit_direction: {int(state.motor_sign):+d}")
-    print(f"  joint_angle_at_zero_unit_deg: {float(servo.joint_angle_at_zero_unit_deg):+.3f}")
+    print(f"  joint_angle_at_servo_center_deg: {float(servo.joint_angle_at_servo_center_deg):+.3f}")
     if axis is not None:
         print(f"  local_axis: {_axis_summary(axis.local_axis)}")
         print(f"  init_world_axis: {_axis_summary(axis.init_world_axis)}")
@@ -2362,7 +2368,7 @@ def range_test_joint(
     print(f"  Deg range: {min_deg:.1f} to {max_deg:.1f}")
     print(
         "  Calibration: "
-        f"joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.1f} "
+        f"joint_angle_at_servo_center_deg={float(servo.joint_angle_at_servo_center_deg):+.1f} "
         f"servo_unit_direction/motor_unit_direction={int(effective_state.motor_sign):+d} "
         f"servo_offset_unit={int(effective_state.offset)}"
     )
@@ -2386,7 +2392,7 @@ def range_test_joint(
         print(
             "WARNING: requested joint range clips to servo limits (0..1000 units): "
             + ", ".join(clipped)
-            + ". This usually means joint_angle_at_zero_unit_deg/motor_unit_direction/servo_offset_unit needs adjustment, or the MuJoCo range exceeds servo capability."
+            + ". This usually means joint_angle_at_servo_center_deg/motor_unit_direction/servo_offset_unit needs adjustment, or the MuJoCo range exceeds servo capability."
         )
 
 
@@ -5006,7 +5012,7 @@ Examples (copy/paste):
                 print(
                     f"    #{servo.id}: {joint} (servo_id={servo.id}, servo_offset_unit={state.offset}, "
                     f"servo_unit_direction/motor_unit_direction={state.motor_sign}, "
-                    f"joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g}, "
+                    f"joint_angle_at_servo_center_deg={float(servo.joint_angle_at_servo_center_deg):+.3g}, "
                     f"local_axis={local_axis}, init_world_axis={init_world_axis}, "
                     f"policy_base_rad={base_rad:+.4f}, policy_scale_rad={scale_rad:.4f}, hint='{hint}')"
                 )
@@ -5333,7 +5339,7 @@ Examples (copy/paste):
                     )
                     print(
                         f"  #{servo.id}: {joint} (id={servo.id}, servo_unit_direction/motor_unit_direction={state.motor_sign:+d}, "
-                        f"servo_offset_unit={state.offset:+d}, joint_angle_at_zero_unit_deg={float(servo.joint_angle_at_zero_unit_deg):+.3g}, "
+                        f"servo_offset_unit={state.offset:+d}, joint_angle_at_servo_center_deg={float(servo.joint_angle_at_servo_center_deg):+.3g}, "
                         f"connection={connection_status})"
                     )
                 print("\n  q = quit (discard changes)")

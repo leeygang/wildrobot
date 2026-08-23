@@ -408,7 +408,7 @@ Why:
   Per-joint spans ensure action=±1 reaches the further limit, with only
   the short side clipping (minimally).
 - The runtime `target_rad → servo units` path is completely unchanged — it uses
-  its own `joint_angle_at_zero_unit_deg` and `motor_unit_direction`, independent of the
+  its own `joint_angle_at_servo_center_deg` and `motor_unit_direction`, independent of the
   action mapping.
 
 Per-joint span examples (home = 0 for all):

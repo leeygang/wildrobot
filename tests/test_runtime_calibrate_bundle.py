@@ -538,7 +538,7 @@ def test_policy_action_evaluator_moves_home_then_action(monkeypatch) -> None:
         id=1,
         servo_offset_unit=0,
         motor_unit_direction=1,
-        joint_angle_at_zero_unit_deg=0,
+        joint_angle_at_servo_center_deg=0,
         rad_range=(-1.0, 1.0),
     )
     state = JointState(offset=10, motor_sign=1)

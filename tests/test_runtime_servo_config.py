@@ -33,8 +33,8 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
             "baudrate": 115200,
             "default_move_time_ms": 900,
             "servos": {
-                "left_hip_pitch": {"id": 1, "servo_offset_unit": 10, "motor_unit_direction": 1, "joint_angle_at_zero_unit_deg": 0},
-                "right_hip_pitch": {"id": 2, "servo_offset_unit": -20, "motor_unit_direction": -1, "joint_angle_at_zero_unit_deg": 90},
+                "left_hip_pitch": {"id": 1, "servo_offset_unit": 10, "motor_unit_direction": 1, "joint_angle_at_servo_center_deg": 0},
+                "right_hip_pitch": {"id": 2, "servo_offset_unit": -20, "motor_unit_direction": -1, "joint_angle_at_servo_center_deg": 90},
             },
         }
     }
@@ -47,7 +47,7 @@ def test_canonical_servo_controller_parses(tmp_path: Path) -> None:
     assert cfg.servo_controller.servo_ids == {"left_hip_pitch": 1, "right_hip_pitch": 2}
     assert cfg.servo_controller.joint_servo_offset_units["left_hip_pitch"] == 10
     assert cfg.servo_controller.joint_motor_unit_directions["right_hip_pitch"] == -1.0
-    assert cfg.servo_controller.joint_angle_at_zero_unit_deg["right_hip_pitch"] == 90.0
+    assert cfg.servo_controller.joint_angle_at_servo_center_deg["right_hip_pitch"] == 90.0
 
 
 def test_multi_board_servo_controller_parses_and_serializes(tmp_path: Path) -> None:
@@ -186,14 +186,52 @@ def test_legacy_servo_keys_still_load_and_serialize_to_new_names(tmp_path: Path)
     servo = cfg.servo_controller.get_servo("left")
     assert servo.servo_offset_unit == 7
     assert servo.motor_unit_direction == -1.0
-    assert servo.joint_angle_at_zero_unit_deg == 12.0
+    assert servo.joint_angle_at_servo_center_deg == 12.0
     out = cfg.to_dict()
     assert out["servo_controller"]["servos"]["left"] == {
         "id": 1,
         "servo_offset_unit": 7,
         "motor_unit_direction": -1.0,
-        "joint_angle_at_zero_unit_deg": 12.0,
+        "joint_angle_at_servo_center_deg": 12.0,
     }
+
+
+def test_renamed_servo_center_angle_loads_legacy_key(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left": {
+                    "id": 1,
+                    "joint_angle_at_zero_unit_deg": -85,
+                }
+            }
+        }
+    }
+
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+    servo = cfg.servo_controller.get_servo("left")
+    assert servo.joint_angle_at_servo_center_deg == -85.0
+
+    serialized = cfg.to_dict()["servo_controller"]["servos"]["left"]
+    assert serialized["joint_angle_at_servo_center_deg"] == -85.0
+    assert "joint_angle_at_zero_unit_deg" not in serialized
+
+
+def test_conflicting_servo_center_angle_alias_raises(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left": {
+                    "id": 1,
+                    "joint_angle_at_servo_center_deg": -85,
+                    "joint_angle_at_zero_unit_deg": -90,
+                }
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="conflicts with servo center angle"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
 def test_servo_unit_direction_alias_loads_and_serializes_to_canonical(tmp_path: Path) -> None:
