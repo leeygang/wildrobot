@@ -71,13 +71,13 @@
       },
       "left_shoulder_pitch": {
         "id": 21,
-        "servo_offset_unit": 22,
+        "servo_offset_unit": 33,
         "motor_unit_direction": -1,
         "joint_angle_at_servo_center_deg": 90
       },
       "left_shoulder_roll": {
         "id": 22,
-        "servo_offset_unit": 18,
+        "servo_offset_unit": -2,
         "motor_unit_direction": -1,
         "joint_angle_at_servo_center_deg": -85
       },
