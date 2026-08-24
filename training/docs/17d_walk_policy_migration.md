@@ -2,8 +2,9 @@
 
 ## Contract
 
-- The processed MuJoCo model is 17-actuator. Palm/finger bodies and inertias
-  remain, but wrist joints are fixed and have no DOF or actuator.
+- The processed MuJoCo model is 17-actuator. The CAD no longer exports wrist
+  joints or actuators; remaining hand geometry is fixed into the forearms and
+  represented by their explicit inertias.
 - Walking actor/runtime locomotion I/O uses 17 actuators and a 937-value
   `wr_obs_v8_cmd3d` observation.
 - Physical wrist servos are outside the locomotion hardware configuration. A
@@ -50,8 +51,9 @@ initializes the student by selecting the retained teacher input/output weights,
 and then trains the 17D actor by deterministic action MSE. Shared hidden layers
 are copied exactly; distillation corrects the loss of wrist input channels.
 The teacher gets its 21D robot, policy, and home contracts from the archived
-walking bundle. The script constructs a temporary archived teacher scene for
-rollout; active training configs and the processed model remain natively 17D.
+walking bundle. The script constructs a temporary collision-only teacher scene,
+removing non-physical visual meshes so later CAD mesh renames do not break the
+archive. Active training configs and the processed model remain natively 17D.
 
 ```bash
 uv run python training/scripts/distill_walking_21d_to_17d.py \
@@ -110,3 +112,7 @@ uv run python training/train.py \
 The fine-tune config keeps smoke6's physics/domain randomization, enables the
 asynchronous cache model, and uses 500 iterations at `1e-5`. Evaluate saved
 checkpoints for 1000 steps at both commands before bundle export or robot use.
+
+For a subsequent CAD morphology refresh, repeat distillation against the
+current 17D student model and follow
+[`morphology_finetune.md`](morphology_finetune.md).

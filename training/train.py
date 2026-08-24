@@ -18,6 +18,9 @@ Usage Examples:
     # Quick verify (overrides via the config's quick_verify section):
     python training/train.py --config <yaml> --verify
 
+    # Actor-only fine-tune after a compatible morphology/contract update:
+    python training/train.py --config <yaml> --finetune-policy <checkpoint.pkl>
+
 See also:
     - training/docs/walking_training.md: locomotion roadmap (v0.20.x)
     - training/docs/v0201_env_wiring.md: v0.20.1 env design + status
@@ -228,15 +231,20 @@ def parse_args():
         "--resume",
         type=str,
         default=None,
-        help="Path to checkpoint to resume training from (e.g., checkpoints/best_checkpoint.pkl)",
+        help=(
+            "Path to a full checkpoint for exact same-contract resume. "
+            "Do not use this after CAD or policy-contract changes."
+        ),
     )
     checkpoint_start.add_argument(
         "--init-policy",
+        "--finetune-policy",
+        dest="init_policy",
         type=str,
         default=None,
         help=(
-            "Path to an actor checkpoint used to initialize a fresh PPO run. "
-            "The critic and optimizer states are newly initialized."
+            "Path to an actor checkpoint used to fine-tune under the current "
+            "model/contract. The critic and optimizer states are newly initialized."
         ),
     )
 

@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "0cbedfc73ccd15a78b68fb9b",
+    "documentMicroversion": "206c6a7a90e7a24bb2a55e22",
     "elementId": "89ceb3190ceb802f85d40185",
     "fullConfiguration": "default",
     "id": "MRdoVeu6iAVWeQ+RX",
     "isStandardContent": false,
     "name": "left_foot_servo_bracket_end <1>",
-    "partId": "RbBD",
+    "partId": "RaBD",
     "suppressed": false,
     "type": "Part"
 }

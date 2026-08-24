@@ -224,7 +224,7 @@ def test_home_and_walk_start_locomotion_ready():
 
 
 def main() -> int:
-    model, data, mapper, act_to_qpos, L_geoms, R_geoms = _setup()
+    model, data, policy_to_qpos, L_geoms, R_geoms = _setup()
     gen = ZMPWalkGenerator()
 
     failures: list[str] = []
@@ -241,7 +241,7 @@ def main() -> int:
         for f in _PROBE_FRAMES:
             if f >= traj.n_steps:
                 continue
-            _apply_frame(model, data, mapper, act_to_qpos, traj, f)
+            _apply_frame(model, data, policy_to_qpos, traj, f)
             Lz = min(_box_min_z(model, data, g) for g in L_geoms)
             Rz = min(_box_min_z(model, data, g) for g in R_geoms)
             for side, z, contact in (("L", Lz, traj.contact_mask[f, 0]),
@@ -255,10 +255,17 @@ def main() -> int:
                     failures.append(
                         f"vx={vx:.2f} frame={f} {side} swing z={z:+.4f} "
                         f"< {_SWING_MIN_M}")
-            verdict = "✓"
-            if (traj.contact_mask[f, 0] > 0.5 and Lz > _STANCE_TOL_M) or \
-               (traj.contact_mask[f, 1] > 0.5 and Rz > _STANCE_TOL_M):
-                verdict = "FAIL"
+            left_bad = (
+                Lz > _STANCE_TOL_M
+                if traj.contact_mask[f, 0] > 0.5
+                else Lz < _SWING_MIN_M
+            )
+            right_bad = (
+                Rz > _STANCE_TOL_M
+                if traj.contact_mask[f, 1] > 0.5
+                else Rz < _SWING_MIN_M
+            )
+            verdict = "FAIL" if left_bad or right_bad else "✓"
             print(f"{vx:5.2f} {f:5d} {traj.phase[f]:5.2f}     - "
                   f"L={int(traj.contact_mask[f, 0])}R={int(traj.contact_mask[f, 1])}"
                   f" {Lz:+8.4f} {Rz:+8.4f} {verdict:>8}")

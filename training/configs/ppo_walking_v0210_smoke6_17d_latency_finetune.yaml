@@ -2,8 +2,8 @@
 # WildRobot v0.21.0 native-17D latency fine-tune
 # =============================================================================
 # Inherits smoke6's learned walking task and ToddlerBot-aligned PPO contract.
-# Wrist bodies remain fixed in MuJoCo, while model, policy, and runtime are
-# natively 17D.
+# Wrist servo DOFs are absent from MuJoCo; remaining hand geometry is fixed to
+# the forearms, while model, policy, and runtime are natively 17D.
 # Start this config from a distilled 17D actor with training/train.py
 # --init-policy.  This is not checkpoint resume: critic and optimizers are new.
 #
@@ -334,7 +334,7 @@
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
 version: "0.21.0-17d1"
-version_name: "v0.21.0 native 17D walking latency fine-tune (smoke6 actor distillation; wrists fixed in MuJoCo and absent from policy/runtime locomotion IO)"
+version_name: "v0.21.0 native 17D walking latency fine-tune (smoke6 actor distillation; wrist servo DOFs absent from model/policy/runtime IO)"
 
 seed: 42
 

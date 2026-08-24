@@ -53,9 +53,9 @@ class TestModelStability:
         Purpose: Verify model dimensions match expectations.
 
         WildRobot v2:
-        - nq = 28 (7 floating base + 21 joint qpos)
-        - nv = 27 (6 floating base + 21 joint qvel)
-        - nu = 17 (17 actuated joints: legs + waist + arms)
+        - nq = 24 (7 floating base + 17 joint qpos)
+        - nv = 23 (6 floating base + 17 joint qvel)
+        - nu = 17 (17 actuated joints: legs + waist + arms; no wrist DOFs)
 
         Assertions:
         - Dimensions match expected values

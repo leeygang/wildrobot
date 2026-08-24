@@ -295,6 +295,12 @@ uv run pytest training/tests --cov=training --cov-report=html
 
 The commands below are for the PPO training stack in `training/`.
 
+For CAD/mass/inertia updates that keep a compatible actor shape, use the
+actor-only fine-tuning workflow in
+[`training/docs/morphology_finetune.md`](training/docs/morphology_finetune.md).
+It deliberately starts a fresh critic and optimizer instead of resuming stale
+value/optimizer state.
+
 ### Walking Task
 
 ```bash

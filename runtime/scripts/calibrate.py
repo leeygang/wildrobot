@@ -5248,6 +5248,10 @@ Examples (copy/paste):
                 "Servo connections and USB board ports are re-detected before each "
                 "joint-list refresh."
             )
+            print(
+                "Electrical midpoint is not necessarily MuJoCo zero; each joint's "
+                "configured joint_angle_at_servo_center_deg is shown in the list."
+            )
 
             # Step 0: Move all joints to MuJoCo joint position 0 deg (0.0 rad).
             cmds: List[Tuple[int, int]] = []

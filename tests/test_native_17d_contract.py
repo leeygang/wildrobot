@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco
+import numpy as np
 import pytest
 
 from assets.post_process import remove_deprecated_wrist_dofs
 from control.zmp.zmp_walk import ZMPWalkGenerator
 from training.configs.training_config import _parse_env_config
+from training.envs.env_info import (
+    PRIVILEGED_OBS_HISTORY_FRAMES,
+    get_expected_shapes,
+)
+from training.scripts.distill_walking_21d_to_17d import (
+    DEFAULT_TEACHER_POLICY_SPEC,
+    DEFAULT_TEACHER_ROBOT_XML,
+    _build_legacy_teacher_scene,
+)
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +66,26 @@ def test_mujoco_model_exactly_matches_native_policy_actuators() -> None:
     assert (model.nq, model.nv, model.nu) == (24, 23, 17)
     assert policy_names == model_names
     assert not any("wrist" in name for name in model_names)
+    joint_names = [str(model.joint(index).name) for index in range(model.njnt)]
+    assert not any("wrist" in name for name in joint_names)
+    assert np.count_nonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE) == 1
     assert model.key_qpos.shape == (2, 24)
+
+
+def test_onshape_export_is_native_17d_with_one_root_body() -> None:
+    root = ET.parse(_ROOT / "assets/v2/onshape_export/wildrobot.xml").getroot()
+    worldbody = root.find("worldbody")
+    actuator = root.find("actuator")
+
+    assert worldbody is not None
+    assert actuator is not None
+    assert len(worldbody.findall("body")) == 1
+    assert len(root.findall(".//freejoint")) == 1
+
+    joint_names = [joint.get("name", "") for joint in root.findall(".//joint")]
+    actuator_names = [item.get("name", "") for item in list(actuator)]
+    assert len(actuator_names) == 17
+    assert not any("wrist" in name for name in joint_names + actuator_names)
 
 
 def test_post_process_removes_wrist_dofs_but_keeps_hand_bodies(
@@ -91,3 +121,24 @@ def test_distillation_generator_can_select_archived_21d_teacher_config() -> None
     )
 
     assert generator._load_actuator_layout()["n_joints"] == 21
+
+
+def test_archived_teacher_scene_does_not_depend_on_active_visual_meshes() -> None:
+    scene_path = _build_legacy_teacher_scene(
+        robot_xml_path=DEFAULT_TEACHER_ROBOT_XML,
+        policy_spec_path=DEFAULT_TEACHER_POLICY_SPEC,
+    )
+    try:
+        model = mujoco.MjModel.from_xml_path(str(scene_path))
+    finally:
+        scene_path.unlink(missing_ok=True)
+
+    assert model.nu == 21
+    assert not np.any(model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)
+
+
+def test_archived_teacher_critic_history_uses_21d_width() -> None:
+    assert get_expected_shapes(action_size=21)["critic_obs_history"] == (
+        PRIVILEGED_OBS_HISTORY_FRAMES,
+        52,
+    )

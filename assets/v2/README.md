@@ -1,7 +1,8 @@
 # assets/v2 (WildRobot full body with arms)
 
-This folder is the **v2** robot asset variant (full body with arms). Wrist
-meshes and inertial bodies remain, but wrist joints are fixed and unactuated.
+This folder is the **v2** robot asset variant (full body with arms). The CAD no
+longer exports wrist joints or actuators. Remaining hand/wrist meshes are fixed
+directly to each forearm and included in the forearm inertia.
 
 - Onshape document (assembly): `WildRobot`
   - Link: https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/3b5db3932a544d9f939ac6a6/e/5c6acb3ff696b03bdf018f3b
@@ -43,4 +44,4 @@ The 17-actuator order in `wildrobot.xml` must be deterministic for policy/action
   - `python3 ../reorder_actuators.py --xml wildrobot.xml --order actuator_order.txt`
   - then `python3 ../post_process.py wildrobot.xml`
 
-The repo `assets/update_xml.sh --version v2` does this automatically.
+The repo `./assets/update_xml.sh` does this automatically.

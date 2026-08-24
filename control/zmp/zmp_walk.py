@@ -49,7 +49,11 @@ class ZMPWalkConfig:
     upper_leg_m: float = 0.193
     lower_leg_m: float = 0.180
     hip_lateral_offset_m: float = 0.0536
-    ankle_to_ground_m: float = 0.061   # foot body origin to foot collision-bottom (from MJCF FK)
+    # The Onshape export refreshed on 2026-08-23 moved the ankle-pitch
+    # bracket 1 mm upward while preserving the 0.193 m / 0.180 m sagittal
+    # link lengths.  Keep the reference pelvis height aligned with the new
+    # collision geometry; the leg-length-based 0.96 s gait timing is unchanged.
+    ankle_to_ground_m: float = 0.062
     pelvis_to_hip_m: float = 0.034     # pelvis frame origin to hip joint, vertical (round-7 refit)
 
     # Joint limits (radians) — used to compute safe COM height and step length

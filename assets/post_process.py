@@ -928,12 +928,6 @@ def generate_actuated_joints_config(
             ],
             "max_velocity": float(existing_joint.get("max_velocity", 10.0)),
         }
-        if "init_world_axis" in existing_joint:
-            joint_config["init_world_axis"] = [
-                _round_axis_component(float(v))
-                for v in existing_joint["init_world_axis"]
-            ]
-
         actuated_joints.append(joint_config)
 
     return actuated_joints
@@ -969,21 +963,18 @@ def _compute_init_world_axes(
     return axes
 
 
-def _seed_missing_init_world_axes(
+def _refresh_init_world_axes(
     *,
     xml_file: str,
     actuated_joints: List[Dict[str, Any]],
 ) -> None:
-    missing = [j["name"] for j in actuated_joints if "init_world_axis" not in j]
-    if not missing:
-        return
-
     xml_path = Path(xml_file)
-    axes = _compute_init_world_axes(xml_path, missing)
+    axes = _compute_init_world_axes(
+        xml_path,
+        [joint["name"] for joint in actuated_joints],
+    )
     for joint in actuated_joints:
-        axis = axes.get(joint["name"])
-        if axis is not None:
-            joint["init_world_axis"] = axis
+        joint["init_world_axis"] = axes[joint["name"]]
 
 
 def _write_robot_config_file(config: Dict[str, Any], output_file: str) -> None:
@@ -1127,8 +1118,6 @@ def generate_robot_config(
                 joint_overrides: Dict[str, Any] = {
                     "max_velocity": float(entry.get("max_velocity", 10.0)),
                 }
-                if "init_world_axis" in entry:
-                    joint_overrides["init_world_axis"] = entry["init_world_axis"]
                 existing_joint_overrides[str(name)] = joint_overrides
         except Exception as exc:
             print(f"Warning: failed to read existing {output_file} overrides: {exc}")
@@ -1145,12 +1134,15 @@ def generate_robot_config(
         existing_joint_overrides=existing_joint_overrides,
     )
     try:
-        _seed_missing_init_world_axes(
+        # This is derived from the current MJCF pose and must be regenerated
+        # after CAD changes.  Only authored metadata such as max_velocity is
+        # preserved from the previous generated config.
+        _refresh_init_world_axes(
             xml_file=xml_file,
             actuated_joints=actuated_joints,
         )
     except Exception as exc:
-        print(f"Warning: failed to seed missing init_world_axis values: {exc}")
+        print(f"Warning: failed to refresh init_world_axis values: {exc}")
     config["actuated_joint_specs"] = actuated_joints
 
     num_actuators = len(actuated_joints)

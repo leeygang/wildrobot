@@ -115,6 +115,9 @@ Notes:
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_servo_center_deg` (optional, default 0) selects the MuJoCo angle represented by conceptual servo center unit 500. The electrical command at that angle is `500 + servo_offset_unit`. Most joints can keep this at 0. The former `joint_angle_at_zero_unit_deg` key remains load-compatible but is serialized using the new name.
+- In the current v2 CAD, the left/right shoulder-roll electrical midpoints are
+  MuJoCo `-80` / `+80` degrees respectively. Calibration prints these values;
+  do not align raw unit 500 to MuJoCo zero for those two joints.
 - Policy and hardware configurations use the same native 17-actuator order. Wrist
   servos are not part of locomotion configuration, feedback, or writes.
 - Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.

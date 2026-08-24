@@ -75,11 +75,11 @@ from training.envs.domain_randomize import (
 from training.envs.env_info import (
     IMU_HIST_LEN,
     IMU_MAX_LATENCY,
-    PRIVILEGED_OBS_DIM,
     PRIVILEGED_OBS_HISTORY_FRAMES,
     PROPRIO_HISTORY_FRAMES,
     WR_INFO_KEY,
     WildRobotInfo,
+    privileged_obs_dim,
 )
 from training.envs.standing_recovery import (
     HOLD as RECOVERY_HOLD,
@@ -250,6 +250,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self,
         config: TrainingConfig,
         config_overrides: Optional[Dict[str, Union[str, int, list[Any]]]] = None,
+        *,
+        allow_legacy_metric_actuators: bool = False,
     ) -> None:
         # MjxEnv parent expects a ConfigDict with .ctrl_dt / .sim_dt.
         parent_config = config_dict.ConfigDict()
@@ -258,6 +260,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         super().__init__(parent_config, config_overrides)
 
         self._config = config
+        self._allow_legacy_metric_actuators = bool(allow_legacy_metric_actuators)
 
         if int(self._config.env.imu_max_latency_steps) != int(IMU_MAX_LATENCY):
             raise ValueError(
@@ -2171,7 +2174,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         (toddlerbot/locomotion/mjx_config.py:86, walk.gin:25-28):
             motor_pos_error + lin_vel + actuator_force + ref_stance.
 
-        Layout (PRIVILEGED_OBS_DIM=44):
+        Layout (44 values for the active 17D model; 52 for the archived 21D
+        distillation teacher):
             [0:3]   lin_vel (heading-frame)
             [3:6]   ang_vel (heading-frame)
             [6:8]   per-foot aggregated contact force (left, right)
@@ -2259,13 +2263,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def _stack_critic_obs(self, history: jax.Array) -> jax.Array:
         """Flatten the trailing N frames of ``history`` into a single
         critic obs vector.  ``history`` has shape
-        ``(PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM)``; the
+        ``(PRIVILEGED_OBS_HISTORY_FRAMES, privileged_obs_dim(action_size))``; the
         rolling buffer is oldest-first (index 0) → newest-last, matching
         TB convention (mjx_env.py:2166-2171).
 
         Under depth==1 we return the newest single frame (legacy
         byte-equal path); under depth==N we take the last N frames and
-        flatten to length ``N * PRIVILEGED_OBS_DIM``."""
+        flatten to length ``N * privileged_obs_dim(action_size)``."""
         n = self._critic_obs_history_frames
         if n == 1:
             return history[-1].astype(jp.float32)
@@ -4048,7 +4052,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # depth==1 this collapses to the legacy single-frame critic
         # obs path.
         critic_obs_history = jp.zeros(
-            (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM),
+            (
+                PRIVILEGED_OBS_HISTORY_FRAMES,
+                privileged_obs_dim(self.action_size),
+            ),
             dtype=jp.float32,
         )
         critic_obs_history = self._roll_critic_obs_history(
@@ -5180,6 +5187,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._policy_spec.robot.actuator_names
         ):
             if actuator_name not in torque_metric_names:
+                if self._allow_legacy_metric_actuators:
+                    continue
                 raise ValueError(
                     "Missing per-actuator torque metric registration for "
                     f"{actuator_name!r}"

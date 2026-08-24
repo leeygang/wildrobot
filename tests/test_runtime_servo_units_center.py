@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 
 from runtime.configs.config import ServoConfig
@@ -6,6 +9,9 @@ from runtime.wr_runtime.hardware.actuators import (
     joint_target_rad_to_servo_pos_elec_units,
     servo_pos_elect_units_to_joint_target_rad,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_rad_to_units_center_uses_center_rad_not_joint_range_mid() -> None:
@@ -75,3 +81,13 @@ def test_mujoco_zero_uses_servo_center_angle_direction_and_offset() -> None:
 
     assert servo.joint_target_rad_to_elect_unit(servo.center_rad) == 518
     assert servo.joint_target_rad_to_elect_unit(0.0) == 164
+
+
+def test_current_shoulder_roll_servo_centers_match_v2_cad() -> None:
+    config = json.loads(
+        (PROJECT_ROOT / "runtime/configs/hardware_config.json").read_text()
+    )
+    servos = config["servo_controller"]["servos"]
+
+    assert servos["left_shoulder_roll"]["joint_angle_at_servo_center_deg"] == -80
+    assert servos["right_shoulder_roll"]["joint_angle_at_servo_center_deg"] == 80

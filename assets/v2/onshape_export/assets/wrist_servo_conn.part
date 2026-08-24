@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "408bad3989282562b8b53ba4",
+    "documentMicroversion": "206c6a7a90e7a24bb2a55e22",
     "elementId": "eed32dd76ad6e0d510784b1c",
     "fullConfiguration": "default",
     "id": "MGtnd9rqmowYrgVTb",
     "isStandardContent": false,
     "name": "wrist_servo_conn <1>",
-    "partId": "ReHD",
+    "partId": "RJHD",
     "suppressed": false,
     "type": "Part"
 }

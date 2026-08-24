@@ -59,6 +59,16 @@ IMU_HIST_LEN = IMU_MAX_LATENCY + 1
 # there is no migration burden — only the actor params transfer.
 PRIVILEGED_OBS_DIM = 44
 
+
+def privileged_obs_dim(action_size: int) -> int:
+    """Return critic frame width for a given actuator contract.
+
+    The active 17D model uses 44. Archived 21D teacher rollouts use 52 while
+    being distilled, so migration code must not assume the active width.
+    """
+    return 10 + 2 * int(action_size)
+
+
 # v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
 # rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
 #
@@ -160,16 +170,16 @@ try:
         recovery_step_count: jnp.ndarray     # () int32
 
         # Privileged critic obs (sim-only fields the actor doesn't see).
-        # Shape: (PRIVILEGED_OBS_DIM,) under legacy single-frame mode;
-        # (env.critic_obs_history_frames * PRIVILEGED_OBS_DIM,) under
-        # smoke14+ stacked mode.
+        # Shape: (privileged_obs_dim(action_size),) under legacy single-frame
+        # mode; multiplied by env.critic_obs_history_frames under smoke14+
+        # stacked mode.  The active 17-DoF contract has 44 values per frame.
         critic_obs: jnp.ndarray
         # Rolling buffer of the most recent PRIVILEGED_OBS_HISTORY_FRAMES
         # single-frame critic observations (oldest at index 0, newest
-        # at the end).  Always shape
-        # (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM) regardless
-        # of how many of those frames are exposed on ``critic_obs``.
-        critic_obs_history: jnp.ndarray    # (PRIVILEGED_OBS_HISTORY_FRAMES, PRIVILEGED_OBS_DIM)
+        # at the end).  Always shape (PRIVILEGED_OBS_HISTORY_FRAMES,
+        # privileged_obs_dim(action_size)) regardless of how many of those
+        # frames are exposed on ``critic_obs``.
+        critic_obs_history: jnp.ndarray
 
         # v3 offline ReferenceLibrary playback state
         loc_ref_offline_step_idx: jnp.ndarray   # () int32 — increments by 1 per step
@@ -332,6 +342,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
     if action_size is None:
         from training.configs.training_config import get_robot_config
         action_size = get_robot_config().action_dim
+    critic_frame_dim = privileged_obs_dim(action_size)
 
     return {
         "step_count": (),
@@ -374,7 +385,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "critic_obs": None,
         "critic_obs_history": (
             PRIVILEGED_OBS_HISTORY_FRAMES,
-            PRIVILEGED_OBS_DIM,
+            critic_frame_dim,
         ),
         "loc_ref_offline_step_idx": (),
         "loc_ref_offline_command_id": (),

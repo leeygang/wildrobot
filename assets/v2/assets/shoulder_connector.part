@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "0cbedfc73ccd15a78b68fb9b",
-    "elementId": "a21c5f674a44be82c0749694",
+    "documentMicroversion": "206c6a7a90e7a24bb2a55e22",
+    "elementId": "eed32dd76ad6e0d510784b1c",
     "fullConfiguration": "default",
-    "id": "Mr76Cv+w/1JELyWV7",
+    "id": "MDdytsTBXJGMO0J2h",
     "isStandardContent": false,
-    "name": "hip_cover <1>",
-    "partId": "RgBD",
+    "name": "shoulder_connector <1>",
+    "partId": "JHH",
     "suppressed": false,
     "type": "Part"
 }

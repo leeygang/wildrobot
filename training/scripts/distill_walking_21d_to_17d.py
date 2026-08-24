@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from assets.robot_config import load_robot_config
+from assets.robot_config import clear_robot_config_cache, load_robot_config
 from training.algos.ppo.ppo_core import (
     create_networks,
     init_network_params,
@@ -99,6 +99,7 @@ def _load_env(
     config_path: Path,
     *,
     disable_feedback_delay: bool,
+    allow_legacy_metric_actuators: bool = False,
     robot_config_path: Path | None = None,
     scene_xml_path: Path | None = None,
 ):
@@ -115,23 +116,62 @@ def _load_env(
     config.env.imu_latency_steps = 0
     if disable_feedback_delay:
         config.env.joint_feedback_sample_hold_enabled = False
+    # load_robot_config is a process-global singleton. Teacher and student use
+    # different actuator contracts in this script, so each environment must
+    # replace the previous cache before its spec and CAL are constructed.
+    clear_robot_config_cache()
     robot_config = load_robot_config(config.env.robot_config_path)
     spec = build_policy_spec_from_training_config(
         training_cfg=config, robot_cfg=robot_config
     )
-    return config, spec, WildRobotEnv(config)
+    return config, spec, WildRobotEnv(
+        config,
+        allow_legacy_metric_actuators=allow_legacy_metric_actuators,
+    )
 
 
 def _build_legacy_teacher_scene(
     *, robot_xml_path: Path, policy_spec_path: Path
 ) -> Path:
-    """Build a temporary, self-contained 21D scene for the archived teacher."""
+    """Build a temporary collision-only 21D scene for the archived teacher.
+
+    Historical bundles intentionally do not duplicate visual mesh assets. CAD
+    refreshes may delete or rename those files, so teacher rollouts remove
+    non-colliding mesh geoms while retaining explicit body inertias and all
+    primitive collision geoms.
+    """
     tree = ET.parse(robot_xml_path)
     root = tree.getroot()
     compiler = root.find("compiler")
     if compiler is None:
         raise ValueError(f"archived teacher MJCF has no compiler: {robot_xml_path}")
-    compiler.set("meshdir", str((PROJECT_ROOT / "assets/v2/assets").resolve()))
+    compiler.attrib.pop("meshdir", None)
+
+    for body in root.findall(".//body"):
+        mesh_geoms = [
+            geom for geom in body.findall("geom") if geom.get("type") == "mesh"
+        ]
+        if mesh_geoms and body.find("inertial") is None:
+            raise ValueError(
+                "cannot strip archived visual meshes from a body without an "
+                f"explicit inertial: {body.get('name')}"
+            )
+        for geom in mesh_geoms:
+            is_visual = geom.get("class") == "visual"
+            is_non_colliding = (
+                geom.get("contype") == "0" and geom.get("conaffinity") == "0"
+            )
+            if not (is_visual or is_non_colliding):
+                raise ValueError(
+                    "archived teacher contains a physical mesh geom that cannot "
+                    f"be stripped safely: {ET.tostring(geom, encoding='unicode')}"
+                )
+            body.remove(geom)
+
+    asset = root.find("asset")
+    if asset is not None:
+        for mesh in list(asset.findall("mesh")):
+            asset.remove(mesh)
 
     worldbody = root.find("worldbody")
     if worldbody is None:
@@ -404,6 +444,7 @@ def main() -> int:
         teacher_cfg, teacher_spec, teacher_env = _load_env(
             args.teacher_config,
             disable_feedback_delay=True,
+            allow_legacy_metric_actuators=True,
             robot_config_path=args.teacher_robot_config,
             scene_xml_path=teacher_scene,
         )

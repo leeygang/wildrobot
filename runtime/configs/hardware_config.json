@@ -79,7 +79,7 @@
         "id": 22,
         "servo_offset_unit": -2,
         "motor_unit_direction": -1,
-        "joint_angle_at_servo_center_deg": -85
+        "joint_angle_at_servo_center_deg": -80
       },
       "left_elbow_pitch": {
         "id": 23,
@@ -97,7 +97,7 @@
         "id": 32,
         "servo_offset_unit": -75,
         "motor_unit_direction": -1,
-        "joint_angle_at_servo_center_deg": 85
+        "joint_angle_at_servo_center_deg": 80
       },
       "right_elbow_pitch": {
         "id": 33,

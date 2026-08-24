@@ -917,13 +917,15 @@ def _validate_resume_checkpoint(
         raise ValueError(
             "Resume checkpoint is missing policy_contract fingerprint (policy_spec_hash).\n"
             "This checkpoint was created before the policy_contract migration, so resuming is unsafe.\n"
-            "Start a fresh run (no --resume) to train under the current contract."
+            "Use --finetune-policy for shape-compatible actor transfer, "
+            "or start a fresh run."
         )
     if ckpt_policy_spec_hash != current_policy_spec_hash:
         raise ValueError(
             "Resume checkpoint policy_contract mismatch (hard):\n"
             f"  - policy_spec_hash: ckpt={ckpt_policy_spec_hash}, current={current_policy_spec_hash}\n"
-            "Start a fresh run (no --resume) to train under the current contract."
+            "Use --finetune-policy for shape-compatible actor transfer, "
+            "or migrate the actor first."
         )
 
     if hard_mismatch:
@@ -1088,7 +1090,7 @@ def train(
                 f"{(2 * action_dim,)}, got {tuple(initial_logits.shape)}"
             )
         policy_params = initial_policy_params
-        print("✓ Initialized actor from migration checkpoint; critic is fresh")
+        print("✓ Initialized actor for fine-tuning; critic and optimizers are fresh")
 
     # Create optimizers
     total_schedule_updates = max(

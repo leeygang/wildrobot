@@ -1,9 +1,8 @@
 # WildRobot v2 — Arm-chain CAD follow-ups
 
-**Status:** non-blocking residual — arms are static during walking, so
-this does not affect sim training. May matter for hardware deployment
-(v0.20.2+) where the resulting whole-body COM bias could surface as a
-small standing lean.
+**Status:** non-blocking residual after the 2026-08-23 Onshape refresh. The
+wrist servo DOFs and separate palm/finger bodies are gone, but a small mirrored
+arm-position mismatch remains and can contribute to standing lean.
 
 **History:** the original `model_issues.md` (now removed) tracked four
 CAD-side asymmetries surfaced by Phase 12C closed-loop diagnostic.
@@ -15,47 +14,36 @@ export; closeout history lives in CHANGELOG entries
 symmetric (sub-100 µm in x and z; 0 mm in y at parent-local; Phase 10
 shows zero saturation at vx=0.15).
 
-This file tracks the remaining arm-chain issue.
+This file tracks the remaining arm-chain issue. The generated model passes the
+left/right body mass and inertia symmetry checks.
 
 ---
 
-## Issue 4 (arm subtree) — Sub-mm to ~1 cm L/R asymmetries
+## Issue 4 (arm subtree) — Sub-mm to ~5 mm L/R asymmetries
 
 World-frame body-pair COM offsets at the home keyframe:
 
 | Body pair | |Δx| | |Δy_mirror| | |Δz| |
 |---|---|---|---|
-| shoulder_2 / shoulder | 1.01 mm | 1.69 mm | 0.05 mm |
-| upper_arm_2 / upper_arm | 0.96 mm | 3.46 mm | 0.17 mm |
-| fore_arm_2 / fore_arm | 0.78 mm | 3.68 mm | 0.19 mm |
-| **palm_2 / palm** | **0.59 mm** | **10.11 mm** | **0.80 mm** |
-| **finger_2 / finger** | **0.53 mm** | **11.35 mm** | **0.87 mm** |
+| left_shoulder / right_shoulder | 0.37 mm | 1.27 mm | 0.17 mm |
+| left_upper_arm / right_upper_arm | 0.50 mm | 2.93 mm | 0.39 mm |
+| **left_fore_arm / right_fore_arm** | **0.77 mm** | **5.25 mm** | **0.79 mm** |
 
-**Aggregate effect:** whole-body COM y-bias = 1.5 mm (was 0.7 mm
-pre-merge — leg chain became more symmetric, so arm asymmetries now
-dominate).  Static bias only; does not affect closed-loop walking
-gates because the bias settles into the home keyframe equilibrium.
+**Aggregate effect:** whole-body COM y-bias = -1.25 mm at the current home
+keyframe (magnitude improved from 1.5 mm). The forearm inertias now include the
+fixed hand/wrist geometry, so there are no separate palm/finger body pairs to
+audit.
 
-**What to fix in Onshape:** apply CAD mirror constraints to all arm
-sub-assemblies so the raw export's `palm` / `palm_2` and `finger` /
-`finger_2` pairs become bit-identical mirrors.
+**What remains to fix in Onshape:** tighten the mirror constraints on the
+shoulder-to-forearm chain, especially the forearm placement. The wrist-servo
+removal itself is complete.
 
 ## Re-checking after a CAD fix
 
 ```bash
-# Local-frame body-pair symmetry (parent-local positions)
-uv run python -c "
-import re
-xml = open('assets/v2/onshape_export/wildrobot.xml').read()
-for l, r in [('shoulder_2','shoulder'), ('upper_arm_2','upper_arm'), ('fore_arm_2','fore_arm'), ('palm_2','palm'), ('finger_2','finger')]:
-    lp = [float(v) for v in re.search(rf'<body name=\"{l}\" pos=\"([^\"]+)\"', xml).group(1).split()]
-    rp = [float(v) for v in re.search(rf'<body name=\"{r}\" pos=\"([^\"]+)\"', xml).group(1).split()]
-    print(f'{l:<14}{lp}\\n{r:<14}{rp}\\n')"
-
-# World-frame COM symmetry at the home keyframe
+# World-frame COM, mass, inertia, and collision symmetry
 uv run python assets/validate_model.py
 ```
 
-Expected after fix: every arm body pair should have parent-local
-positions that are bit-identical mirrors (or as close as the CAD
-mirror constraint allows — sub-100 µm tolerance is fine).
+Expected after a follow-up: every arm body pair should be a mirror within the
+validator tolerance, with the forearm `|Δy_mirror|` reduced below 1 mm.

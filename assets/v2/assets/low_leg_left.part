@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "0cbedfc73ccd15a78b68fb9b",
+    "documentMicroversion": "206c6a7a90e7a24bb2a55e22",
     "elementId": "c0ece913c3564a9f34cbc816",
     "fullConfiguration": "default",
     "id": "MPP59SS6vYwuvje26",
     "isStandardContent": false,
     "name": "low_leg_left <1>",
-    "partId": "RhCD",
+    "partId": "R+BD",
     "suppressed": false,
     "type": "Part"
 }

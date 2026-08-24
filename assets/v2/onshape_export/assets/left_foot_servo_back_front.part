@@ -1,13 +1,13 @@
 {
     "configuration": "default",
     "documentId": "ba106cac193c0e2253e1958f",
-    "documentMicroversion": "408bad3989282562b8b53ba4",
+    "documentMicroversion": "206c6a7a90e7a24bb2a55e22",
     "elementId": "89ceb3190ceb802f85d40185",
     "fullConfiguration": "default",
     "id": "MYEVHVk6blV7dPjIB",
     "isStandardContent": false,
     "name": "left_foot_servo_back_front <1>",
-    "partId": "RbBH",
+    "partId": "RaBH",
     "suppressed": false,
     "type": "Part"
 }
