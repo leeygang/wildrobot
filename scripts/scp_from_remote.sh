@@ -161,6 +161,20 @@ get_latest_runs() {
     remote_ssh "ls -1t $REMOTE_BASE/training/wandb/ 2>/dev/null | grep -E '^(run|offline-run)-' | head -$N"
 }
 
+find_checkpoint_for_run_id() {
+    local WANDB_RUN_ID="$1"
+
+    if ! [[ "$WANDB_RUN_ID" =~ ^[a-zA-Z0-9]+$ ]]; then
+        echo -e "${RED}Invalid W&B run ID: $WANDB_RUN_ID${NC}" >&2
+        return 1
+    fi
+
+    # Checkpoints may be grouped under a training-series directory. Return the
+    # newest matching path relative to training/checkpoints so copy_checkpoint
+    # can preserve that hierarchy locally.
+    remote_ssh "find '$REMOTE_BASE/training/checkpoints' -mindepth 1 -type d -name '*-${WANDB_RUN_ID}' -printf '%T@ %P\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-"
+}
+
 copy_file() {
     local FILE="$1"
     local REMOTE_PATH="$REMOTE_BASE/$FILE"
@@ -285,9 +299,17 @@ copy_checkpoint() {
     local CHECKPOINT_NAME="$1"
     local REMOTE_PATH="$REMOTE_BASE/training/checkpoints/$CHECKPOINT_NAME"
     local LOCAL_PATH="training/checkpoints/$CHECKPOINT_NAME"
+    local LOCAL_PARENT
 
-    # Create local checkpoints directory
-    mkdir -p training/checkpoints
+    if [ -z "$CHECKPOINT_NAME" ] || [[ "$CHECKPOINT_NAME" = /* ]] || \
+       [[ "/$CHECKPOINT_NAME/" == *"/../"* ]] || [[ "$CHECKPOINT_NAME" == *$'\n'* ]]; then
+        echo -e "${RED}Invalid checkpoint path: $CHECKPOINT_NAME${NC}"
+        return 1
+    fi
+
+    # Preserve nested training-series directories used by newer runs.
+    LOCAL_PARENT=$(dirname "$LOCAL_PATH")
+    mkdir -p "$LOCAL_PARENT"
 
     echo -e "${YELLOW}Copying checkpoint folder:${NC} $CHECKPOINT_NAME"
     echo -e "  Remote: $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
@@ -301,7 +323,7 @@ copy_checkpoint() {
         RESULT=$?
     else
         echo -e "${CYAN}Using scp (rsync not found)...${NC}"
-        remote_scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" checkpoints/
+        remote_scp -r "$REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH" "$LOCAL_PARENT/"
         RESULT=$?
     fi
 
@@ -406,7 +428,7 @@ copy_run() {
     # The timestamp may differ slightly between wandb run and checkpoint, so we match
     # only the wandb run ID suffix (e.g., -uf665cr6)
     local WANDB_RUN_ID=$(echo "$RUN_ID" | sed 's/.*-//')  # Extract just the wandb ID (e.g., 8p2bv838)
-    local CHECKPOINT_NAME=$(remote_ssh "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | grep '\-${WANDB_RUN_ID}$' | head -1")
+    local CHECKPOINT_NAME=$(find_checkpoint_for_run_id "$WANDB_RUN_ID")
 
     # Step 1: Copy wandb log
     echo -e "${CYAN}Step 1/2: Copying W&B log...${NC}"
@@ -431,7 +453,7 @@ copy_run() {
         echo "  3. Checkpoint was saved with a different naming scheme"
         echo ""
         echo -e "${CYAN}Available checkpoints (most recent first):${NC}"
-        remote_ssh "ls -1t $REMOTE_BASE/training/checkpoints/ 2>/dev/null | head -10"
+        remote_ssh "find '$REMOTE_BASE/training/checkpoints' -mindepth 1 -type d -name '*-*' -printf '%T@ %P\n' 2>/dev/null | sort -nr | head -10 | cut -d' ' -f2-"
         echo ""
         echo -e "${CYAN}To copy a specific checkpoint manually:${NC}"
         echo "  ./scp_from_remote.sh <checkpoint_folder_name>"

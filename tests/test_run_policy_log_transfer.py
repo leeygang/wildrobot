@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -9,6 +10,63 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _TRANSFER_SCRIPT = _REPO_ROOT / "scripts" / "scp_from_remote.sh"
+
+
+def test_latest_run_copies_nested_checkpoint_directory(tmp_path: Path) -> None:
+    temp_repo = tmp_path / "repo"
+    temp_scripts = temp_repo / "scripts"
+    temp_scripts.mkdir(parents=True)
+    transfer_script = temp_scripts / "scp_from_remote.sh"
+    shutil.copy2(_TRANSFER_SCRIPT, transfer_script)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    rsync_record = tmp_path / "rsync_args.txt"
+    run_name = "offline-run-20260823_200326-ok607jgs"
+    checkpoint_path = (
+        "walking_v0210_onshape9_finetune/"
+        "ppo_walking_v0210_smoke6_17d_latency_finetune_v0210-17d1_"
+        "20260823_200339-ok607jgs"
+    )
+
+    ssh = fake_bin / "ssh"
+    ssh.write_text(
+        "#!/bin/sh\n"
+        'if printf "%s\\n" "$*" | grep -q "find .*training/checkpoints"; then\n'
+        f'    printf "%s\\n" "{checkpoint_path}"\n'
+        'elif printf "%s\\n" "$*" | grep -q "ls -1t .*training/wandb"; then\n'
+        f'    printf "%s\\n" "{run_name}"\n'
+        "fi\n"
+    )
+    ssh.chmod(0o755)
+
+    rsync = fake_bin / "rsync"
+    rsync.write_text(
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$RSYNC_RECORD"\n'
+    )
+    rsync.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env['PATH']}",
+            "RSYNC_RECORD": str(rsync_record),
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(transfer_script), "--latest"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    rsync_calls = rsync_record.read_text().splitlines()
+    assert len(rsync_calls) == 2
+    assert checkpoint_path in rsync_calls[1]
+    assert rsync_calls[1].endswith(f"training/checkpoints/{checkpoint_path}/")
+    assert f"Checkpoint: {checkpoint_path}" in result.stdout
 
 
 def _assert_connection_reuse(ssh_args: str, scp_args: str) -> None:
