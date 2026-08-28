@@ -8,6 +8,96 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d1-result + v0.21.0-17d2-plan] - 2026-08-28: forward gait recovered, deployment rejected
+
+### Training result
+
+The native-17D latency fine-tune is
+`training/wandb/offline-run-20260823_200326-ok607jgs`; its checkpoints, saved
+configuration, and automatic summary are under
+`training/checkpoints/walking_v0210_onshape9_finetune/ppo_walking_v0210_smoke6_17d_latency_finetune_v0210-17d1_20260823_200339-ok607jgs`.
+It completed 500 iterations and 10,240,000 environment steps in 194.2 minutes.
+
+The automatic 8-environment post-training evaluation selected checkpoint 300,
+but that selection is not deployment-valid. It tested only `(vx,vy,wz) =
+(0.13,0,0)` and treated lateral velocity, world-y drift, and yaw drift as soft
+signals. All three selected candidates failed those soft limits. To remove the
+small-sample ambiguity, checkpoints 290, 300, and 490 were rerun on Mac with
+64 deterministic environments, 1,000 steps, the saved domain randomization and
+feedback-latency configuration, no pushes, and fixed commands at both ends of
+the intended deployment speed band.
+
+| Checkpoint | cmd vx | achieved vx | vx/cmd | cmd error | mean episode length | step length | lateral speed | world-y drift | yaw drift | falls / 64 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 290 | 0.130 | 0.173 | 1.33 | 0.051 | 985.4 | 0.116 m | 0.189 m/s | 0.990 m | 1.198 rad | 1 |
+| 300 | 0.130 | 0.176 | 1.35 | 0.053 | 985.3 | 0.123 m | 0.185 m/s | 0.990 m | 1.200 rad | 1 |
+| 490 | 0.130 | 0.142 | 1.09 | 0.041 | 908.7 | 0.105 m | 0.162 m/s | 0.421 m | 0.349 rad | 7 |
+| 290 | 0.065 | 0.166 | 2.55 | 0.104 | 984.3 | 0.115 m | 0.189 m/s | 0.776 m | 1.075 rad | 2 |
+| 300 | 0.065 | 0.169 | 2.59 | 0.105 | 985.3 | 0.121 m | 0.186 m/s | 0.758 m | 1.072 rad | 1 |
+| 490 | 0.065 | 0.137 | 2.11 | 0.078 | 917.4 | 0.104 m | 0.163 m/s | 0.532 m | 0.269 rad | 6 |
+
+The configured soft limits are 0.10 m/s lateral velocity, 0.30 m world-y
+drift, and 0.40 rad yaw drift. No candidate passes the deployment contract.
+Checkpoint 490 improves drift and orientation, but its survival is worse; the
+conditional preference for checkpoint 490 is therefore rejected. Checkpoint
+300 is the safer initialization for another training run, not a deployable
+policy.
+
+This is a real alternating gait rather than a foot-shuffle: left/right
+touchdown rates are about 0.022--0.029 per step and per-touchdown strides are
+0.093--0.142 m. The remaining failure is control quality. At the 0.13 m/s
+command, checkpoint 300 has 34.8 deg mean, 114.0 deg peak, and 113.8 deg final
+maximum body-orientation error. Its left/right hip-roll torque saturation is
+17.5% / 5.5%. Across the matrix, shoulder-roll saturation is 0%, while hip-roll
+saturation remains about 17--20% left and 5--7% right. The global 1.45--1.72%
+torque-saturation metric hides this actuator-local problem.
+
+The command sampler is not the cause: the expected mean `|vx_cmd|`, including
+the 5% zero-command branch, is 0.154375 m/s; the final ten logged iterations
+average 0.155382 m/s (0.65% difference). The saved config instead confirms the
+missing objectives: `cmd_sampler_3d_branched=false`, `min/max_velocity_y=0`,
+`cmd_lateral_velocity_track=0`, `cmd_yaw_rate_track=0`, `torque=0`, no command
+probes, and only eight post-training environments. The code also confirms that
+the standalone lateral reward and per-actuator torque metrics already exist;
+this does not require a new reward implementation.
+
+### Next training: native-17D deployment band
+
+Added `training/configs/ppo_walking_v0210_17d2_deployment_band.yaml`. Start it
+from checkpoint 300 with `--init-policy` so the changed reward/distribution gets
+a fresh critic and optimizer. The change is intentionally limited to the
+measured failures:
+
+- narrow forward commands from `[0.065, 0.26]` to the deployment band
+  `[0.065, 0.13]`;
+- enable the branched sampler with exact balanced lateral bins
+  `{-0.065, 0, +0.065}` and matching reference bins;
+- keep the forward reward one-dimensional and enable the existing standalone
+  lateral tracker at weight 1.0 with `alpha_y=120`;
+- restore yaw-rate tracking at weight 1.5 while keeping yaw commands at zero;
+- enable the existing light torque penalty at `-0.001`;
+- increase deterministic post-training evaluation from 8 to 64 environments
+  and make straight-line lateral drift plus both signed-vy probes hard gates.
+
+The primary automated gate remains `(0.13,0,0)`. Before deployment, also rerun
+the same 64-environment/1,000-step evaluation at `(0.065,0,0)` and reject any
+candidate with a forward ratio outside 0.6--1.5, any fall, or greater than 5%
+saturation on any actuator.
+
+ToddlerBot is the structural reference: its walking reward tracks both XY
+linear velocity axes with weight 2 and sigma 1000, tracks yaw rate with weight
+1.5, and penalizes roll/pitch angular velocity and torso orientation
+(`toddlerbot/locomotion/walk.gin` and
+`toddlerbot/locomotion/mjx_env.py::_reward_lin_vel_xy`). WildRobot keeps the
+looser lateral `alpha_y=120` as an explicit bridge for fine-tuning an already
+biased gait instead of copying ToddlerBot's from-scratch kernel. See Shi et al.,
+[ToddlerBot](https://arxiv.org/abs/2502.00893), and Tan et al.,
+[Sim-to-Real: Learning Agile Locomotion For Quadruped Robots](https://arxiv.org/abs/1804.10332),
+for the morphology-aware reference-policy and randomized sim-to-real rationale.
+
+**Decision:** reject every checkpoint from `ok607jgs` for deployment. Use
+checkpoint 300 only as the initialization for v0.21.0-17d2.
+
 ## [v0.22.7-planner-free-stabilization-result] - 2026-08-01: checkpoint 200 is the bounded-envelope candidate
 
 ### Training result
