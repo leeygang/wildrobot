@@ -7,9 +7,11 @@ deterministic policy and a zero-residual home-hold controller. Clean and
 configured-push suites therefore use common initial conditions, randomized
 dynamics, and push schedules.
 
-Pass/fail is computed from the original episode only. A pass requires the
-robot to remain inside the configured tilt, gyro, joint-to-home, and bilateral
-support bounds for the final continuous settle window.
+Pass/fail is computed from the original episode only. The evaluator bypasses
+the training time limit so a 60-second rollout is continuous, while physical
+height and tilt terminations remain active. A pass requires the robot to remain
+inside the configured tilt, gyro, joint-to-home, and bilateral support bounds
+for the final continuous settle window.
 """
 
 from __future__ import annotations
@@ -48,6 +50,23 @@ from training.exports.export_onnx import get_checkpoint_dims
 
 _CONTROLLERS = ("policy", "home")
 _KNOWN_SUITES = ("clean", "push")
+
+
+def _continuous_eval_step(
+    env: WildRobotEnv,
+    state,
+    action,
+    *,
+    disable_pushes: bool,
+):
+    """Step without the training timeout, retaining physical termination."""
+    return env.step(
+        state,
+        action,
+        disable_cmd_resample=True,
+        disable_pushes=disable_pushes,
+        disable_time_limit=True,
+    )
 
 
 def _parse_suites(value: str) -> tuple[str, ...]:
@@ -320,7 +339,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--num-envs", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--rollout-s", type=float, default=10.0)
+    parser.add_argument("--rollout-s", type=float, default=60.0)
     parser.add_argument("--suites", type=_parse_suites, default=("clean", "push"))
     parser.add_argument("--initial-max-tilt-deg", type=float, default=4.0)
     parser.add_argument("--initial-max-gyro-rad-s", type=float, default=0.35)
@@ -473,10 +492,10 @@ def main() -> int:
         steps: int,
     ):
         batch_step = jax.vmap(
-            lambda state, action: env.step(
+            lambda state, action: _continuous_eval_step(
+                env,
                 state,
                 action,
-                disable_cmd_resample=True,
                 disable_pushes=disable_pushes,
             )
         )
@@ -581,14 +600,18 @@ def main() -> int:
 
     wr = initial_state.info[WR_INFO_KEY]
     push_force_xy = np.asarray(wr.push_schedule.force_xy)
+    persistent_pitch_error = np.asarray(
+        wr.domain_rand_persistent_torso_pitch_error_rad
+    )
     output = {
-        "schema_version": 1,
+        "schema_version": 2,
         "checkpoint": str(args.checkpoint),
         "config": str(args.config),
         "seed": args.seed,
         "num_envs": args.num_envs,
         "ctrl_dt_s": ctrl_dt,
         "rollout_s": args.rollout_s,
+        "training_time_limit_disabled": True,
         "suites": list(args.suites),
         "initial_envelope": {
             "max_tilt_deg": args.initial_max_tilt_deg,
@@ -615,6 +638,19 @@ def main() -> int:
             "duration_steps": int(training_cfg.env.push_duration_steps),
             "sample_force_n_min": float(np.min(np.linalg.norm(push_force_xy, axis=1))),
             "sample_force_n_max": float(np.max(np.linalg.norm(push_force_xy, axis=1))),
+        },
+        "persistent_torso_pitch_calibration": {
+            "configured_range_rad": list(
+                training_cfg.env.domain_rand_persistent_torso_pitch_error_range
+            ),
+            "configured_range_deg": list(
+                np.rad2deg(
+                    training_cfg.env.domain_rand_persistent_torso_pitch_error_range
+                )
+            ),
+            "sample_rad_min": float(np.min(persistent_pitch_error)),
+            "sample_rad_max": float(np.max(persistent_pitch_error)),
+            "sample_abs_rad_max": float(np.max(np.abs(persistent_pitch_error))),
         },
         "results": results,
     }

@@ -8,6 +8,63 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.8-standing-persistent-bias-plan] - 2026-08-28: ready for Onshape9 fine-tuning
+
+The next standing run is now pinned by
+`training/configs/ppo_standing_stabilizer_v0228_persistent_bias.yaml`. Initialize
+its actor from `runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl` with
+`--init-policy`; do not use `--resume`, because the Onshape export(9) dynamics,
+disturbance distribution, and critic inputs require a fresh critic and
+optimizer. The old actor remains directly compatible at 59 observations and
+17 actions.
+
+The training change targets the measured hardware failure rather than adding a
+new recovery planner:
+
+- add a hidden episode-constant torso-pitch calibration error over +/-12.5 deg,
+  split across bilateral hip/knee/ankle pitch targets and removed from the
+  encoder-facing position observation;
+- train initial tilt over +/-4 deg and roll/pitch rate over +/-0.35 rad/s while
+  retaining foot stagger, randomized dynamics, backlash, and 2--5 N pushes;
+- enable the measured native-17D feedback sample-and-hold ranges of 4--7 control
+  steps for legs and 12--24 for upper-body joints;
+- reduce only ankle-pitch pose weights from 5.0 to 1.0, because checkpoint 200
+  showed little ankle correction during the forward-drift failure;
+- actor-only fine-tune for 100 iterations at `1e-5`, totaling 13,107,200
+  transitions, with a 128-environment built-in candidate screen.
+
+The environment implementation follows ToddlerBot's
+`persistent_torso_pitch_error_range` mechanism: physics receives the biased
+motor target while actor joint positions subtract the same offset, so the
+policy must infer the error from IMU and support dynamics. The default range is
+exactly zero, preserving all older configs. WildRobot implements pitch only;
+ToddlerBot's waist-based roll error is not copied because WR has no equivalent
+waist actuation. Pitch is angular and therefore needs no robot-size scaling.
+
+The paired standing evaluator now defaults to 60 seconds and disables only the
+1,000-step training timeout, while retaining physical height and tilt
+termination. Its JSON records the configured and sampled persistent-bias range.
+Final promotion requires 128 paired clean and push trials against home hold,
+with no falls and a final continuous gate of <=3 deg tilt, <=0.1 rad/s angular
+rate, <=8/4 deg maximum/RMS joint-to-home error, and both feet loaded.
+
+Run:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_standing_stabilizer_v0228_persistent_bias.yaml \
+  --init-policy runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl \
+  --checkpoint-dir training/checkpoints/standing_v0228_persistent_bias_finetune
+```
+
+Then apply the 60-second gate documented in
+`training/docs/morphology_finetune.md`. This design uses Shi et al.,
+[ToddlerBot](https://arxiv.org/abs/2502.00893), for the hidden calibration-error
+pattern; Tan et al.,
+[Sim-to-Real: Learning Agile Locomotion For Quadruped Robots](https://arxiv.org/abs/1804.10332),
+for dynamics randomization; and Hof et al. (2005) plus Pratt et al. (2006) for
+the support-state and capture-region interpretation.
+
 ## [v0.21.0-17d1-result + v0.21.0-17d2-plan] - 2026-08-28: forward gait recovered, deployment rejected
 
 ### Training result

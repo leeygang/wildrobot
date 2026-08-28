@@ -2150,6 +2150,30 @@ METRIC_SPECS.extend(
     ]
 )
 
+# v0.22.8 persistent sagittal calibration diagnostics (append-only).
+METRIC_SPECS.extend(
+    [
+        MetricSpec(
+            name="debug/persistent_torso_pitch_error_rad",
+            reducer=Reducer.MEAN,
+            log_prefix="debug",
+            description=(
+                "Episode-constant hidden torso-pitch calibration error sampled "
+                "for persistent actuator-target bias randomization"
+            ),
+        ),
+        MetricSpec(
+            name="debug/persistent_actuator_offset_abs_max_rad",
+            reducer=Reducer.MEAN,
+            log_prefix="debug",
+            description=(
+                "Maximum absolute per-actuator target offset from the hidden "
+                "persistent sagittal calibration error"
+            ),
+        ),
+    ]
+)
+
 # =============================================================================
 # Derived constants
 # =============================================================================

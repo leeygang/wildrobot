@@ -36,13 +36,16 @@ pose still require policy adaptation and fresh value learning.
 ## Standing
 
 The deployed standing checkpoint is `(obs_dim, action_dim) = (59, 17)`, which
-matches the current actor shape. First run the short wiring check:
+matches the current actor shape. The v0.22.8 recipe adds ToddlerBot-style hidden
+persistent torso-pitch calibration error over +/-12.5 deg, measured native-17D
+feedback sample-and-hold timing, and lower ankle-pitch pose stiffness. It keeps
+the actor interface unchanged and trains a fresh critic. First run the short
+wiring check:
 
 ```bash
 uv run python training/train.py \
-  --config training/configs/ppo_standing_stabilizer_v0227.yaml \
-  --finetune-policy runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl \
-  --lr 1e-5 \
+  --config training/configs/ppo_standing_stabilizer_v0228_persistent_bias.yaml \
+  --init-policy runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl \
   --verify
 ```
 
@@ -51,22 +54,31 @@ steps) with a fresh critic and optimizer:
 
 ```bash
 uv run python training/train.py \
-  --config training/configs/ppo_standing_stabilizer_v0227.yaml \
-  --finetune-policy runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl \
-  --lr 1e-5 \
-  --iterations 100 \
-  --checkpoint-dir training/checkpoints/standing_v0227_onshape9_finetune
+  --config training/configs/ppo_standing_stabilizer_v0228_persistent_bias.yaml \
+  --init-policy runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl \
+  --checkpoint-dir training/checkpoints/standing_v0228_persistent_bias_finetune
 ```
 
-Evaluate candidates against home hold before deployment:
+Evaluate candidates against home hold before deployment. This evaluator runs a
+continuous 3,000-step episode by bypassing only the training timeout; physical
+height and tilt terminations remain enforced:
 
 ```bash
 uv run python training/eval/eval_standing_stabilization.py \
   --checkpoint <new-standing-checkpoint.pkl> \
-  --config training/configs/ppo_standing_stabilizer_v0227.yaml \
+  --config training/configs/ppo_standing_stabilizer_v0228_persistent_bias.yaml \
+  --num-envs 128 \
+  --rollout-s 60 \
+  --suites clean,push \
   --platform gpu \
-  --output /tmp/standing_onshape9_eval.json
+  --output /tmp/standing_v0228_60s_eval.json
 ```
+
+Promotion requires no falls and final continuous stabilization at <=3 deg
+tilt, <=0.1 rad/s roll/pitch angular rate, <=8/4 deg maximum/RMS joint-to-home
+error, and both feet loaded. Compare every condition with the paired home-hold
+controller; do not promote solely from the built-in 1,000-step candidate
+screen.
 
 ## Walking
 

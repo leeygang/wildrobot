@@ -651,6 +651,15 @@ class EnvConfig(Freezable):
     domain_rand_kp_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
     domain_rand_frictionloss_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
     domain_rand_joint_offset_rad: float = 0.03  # U(-val, val) added to qpos0
+    # ToddlerBot-style hidden, episode-constant sagittal calibration error.
+    # A sampled torso-pitch magnitude is partitioned across bilateral hip,
+    # knee, and ankle pitch targets.  Physics receives the biased target while
+    # actor joint-position observations subtract the same offset, matching a
+    # servo-zero error that must be rejected from IMU/support feedback.
+    domain_rand_persistent_torso_pitch_error_range: Tuple[float, float] = (
+        0.0,
+        0.0,
+    )
     # v0.17.3b: Action delay (disabled by default, 0 = no delay)
     action_delay_steps: int = 0  # 1 = apply prev_action instead of current
 

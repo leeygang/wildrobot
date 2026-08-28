@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import fields as dataclass_fields
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -115,6 +116,23 @@ def _load_positive_int_range(
     if low < 1 or high < low:
         raise ValueError(
             f"{field_name} must satisfy 1 <= low <= high; got {value!r}"
+        )
+    return (low, high)
+
+
+def _load_float_range(
+    value: Any, *, default: Tuple[float, float], field_name: str
+) -> Tuple[float, float]:
+    """Load a finite two-element floating-point range from YAML."""
+    if value is None:
+        return default
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{field_name} must be a two-element [low, high] list")
+    low, high = float(value[0]), float(value[1])
+    if not math.isfinite(low) or not math.isfinite(high) or high < low:
+        raise ValueError(
+            f"{field_name} must contain finite values with low <= high; "
+            f"got {value!r}"
         )
     return (low, high)
 
@@ -665,6 +683,13 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         domain_rand_kp_scale_range=env.get("domain_rand_kp_scale_range", [0.9, 1.1]),
         domain_rand_frictionloss_scale_range=env.get("domain_rand_frictionloss_scale_range", [0.9, 1.1]),
         domain_rand_joint_offset_rad=float(env.get("domain_rand_joint_offset_rad", 0.03)),
+        domain_rand_persistent_torso_pitch_error_range=_load_float_range(
+            env.get("domain_rand_persistent_torso_pitch_error_range"),
+            default=(0.0, 0.0),
+            field_name=(
+                "env.domain_rand_persistent_torso_pitch_error_range"
+            ),
+        ),
         action_delay_steps=int(env.get("action_delay_steps", 0)),
         joint_feedback_sample_hold_enabled=bool(
             env.get("joint_feedback_sample_hold_enabled", False)

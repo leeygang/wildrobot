@@ -3,12 +3,32 @@ from __future__ import annotations
 import numpy as np
 
 from training.eval.eval_standing_stabilization import (
+    _continuous_eval_step,
     _paired_comparison,
     _parse_range,
     _parse_suites,
     _sample_initial_conditions,
     _summarize_rollout,
 )
+
+
+def test_continuous_eval_step_disables_only_eval_time_limit() -> None:
+    class FakeEnv:
+        def step(self, state, action, **kwargs):
+            return state, action, kwargs
+
+    result = _continuous_eval_step(
+        FakeEnv(), "state", "action", disable_pushes=True
+    )
+    assert result == (
+        "state",
+        "action",
+        {
+            "disable_cmd_resample": True,
+            "disable_pushes": True,
+            "disable_time_limit": True,
+        },
+    )
 
 
 def test_sample_initial_conditions_respects_magnitude_bounds() -> None:

@@ -247,6 +247,12 @@ def _apply_recovery_condition(
         "frictionloss_scales": wr.domain_rand_frictionloss_scales,
         "joint_offsets": wr.domain_rand_joint_offsets,
         "backlash": wr.domain_rand_backlash,
+        "persistent_torso_pitch_error_rad": (
+            wr.domain_rand_persistent_torso_pitch_error_rad
+        ),
+        "persistent_actuator_calibration_offsets": (
+            wr.domain_rand_persistent_actuator_offsets
+        ),
     }
     return env._make_initial_state(
         rng=base_state.rng,

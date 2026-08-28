@@ -13,6 +13,86 @@ import jax
 import jax.numpy as jp
 
 
+def sample_persistent_torso_pitch_calibration(
+    rng: jax.Array,
+    *,
+    num_actuators: int,
+    leg_pitch_actuator_indices: jax.Array,
+    leg_pitch_joint_signs: jax.Array,
+    pitch_error_range: tuple[float, float],
+) -> tuple[jax.Array, jax.Array]:
+    """Sample a hidden episode-constant sagittal actuator calibration error.
+
+    Mirrors ToddlerBot's persistent torso-pitch calibration randomization:
+    one torso-pitch error is partitioned across hip, knee, and ankle pitch,
+    then applied symmetrically to both legs.  The returned actuator offsets
+    are added to physical position targets and subtracted from encoder-facing
+    joint positions, so the policy must infer and reject the bias from IMU and
+    support feedback instead of observing the calibration error directly.
+    """
+    low, high = float(pitch_error_range[0]), float(pitch_error_range[1])
+    if low == 0.0 and high == 0.0:
+        return (
+            jp.float32(0.0),
+            jp.zeros((num_actuators,), dtype=jp.float32),
+        )
+
+    rng_pitch, rng_hip, rng_knee = jax.random.split(rng, 3)
+    torso_pitch = jax.random.uniform(
+        rng_pitch, (), minval=low, maxval=high
+    ).astype(jp.float32)
+    pitch_abs = jp.abs(torso_pitch)
+    hip_delta = jax.random.uniform(
+        rng_hip, (), minval=0.0, maxval=pitch_abs
+    ).astype(jp.float32)
+    knee_delta = jax.random.uniform(
+        rng_knee,
+        (),
+        minval=0.0,
+        maxval=jp.maximum(pitch_abs - hip_delta, jp.float32(0.0)),
+    ).astype(jp.float32)
+    ankle_delta = jp.maximum(
+        pitch_abs - hip_delta - knee_delta, jp.float32(0.0)
+    )
+    magnitudes = jp.stack(
+        [
+            hip_delta,
+            knee_delta,
+            ankle_delta,
+            hip_delta,
+            knee_delta,
+            ankle_delta,
+        ]
+    ).astype(jp.float32)
+    leg_offsets = (
+        magnitudes
+        * jp.asarray(leg_pitch_joint_signs, dtype=jp.float32)
+        * jp.sign(torso_pitch)
+    )
+    actuator_offsets = jp.zeros((num_actuators,), dtype=jp.float32).at[
+        jp.asarray(leg_pitch_actuator_indices, dtype=jp.int32)
+    ].set(leg_offsets)
+    return torso_pitch, actuator_offsets
+
+
+def apply_persistent_calibration_to_target(
+    target_q: jax.Array,
+    actuator_offsets: jax.Array,
+    joint_mins: jax.Array,
+    joint_maxs: jax.Array,
+) -> jax.Array:
+    """Apply the hidden calibration error to the physical actuator target."""
+    return jp.clip(target_q + actuator_offsets, joint_mins, joint_maxs)
+
+
+def remove_persistent_calibration_from_observation(
+    joint_pos: jax.Array,
+    actuator_offsets: jax.Array,
+) -> jax.Array:
+    """Map physical joint positions back to the miscalibrated encoder frame."""
+    return (joint_pos - actuator_offsets).astype(jp.float32)
+
+
 def sample_domain_rand_params(
     rng: jax.Array,
     *,

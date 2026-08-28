@@ -68,9 +68,12 @@ from training.envs.disturbance import (
     sample_push_schedule,
 )
 from training.envs.domain_randomize import (
+    apply_persistent_calibration_to_target,
     apply_backlash_to_joint_pos,
     nominal_domain_rand_params,
+    remove_persistent_calibration_from_observation,
     sample_domain_rand_params,
+    sample_persistent_torso_pitch_calibration,
 )
 from training.envs.env_info import (
     IMU_HIST_LEN,
@@ -720,6 +723,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "right_knee_pitch",
             "right_ankle_pitch",
         ]
+        policy_name_to_idx = {
+            name: idx
+            for idx, name in enumerate(self._policy_spec.robot.actuator_names)
+        }
+        self._leg_pitch_policy_indices = jp.asarray(
+            [policy_name_to_idx[name] for name in leg_pitch_joint_names],
+            dtype=jp.int32,
+        )
         leg_pitch_qpos_addrs: List[int] = []
         leg_pitch_range_mins: List[float] = []
         leg_pitch_range_maxs: List[float] = []
@@ -801,6 +812,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._reset_torso_pitch_range = jp.asarray(
             reset_pitch_range, dtype=jp.float32
         )
+        persistent_pitch_range = tuple(
+            float(value)
+            for value in self._config.env.domain_rand_persistent_torso_pitch_error_range
+        )
+        if len(persistent_pitch_range) != 2 or (
+            persistent_pitch_range[1] < persistent_pitch_range[0]
+        ):
+            raise ValueError(
+                "env.domain_rand_persistent_torso_pitch_error_range must be "
+                "a two-element [low, high] range"
+            )
+        self._persistent_torso_pitch_error_range = persistent_pitch_range
         self._reset_torso_roll_rate_range = jp.asarray(
             self._config.env.reset_torso_roll_rate_range, dtype=jp.float32
         )
@@ -1362,11 +1385,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     def _sample_domain_rand_params(self, rng: jax.Array) -> Dict[str, jax.Array]:
         if not bool(getattr(self._config.env, "domain_randomization_enabled", False)):
-            return nominal_domain_rand_params(
+            params = nominal_domain_rand_params(
                 num_bodies=self._mj_model.nbody,
                 num_actuators=self.action_size,
             )
-        return sample_domain_rand_params(
+            params["persistent_torso_pitch_error_rad"] = jp.float32(0.0)
+            params["persistent_actuator_calibration_offsets"] = jp.zeros(
+                (self.action_size,), dtype=jp.float32
+            )
+            return params
+
+        params = sample_domain_rand_params(
             rng,
             num_bodies=self._mj_model.nbody,
             num_actuators=self.action_size,
@@ -1381,6 +1410,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 getattr(self._config.env, "domain_rand_backlash_range", (0.0, 0.0))
             ),
         )
+        # Derive this stream with fold_in so enabling the new randomization does
+        # not perturb the established friction/mass/Kp/backlash samples.
+        persistent_pitch, persistent_offsets = (
+            sample_persistent_torso_pitch_calibration(
+                jax.random.fold_in(rng, 22_800),
+                num_actuators=self.action_size,
+                leg_pitch_actuator_indices=self._leg_pitch_policy_indices,
+                leg_pitch_joint_signs=self._leg_pitch_joint_signs,
+                pitch_error_range=self._persistent_torso_pitch_error_range,
+            )
+        )
+        params["persistent_torso_pitch_error_rad"] = persistent_pitch
+        params["persistent_actuator_calibration_offsets"] = persistent_offsets
+        return params
 
     def _get_randomized_mjx_model(self, dr_params: Dict[str, jax.Array]) -> mjx.Model:
         if not bool(getattr(self._config.env, "domain_randomization_enabled", False)):
@@ -3121,7 +3164,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # ----------------------------------------------------------- termination
 
     def _get_termination(
-        self, data: mjx.Data, step_count
+        self,
+        data: mjx.Data,
+        step_count,
+        *,
+        disable_time_limit: bool = False,
     ) -> tuple[jax.Array, jax.Array, jax.Array, Dict[str, jax.Array]]:
         root_pose = self._cal.get_root_pose(data)
         height = root_pose.height
@@ -3138,7 +3185,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             terminated = height_fail | (pitch_fail | roll_fail)
 
-        truncated = (step_count >= self._config.env.max_episode_steps) & ~terminated
+        truncated = (
+            (step_count >= self._config.env.max_episode_steps)
+            & ~terminated
+            & ~jp.asarray(disable_time_limit)
+        )
         done = terminated | truncated
 
         info = {
@@ -3981,9 +4032,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
             ctrl_init = self._ref_init_q_rad
         else:
             ctrl_init = q_ref0
+        ctrl_init_physical = apply_persistent_calibration_to_target(
+            ctrl_init,
+            dr_params["persistent_actuator_calibration_offsets"],
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        )
         data = mjx.make_data(randomized_model)
         data = data.replace(
-            qpos=qpos, qvel=qvel, ctrl=self._to_mj_ctrl(ctrl_init)
+            qpos=qpos,
+            qvel=qvel,
+            ctrl=self._to_mj_ctrl(ctrl_init_physical),
         )
         data = mjx.forward(randomized_model, data)
 
@@ -4015,6 +4074,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
                         self._config.env, "domain_rand_backlash_activation", 0.1
                     )
                 ),
+            )
+        )
+        signals_override = signals_override.replace(
+            joint_pos_rad=remove_persistent_calibration_from_observation(
+                signals_override.joint_pos_rad,
+                dr_params["persistent_actuator_calibration_offsets"],
             )
         )
         joint_feedback_period_steps, joint_feedback_phase_steps = (
@@ -4192,6 +4257,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_frictionloss_scales=dr_params["frictionloss_scales"],
             domain_rand_joint_offsets=dr_params["joint_offsets"],
             domain_rand_backlash=dr_params["backlash"],
+            domain_rand_persistent_torso_pitch_error_rad=dr_params[
+                "persistent_torso_pitch_error_rad"
+            ],
+            domain_rand_persistent_actuator_offsets=dr_params[
+                "persistent_actuator_calibration_offsets"
+            ],
             proprio_history=proprio_history_init,
             # ToddlerBot-aligned per-foot air-time / clearance bookkeeping
             # (env_info.WildRobotInfo).  At reset both feet are assumed
@@ -4266,6 +4337,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ).astype(jp.float32)
         metrics_dict["support/load_imbalance"] = (
             jp.abs(left_force - right_force) / reset_support_force
+        ).astype(jp.float32)
+        metrics_dict["debug/persistent_torso_pitch_error_rad"] = dr_params[
+            "persistent_torso_pitch_error_rad"
+        ]
+        metrics_dict["debug/persistent_actuator_offset_abs_max_rad"] = jp.max(
+            jp.abs(dr_params["persistent_actuator_calibration_offsets"])
         ).astype(jp.float32)
         # Live diagnostics at reset.  episode_step_count is 0; phase
         # progress is 0; loc_ref tracking fields read from the window
@@ -4435,6 +4512,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         action: jax.Array,
         disable_pushes: bool = False,
         disable_cmd_resample: bool = False,
+        disable_time_limit: bool = False,
     ) -> WildRobotEnvState:
         """One control step.  v3 flow:
 
@@ -4445,7 +4523,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             5. compose target_q = clip(base_q + filtered_residual * scale)
             6. set ctrl + push xfrc; scan mjx.step n_substeps times
             7. v5 obs from the new data + window
-            8. termination + imitation reward
+            8. termination + imitation reward; evaluators may bypass only the
+               configured time limit while retaining physical terminations
             9. build new WildRobotInfo, advance step_count
         """
         wr = state.info[WR_INFO_KEY]
@@ -4573,7 +4652,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     nominal_q_ref=nominal_q_ref,
                 )
             )
-        ctrl_mj = self._to_mj_ctrl(applied_target_q)
+        physical_target_q = apply_persistent_calibration_to_target(
+            applied_target_q,
+            wr.domain_rand_persistent_actuator_offsets,
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        )
+        ctrl_mj = self._to_mj_ctrl(physical_target_q)
 
         # Apply push (gated by schedule + disable_pushes flag).
         push_enabled = jp.logical_not(jp.asarray(disable_pushes))
@@ -4620,6 +4705,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
                         self._config.env, "domain_rand_backlash_activation", 0.1
                     )
                 ),
+            )
+        )
+        signals_override = signals_override.replace(
+            joint_pos_rad=remove_persistent_calibration_from_observation(
+                signals_override.joint_pos_rad,
+                wr.domain_rand_persistent_actuator_offsets,
             )
         )
         (
@@ -4736,7 +4827,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Termination + imitation reward family (v0.20.1).
         new_step_count = wr.step_count + 1
         done, terminated, truncated, term_info = self._get_termination(
-            data, new_step_count
+            data,
+            new_step_count,
+            disable_time_limit=disable_time_limit,
         )
 
         # ToddlerBot-style per-foot air-time / clearance bookkeeping.
@@ -5181,6 +5274,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["debug/torque_abs_max"] = jp.max(torque_ratio).astype(jp.float32)
         terminal_metrics_dict["debug/torque_sat_frac"] = jp.mean(
             (torque_ratio > jp.float32(0.95)).astype(jp.float32)
+        )
+        terminal_metrics_dict["debug/persistent_torso_pitch_error_rad"] = (
+            wr.domain_rand_persistent_torso_pitch_error_rad
+        )
+        terminal_metrics_dict["debug/persistent_actuator_offset_abs_max_rad"] = (
+            jp.max(jp.abs(wr.domain_rand_persistent_actuator_offsets)).astype(
+                jp.float32
+            )
         )
         torque_metric_names = set(TORQUE_ACTUATOR_NAMES)
         for actuator_idx, actuator_name in enumerate(
