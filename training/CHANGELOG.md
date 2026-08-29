@@ -113,6 +113,12 @@ uv run python training/train.py \
   --checkpoint-dir training/checkpoints/standing_v0230_narrow_stance_finetune
 ```
 
+`--init-policy` also accepts the v0.22.9 checkpoint-run directory directly. It
+resolves `post_training_eval_summary.json`; because that run has no promoted
+checkpoint, it emits a warning and selects the rank-1 diagnostic checkpoint 1
+for fine-tuning. Ambiguous directories without an automatic summary still fail
+closed and list the available checkpoint files.
+
 Do not extend the run unchanged if too-close occupancy exceeds 0.25 for two
 consecutive iterations or orientation error trends above the checkpoint-1
 baseline. Deployment still requires the automatic 128-environment screen and

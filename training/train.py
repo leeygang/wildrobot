@@ -138,6 +138,57 @@ def _load_metrics_jsonl_by_iteration(metrics_log_path: Optional[Path]) -> Dict[i
     return rows_by_iteration
 
 
+def _resolve_initial_policy_checkpoint_path(checkpoint_arg: str) -> str:
+    """Resolve an actor checkpoint file from a file or checkpoint-run directory."""
+    requested = Path(checkpoint_arg)
+    if not requested.is_dir():
+        return str(requested)
+
+    summary_path = requested / "post_training_eval_summary.json"
+    if summary_path.is_file():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        selected_path = summary.get("selected_checkpoint_path")
+        selection_label = "promoted"
+        if not selected_path:
+            ranked = sorted(
+                summary.get("top_k_candidates", ()),
+                key=lambda row: int(row.get("rank", 1 << 30)),
+            )
+            if ranked:
+                selected_path = ranked[0].get("checkpoint_path")
+                selection_label = "rank-1 diagnostic"
+
+        if selected_path:
+            candidate = requested / Path(str(selected_path)).name
+            if candidate.is_file():
+                if selection_label != "promoted":
+                    print(
+                        "  ⚠ --init-policy directory has no promoted checkpoint; "
+                        f"using {selection_label} {candidate.name} for fine-tuning only"
+                    )
+                else:
+                    print(
+                        "  ✓ --init-policy directory resolved to promoted checkpoint "
+                        f"{candidate.name}"
+                    )
+                return str(candidate)
+
+    checkpoint_files = sorted(requested.glob("checkpoint_*.pkl"))
+    if len(checkpoint_files) == 1:
+        print(
+            "  ✓ --init-policy directory contains one checkpoint; using "
+            f"{checkpoint_files[0].name}"
+        )
+        return str(checkpoint_files[0])
+
+    available = ", ".join(path.name for path in checkpoint_files) or "none"
+    raise ValueError(
+        "--init-policy directory could not be resolved unambiguously. "
+        "Pass a checkpoint .pkl file explicitly. "
+        f"Available checkpoints: {available}"
+    )
+
+
 def parse_args():
     """Parse command-line arguments.
 
@@ -243,8 +294,10 @@ def parse_args():
         type=str,
         default=None,
         help=(
-            "Path to an actor checkpoint used to fine-tune under the current "
-            "model/contract. The critic and optimizer states are newly initialized."
+            "Actor checkpoint .pkl or checkpoint-run directory used to fine-tune "
+            "under the current model/contract. A directory resolves the promoted "
+            "checkpoint, or its rank-1 diagnostic candidate when none passed. "
+            "The critic and optimizer states are newly initialized."
         ),
     )
 
@@ -795,6 +848,9 @@ def start_training(
 
     initial_policy_params = None
     if initial_policy_checkpoint_path is not None:
+        initial_policy_checkpoint_path = _resolve_initial_policy_checkpoint_path(
+            initial_policy_checkpoint_path
+        )
         print(
             "\nLoading actor initialization checkpoint: "
             f"{initial_policy_checkpoint_path}"
