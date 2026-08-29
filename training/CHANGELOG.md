@@ -8,6 +8,77 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d2-result] - 2026-08-28: forward tracking fixed, lateral-sign control still fails
+
+The deployment-band fine-tune is
+`training/wandb/offline-run-20260828_144825-x4wnx6yw`; its checkpoints, saved
+configuration, and automatic summary are under
+`training/checkpoints/ppo_walking_v0210_17d2_deployment_band_v0210-17d2_20260828_144834-x4wnx6yw`.
+It completed 500 iterations and 10,240,000 environment steps in 213.0 minutes.
+The actor was initialized from v0.21.0-17d1 checkpoint 300 with a fresh critic
+and optimizer.
+
+The command distribution is correct. With 5% zero commands, uniform
+`vx in [0.065, 0.13]`, and equal-probability `vy in {-0.065, 0, +0.065}`,
+the expected means are `E|vx|=0.092625 m/s` and
+`E|vy|=0.041167 m/s`. The final ten logged iterations measured 0.092181 and
+0.041010 m/s respectively. This rules out the earlier command-projection bug.
+Code and metrics also confirm that the standalone signed-lateral reward,
+yaw-rate reward, and torque penalty are present and active; the failure is not
+a missing reward or disconnected metric.
+
+The authoritative 64-environment deterministic post-training evaluation
+selected no checkpoint. All three automatically ranked candidates passed the
+forward-speed, forward-error, survival, stride, and forward-ratio gates, but
+failed lateral velocity, world-y drift, and the signed lateral probes:
+
+| Checkpoint | forward velocity | forward error | episode length | step length | lateral speed | world-y drift | yaw drift | negative-vy ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 120 | 0.131 m/s | 0.035 m/s | 985.5 | 0.100 m | 0.180 m/s | 0.456 m | 0.839 rad | -0.946 |
+| 130 | 0.134 m/s | 0.037 m/s | 973.2 | 0.095 m | 0.176 m/s | 0.553 m | 1.038 rad | -0.882 |
+| 140 | 0.146 m/s | 0.039 m/s | 959.3 | 0.102 m | 0.171 m/s | 0.732 m | 1.075 rad | -0.851 |
+
+Checkpoint 120 is the best diagnostic candidate, not a deployment candidate.
+At `vy_cmd=+0.065 m/s` it achieved `+0.0596 m/s`, but at
+`vy_cmd=-0.065 m/s` it still achieved `+0.0615 m/s`. The actor therefore
+retained a one-sided lateral gait instead of responding to command sign. Its
+mean/peak/final body-orientation errors were 26.7/105.2/104.8 deg. A separate
+8-environment Mac diagnostic also exposed 20.6% left-hip-roll and 6.9%
+right-hip-roll torque saturation, which the 1.87% aggregate saturation metric
+hides.
+
+Relative to the v0.21.0-17d1 checkpoint-300 initialization, checkpoint 120
+improved forward tracking (`0.177 -> 0.131 m/s` at a 0.13 m/s command),
+world-y drift (`0.894 -> 0.456 m`), yaw drift (`1.199 -> 0.839 rad`), and mean
+orientation error (`33.6 -> 26.7 deg`). It barely changed lateral speed
+(`0.184 -> 0.180 m/s`) and increased aggregate torque saturation
+(`1.47% -> 1.85%`). The run is an improvement in forward calibration, not a
+solution to the deployment failure.
+
+Late training did not reveal a safer checkpoint. Over iterations 410--500,
+mean forward velocity fell to 0.0426 m/s while lateral speed remained
+0.1094 m/s. A separate deterministic evaluation of checkpoint 500 reached
+0.090 m/s forward velocity but only 75% of eight environments completed the
+horizon; lateral speed was 0.174 m/s, signed world-y drift was 0.697 m, and
+left-hip-roll/right-knee saturation was 15.7%/13.1%. The policy traded forward
+performance for posture without eliminating lateral drift.
+
+ToddlerBot's active policy uses a coupled XY velocity reward at weight 2.0 and
+yaw-rate reward at 1.5. WildRobot intentionally kept forward tracking separate
+and assigned the lateral term weight 1.0 to avoid the previous coupled-reward
+dead-gradient failure. This preserved forward walking, but the logged lateral
+factor reached only 0.454 of its maximum late in training and did not overcome
+the inherited directional gait. ToddlerBot remains the structural reference;
+the result is not evidence for copying its tighter coupled Gaussian directly.
+See Shi et al., [ToddlerBot](https://arxiv.org/abs/2502.00893).
+
+**Decision:** reject every checkpoint from `x4wnx6yw` for deployment. Do not
+continue this recipe unchanged. If walking resumes, start with a short
+checkpoint-120 diagnostic that strengthens bidirectional lateral conditioning,
+and add hard body-orientation plus per-actuator torque gates before committing
+another full run. Walking development is paused while v0.22.8 standing
+persistent-bias fine-tuning runs first.
+
 ## [v0.22.8-standing-persistent-bias-plan] - 2026-08-28: ready for Onshape9 fine-tuning
 
 The next standing run is now pinned by
