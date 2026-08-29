@@ -252,8 +252,8 @@ def parse_args():
     parser.add_argument(
         "--checkpoint-interval",
         type=int,
-        default=10,
-        help="Save checkpoint every N iterations (default: 10)",
+        default=None,
+        help="Save checkpoint every N iterations (default from config)",
     )
     parser.add_argument(
         "--skip-gpu-check",

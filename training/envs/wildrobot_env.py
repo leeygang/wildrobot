@@ -2837,6 +2837,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         too_close = feet_lateral_dist < self._close_feet_threshold
         r_close_feet_xy = jp.where(too_close, jp.float32(-1.0), jp.float32(0.0))
+        min_stance_width = jp.maximum(
+            jp.float32(self._config.env.min_feet_y_dist), jp.float32(1e-6)
+        )
+        penalty_narrow_stance = -jp.clip(
+            (min_stance_width - feet_lateral_dist) / min_stance_width,
+            min=0.0,
+            max=1.0,
+        )
 
         # ---- feet_phase (smoke9, TB walk.gin / walk_env.py:631-695) --
         # WR's CAL.get_foot_positions() returns body-origin z, NOT sole z
@@ -2976,6 +2984,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             penalty_feet_ori=penalty_feet_ori.astype(jp.float32),
             # v0.20.1 smoke9 — TB walk.gin reward terms.
             r_close_feet_xy=r_close_feet_xy.astype(jp.float32),
+            penalty_narrow_stance=penalty_narrow_stance.astype(jp.float32),
             close_feet_lateral_distance_m=feet_lateral_dist.astype(jp.float32),
             r_feet_phase=r_feet_phase.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
@@ -3148,6 +3157,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # existing smokes are unaffected.
             penalty_close_feet_xy=jp.float32(w.penalty_close_feet_xy)
             * terms["r_close_feet_xy"],
+            penalty_narrow_stance=jp.float32(w.penalty_narrow_stance)
+            * terms["penalty_narrow_stance"],
             feet_phase=jp.float32(w.feet_phase) * terms["r_feet_phase"]
             * terms["recovery_static_gate"],
         )
@@ -5406,6 +5417,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # v0.20.1 smoke9 — TB walk.gin reward terms.
         terminal_metrics_dict["reward/penalty_close_feet_xy"] = reward_contrib[
             "penalty_close_feet_xy"
+        ]
+        terminal_metrics_dict["reward/penalty_narrow_stance"] = reward_contrib[
+            "penalty_narrow_stance"
         ]
         terminal_metrics_dict["reward/feet_phase"] = reward_contrib["feet_phase"]
         terminal_metrics_dict["reward/torso_pitch_soft"] = reward_contrib[

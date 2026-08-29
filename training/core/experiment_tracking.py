@@ -144,6 +144,7 @@ REWARD_TERM_KEYS = [
     # v0.20.1 smoke9 — TB walk.gin reward terms (commit de7ab77).
     # Same silent-drop bug — registered + env-writing but missing here.
     "reward/penalty_close_feet_xy",
+    "reward/penalty_narrow_stance",
     "reward/feet_phase",
     # v0.22.3: weighted, dt-scaled bilateral standing support contribution.
     "reward/standing_support_balance",
@@ -185,6 +186,9 @@ ENV_METRICS_KEYS = {
     "reward/feet_air_time": "Touchdown air-time reward accumulated per foot before first contact",
     "reward/feet_clearance": "Touchdown clearance reward from per-foot air-distance before contact",
     "reward/feet_distance": "Lateral foot-spacing reward in the torso frame",
+    "reward/penalty_narrow_stance": (
+        "Normalized linear penalty below the WR-scaled minimum stance width"
+    ),
     "reward/torso_pitch_soft": "Soft torso-pitch band reward inside configured limits",
     "reward/torso_roll_soft": "Soft torso-roll band reward inside configured limits",
     "reward/penalty_slip_raw": (
@@ -544,6 +548,7 @@ def get_initial_env_metrics(
         "reward/feet_air_time": 0.0,
         "reward/feet_clearance": 0.0,
         "reward/feet_distance": 0.0,
+        "reward/penalty_narrow_stance": 0.0,
         "reward/torso_pitch_soft": 0.0,
         "reward/torso_roll_soft": 0.0,
         "reward/penalty_slip_raw": 0.0,
@@ -744,6 +749,7 @@ def get_initial_env_metrics_jax(
         "reward/feet_air_time": jp.zeros(()),
         "reward/feet_clearance": jp.zeros(()),
         "reward/feet_distance": jp.zeros(()),
+        "reward/penalty_narrow_stance": jp.zeros(()),
         "reward/torso_pitch_soft": jp.zeros(()),
         "reward/torso_roll_soft": jp.zeros(()),
         "reward/penalty_slip_raw": jp.zeros(()),

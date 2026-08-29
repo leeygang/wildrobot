@@ -1317,6 +1317,10 @@ class RewardWeightsConfig(Freezable):
     #     (perpendicular to base forward) < env.close_feet_threshold.
     #     Mirrors TB _reward_penalty_close_feet_xy (mjx_env.py:2709-2745).
     #     TB walk.gin sets RewardScales.penalty_close_feet_xy = 10.0.
+    #   penalty_narrow_stance — WR standing-specific continuous deficit below
+    #     env.min_feet_y_dist, normalized by that WR-scaled distance.  Unlike
+    #     the TB binary term and two-sided feet_distance reward, it preserves
+    #     violation severity throughout the too-narrow region.
     #   feet_phase — TB-aligned dense per-step swing-foot height tracking.
     #     Expected foot z is phase-derived via cubic-Bézier rise/fall over
     #     each foot's swing window (left swings during phase ∈ [0, π],
@@ -1328,6 +1332,7 @@ class RewardWeightsConfig(Freezable):
     #     walk.gin: feet_phase = 7.5, swing_height = 0.04,
     #     feet_phase_tracking_sigma = 0.0007.
     penalty_close_feet_xy: float = 0.0
+    penalty_narrow_stance: float = 0.0
     feet_phase: float = 0.0
     # feet_phase reward landscape is invariant under the dimensionless
     # group ``alpha * swing_height²``.  TB walk.gin uses 0.04 m swing

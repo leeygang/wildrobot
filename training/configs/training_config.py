@@ -1109,6 +1109,7 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         penalty_feet_ori=rewards.get("penalty_feet_ori", 0.0),
         # v0.20.1 smoke9 — TB walk.gin reward terms.
         penalty_close_feet_xy=rewards.get("penalty_close_feet_xy", 0.0),
+        penalty_narrow_stance=rewards.get("penalty_narrow_stance", 0.0),
         feet_phase=rewards.get("feet_phase", 0.0),
         # feet_phase WR target = 0.05 m, set from the WR-validated ZMP
         # prior (control/zmp/zmp_walk.py:134 foot_step_height_m).  NOT

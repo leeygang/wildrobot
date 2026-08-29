@@ -8,6 +8,116 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.9-result + v0.23.0-plan] - 2026-08-29: early improvement, then repeated narrow-stance collapse
+
+### v0.22.9 training result
+
+The stance-health diagnostic is
+`training/wandb/offline-run-20260829_102731-tthgzzi9`; its checkpoints, saved
+configuration, and authoritative automatic summary are under
+`training/checkpoints/standing_v0229_stance_health_finetune/ppo_standing_stabilizer_v0229_stance_health_v00229_20260829_102736-tthgzzi9`.
+It completed the configured 40 iterations and 5,242,880 transitions in 127.81
+minutes. The actor was initialized from v0.22.8 checkpoint 60 with a fresh
+critic and optimizer.
+
+No checkpoint passed the 128-environment, 1,000-step deterministic standing
+screen:
+
+| Checkpoint | mean orientation | peak orientation | worst final orientation | both feet loaded | load imbalance |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 5.66 deg | 16.50 deg | 16.50 deg | 0.9991 | 0.0826 |
+| 20 | 7.49 deg | 29.74 deg | 29.43 deg | 0.9982 | 0.0956 |
+| 30 | 8.11 deg | 32.48 deg | 30.35 deg | 0.9980 | 0.0982 |
+| 40 | 10.22 deg | 41.24 deg | 33.27 deg | 0.9963 | 0.0808 |
+
+Checkpoint 1 is the only useful candidate. Relative to its v0.22.8 checkpoint-
+60 initialization, it improved the broad-screen mean orientation from 6.92 to
+5.66 deg and worst peak/final orientation from about 28.2 to 16.5 deg. It still
+failed the <=15 deg peak and <=10 deg worst-final orientation gates, so the
+automatic selector correctly left `selected_checkpoint_path` null.
+
+A separate 60-second Mac evaluation of checkpoint 1 used eight paired clean and
+configured-push environments. Both suites passed 6/8 with zero falls, while
+home hold passed 0/8. The policy reduced peak tilt relative to home in all eight
+environments. Its clean-suite worst peak/final tilt was 6.88/4.43 deg and worst
+joint-to-home error was 9.08 deg. These are only marginal changes from the
+v0.22.8 checkpoint-60 values of 6.97/4.45 deg and 9.04 deg; the same two initial
+states failed. Pushes again caused no additional failures. The small screen is
+diagnostic only and does not override the failed 128-environment gate.
+
+### Direct stance-metric evidence
+
+The v0.22.9 metrics and revised checkpoint ranker worked as intended, selecting
+the early checkpoint instead of the high-support late policies. They also show
+that enabling the smooth `feet_distance` reward at weight 1.0 did not prevent
+the same training collapse:
+
+| Iteration | lateral foot distance | too-close occupancy | reward/step | body orientation error | action maximum |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 0.163 m | 12.8% | +0.1076 | 6.39 deg | 0.398 |
+| 10 | 0.153 m | 25.3% | +0.0780 | 7.39 deg | 0.417 |
+| 20 | 0.131 m | 97.6% | -0.0728 | 7.86 deg | 0.481 |
+| 30 | 0.108 m | 99.3% | -0.0807 | 8.88 deg | 0.567 |
+| 40 | 0.130 m | 71.8% | -0.0236 | 8.40 deg | 0.615 |
+
+The active binary close-feet contribution reached approximately `-0.20` per
+step. The newly enabled smooth contribution fell only from `+0.0152` at
+iteration 1 to approximately `+0.0101` at iteration 30. Code inspection
+explains this floor: ToddlerBot's two-sided band reward averages a lower-bound
+exponential with an upper-bound exponential. Far below the minimum width, the
+upper-bound branch remains one and the average approaches 0.5. The reward is
+therefore smooth near the boundary but nearly flat deep inside the failed
+region. PPO KL, clipping, and torque saturation remained controlled; this is a
+reward-shape/cumulative-policy-drift failure rather than numerical divergence.
+
+ToddlerBot retains the same binary close-feet penalty and two-sided spacing-band
+reward. Its active walking recipe uses the binary term, while walking kinematics
+naturally alternate foot separation. WildRobot's stationary persistent-bias
+task lacks that motion prior, which is the explicit reason for adding a
+standing-specific one-sided signal rather than changing ToddlerBot-aligned
+walking behavior. See Shi et al.,
+[ToddlerBot](https://arxiv.org/abs/2502.00893).
+
+**Decision:** reject v0.22.9 for deployment and do not resume checkpoint 40.
+Preserve checkpoint 1 as the next actor initialization.
+
+### v0.23.0 continuous narrow-stance diagnostic
+
+The next run is pinned by
+`training/configs/ppo_standing_stabilizer_v0230_narrow_stance.yaml`. It adds one
+WR standing-specific reward:
+
+```text
+penalty_narrow_stance = -clip(
+    (min_feet_y_dist - lateral_foot_distance) / min_feet_y_dist,
+    0,
+    1,
+)
+```
+
+The term is zero at or above the WR-scaled healthy minimum of 0.171 m and
+preserves normalized violation severity down to zero separation. The
+ToddlerBot binary crossing penalty remains active at the WR-scaled 0.146 m hard
+threshold. The ineffective v0.22.9 two-sided `feet_distance` reward is disabled
+so this remains a controlled experiment.
+
+The diagnostic uses 20 iterations at `2e-6`, logs and checkpoints every
+iteration, retains the complete +/-12.5 deg persistent-bias and disturbance
+distribution, and keeps the 59x17 actor contract. Start with actor-only
+initialization so the changed reward receives a fresh critic and optimizer:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_standing_stabilizer_v0230_narrow_stance.yaml \
+  --init-policy training/checkpoints/standing_v0229_stance_health_finetune/ppo_standing_stabilizer_v0229_stance_health_v00229_20260829_102736-tthgzzi9/checkpoint_1_131072.pkl \
+  --checkpoint-dir training/checkpoints/standing_v0230_narrow_stance_finetune
+```
+
+Do not extend the run unchanged if too-close occupancy exceeds 0.25 for two
+consecutive iterations or orientation error trends above the checkpoint-1
+baseline. Deployment still requires the automatic 128-environment screen and
+the paired 128-environment, 60-second clean-and-push gate with zero failures.
+
 ## [v0.22.8-result + v0.22.9-plan] - 2026-08-29: persistent-bias response learned, stance collapse blocks promotion
 
 ### v0.22.8 training result

@@ -1568,6 +1568,14 @@ METRIC_SPECS: List[MetricSpec] = [
         ),
     ),
     MetricSpec(
+        name="reward/penalty_narrow_stance",
+        reducer=Reducer.MEAN,
+        description=(
+            "WR standing-specific normalized linear deficit below "
+            "env.min_feet_y_dist; zero at or above the healthy minimum"
+        ),
+    ),
+    MetricSpec(
         name="reward/feet_phase",
         reducer=Reducer.MEAN,
         description=(
