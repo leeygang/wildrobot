@@ -84,6 +84,8 @@ from training.core.checkpoint import (
 )
 from training.core.post_training_eval import (
     CheckpointMetricCandidate,
+    STANDING_BODY_TILT_DEG_FINAL_MAX,
+    STANDING_BODY_TILT_DEG_PEAK_MAX,
     deterministic_eval_gate,
     deterministic_standing_eval_gate,
     rank_checkpoint_candidates,
@@ -554,6 +556,11 @@ def start_training(
     import numpy as np
 
     from training.configs.training_config import get_robot_config
+    from training.eval.standing_orientation import (
+        STANDING_FINAL_WINDOW_S,
+        quaternion_tilt_rad,
+        summarize_orientation_rollout,
+    )
     from policy_contract.calib import JaxCalibOps
 
     def _to_yamlable(value: Any) -> Any:
@@ -745,6 +752,10 @@ def start_training(
     post_training_top_k = int(training_cfg.ppo.eval.post_training_top_k or 3)
     post_training_num_envs = int(training_cfg.ppo.eval.post_training_num_envs or 8)
     post_training_num_steps = int(training_cfg.ppo.eval.post_training_num_steps or 500)
+    standing_final_window_steps = max(
+        1,
+        int(round(STANDING_FINAL_WINDOW_S / float(training_cfg.env.ctrl_dt))),
+    )
     post_training_task = str(
         getattr(training_cfg.ppo.eval, "post_training_task", "walking")
     ).lower()
@@ -1013,7 +1024,7 @@ def start_training(
 
                 from training.algos.ppo.ppo_core import create_networks, sample_actions
                 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
-                from training.envs.env_info import PRIVILEGED_OBS_DIM
+                from training.envs.env_info import PRIVILEGED_OBS_DIM, WR_INFO_KEY
 
                 actor_activation = str(training_cfg.networks.actor.activation).lower()
                 critic_activation = str(training_cfg.networks.critic.activation).lower()
@@ -1050,7 +1061,10 @@ def start_training(
                     Factored out so the probe path (different reset
                     closure) computes the same set of deploy metrics
                     + the signed lateral / ang_vel_z means used by
-                    ``evaluate_lateral_yaw_pass_criterion``."""
+                    ``evaluate_lateral_yaw_pass_criterion``.  Standing also
+                    receives yaw-independent tilt and a 0.5-second final-window
+                    maximum; the legacy full-quaternion metrics remain for
+                    diagnostics."""
                     total_done = jnp.sum(rollout["done"])
                     episode_lengths = (
                         rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
@@ -1123,7 +1137,7 @@ def start_training(
                     td_right = _mean("tracking/touchdown_rate_right_count")
                     step_left_event = _mean("tracking/step_length_left_event_m")
                     step_right_event = _mean("tracking/step_length_right_event_m")
-                    return {
+                    aggregates = {
                         "mean_episode_reward": mean_episode_reward,
                         "mean_episode_length": mean_episode_length,
                         "forward_velocity": _mean("forward_velocity"),
@@ -1201,6 +1215,14 @@ def start_training(
                             / jnp.maximum(td_right, eps_touchdown)
                         ),
                     }
+                    if post_training_task == "standing":
+                        aggregates.update(
+                            summarize_orientation_rollout(
+                                rollout["root_quat_wxyz"],
+                                final_window_steps=standing_final_window_steps,
+                            )
+                        )
+                    return aggregates
 
                 def _eval_scan_body(policy_params, processor_params):
                     """Closure factory for the per-step scan body.
@@ -1221,6 +1243,7 @@ def start_training(
                             "reward": next_env_state.reward,
                             "done": next_env_state.done,
                             "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                            "root_quat_wxyz": next_env_state.data.qpos[..., 3:7],
                         }
                         return (next_env_state, rng_state), step_data
                     return eval_step
@@ -1271,7 +1294,22 @@ def start_training(
                         None,
                         length=post_training_num_steps,
                     )
-                    return _build_rollout_aggregates(rollout)
+                    aggregates = _build_rollout_aggregates(rollout)
+                    if post_training_task == "standing":
+                        wr = eval_env_state.info[WR_INFO_KEY]
+                        aggregates.update(
+                            {
+                                "initial_body_tilt_deg_per_env": jnp.rad2deg(
+                                    quaternion_tilt_rad(
+                                        eval_env_state.data.qpos[..., 3:7]
+                                    )
+                                ),
+                                "persistent_pitch_calibration_error_rad_per_env": (
+                                    wr.domain_rand_persistent_torso_pitch_error_rad
+                                ),
+                            }
+                        )
+                    return aggregates
 
                 @jax.jit
                 def run_post_training_probe_eval(
@@ -1428,6 +1466,28 @@ def start_training(
                         ),
                     }
                     if post_training_task == "standing":
+                        eval_metrics.update(
+                            {
+                                "body_tilt_deg": float(
+                                    eval_result["body_tilt_deg"]
+                                ),
+                                "body_tilt_deg_peak": float(
+                                    eval_result["body_tilt_deg_peak"]
+                                ),
+                                "body_tilt_deg_final_max": float(
+                                    eval_result["body_tilt_deg_final_max"]
+                                ),
+                                "yaw_error_deg": float(
+                                    eval_result["yaw_error_deg"]
+                                ),
+                                "yaw_error_deg_peak": float(
+                                    eval_result["yaw_error_deg_peak"]
+                                ),
+                                "yaw_error_deg_final_max": float(
+                                    eval_result["yaw_error_deg_final_max"]
+                                ),
+                            }
+                        )
                         decision = deterministic_standing_eval_gate(
                             eval_metrics=eval_metrics,
                             eval_num_steps=post_training_num_steps,
@@ -1440,6 +1500,60 @@ def start_training(
                             eval_num_steps=post_training_num_steps,
                             strict_lateral_drift=post_training_strict_lateral_drift,
                         )
+                    standing_orientation_cases: list[dict[str, Any]] = []
+                    if post_training_task == "standing":
+                        initial_tilt = np.asarray(
+                            eval_result["initial_body_tilt_deg_per_env"]
+                        )
+                        pitch_bias_deg = np.rad2deg(
+                            np.asarray(
+                                eval_result[
+                                    "persistent_pitch_calibration_error_rad_per_env"
+                                ]
+                            )
+                        )
+                        peak_tilt = np.asarray(
+                            eval_result["body_tilt_deg_peak_per_env"]
+                        )
+                        final_tilt = np.asarray(
+                            eval_result["body_tilt_deg_final_max_per_env"]
+                        )
+                        peak_yaw = np.asarray(
+                            eval_result["yaw_error_deg_peak_per_env"]
+                        )
+                        final_yaw = np.asarray(
+                            eval_result["yaw_error_deg_final_max_per_env"]
+                        )
+                        for env_index in range(post_training_num_envs):
+                            fail_reasons: list[str] = []
+                            if peak_tilt[env_index] > STANDING_BODY_TILT_DEG_PEAK_MAX:
+                                fail_reasons.append("body_tilt_deg_peak")
+                            if final_tilt[env_index] > STANDING_BODY_TILT_DEG_FINAL_MAX:
+                                fail_reasons.append("body_tilt_deg_final_max")
+                            standing_orientation_cases.append(
+                                {
+                                    "env_index": env_index,
+                                    "persistent_pitch_calibration_error_deg": float(
+                                        pitch_bias_deg[env_index]
+                                    ),
+                                    "initial_body_tilt_deg": float(
+                                        initial_tilt[env_index]
+                                    ),
+                                    "body_tilt_deg_peak": float(
+                                        peak_tilt[env_index]
+                                    ),
+                                    "body_tilt_deg_final_max": float(
+                                        final_tilt[env_index]
+                                    ),
+                                    "yaw_error_deg_peak": float(
+                                        peak_yaw[env_index]
+                                    ),
+                                    "yaw_error_deg_final_max": float(
+                                        final_yaw[env_index]
+                                    ),
+                                    "orientation_fail_reasons": fail_reasons,
+                                }
+                            )
                     eval_rows.append(
                         {
                             "rank": rank,
@@ -1483,6 +1597,7 @@ def start_training(
                             ],
                             "step_metric_available": bool(decision.step_metric_available),
                             "ratio_gate_applied": bool(decision.ratio_gate_applied),
+                            "standing_orientation_cases": standing_orientation_cases,
                         }
                     )
 
@@ -1632,7 +1747,8 @@ def start_training(
                     else:
                         print(
                             "rank  checkpoint                      eval_ep_len  "
-                            "both_loaded  imbalance  body_err  torque_sat  pass"
+                            "both_loaded  imbalance  mean_tilt  peak_tilt  "
+                            "final_tilt  pass"
                         )
                     for row in eval_rows:
                         eval_metrics = row["eval_metrics"]
@@ -1654,8 +1770,9 @@ def start_training(
                                 f"{eval_metrics['mean_episode_length']:>11.0f}  "
                                 f"{eval_metrics['both_loaded']:>11.3f}  "
                                 f"{eval_metrics['load_imbalance']:>9.3f}  "
-                                f"{eval_metrics['body_quat_err_deg']:>8.2f}  "
-                                f"{eval_metrics['torque_sat_frac']:>10.3f}  "
+                                f"{eval_metrics['body_tilt_deg']:>9.2f}  "
+                                f"{eval_metrics['body_tilt_deg_peak']:>9.2f}  "
+                                f"{eval_metrics['body_tilt_deg_final_max']:>10.2f}  "
                                 f"{'✓' if row['passed'] else '✗'}"
                             )
                 else:
@@ -1689,7 +1806,7 @@ def start_training(
                             / float(max(1, post_training_num_steps))
                             + float(eval_metrics["both_loaded"])
                             - float(eval_metrics["load_imbalance"])
-                            - float(eval_metrics["body_quat_err_deg"]) / 10.0
+                            - float(eval_metrics["body_tilt_deg"]) / 10.0
                             - float(eval_metrics["torque_sat_frac"])
                             - float(eval_metrics["action_sat_frac"])
                         )
@@ -1815,6 +1932,20 @@ def start_training(
                     # selection heuristics when present.
                     "no_passing_candidate_message": no_passing_message,
                     "deterministic_selection_is_authoritative": True,
+                    "standing_orientation_definition": (
+                        {
+                            "tilt": (
+                                "Angle between torso +Z and world +Z; excludes yaw."
+                            ),
+                            "yaw": (
+                                "Absolute wrapped yaw relative to the identity "
+                                "standing reference; reported separately."
+                            ),
+                            "final_window_s": STANDING_FINAL_WINDOW_S,
+                        }
+                        if post_training_task == "standing"
+                        else None
+                    ),
                     # v0.21.0 follow-up — record the probe configuration
                     # at the top level so a reader can immediately tell
                     # whether the smoke evaluated the Appendix C
@@ -1850,6 +1981,9 @@ def start_training(
                             ),
                             "step_metric_available": row["step_metric_available"],
                             "ratio_gate_applied": row["ratio_gate_applied"],
+                            "standing_orientation_cases": row[
+                                "standing_orientation_cases"
+                            ],
                         }
                         for row in eval_rows
                     ],
@@ -1892,6 +2026,18 @@ def start_training(
                                 ),
                                 "post_training_eval/best_body_quat_err_deg": float(
                                     best_eval_metrics["body_quat_err_deg"]
+                                ),
+                                "post_training_eval/best_body_tilt_deg": float(
+                                    best_eval_metrics["body_tilt_deg"]
+                                ),
+                                "post_training_eval/best_body_tilt_deg_peak": float(
+                                    best_eval_metrics["body_tilt_deg_peak"]
+                                ),
+                                "post_training_eval/best_body_tilt_deg_final_max": float(
+                                    best_eval_metrics["body_tilt_deg_final_max"]
+                                ),
+                                "post_training_eval/best_yaw_error_deg_peak": float(
+                                    best_eval_metrics["yaw_error_deg_peak"]
                                 ),
                                 "post_training_eval/best_torque_sat_frac": float(
                                     best_eval_metrics["torque_sat_frac"]

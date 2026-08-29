@@ -83,14 +83,16 @@ LATERAL_VELOCITY_SOFT_CAP_MPS = 0.10
 YAW_DRIFT_SOFT_CAP_RAD = 0.40
 WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
 
-# v0.22.3 deterministic standing promotion thresholds.  Support thresholds
-# match the hardware startup gate's 0.90 pressed-ratio contract.  Load
-# imbalance is dimensionless, so it does not inherit ToddlerBot's body weight.
+# Deterministic standing promotion thresholds.  Tilt is the angle between the
+# torso and world vertical, so yaw is reported independently and cannot be
+# mistaken for reduced balance margin.  Support thresholds match the hardware
+# startup gate's 0.90 pressed-ratio contract.  Load imbalance is dimensionless,
+# so it does not inherit ToddlerBot's body weight.
 STANDING_SUPPORT_RATIO_MIN = 0.90
 STANDING_LOAD_IMBALANCE_MAX = 0.35
-STANDING_BODY_QUAT_ERR_DEG_MAX = 10.0
-STANDING_BODY_QUAT_ERR_DEG_PEAK_MAX = 15.0
-STANDING_BODY_QUAT_ERR_DEG_FINAL_MAX = 10.0
+STANDING_BODY_TILT_DEG_MAX = 10.0
+STANDING_BODY_TILT_DEG_PEAK_MAX = 15.0
+STANDING_BODY_TILT_DEG_FINAL_MAX = 10.0
 STANDING_TORQUE_SAT_FRAC_MAX = 0.05
 STANDING_ACTION_SAT_FRAC_MAX = 0.05
 
@@ -375,7 +377,7 @@ def _train_standing_score(
         else max(
             0.0,
             1.0
-            - float(body_quat_err_deg) / STANDING_BODY_QUAT_ERR_DEG_MAX,
+            - float(body_quat_err_deg) / STANDING_BODY_TILT_DEG_MAX,
         )
     )
     stance_score = (
@@ -726,11 +728,20 @@ def deterministic_standing_eval_gate(
     right_loaded = _metric(eval_metrics, "right_loaded")
     both_loaded = _metric(eval_metrics, "both_loaded")
     load_imbalance = _metric(eval_metrics, "load_imbalance")
-    body_quat_err_deg = _metric(eval_metrics, "body_quat_err_deg")
-    body_quat_err_deg_peak = _metric(eval_metrics, "body_quat_err_deg_peak")
-    body_quat_err_deg_final_max = _metric(
-        eval_metrics, "body_quat_err_deg_final_max"
-    )
+    # Prefer yaw-independent tilt for standing safety.  Legacy callers may
+    # still provide only the full quaternion error, so retain a compatibility
+    # fallback while new evaluations report both quantities explicitly.
+    body_tilt_deg = _metric(eval_metrics, "body_tilt_deg")
+    body_tilt_deg_peak = _metric(eval_metrics, "body_tilt_deg_peak")
+    body_tilt_deg_final_max = _metric(eval_metrics, "body_tilt_deg_final_max")
+    if body_tilt_deg is None:
+        body_tilt_deg = _metric(eval_metrics, "body_quat_err_deg")
+    if body_tilt_deg_peak is None:
+        body_tilt_deg_peak = _metric(eval_metrics, "body_quat_err_deg_peak")
+    if body_tilt_deg_final_max is None:
+        body_tilt_deg_final_max = _metric(
+            eval_metrics, "body_quat_err_deg_final_max"
+        )
     torque_sat_frac = _metric(eval_metrics, "torque_sat_frac")
     action_sat_frac = _metric(eval_metrics, "action_sat_frac")
 
@@ -752,18 +763,17 @@ def deterministic_standing_eval_gate(
             load_imbalance is not None
             and load_imbalance <= STANDING_LOAD_IMBALANCE_MAX
         ),
-        "body_quat_err_deg": (
-            body_quat_err_deg is not None
-            and body_quat_err_deg <= STANDING_BODY_QUAT_ERR_DEG_MAX
+        "body_tilt_deg": (
+            body_tilt_deg is not None
+            and body_tilt_deg <= STANDING_BODY_TILT_DEG_MAX
         ),
-        "body_quat_err_deg_peak": (
-            body_quat_err_deg_peak is not None
-            and body_quat_err_deg_peak <= STANDING_BODY_QUAT_ERR_DEG_PEAK_MAX
+        "body_tilt_deg_peak": (
+            body_tilt_deg_peak is not None
+            and body_tilt_deg_peak <= STANDING_BODY_TILT_DEG_PEAK_MAX
         ),
-        "body_quat_err_deg_final_max": (
-            body_quat_err_deg_final_max is not None
-            and body_quat_err_deg_final_max
-            <= STANDING_BODY_QUAT_ERR_DEG_FINAL_MAX
+        "body_tilt_deg_final_max": (
+            body_tilt_deg_final_max is not None
+            and body_tilt_deg_final_max <= STANDING_BODY_TILT_DEG_FINAL_MAX
         ),
         "torque_sat_frac": (
             torque_sat_frac is not None

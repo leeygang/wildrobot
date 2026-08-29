@@ -244,9 +244,9 @@ def test_v0223_standing_deterministic_gate_checks_support() -> None:
         "right_loaded": 0.98,
         "both_loaded": 0.97,
         "load_imbalance": 0.10,
-        "body_quat_err_deg": 3.0,
-        "body_quat_err_deg_peak": 8.0,
-        "body_quat_err_deg_final_max": 4.0,
+        "body_tilt_deg": 3.0,
+        "body_tilt_deg_peak": 8.0,
+        "body_tilt_deg_final_max": 4.0,
         "torque_sat_frac": 0.01,
         "action_sat_frac": 0.00,
     }
@@ -262,10 +262,33 @@ def test_v0223_standing_deterministic_gate_checks_support() -> None:
     assert failed.gates["both_loaded"] is False
 
     diverging = deterministic_standing_eval_gate(
-        {**metrics, "body_quat_err_deg_peak": 18.0}, eval_num_steps=1000
+        {**metrics, "body_tilt_deg_peak": 18.0}, eval_num_steps=1000
     )
     assert not diverging.passed
-    assert diverging.gates["body_quat_err_deg_peak"] is False
+    assert diverging.gates["body_tilt_deg_peak"] is False
+
+
+def test_v0223_standing_gate_ignores_yaw_only_error() -> None:
+    from training.core.post_training_eval import deterministic_standing_eval_gate
+
+    metrics = {
+        "mean_episode_length": 1000.0,
+        "left_loaded": 0.99,
+        "right_loaded": 0.99,
+        "both_loaded": 0.99,
+        "load_imbalance": 0.10,
+        "body_quat_err_deg": 45.0,
+        "body_quat_err_deg_peak": 45.0,
+        "body_quat_err_deg_final_max": 45.0,
+        "body_tilt_deg": 0.0,
+        "body_tilt_deg_peak": 0.0,
+        "body_tilt_deg_final_max": 0.0,
+        "yaw_error_deg_peak": 45.0,
+        "torque_sat_frac": 0.0,
+        "action_sat_frac": 0.0,
+    }
+    decision = deterministic_standing_eval_gate(metrics, eval_num_steps=1000)
+    assert decision.passed
 
 
 def test_v0223_checkpoint_ranking_uses_standing_support_metrics() -> None:

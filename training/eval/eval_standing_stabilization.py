@@ -34,7 +34,7 @@ sys.path.insert(0, str(project_root))
 from assets.robot_config import load_robot_config
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 from training.configs.training_config import load_training_config
-from training.core.checkpoint import load_checkpoint
+from training.core.checkpoint import list_checkpoints, load_checkpoint
 from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
 from training.envs.env_info import WR_INFO_KEY
 from training.envs.wildrobot_env import WildRobotEnv
@@ -44,6 +44,10 @@ from training.eval.eval_standing_recovery_grid import (
     _apply_recovery_condition,
     _pitch_from_quat_wxyz,
     _roll_from_quat_wxyz,
+)
+from training.eval.standing_orientation import (
+    quaternion_tilt_rad,
+    quaternion_yaw_rad,
 )
 from training.exports.export_onnx import get_checkpoint_dims
 
@@ -79,6 +83,21 @@ def _parse_suites(value: str) -> tuple[str, ...]:
             f"Unknown suites {unknown}; expected a comma-separated subset of {_KNOWN_SUITES}"
         )
     return tuple(dict.fromkeys(suites))
+
+
+def _parse_controllers(value: str) -> tuple[str, ...]:
+    controllers = tuple(
+        item.strip().lower() for item in value.split(",") if item.strip()
+    )
+    if not controllers:
+        raise argparse.ArgumentTypeError("Expected at least one controller")
+    unknown = sorted(set(controllers) - set(_CONTROLLERS))
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"Unknown controllers {unknown}; expected a comma-separated subset "
+            f"of {_CONTROLLERS}"
+        )
+    return tuple(dict.fromkeys(controllers))
 
 
 def _parse_range(value: str) -> tuple[float, float]:
@@ -120,14 +139,6 @@ def _sample_initial_conditions(
             foot_stagger_range_m[0], foot_stagger_range_m[1], num_envs
         ),
     }
-
-
-def _tilt_from_quat_wxyz(quat: jax.Array) -> jax.Array:
-    quat = quat / jnp.maximum(
-        jnp.linalg.norm(quat, axis=-1, keepdims=True), jnp.float32(1e-8)
-    )
-    body_z_world_z = 1.0 - 2.0 * (quat[..., 1] ** 2 + quat[..., 2] ** 2)
-    return jnp.arccos(jnp.clip(body_z_world_z, -1.0, 1.0)).astype(jnp.float32)
 
 
 def _wilson_interval(successes: int, total: int) -> tuple[float, float]:
@@ -174,6 +185,9 @@ def _summarize_rollout(
     )
     joint_rms_deg = np.rad2deg(
         np.asarray(rollout["joint_home_rms_rad"], dtype=np.float64)
+    )
+    yaw_abs_deg = np.abs(
+        np.rad2deg(np.asarray(rollout["yaw_rad"], dtype=np.float64))
     )
     both_loaded = np.asarray(rollout["both_loaded"], dtype=np.float64)
     within = np.asarray(rollout["within_envelope"], dtype=bool)
@@ -232,11 +246,17 @@ def _summarize_rollout(
                 "settle_time_s": settle_time_s,
                 "stable_tail_s": float(stable_tail_steps * ctrl_dt),
                 "peak_tilt_deg": float(np.max(tilt_deg[valid_slice, env_idx])),
+                "peak_yaw_error_deg": float(
+                    np.max(yaw_abs_deg[valid_slice, env_idx])
+                ),
                 "peak_gyro_rad_s": float(np.max(gyro_norm[valid_slice, env_idx])),
                 "peak_joint_home_max_deg": float(
                     np.max(joint_max_deg[valid_slice, env_idx])
                 ),
                 "final_tilt_deg_max": final_tilt,
+                "final_yaw_error_deg_max": float(
+                    np.max(yaw_abs_deg[final_slice, env_idx])
+                ),
                 "final_gyro_rad_s_max": final_gyro,
                 "final_joint_home_max_deg": final_joint_max,
                 "final_joint_home_rms_deg": final_joint_rms,
@@ -258,6 +278,11 @@ def _summarize_rollout(
                 ),
                 "foot_stagger_m": float(
                     initial_conditions["foot_stagger_m"][env_idx]
+                ),
+                "persistent_pitch_calibration_error_deg": float(
+                    np.rad2deg(
+                        initial_conditions["persistent_pitch_error_rad"][env_idx]
+                    )
                 ),
             }
         )
@@ -291,7 +316,13 @@ def _summarize_rollout(
             float(np.percentile(settle_times, 95.0)) if settle_times else None
         ),
         "peak_tilt_deg_max": max(item["peak_tilt_deg"] for item in per_env),
+        "peak_yaw_error_deg_max": max(
+            item["peak_yaw_error_deg"] for item in per_env
+        ),
         "final_tilt_deg_max": max(item["final_tilt_deg_max"] for item in per_env),
+        "final_yaw_error_deg_max": max(
+            item["final_yaw_error_deg_max"] for item in per_env
+        ),
         "final_gyro_rad_s_max": max(
             item["final_gyro_rad_s_max"] for item in per_env
         ),
@@ -335,12 +366,24 @@ def _parse_args() -> argparse.Namespace:
         description="Evaluate bounded standing stabilization against home hold",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    checkpoint_group = parser.add_mutually_exclusive_group(required=True)
+    checkpoint_group.add_argument("--checkpoint", type=Path)
+    checkpoint_group.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        help="Evaluate every checkpoint_*.pkl in iteration order",
+    )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--num-envs", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--rollout-s", type=float, default=60.0)
     parser.add_argument("--suites", type=_parse_suites, default=("clean", "push"))
+    parser.add_argument(
+        "--controllers",
+        type=_parse_controllers,
+        default=_CONTROLLERS,
+        help="Comma-separated subset of policy,home",
+    )
     parser.add_argument("--initial-max-tilt-deg", type=float, default=4.0)
     parser.add_argument("--initial-max-gyro-rad-s", type=float, default=0.35)
     parser.add_argument(
@@ -373,13 +416,32 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("Initial tilt and gyro limits must be non-negative")
     if args.settle_window_s > args.rollout_s:
         raise ValueError("--settle-window-s cannot exceed --rollout-s")
-    if not args.checkpoint.is_file() or not args.config.is_file():
-        raise FileNotFoundError("Checkpoint and config must both be files")
+    if not args.config.is_file():
+        raise FileNotFoundError("Config must be a file")
+    if args.checkpoint is not None and not args.checkpoint.is_file():
+        raise FileNotFoundError(f"Checkpoint is not a file: {args.checkpoint}")
+    if args.checkpoint_dir is not None and not args.checkpoint_dir.is_dir():
+        raise FileNotFoundError(
+            f"Checkpoint directory does not exist: {args.checkpoint_dir}"
+        )
+
+
+def _resolve_checkpoint_paths(args: argparse.Namespace) -> list[Path]:
+    if args.checkpoint is not None:
+        return [args.checkpoint]
+    checkpoint_rows = list_checkpoints(str(args.checkpoint_dir))
+    paths = [args.checkpoint_dir / filename for _, filename in checkpoint_rows]
+    if not paths:
+        raise FileNotFoundError(
+            f"No checkpoint_*.pkl files found in {args.checkpoint_dir}"
+        )
+    return paths
 
 
 def main() -> int:
     args = _parse_args()
     _validate_args(args)
+    checkpoint_paths = _resolve_checkpoint_paths(args)
     if args.platform:
         jax.config.update("jax_platform_name", args.platform)
 
@@ -395,8 +457,9 @@ def main() -> int:
     ctrl_dt = float(training_cfg.env.ctrl_dt)
     num_steps = max(1, int(round(args.rollout_s / ctrl_dt)))
 
-    checkpoint = load_checkpoint(str(args.checkpoint))
-    obs_dim, action_dim = get_checkpoint_dims(args.checkpoint)
+    first_checkpoint = checkpoint_paths[0]
+    checkpoint = load_checkpoint(str(first_checkpoint))
+    obs_dim, action_dim = get_checkpoint_dims(first_checkpoint)
     if obs_dim != int(env._policy_spec.model.obs_dim):
         raise ValueError(
             f"Checkpoint obs_dim={obs_dim} does not match env obs_dim="
@@ -414,8 +477,8 @@ def main() -> int:
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
         activation=_network_activation_name(training_cfg),
     )
-    policy_params = checkpoint["policy_params"]
-    processor_params = checkpoint.get("processor_params", ()) or ()
+    first_policy_params = checkpoint["policy_params"]
+    first_processor_params = checkpoint.get("processor_params", ()) or ()
 
     sampled = _sample_initial_conditions(
         seed=args.seed,
@@ -462,7 +525,9 @@ def main() -> int:
     actual_roll = np.asarray(_roll_from_quat_wxyz(initial_quat))
     actual_pitch = np.asarray(_pitch_from_quat_wxyz(initial_quat))
     actual_rates = np.asarray(initial_state.data.qvel[:, 3:6])
-    actual_initial_tilt_deg = np.rad2deg(np.asarray(_tilt_from_quat_wxyz(initial_quat)))
+    actual_initial_tilt_deg = np.rad2deg(
+        np.asarray(quaternion_tilt_rad(initial_quat))
+    )
     actual_initial_gyro = np.linalg.norm(actual_rates, axis=1)
     left_foot, right_foot = jax.vmap(
         lambda data: env._cal.get_foot_positions(
@@ -472,12 +537,17 @@ def main() -> int:
         )
     )(initial_state.data)
     actual_stagger = np.asarray(left_foot[:, 0] - right_foot[:, 0])
+    wr = initial_state.info[WR_INFO_KEY]
+    persistent_pitch_error = np.asarray(
+        wr.domain_rand_persistent_torso_pitch_error_rad
+    )
     initial_conditions = {
         "roll_rad": actual_roll,
         "pitch_rad": actual_pitch,
         "roll_rate_rad_s": actual_rates[:, 0],
         "pitch_rate_rad_s": actual_rates[:, 1],
         "foot_stagger_m": actual_stagger,
+        "persistent_pitch_error_rad": persistent_pitch_error,
     }
     @partial(
         jax.jit,
@@ -486,6 +556,8 @@ def main() -> int:
     def run_controller(
         start_state,
         rng,
+        policy_params,
+        processor_params,
         *,
         controller: str,
         disable_pushes: bool,
@@ -521,7 +593,8 @@ def main() -> int:
             truncated = metrics[:, METRIC_INDEX["term/truncated"]] > 0.5
             done = next_state.done > 0.5
             quat = next_state.data.qpos[:, 3:7]
-            tilt_rad = _tilt_from_quat_wxyz(quat)
+            tilt_rad = quaternion_tilt_rad(quat)
+            yaw_rad = quaternion_yaw_rad(quat)
             gyro_norm = jnp.linalg.norm(next_state.data.qvel[:, 3:6], axis=1)
             joint_q = next_state.data.qpos[:, env._actuator_qpos_addrs]
             joint_err = joint_q - env._home_q_rad
@@ -539,6 +612,7 @@ def main() -> int:
                 "active": alive,
                 "failed": done & ~truncated,
                 "tilt_rad": tilt_rad,
+                "yaw_rad": yaw_rad,
                 "gyro_norm_rad_s": gyro_norm,
                 "joint_home_max_rad": joint_max,
                 "joint_home_rms_rad": joint_rms,
@@ -557,23 +631,24 @@ def main() -> int:
         )
         return rollout
 
-    results: dict[str, Any] = {}
-    for suite_index, suite in enumerate(args.suites):
-        controller_results: dict[str, Any] = {}
-        for controller_index, controller in enumerate(_CONTROLLERS):
+    home_results: dict[str, Any] = {}
+    if "home" in args.controllers:
+        for suite_index, suite in enumerate(args.suites):
             rollout_rng = jax.random.fold_in(
-                base_rng, suite_index * len(_CONTROLLERS) + controller_index
+                base_rng, 10_000 + suite_index
             )
             rollout = jax.device_get(
                 run_controller(
                     initial_state,
                     rollout_rng,
-                    controller=controller,
+                    first_policy_params,
+                    first_processor_params,
+                    controller="home",
                     disable_pushes=(suite == "clean"),
                     steps=num_steps,
                 )
             )
-            controller_results[controller] = _summarize_rollout(
+            home_results[suite] = _summarize_rollout(
                 rollout,
                 ctrl_dt=ctrl_dt,
                 settle_window_s=args.settle_window_s,
@@ -583,29 +658,71 @@ def main() -> int:
                 settle_joint_rms_deg=args.settle_joint_rms_deg,
                 initial_conditions=initial_conditions,
             )
-        results[suite] = {
-            "controllers": controller_results,
-            "policy_vs_home": _paired_comparison(
-                controller_results["policy"], controller_results["home"]
-            ),
-        }
-        policy = controller_results["policy"]
-        home = controller_results["home"]
-        print(
-            f"{suite}: policy pass={policy['pass']['count']}/{args.num_envs} "
-            f"fall={policy['fall']['count']}/{args.num_envs}; "
-            f"home pass={home['pass']['count']}/{args.num_envs} "
-            f"fall={home['fall']['count']}/{args.num_envs}"
+
+    checkpoint_outputs: list[dict[str, Any]] = []
+    for checkpoint_path in checkpoint_paths:
+        checkpoint = load_checkpoint(str(checkpoint_path))
+        checkpoint_obs_dim, checkpoint_action_dim = get_checkpoint_dims(
+            checkpoint_path
+        )
+        if (checkpoint_obs_dim, checkpoint_action_dim) != (obs_dim, action_dim):
+            raise ValueError(
+                f"Checkpoint {checkpoint_path} dimensions "
+                f"{checkpoint_obs_dim}x{checkpoint_action_dim} do not match "
+                f"{obs_dim}x{action_dim}"
+            )
+        policy_params = checkpoint["policy_params"]
+        processor_params = checkpoint.get("processor_params", ()) or ()
+        results: dict[str, Any] = {}
+        for suite_index, suite in enumerate(args.suites):
+            controller_results: dict[str, Any] = {}
+            if "policy" in args.controllers:
+                rollout_rng = jax.random.fold_in(base_rng, suite_index)
+                rollout = jax.device_get(
+                    run_controller(
+                        initial_state,
+                        rollout_rng,
+                        policy_params,
+                        processor_params,
+                        controller="policy",
+                        disable_pushes=(suite == "clean"),
+                        steps=num_steps,
+                    )
+                )
+                controller_results["policy"] = _summarize_rollout(
+                    rollout,
+                    ctrl_dt=ctrl_dt,
+                    settle_window_s=args.settle_window_s,
+                    settle_tilt_deg=args.settle_tilt_deg,
+                    settle_gyro_rad_s=args.settle_gyro_rad_s,
+                    settle_joint_max_deg=args.settle_joint_max_deg,
+                    settle_joint_rms_deg=args.settle_joint_rms_deg,
+                    initial_conditions=initial_conditions,
+                )
+            if "home" in args.controllers:
+                controller_results["home"] = home_results[suite]
+            result: dict[str, Any] = {"controllers": controller_results}
+            if set(_CONTROLLERS).issubset(controller_results):
+                result["policy_vs_home"] = _paired_comparison(
+                    controller_results["policy"], controller_results["home"]
+                )
+            results[suite] = result
+
+            status = []
+            for controller in args.controllers:
+                summary = controller_results[controller]
+                status.append(
+                    f"{controller} pass={summary['pass']['count']}/{args.num_envs} "
+                    f"fall={summary['fall']['count']}/{args.num_envs}"
+                )
+            print(f"{checkpoint_path.name} {suite}: " + "; ".join(status))
+        checkpoint_outputs.append(
+            {"checkpoint": str(checkpoint_path), "results": results}
         )
 
-    wr = initial_state.info[WR_INFO_KEY]
     push_force_xy = np.asarray(wr.push_schedule.force_xy)
-    persistent_pitch_error = np.asarray(
-        wr.domain_rand_persistent_torso_pitch_error_rad
-    )
     output = {
-        "schema_version": 2,
-        "checkpoint": str(args.checkpoint),
+        "schema_version": 3,
         "config": str(args.config),
         "seed": args.seed,
         "num_envs": args.num_envs,
@@ -613,6 +730,7 @@ def main() -> int:
         "rollout_s": args.rollout_s,
         "training_time_limit_disabled": True,
         "suites": list(args.suites),
+        "controllers": list(args.controllers),
         "initial_envelope": {
             "max_tilt_deg": args.initial_max_tilt_deg,
             "max_gyro_rad_s": args.initial_max_gyro_rad_s,
@@ -652,8 +770,11 @@ def main() -> int:
             "sample_rad_max": float(np.max(persistent_pitch_error)),
             "sample_abs_rad_max": float(np.max(np.abs(persistent_pitch_error))),
         },
-        "results": results,
     }
+    if len(checkpoint_outputs) == 1:
+        output.update(checkpoint_outputs[0])
+    else:
+        output["checkpoints"] = checkpoint_outputs
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
     print(f"Results saved to: {args.output}")
