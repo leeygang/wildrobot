@@ -311,6 +311,55 @@ def test_v0223_checkpoint_ranking_uses_standing_support_metrics() -> None:
     assert ranked[0].train_both_loaded == 0.98
 
 
+def test_standing_checkpoint_ranking_penalizes_orientation_and_narrow_stance() -> None:
+    from training.core.post_training_eval import (
+        CheckpointMetricCandidate,
+        rank_checkpoint_candidates,
+    )
+
+    candidates = [
+        CheckpointMetricCandidate(
+            checkpoint_path="late_narrow.pkl",
+            iteration=100,
+            total_steps=1000,
+            metrics={
+                "episode_reward": 300.0,
+                "support/both_loaded": 0.999,
+                "support/load_imbalance": 0.08,
+                "support/feet_lateral_distance_m": 0.10,
+                "support/feet_too_close_frac": 0.99,
+                "ref/body_quat_err_deg": 9.8,
+            },
+        ),
+        CheckpointMetricCandidate(
+            checkpoint_path="upright_stance.pkl",
+            iteration=40,
+            total_steps=400,
+            metrics={
+                "episode_reward": 200.0,
+                "support/both_loaded": 0.98,
+                "support/load_imbalance": 0.20,
+                "support/feet_lateral_distance_m": 0.18,
+                "support/feet_too_close_frac": 0.08,
+                "ref/body_quat_err_deg": 6.5,
+            },
+        ),
+    ]
+
+    ranked, used_filter_fallback = rank_checkpoint_candidates(
+        candidates,
+        top_k=2,
+        task="standing",
+        episode_length_target=1000,
+    )
+
+    assert used_filter_fallback is False
+    assert ranked[0].checkpoint_path == "upright_stance.pkl"
+    assert ranked[0].train_body_quat_err_deg == 6.5
+    assert ranked[0].train_feet_lateral_distance_m == 0.18
+    assert ranked[0].train_feet_too_close_frac == 0.08
+
+
 def test_standing_ranking_does_not_treat_no_completion_as_zero_length() -> None:
     from training.core.post_training_eval import (
         CheckpointMetricCandidate,
@@ -383,6 +432,8 @@ def test_v0223_support_metrics_are_registered() -> None:
     assert "support/right_loaded" in METRIC_NAMES
     assert "support/both_loaded" in METRIC_NAMES
     assert "support/load_imbalance" in METRIC_NAMES
+    assert "support/feet_lateral_distance_m" in METRIC_NAMES
+    assert "support/feet_too_close_frac" in METRIC_NAMES
 
 
 def test_standing_support_metrics_are_saved_in_checkpoint(tmp_path) -> None:

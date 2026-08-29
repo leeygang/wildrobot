@@ -1,0 +1,208 @@
+# WildRobot standing stabilizer v0.22.9: stance-health diagnostic fine-tune.
+#
+# Initialize the actor from v0.22.8 checkpoint 60 with --init-policy.  Keep a
+# fresh critic and optimizer because the reward changes.  This short run tests
+# whether a graded stance-width signal prevents the late narrow-stance collapse
+# while retaining the full measured persistent-pitch calibration envelope.
+version: "0.22.9"
+version_name: "Persistent-bias standing stance-health diagnostic"
+
+seed: 42
+
+env:
+  assets_root: assets/v2
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 1000
+
+  target_height: 0.46
+  min_height: 0.36
+  max_height: 0.70
+  max_pitch: 0.436332
+  max_roll: 0.436332
+  torso_pitch_soft_min_rad: -0.0523599
+  torso_pitch_soft_max_rad: 0.0523599
+  torso_roll_soft_min_rad: -0.0523599
+  torso_roll_soft_max_rad: 0.0523599
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+
+  min_velocity: 0.0
+  max_velocity: 0.0
+  min_velocity_y: 0.0
+  max_velocity_y: 0.0
+  max_yaw_rate: 0.0
+  eval_velocity_cmd: [0.0, 0.0, 0.0]
+
+  contact_threshold_force: 5.0
+  foot_switch_threshold: 2.0
+
+  # Preserve the deployable contact-free 59-observation/17-action actor.
+  actor_obs_layout_id: wr_obs_v9_standing
+  action_mapping_id: pos_target_home_025_v1
+  action_filter_alpha: 0.6
+  action_delay_steps: 1
+  standing_recovery_enabled: false
+
+  loc_ref_version: v3_offline_library
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_base: home
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: false
+  close_feet_threshold: 0.146
+
+  penalty_pose_deadzone_rad: 0.0698132
+  penalty_pose_weight_default: 1.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.25
+    right_hip_pitch: 0.25
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.25
+    right_knee_pitch: 0.25
+    left_ankle_pitch: 1.0
+    right_ankle_pitch: 1.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+
+  reset_torso_roll_range: [-0.0698132, 0.0698132]
+  reset_torso_pitch_range: [-0.0698132, 0.0698132]
+  reset_torso_roll_rate_range: [-0.35, 0.35]
+  reset_torso_pitch_rate_range: [-0.35, 0.35]
+  reset_foot_stagger_range_m: [-0.04, 0.04]
+
+  push_enabled: true
+  push_start_step_min: 40
+  push_start_step_max: 250
+  push_duration_steps: 6
+  push_force_min: 2.0
+  push_force_max: 5.0
+  push_body: waist
+
+  imu_gyro_noise_std: 0.015
+  imu_quat_noise_deg: 0.25
+  imu_latency_steps: 1
+
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+  # Retain the measured hardware envelope; pitch is angular and does not scale
+  # with the WildRobot/ToddlerBot size ratio.
+  domain_rand_persistent_torso_pitch_error_range: [-0.218166, 0.218166]
+
+  joint_feedback_sample_hold_enabled: true
+  joint_feedback_leg_period_steps_range: [4, 7]
+  joint_feedback_upper_period_steps_range: [12, 24]
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 128
+  # Short diagnostic: 40 * 1024 * 128 = 5,242,880 transitions.
+  iterations: 40
+  learning_rate: 1.0e-5
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.0005
+  value_loss_coef: 0.5
+  epochs: 4
+  num_minibatches: 32
+  max_grad_norm: 0.5
+  log_interval: 10
+  critic_privileged_enabled: true
+  critic_includes_actor_obs: false
+  eval:
+    enabled: false
+    deterministic: true
+    reset_perturb_pose: true
+    post_training_enabled: true
+    post_training_task: standing
+    post_training_top_k: 5
+    post_training_num_envs: 128
+    post_training_num_steps: 1000
+    post_training_checkpoint_label: standing_stance_health_candidate
+
+networks:
+  actor:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+    log_std_init: -1.0
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [256, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  ref_body_quat_track: 5.0
+  ref_body_quat_alpha: 50.0
+  torso_pos_xy: 0.25
+  torso_pos_xy_alpha: 50.0
+  ang_vel_xy: 2.0
+  torso_pitch_soft: 1.0
+  torso_roll_soft: 1.0
+
+  ref_contact_match: 0.0
+  standing_support_balance: 0.25
+  standing_support_balance_alpha: 4.0
+
+  recovery_swing_track: 0.0
+  recovery_stance_contact: 0.0
+  recovery_touchdown: 0.0
+  recovery_squat: 0.0
+  unnecessary_step: 0.0
+
+  penalty_pose: -0.5
+  # ToddlerBot implements both this smooth spacing-band reward and the binary
+  # crossing penalty.  Its active walk recipe uses only the binary term; WR
+  # enables the smooth term because v0.22.8 saturated the binary penalty on
+  # 99% of samples, removing severity information inside the failed region.
+  feet_distance: 1.0
+  penalty_close_feet_xy: 10.0
+  penalty_feet_ori: 5.0
+  feet_phase: 0.25
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+
+  torque: -0.001
+  action_rate: -0.01
+  joint_velocity: -0.001
+  slip: -0.5
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints/standing_v0229_stance_health_finetune
+  interval: 10
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, standing, stabilization, persistent-bias, stance-health, onshape9, v0229]
+
+video:
+  enabled: true
+  episode_length: 500
+  width: 640
+  height: 480
+  fps: 25
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      post_training_enabled: false

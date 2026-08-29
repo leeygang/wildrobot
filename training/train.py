@@ -867,6 +867,9 @@ def start_training(
                 "tracking/forward_velocity_cmd_ratio",
                 "support/both_loaded",
                 "support/load_imbalance",
+                "support/feet_lateral_distance_m",
+                "support/feet_too_close_frac",
+                "ref/body_quat_err_deg",
             )
             raw_candidates: list[CheckpointMetricCandidate] = []
             used_metrics_jsonl = False
@@ -922,7 +925,8 @@ def start_training(
                 if post_training_task == "standing":
                     print(
                         "rank  checkpoint                      train_score  "
-                        "train_ep_len  both_loaded  load_imbalance"
+                        "train_ep_len  body_err  too_close  both_loaded  "
+                        "load_imbalance"
                     )
                     for rank, candidate in enumerate(ranked_candidates, 1):
                         print(
@@ -930,6 +934,8 @@ def start_training(
                             f"{Path(candidate.checkpoint_path).name:<30} "
                             f"{candidate.train_score:>10.3f}  "
                             f"{_fmt(candidate.train_episode_length, '.0f'):>12}  "
+                            f"{_fmt(candidate.train_body_quat_err_deg, '.2f'):>8}  "
+                            f"{_fmt(candidate.train_feet_too_close_frac, '.3f'):>9}  "
                             f"{_fmt(candidate.train_both_loaded, '.3f'):>11}  "
                             f"{_fmt(candidate.train_load_imbalance, '.3f'):>14}"
                         )
@@ -1395,6 +1401,15 @@ def start_training(
                                 "forward_velocity_cmd_ratio": candidate.train_cmd_ratio,
                                 "both_loaded": candidate.train_both_loaded,
                                 "load_imbalance": candidate.train_load_imbalance,
+                                "body_quat_err_deg": (
+                                    candidate.train_body_quat_err_deg
+                                ),
+                                "feet_lateral_distance_m": (
+                                    candidate.train_feet_lateral_distance_m
+                                ),
+                                "feet_too_close_frac": (
+                                    candidate.train_feet_too_close_frac
+                                ),
                             },
                             "eval_metrics": eval_metrics,
                             "eval_ratio": decision.forward_velocity_cmd_ratio,

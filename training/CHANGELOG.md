@@ -8,6 +8,111 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.22.8-result + v0.22.9-plan] - 2026-08-29: persistent-bias response learned, stance collapse blocks promotion
+
+### v0.22.8 training result
+
+The persistent-bias standing fine-tune is
+`training/wandb/offline-run-20260828_210857-ooxrowe7`; its checkpoints, saved
+configuration, and authoritative automatic summary are under
+`training/checkpoints/standing_v0228_persistent_bias_finetune/ppo_standing_stabilizer_v0228_persistent_bias_v00228_20260828_210902-ooxrowe7`.
+It completed 100 iterations and 13,107,200 environment transitions in 259.35
+minutes. The 59-observation/17-action actor was initialized from
+`runtime/bundles/standing_v0227_ckpt200/checkpoint.pkl`; the critic and optimizer
+were fresh.
+
+No checkpoint passed the 128-environment, 1,000-step deterministic standing
+screen. All five automatically ranked candidates passed mean orientation,
+survival, bilateral support, load balance, torque saturation, and action
+saturation. They failed only the peak-orientation <=15 deg and worst-final-
+orientation <=10 deg gates:
+
+| Checkpoint | mean orientation | peak orientation | worst final orientation | both feet loaded | load imbalance |
+|---:|---:|---:|---:|---:|---:|
+| 60 | 6.92 deg | 28.23 deg | 28.20 deg | 0.9990 | 0.0829 |
+| 70 | 8.13 deg | 32.05 deg | 31.94 deg | 0.9986 | 0.0804 |
+| 80 | 8.63 deg | 25.67 deg | 25.67 deg | 0.9984 | 0.0903 |
+| 90 | 9.24 deg | 30.75 deg | 30.75 deg | 0.9974 | 0.0882 |
+| 100 | 9.57 deg | 51.83 deg | 36.54 deg | 0.9958 | 0.1094 |
+
+A separate Mac diagnostic ran checkpoint 60 for 60 seconds in eight paired
+environments. Clean and configured-push suites each passed 6/8 with zero falls;
+home hold passed 0/8. The policy reduced peak tilt relative to home in all eight
+environments. Both policy failures were residual final tilt, and one also
+exceeded the 8 deg joint-to-home maximum. Identical pass counts under clean and
+2--5 N push suites show that persistent steady-state compensation, rather than
+the brief push, is the limiting condition. This small diagnostic is useful for
+selection but does not replace the required 128-environment promotion gate.
+Checkpoint 40 was also screened for 20 seconds on the same Mac clean-suite
+initial states and passed only 4/8, so checkpoint 60 is the best tested
+initialization from this run.
+
+### Failure mechanism
+
+PPO remained numerically controlled and actuator saturation stayed negligible.
+The degradation instead coincided with a narrow-stance transition:
+
+| Iteration | feet below 0.146 m | reward/step | body orientation error | action maximum |
+|---:|---:|---:|---:|---:|
+| 40 | 8.1% | +0.1000 | 6.47 deg | 0.393 |
+| 60 | 38.4% | +0.0375 | 7.43 deg | 0.401 |
+| 70 | 99.1% | -0.0850 | 7.82 deg | 0.446 |
+| 100 | 99.4% | -0.0948 | 9.80 deg | 0.654 |
+
+The ToddlerBot-aligned binary close-feet term contributed almost its full
+`-0.20` per-step penalty after iteration 70 and dominated the negative reward.
+Once the feet are inside the threshold, however, that binary term contains no
+information about violation severity. The actor remained in the narrow stance
+while maintaining high bilateral support and increasing action magnitude.
+This is a stance-health/local-optimum failure, not an optimizer explosion or a
+missing penalty.
+
+The hidden persistent-calibration implementation remains aligned with
+ToddlerBot: the offset is added to the physical motor target and subtracted from
+the actor-facing joint observation, forcing compensation from IMU and support
+dynamics. ToddlerBot provides the same binary close-feet penalty and also a
+smooth torso-frame foot-spacing-band reward. Its active walk recipe uses the
+binary term; WildRobot will additionally enable the existing smooth term because
+the standing result above empirically saturated the binary signal. The band
+limits are already scaled to WildRobot (`0.171--0.317 m`), while the measured
+pitch error is angular and requires no robot-size scaling. See Shi et al.,
+[ToddlerBot](https://arxiv.org/abs/2502.00893).
+
+**Decision:** reject v0.22.8 for deployment. Preserve checkpoint 60 as the next
+actor initialization and do not resume checkpoint 100.
+
+### v0.22.9 stance-health diagnostic
+
+The next run is pinned by
+`training/configs/ppo_standing_stabilizer_v0229_stance_health.yaml`. It changes
+only what is needed to test the diagnosed failure:
+
+- retain the full +/-12.5 deg persistent pitch-bias envelope, native-17D sample
+  hold, randomized dynamics, reset perturbations, and pushes;
+- retain the binary close-feet penalty and enable the existing smooth
+  `feet_distance` band reward at weight 1.0;
+- log direct heading-relative lateral foot distance and too-close occupancy
+  instead of inferring occupancy from a weighted reward contribution;
+- rank standing checkpoints using body-orientation error and too-close
+  occupancy in addition to support and load balance;
+- run a short 40-iteration / 5,242,880-transition diagnostic at the unchanged
+  `1e-5` learning rate, isolating the reward change.
+
+Run with actor initialization and a fresh critic/optimizer:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_standing_stabilizer_v0229_stance_health.yaml \
+  --init-policy training/checkpoints/standing_v0228_persistent_bias_finetune/ppo_standing_stabilizer_v0228_persistent_bias_v00228_20260828_210902-ooxrowe7/checkpoint_60_7864320.pkl \
+  --checkpoint-dir training/checkpoints/standing_v0229_stance_health_finetune
+```
+
+Stop rather than extend the recipe if too-close occupancy again trends upward
+toward the v0.22.8 checkpoint-70 regime. A candidate must first pass the
+automatic 128-environment screen, then pass the paired 128-environment,
+60-second clean-and-push evaluator with zero falls and every final continuous
+gate satisfied before hardware use.
+
 ## [v0.21.0-17d2-result] - 2026-08-28: forward tracking fixed, lateral-sign control still fails
 
 The deployment-band fine-tune is

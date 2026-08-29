@@ -2976,6 +2976,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             penalty_feet_ori=penalty_feet_ori.astype(jp.float32),
             # v0.20.1 smoke9 — TB walk.gin reward terms.
             r_close_feet_xy=r_close_feet_xy.astype(jp.float32),
+            close_feet_lateral_distance_m=feet_lateral_dist.astype(jp.float32),
             r_feet_phase=r_feet_phase.astype(jp.float32),
             # Diagnostic scalars (not weighted into the reward sum):
             q_track_rmse=q_track_rmse.astype(jp.float32),
@@ -5361,6 +5362,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["support/load_imbalance"] = reward_terms[
             "support_load_imbalance"
+        ]
+        terminal_metrics_dict["support/feet_lateral_distance_m"] = reward_terms[
+            "close_feet_lateral_distance_m"
+        ]
+        terminal_metrics_dict["support/feet_too_close_frac"] = -reward_terms[
+            "r_close_feet_xy"
         ]
         terminal_metrics_dict["reward/cmd_forward_velocity_track"] = reward_contrib[
             "cmd_forward_velocity_track"

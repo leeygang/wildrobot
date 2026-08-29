@@ -2094,6 +2094,25 @@ METRIC_SPECS.extend(
             topline=True,
             description="Dimensionless |FL-FR|/(FL+FR) support-force imbalance",
         ),
+        MetricSpec(
+            name="support/feet_lateral_distance_m",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            description=(
+                "Heading-relative lateral distance between the feet in meters; "
+                "the exact input to the ToddlerBot-aligned close-feet condition"
+            ),
+        ),
+        MetricSpec(
+            name="support/feet_too_close_frac",
+            reducer=Reducer.MEAN,
+            log_prefix="support",
+            topline=True,
+            description=(
+                "Fraction of samples below env.close_feet_threshold; derived "
+                "from the ToddlerBot-aligned binary close-feet condition"
+            ),
+        ),
     ]
 )
 
