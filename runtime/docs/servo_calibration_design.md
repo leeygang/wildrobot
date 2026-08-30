@@ -11,6 +11,25 @@ WildRobot hardware runtime lives under `runtime/wr_runtime/` and assumes:
 Calibration is performed with the interactive script:
 - `runtime/scripts/calibrate.py`
 
+For a fixture-based, non-moving capture of several joint-zero offsets at once,
+use `runtime/scripts/capture_servo_zero.py`.  Like ToddlerBot's zero-point tool,
+it relies on the operator installing/aligning the physical calibration reference
+before encoder capture.  It cannot infer mechanical zero from encoder data.
+
+```bash
+uv run python runtime/scripts/capture_servo_zero.py \
+  --config runtime/configs/hardware_config.json \
+  --joints leg_pitch \
+  --samples 7 \
+  --report runtime/calibration/leg_pitch_zero.json \
+  --output-config runtime/configs/hardware_config.zero_candidate.json
+```
+
+The capture tool never commands servo motion. It requires explicit confirmation
+before disabling torque and another confirmation after physical alignment,
+rejects joints whose raw readings vary by more than the configured spread, and
+refuses to overwrite the active hardware configuration.
+
 Calibration data is stored directly in the source-of-truth
 `runtime/configs/hardware_config.json`; policy bundles do not copy it.
 
