@@ -752,7 +752,7 @@ def start_training(
     post_training_top_k = int(training_cfg.ppo.eval.post_training_top_k or 3)
     post_training_num_envs = int(training_cfg.ppo.eval.post_training_num_envs or 8)
     post_training_num_steps = int(training_cfg.ppo.eval.post_training_num_steps or 500)
-    standing_final_window_steps = max(
+    orientation_final_window_steps = max(
         1,
         int(round(STANDING_FINAL_WINDOW_S / float(training_cfg.env.ctrl_dt))),
     )
@@ -769,6 +769,13 @@ def start_training(
     )
     post_training_strict_lateral_drift = bool(
         getattr(training_cfg.ppo.eval, "post_training_strict_lateral_drift", False)
+    )
+    post_training_strict_walking_safety = bool(
+        getattr(
+            training_cfg.ppo.eval,
+            "post_training_strict_walking_safety",
+            False,
+        )
     )
     post_training_checkpoint_label = (
         str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
@@ -1023,7 +1030,11 @@ def start_training(
                         )
 
                 from training.algos.ppo.ppo_core import create_networks, sample_actions
-                from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY
+                from training.core.metrics_registry import (
+                    METRIC_INDEX,
+                    METRICS_VEC_KEY,
+                    TORQUE_ACTUATOR_NAMES,
+                )
                 from training.envs.env_info import PRIVILEGED_OBS_DIM, WR_INFO_KEY
 
                 actor_activation = str(training_cfg.networks.actor.activation).lower()
@@ -1061,10 +1072,10 @@ def start_training(
                     Factored out so the probe path (different reset
                     closure) computes the same set of deploy metrics
                     + the signed lateral / ang_vel_z means used by
-                    ``evaluate_lateral_yaw_pass_criterion``.  Standing also
-                    receives yaw-independent tilt and a 0.5-second final-window
-                    maximum; the legacy full-quaternion metrics remain for
-                    diagnostics."""
+                    ``evaluate_lateral_yaw_pass_criterion``.  Standing and
+                    strict-safety walking evaluations also receive
+                    yaw-independent tilt and a 0.5-second final-window maximum;
+                    the legacy full-quaternion metrics remain for diagnostics."""
                     total_done = jnp.sum(rollout["done"])
                     episode_lengths = (
                         rollout["metrics_vec"][..., METRIC_INDEX["episode_step_count"]]
@@ -1215,11 +1226,27 @@ def start_training(
                             / jnp.maximum(td_right, eps_touchdown)
                         ),
                     }
-                    if post_training_task == "standing":
+                    actuator_torque_sat = {
+                        actuator_name: _mean(f"torque/{actuator_name}/sat_frac")
+                        for actuator_name in TORQUE_ACTUATOR_NAMES
+                    }
+                    aggregates["max_actuator_torque_sat_frac"] = jnp.max(
+                        jnp.stack(tuple(actuator_torque_sat.values()))
+                    )
+                    aggregates.update(
+                        {
+                            f"torque/{actuator_name}/sat_frac": value
+                            for actuator_name, value in actuator_torque_sat.items()
+                        }
+                    )
+                    if post_training_task == "standing" or (
+                        post_training_task == "walking"
+                        and post_training_strict_walking_safety
+                    ):
                         aggregates.update(
                             summarize_orientation_rollout(
                                 rollout["root_quat_wxyz"],
-                                final_window_steps=standing_final_window_steps,
+                                final_window_steps=orientation_final_window_steps,
                             )
                         )
                     return aggregates
@@ -1396,6 +1423,15 @@ def start_training(
                         ),
                         "torque_sat_frac": float(eval_result["torque_sat_frac"]),
                         "action_sat_frac": float(eval_result["action_sat_frac"]),
+                        "max_actuator_torque_sat_frac": float(
+                            eval_result["max_actuator_torque_sat_frac"]
+                        ),
+                        "torque_sat_frac_by_actuator": {
+                            actuator_name: float(
+                                eval_result[f"torque/{actuator_name}/sat_frac"]
+                            )
+                            for actuator_name in TORQUE_ACTUATOR_NAMES
+                        },
                         "recovery_step_rate": float(
                             eval_result["recovery_step_rate"]
                         ),
@@ -1465,7 +1501,10 @@ def start_training(
                             eval_result["step_length_right_per_touchdown_m"]
                         ),
                     }
-                    if post_training_task == "standing":
+                    if post_training_task == "standing" or (
+                        post_training_task == "walking"
+                        and post_training_strict_walking_safety
+                    ):
                         eval_metrics.update(
                             {
                                 "body_tilt_deg": float(
@@ -1488,6 +1527,7 @@ def start_training(
                                 ),
                             }
                         )
+                    if post_training_task == "standing":
                         decision = deterministic_standing_eval_gate(
                             eval_metrics=eval_metrics,
                             eval_num_steps=post_training_num_steps,
@@ -1499,6 +1539,9 @@ def start_training(
                             eval_velocity_cmd=eval_velocity_cmd,
                             eval_num_steps=post_training_num_steps,
                             strict_lateral_drift=post_training_strict_lateral_drift,
+                            strict_walking_safety=(
+                                post_training_strict_walking_safety
+                            ),
                         )
                     standing_orientation_cases: list[dict[str, Any]] = []
                     if post_training_task == "standing":
@@ -1607,11 +1650,9 @@ def start_training(
                 # each rollout reuses ``post_eval_clean_step_fn`` (which
                 # already disables mid-rollout cmd resample), so the
                 # probe cmd persists for the full ``post_training_num_steps``.
-                # Report-only: probes do NOT block primary promotion
-                # (still gated on the G4 forward set against the
-                # primary ``eval_velocity_cmd``).  Surfaced in the JSON
-                # summary so the smoke promotion decision can be made
-                # against the criteria the doc actually writes down.
+                # Probes are recorded in the JSON summary.  Strict lateral
+                # tracking and strict walking safety can promote their
+                # tracking/safety decisions to hard candidate gates below.
                 probe_cmds: list[Tuple[float, float, float]] = (
                     []
                     if post_training_task == "standing"
@@ -1628,6 +1669,7 @@ def start_training(
                     )
                     from training.core.post_training_eval import (
                         evaluate_lateral_yaw_pass_criterion,
+                        walking_safety_gates,
                     )
 
                     for row in eval_rows:
@@ -1673,11 +1715,43 @@ def start_training(
                                     probe_result["mean_episode_reward"]
                                 ),
                             }
+                            if post_training_strict_walking_safety:
+                                probe_eval_metrics.update(
+                                    {
+                                        "body_tilt_deg": float(
+                                            probe_result["body_tilt_deg"]
+                                        ),
+                                        "body_tilt_deg_peak": float(
+                                            probe_result["body_tilt_deg_peak"]
+                                        ),
+                                        "body_tilt_deg_final_max": float(
+                                            probe_result["body_tilt_deg_final_max"]
+                                        ),
+                                        "max_actuator_torque_sat_frac": float(
+                                            probe_result[
+                                                "max_actuator_torque_sat_frac"
+                                            ]
+                                        ),
+                                        "torque_sat_frac_by_actuator": {
+                                            actuator_name: float(
+                                                probe_result[
+                                                    f"torque/{actuator_name}/sat_frac"
+                                                ]
+                                            )
+                                            for actuator_name in TORQUE_ACTUATOR_NAMES
+                                        },
+                                    }
+                                )
                             probe_decision = (
                                 evaluate_lateral_yaw_pass_criterion(
                                     probe_cmd=probe_cmd,
                                     eval_metrics=probe_eval_metrics,
                                 )
+                            )
+                            probe_safety_gates = (
+                                walking_safety_gates(probe_eval_metrics)
+                                if post_training_strict_walking_safety
+                                else {}
                             )
                             probe_results.append(
                                 {
@@ -1688,6 +1762,12 @@ def start_training(
                                     "commanded": probe_decision.commanded,
                                     "signed_ratio": probe_decision.signed_ratio,
                                     "passed": bool(probe_decision.passed),
+                                    "safety_passed": (
+                                        all(probe_safety_gates.values())
+                                        if probe_safety_gates
+                                        else None
+                                    ),
+                                    "safety_gates": probe_safety_gates,
                                     "skip_reason": probe_decision.skip_reason,
                                     "eval_metrics": probe_eval_metrics,
                                 }
@@ -1735,6 +1815,14 @@ def start_training(
                         # Folds the probe result into passed/gates/fail_reasons
                         # consistently (see helper docstring).
                         apply_lateral_probe_gate(row)
+
+                if post_training_strict_walking_safety and probe_cmds:
+                    from training.core.post_training_eval import (
+                        apply_walking_probe_safety_gate,
+                    )
+
+                    for row in eval_rows:
+                        apply_walking_probe_safety_gate(row)
 
                 print()
                 print("Deterministic eval results:")
@@ -1909,7 +1997,8 @@ def start_training(
                         f"Evaluated {len(probe_cmds)} Appendix C probe(s) per "
                         "top-k candidate; see "
                         "top_k_candidates[*].lateral_yaw_probes for per-probe "
-                        "pass/fail (>=0.5 signed ratio with matching sign)."
+                        "tracking pass/fail (>=0.5 signed ratio with matching "
+                        "sign) and opt-in safety gates."
                     )
 
                 summary_payload = {
@@ -1932,6 +2021,9 @@ def start_training(
                     # selection heuristics when present.
                     "no_passing_candidate_message": no_passing_message,
                     "deterministic_selection_is_authoritative": True,
+                    "post_training_strict_walking_safety": (
+                        post_training_strict_walking_safety
+                    ),
                     "standing_orientation_definition": (
                         {
                             "tilt": (
@@ -1944,6 +2036,21 @@ def start_training(
                             "final_window_s": STANDING_FINAL_WINDOW_S,
                         }
                         if post_training_task == "standing"
+                        else None
+                    ),
+                    "walking_safety_definition": (
+                        {
+                            "tilt": (
+                                "Angle between torso +Z and world +Z; excludes yaw."
+                            ),
+                            "final_window_s": STANDING_FINAL_WINDOW_S,
+                            "max_actuator_torque_sat_frac": (
+                                "Maximum rollout-mean torque-limit occupancy over "
+                                "individual policy actuators."
+                            ),
+                        }
+                        if post_training_task == "walking"
+                        and post_training_strict_walking_safety
                         else None
                     ),
                     # v0.21.0 follow-up — record the probe configuration
@@ -2070,6 +2177,31 @@ def start_training(
                                 ),
                             }
                         )
+                        if post_training_strict_walking_safety:
+                            wandb_summary.update(
+                                {
+                                    "post_training_eval/best_body_tilt_deg": float(
+                                        best_eval_metrics["body_tilt_deg"]
+                                    ),
+                                    "post_training_eval/best_body_tilt_deg_peak": float(
+                                        best_eval_metrics["body_tilt_deg_peak"]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_body_tilt_deg_final_max"
+                                    ): float(
+                                        best_eval_metrics["body_tilt_deg_final_max"]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_max_actuator_torque_sat_frac"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "max_actuator_torque_sat_frac"
+                                        ]
+                                    ),
+                                }
+                            )
                     wandb_tracker.log(wandb_summary, step=int(final_state.total_steps))
                     if metrics_log_path is not None:
                         with metrics_log_path.open("a", encoding="utf-8") as f:

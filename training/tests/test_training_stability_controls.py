@@ -302,6 +302,7 @@ def test_post_training_eval_defaults_are_backward_compatible() -> None:
     assert cfg.ppo.eval.post_training_num_envs == 8
     assert cfg.ppo.eval.post_training_num_steps == 500
     assert cfg.ppo.eval.post_training_checkpoint_label == "eval_promoted"
+    assert cfg.ppo.eval.post_training_strict_walking_safety is False
 
 
 def test_post_training_eval_can_enable_without_periodic_eval() -> None:
@@ -878,6 +879,73 @@ def test_deterministic_eval_gate_smoke7_strict_lateral_drift() -> None:
         strict_lateral_drift=True,
     )
     assert clean_decision.passed is True
+
+
+def test_deterministic_eval_gate_strict_walking_safety() -> None:
+    safe = {
+        "forward_velocity": 0.13,
+        "cmd_vs_achieved_forward": 0.03,
+        "mean_episode_length": 1000.0,
+        "step_length_touchdown_event_m": 0.10,
+        "body_tilt_deg": 5.0,
+        "body_tilt_deg_peak": 12.0,
+        "body_tilt_deg_final_max": 7.0,
+        "max_actuator_torque_sat_frac": 0.04,
+    }
+    decision = deterministic_eval_gate(
+        safe,
+        eval_velocity_cmd=0.13,
+        eval_num_steps=1000,
+        strict_walking_safety=True,
+    )
+    assert decision.passed is True
+    assert decision.gates["body_tilt_deg_peak"] is True
+    assert decision.gates["max_actuator_torque_sat_frac"] is True
+
+    unsafe = deterministic_eval_gate(
+        {
+            **safe,
+            "body_tilt_deg_peak": 16.0,
+            "max_actuator_torque_sat_frac": 0.051,
+        },
+        eval_velocity_cmd=0.13,
+        eval_num_steps=1000,
+        strict_walking_safety=True,
+    )
+    assert unsafe.passed is False
+    assert unsafe.gates["body_tilt_deg_peak"] is False
+    assert unsafe.gates["max_actuator_torque_sat_frac"] is False
+
+    missing = deterministic_eval_gate(
+        {
+            key: value
+            for key, value in safe.items()
+            if key != "max_actuator_torque_sat_frac"
+        },
+        eval_velocity_cmd=0.13,
+        eval_num_steps=1000,
+        strict_walking_safety=True,
+    )
+    assert missing.passed is False
+    assert missing.gates["max_actuator_torque_sat_frac"] is False
+
+
+def test_apply_walking_probe_safety_gate() -> None:
+    from training.core.post_training_eval import apply_walking_probe_safety_gate
+
+    row = {
+        "passed": True,
+        "gates": {"lateral_probe_tracking": True},
+        "fail_reasons": [],
+        "lateral_yaw_probes": [
+            {"skip_reason": None, "safety_passed": True},
+            {"skip_reason": None, "safety_passed": False},
+        ],
+    }
+    assert apply_walking_probe_safety_gate(row) is False
+    assert row["passed"] is False
+    assert row["gates"]["lateral_probe_safety"] is False
+    assert row["fail_reasons"] == ["lateral_probe_safety"]
 
 
 def test_lateral_probe_gate_passed_helper() -> None:

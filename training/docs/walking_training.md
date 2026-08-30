@@ -1,7 +1,9 @@
 # WildRobot Walking Training Plan
 
-**Status:** Active locomotion plan for `v0.20.x` (smoke13+); v0.21.x lateral/yaw under development on branch `smoke14_lateral`.
-**Last updated:** 2026-05-24
+**Status:** `v0.21.0-17d3` short bidirectional-lateral diagnostic is ready.
+Initialize from the v0.21.0-17d2 checkpoint 120 actor; see the newest walking
+entry in `training/CHANGELOG.md` for the run command and promotion gates.
+**Last updated:** 2026-08-29
 
 **Historical sections archived:**
 

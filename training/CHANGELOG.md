@@ -8,6 +8,62 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d3-ready] - 2026-08-29: short lateral-weight diagnostic with walking safety gates
+
+Prepared the next walking experiment from the v0.21.0-17d2 rank-1 diagnostic
+checkpoint.  The previous run already had correct balanced command exposure,
+distinct signed reference bins, actor command inputs, and a live standalone
+lateral reward, but still produced positive lateral velocity for both command
+signs.  Late training regressed forward speed, so this is a short controlled
+diagnostic rather than an extension of the 500-iteration run.
+
+`training/configs/ppo_walking_v0210_17d3_lateral_weight.yaml` changes one
+training lever relative to 17d2:
+
+- initialize the actor from `checkpoint_120_2457600.pkl` with a fresh critic
+  and optimizer;
+- run 100 iterations / 2,048,000 environment steps at the unchanged `1e-5`;
+- increase `cmd_lateral_velocity_track` from 1.0 to 2.0;
+- keep `cmd_forward_velocity_alpha_y=120`, the exact balanced
+  `vy={-0.065,0,+0.065}` curriculum, forward band, latency model, dynamics
+  randomization, and all other reward weights unchanged;
+- evaluate all ten regular checkpoints with 64 environments for 1,000 steps
+  at the straight command and both signed-vy probes.
+
+Increasing `alpha_y` was rejected for this diagnostic.  At the observed
+negative-command error of about 0.1265 m/s, the current Gaussian factor is
+already about 0.147; increasing alpha would narrow the basin and reduce the
+gradient available to escape the inherited positive-vy mode.  Raising only the
+lateral weight preserves the validated basin width and matches ToddlerBot's
+active XY tracking weight of 2.0, while retaining WR's explicitly justified
+axis-split reward.
+
+Walking promotion now has an opt-in strict safety mode.  It records and gates
+yaw-independent mean/peak/final torso tilt at 10/15/10 degrees and the maximum
+rollout-mean torque-limit occupancy of any individual actuator at 5%.  This
+prevents low aggregate saturation or yaw-inclusive quaternion error from
+hiding an unsafe candidate.  Historical walking configs retain their previous
+behavior because the new flag defaults off.
+
+Run:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d3_lateral_weight.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d2_deployment_band_v0210-17d2_20260828_144834-x4wnx6yw/checkpoint_120_2457600.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d3_lateral_weight
+```
+
+Verification: 70 focused tests pass, and the three-iteration end-to-end verify
+loaded the 937-observation/17-action actor, built all signed reference bins,
+trained, evaluated both lateral probes, and emitted the new tilt and
+per-actuator saturation gates.  No full 17d3 training result exists yet.
+
+References: Shi et al., [ToddlerBot](https://arxiv.org/abs/2502.00893); Su et
+al., [Leveraging Symmetry in RL-based Legged Locomotion
+Control](https://arxiv.org/abs/2403.17320) for the planned fallback if stronger
+lateral weighting still cannot escape the one-sided gait.
+
 ## [v0.22.9-result + v0.23.0-plan] - 2026-08-29: early improvement, then repeated narrow-stance collapse
 
 ### v0.22.9 training result

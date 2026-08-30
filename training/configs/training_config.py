@@ -883,6 +883,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
             post_training_strict_lateral_drift=eval_cfg.get(
                 "post_training_strict_lateral_drift", False
             ),
+            post_training_strict_walking_safety=eval_cfg.get(
+                "post_training_strict_walking_safety", False
+            ),
         ),
         rollback=PPORollbackConfig(
             enabled=rollback_cfg.get("enabled", False),

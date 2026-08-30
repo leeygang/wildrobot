@@ -959,6 +959,10 @@ class PPOEvalConfig(Freezable):
     # promote a directionally-drifting checkpoint.  Default False keeps
     # historical behavior (these stay report-only soft signals).
     post_training_strict_lateral_drift: bool = False
+    # Opt-in walking deployment gates for yaw-independent torso tilt and the
+    # worst individual actuator's torque-limit occupancy.  Default False keeps
+    # historical walking summaries and promotion decisions unchanged.
+    post_training_strict_walking_safety: bool = False
 
 
 @dataclass

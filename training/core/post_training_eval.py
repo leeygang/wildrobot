@@ -83,6 +83,15 @@ LATERAL_VELOCITY_SOFT_CAP_MPS = 0.10
 YAW_DRIFT_SOFT_CAP_RAD = 0.40
 WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
 
+# Opt-in walking deployment-safety thresholds.  Tilt is yaw-independent and
+# therefore does not double-count the separate heading-drift diagnostic.
+# Angular limits need no morphology scaling; torque saturation is normalized
+# by each actuator's own force limit.
+WALKING_BODY_TILT_DEG_MAX = 10.0
+WALKING_BODY_TILT_DEG_PEAK_MAX = 15.0
+WALKING_BODY_TILT_DEG_FINAL_MAX = 10.0
+WALKING_MAX_ACTUATOR_TORQUE_SAT_FRAC_MAX = 0.05
+
 # Deterministic standing promotion thresholds.  Tilt is the angle between the
 # torso and world vertical, so yaw is reported independently and cannot be
 # mistaken for reduced balance margin.  Support thresholds match the hardware
@@ -568,12 +577,61 @@ def apply_lateral_probe_gate(row: MutableMapping[str, Any]) -> bool:
     return probes_ok
 
 
+def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
+    """Return yaw-independent tilt and per-actuator saturation gates."""
+    body_tilt_deg = _metric(eval_metrics, "body_tilt_deg")
+    body_tilt_deg_peak = _metric(eval_metrics, "body_tilt_deg_peak")
+    body_tilt_deg_final_max = _metric(eval_metrics, "body_tilt_deg_final_max")
+    max_actuator_torque_sat_frac = _metric(
+        eval_metrics, "max_actuator_torque_sat_frac"
+    )
+    return {
+        "body_tilt_deg": (
+            body_tilt_deg is not None
+            and body_tilt_deg <= WALKING_BODY_TILT_DEG_MAX
+        ),
+        "body_tilt_deg_peak": (
+            body_tilt_deg_peak is not None
+            and body_tilt_deg_peak <= WALKING_BODY_TILT_DEG_PEAK_MAX
+        ),
+        "body_tilt_deg_final_max": (
+            body_tilt_deg_final_max is not None
+            and body_tilt_deg_final_max <= WALKING_BODY_TILT_DEG_FINAL_MAX
+        ),
+        "max_actuator_torque_sat_frac": (
+            max_actuator_torque_sat_frac is not None
+            and max_actuator_torque_sat_frac
+            <= WALKING_MAX_ACTUATOR_TORQUE_SAT_FRAC_MAX
+        ),
+    }
+
+
+def apply_walking_probe_safety_gate(row: MutableMapping[str, Any]) -> bool:
+    """Require every evaluated command probe to satisfy walking safety gates."""
+    evaluated = [
+        probe
+        for probe in row.get("lateral_yaw_probes", ())
+        if probe.get("skip_reason") is None
+    ]
+    probes_ok = bool(evaluated) and all(
+        bool(probe.get("safety_passed")) for probe in evaluated
+    )
+    row.setdefault("gates", {})["lateral_probe_safety"] = probes_ok
+    row.setdefault("fail_reasons", [])
+    if not probes_ok:
+        row["passed"] = False
+        if "lateral_probe_safety" not in row["fail_reasons"]:
+            row["fail_reasons"].append("lateral_probe_safety")
+    return probes_ok
+
+
 def deterministic_eval_gate(
     eval_metrics: Mapping[str, Any],
     eval_velocity_cmd: float,
     *,
     eval_num_steps: int = 500,
     strict_lateral_drift: bool = False,
+    strict_walking_safety: bool = False,
 ) -> DeterministicEvalDecision:
     """Apply deterministic post-training promotion gates.
 
@@ -619,6 +677,11 @@ def deterministic_eval_gate(
     The post-training summary surfaces both gates + soft_signals
     so a regression on sideways drift is visible even when the G4
     gates pass.
+
+    ``strict_walking_safety=True`` additionally requires yaw-independent
+    mean/peak/final torso tilt and the worst per-actuator torque-saturation
+    occupancy to clear deployment thresholds.  Missing safety metrics fail
+    closed.  This is opt-in so historical promotion decisions are unchanged.
     """
     forward_velocity = _metric(eval_metrics, "forward_velocity")
     cmd_err = _metric(eval_metrics, "cmd_vs_achieved_forward")
@@ -703,6 +766,13 @@ def deterministic_eval_gate(
                 world_y_drift_abs is not None
                 and abs(float(world_y_drift_abs)) <= WORLD_Y_DRIFT_SOFT_CAP_M
             ),
+        }
+        passed = all(gates.values())
+
+    if strict_walking_safety:
+        gates = {
+            **gates,
+            **walking_safety_gates(eval_metrics),
         }
         passed = all(gates.values())
 
