@@ -27,8 +27,9 @@ uv run python runtime/scripts/capture_servo_zero.py \
 
 The capture tool never commands servo motion. It requires explicit confirmation
 before disabling torque and another confirmation after physical alignment,
-rejects joints whose raw readings vary by more than the configured spread, and
-refuses to overwrite the active hardware configuration.
+redetects the current USB board ports, rejects joints whose raw readings vary by
+more than the configured spread, and refuses to overwrite the active hardware
+configuration. The candidate config includes the newly detected board paths.
 
 Calibration data is stored directly in the source-of-truth
 `runtime/configs/hardware_config.json`; policy bundles do not copy it.

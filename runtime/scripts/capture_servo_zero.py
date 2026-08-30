@@ -17,6 +17,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterable
 
 
@@ -27,9 +28,15 @@ _RUNTIME_ROOT = _REPO_ROOT / "runtime"
 if str(_RUNTIME_ROOT) not in sys.path:
     sys.path.insert(0, str(_RUNTIME_ROOT))
 
-from configs.config import ServoConfig, WrRuntimeConfig  # noqa: E402
+from configs.config import (  # noqa: E402
+    ServoConfig,
+    WrRuntimeConfig,
+    servo_board_name_for_joint,
+)
 from runtime.scripts.calibrate import (  # noqa: E402
+    DetectedServoBoard,
     build_calibration_controller,
+    discover_servo_boards,
     offset_from_reference_pose_units,
     read_servo_positions_best_effort,
     write_config,
@@ -118,6 +125,48 @@ def collect_position_samples(
     return samples
 
 
+def build_controller_from_discovered_ports(
+    *,
+    servo_controller_config,
+    servo_cfgs: dict[str, ServoConfig],
+    joint_names: Iterable[str],
+):
+    selected_ids = {
+        joint: int(servo_cfgs[joint].id)
+        for joint in joint_names
+    }
+    detected_boards = discover_servo_boards(
+        servo_ids_by_joint=selected_ids,
+        controller_type=str(servo_controller_config.type),
+        baudrate=int(servo_controller_config.baudrate),
+    )
+    required_board_names = {
+        servo_board_name_for_joint(joint) for joint in selected_ids
+    }
+    detected_board_names = {board.name for board in detected_boards}
+    missing_boards = sorted(required_board_names - detected_board_names)
+    if missing_boards:
+        raise RuntimeError(
+            "Could not detect USB servo boards required for the selected joints: "
+            f"{missing_boards}. Check USB connections and /dev/serial permissions."
+        )
+
+    detected_config = SimpleNamespace(
+        type=str(servo_controller_config.type),
+        port=str(getattr(servo_controller_config, "port", "")),
+        baudrate=int(servo_controller_config.baudrate),
+        boards=tuple(
+            SimpleNamespace(
+                name=board.name,
+                port=board.port,
+                servo_ids=board.servo_ids,
+            )
+            for board in detected_boards
+        ),
+    )
+    return build_calibration_controller(detected_config), detected_boards
+
+
 def analyze_zero_samples(
     *,
     joint_names: Iterable[str],
@@ -203,6 +252,7 @@ def training_pitch_bias_summary(
 def build_candidate_config(
     raw_config: dict,
     captures: Iterable[JointZeroCapture],
+    detected_boards: Iterable[DetectedServoBoard] = (),
 ) -> dict:
     candidate = copy.deepcopy(raw_config)
     servos = candidate["servo_controller"]["servos"]
@@ -210,6 +260,10 @@ def build_candidate_config(
         servos[capture.joint]["servo_offset_unit"] = int(
             capture.suggested_offset_unit
         )
+    ports_by_name = {board.name: board.port for board in detected_boards}
+    for board in candidate["servo_controller"].get("boards", []):
+        if board["name"] in ports_by_name:
+            board["port"] = ports_by_name[board["name"]]
     return candidate
 
 
@@ -344,7 +398,12 @@ def main() -> int:
         return 2
 
     servo_ids = [int(servo_cfgs[joint].id) for joint in joint_names]
-    controller = build_calibration_controller(config.hiwonder_controller)
+    print("Discovering the currently connected USB servo-board ports...")
+    controller, detected_boards = build_controller_from_discovered_ports(
+        servo_controller_config=config.hiwonder_controller,
+        servo_cfgs=servo_cfgs,
+        joint_names=joint_names,
+    )
     try:
         if not controller.unload_servos(servo_ids):
             raise RuntimeError("Failed to disable torque on all selected servos")
@@ -373,9 +432,9 @@ def main() -> int:
         )
     finally:
         try:
-            controller.unload_servos(servo_ids)
-        finally:
             controller.close()
+        except Exception as exc:
+            print(f"Warning: controller close failed: {exc}", file=sys.stderr)
 
     captures = analyze_zero_samples(
         joint_names=joint_names,
@@ -396,7 +455,11 @@ def main() -> int:
     unstable = [capture.joint for capture in captures if not capture.stable]
     candidate_config_written = False
     if output_config is not None and not unstable:
-        candidate = build_candidate_config(raw_config, captures)
+        candidate = build_candidate_config(
+            raw_config,
+            captures,
+            detected_boards,
+        )
         write_config(candidate, output_config, {})
         candidate_config_written = True
         print(f"\nWrote candidate config: {output_config}")
@@ -409,6 +472,7 @@ def main() -> int:
         "physical_reference": "operator-confirmed MuJoCo joint zero",
         "servo_motion_commanded": False,
         "servo_torque_disabled_during_capture": True,
+        "detected_servo_boards": [asdict(board) for board in detected_boards],
         "samples_per_joint": int(args.samples),
         "sample_interval_s": float(args.sample_interval_s),
         "max_spread_units": int(args.max_spread_units),
