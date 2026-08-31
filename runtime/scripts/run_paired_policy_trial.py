@@ -121,12 +121,15 @@ def _load_home_diagnostic_log(log_path: Path) -> dict[str, object]:
         for sample in final_window
         for value in sample["joint_error_deg"]
     ]
-    footswitch_order = [str(name) for name in meta["footswitch_order"]]
-    footswitch_pressed_ratio = {
-        name: sum(int(sample["footswitches"][index]) for sample in final_window)
-        / len(final_window)
-        for index, name in enumerate(footswitch_order)
-    }
+    footswitch_available = bool(meta.get("footswitch_available", True))
+    footswitch_pressed_ratio = None
+    if footswitch_available:
+        footswitch_order = [str(name) for name in meta["footswitch_order"]]
+        footswitch_pressed_ratio = {
+            name: sum(int(sample["footswitches"][index]) for sample in final_window)
+            / len(final_window)
+            for index, name in enumerate(footswitch_order)
+        }
     elapsed = [float(sample["elapsed_s"]) for sample in samples]
     sample_indices = [int(sample["sample"]) for sample in samples]
     sample_rate_hz = (
@@ -199,9 +202,8 @@ def _write_home_characterization_summary(
         float(trial["final_window_abs_pitch_rate_p95_rad_s"])
         for trial in trials
     ]
-    footswitch_names = list(
-        trials[0]["final_window_footswitch_pressed_ratio"].keys()
-    )
+    footswitch_ratios = trials[0]["final_window_footswitch_pressed_ratio"]
+    footswitch_names = list(footswitch_ratios.keys()) if footswitch_ratios else []
     aggregate = {
         "trial_count": len(trials),
         "tilt_abort_count": sum(trial["status"] == "tilt_abort" for trial in trials),
@@ -234,14 +236,18 @@ def _write_home_characterization_summary(
             "p95": _percentile(pitch_rate_p95, 95.0),
             "max": max(pitch_rate_p95),
         },
-        "final_window_footswitch_pressed_ratio": {
-            name: sum(
-                float(trial["final_window_footswitch_pressed_ratio"][name])
-                for trial in trials
-            )
-            / len(trials)
-            for name in footswitch_names
-        },
+        "final_window_footswitch_pressed_ratio": (
+            {
+                name: sum(
+                    float(trial["final_window_footswitch_pressed_ratio"][name])
+                    for trial in trials
+                )
+                / len(trials)
+                for name in footswitch_names
+            }
+            if footswitch_names
+            else None
+        ),
         "final_window_joint_error_max_deg": max(
             float(trial["final_window_joint_error_max_deg"]) for trial in trials
         ),
@@ -267,16 +273,21 @@ def _write_home_characterization_summary(
         ratios = trial["final_window_footswitch_pressed_ratio"]
         slope = trial["pitch_drift_slope_deg_s"]
         slope_text = "n/a" if slope is None else f"{float(slope):+11.3f}"
+        footswitch_text = (
+            f"{float(ratios['left_toe']):.2f} "
+            f"{float(ratios['left_heel']):.2f} "
+            f"{float(ratios['right_toe']):.2f} "
+            f"{float(ratios['right_heel']):.2f}"
+            if ratios is not None
+            else "n/a n/a n/a n/a"
+        )
         print(
             f"  {index:02d}    {str(trial['status']):<12} "
             f"{float(trial['final_pitch_deg']):+10.2f} "
             f"{float(trial['final_tilt_deg']):10.2f} "
             f"{slope_text:>11} "
             f"{float(trial['final_window_joint_error_max_deg']):13.2f} "
-            f"{float(ratios['left_toe']):.2f} "
-            f"{float(ratios['left_heel']):.2f} "
-            f"{float(ratios['right_toe']):.2f} "
-            f"{float(ratios['right_heel']):.2f}",
+            f"{footswitch_text}",
             flush=True,
         )
     drift_p50 = aggregate["pitch_drift_slope_deg_s"]["p50"]

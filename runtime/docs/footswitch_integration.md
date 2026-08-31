@@ -57,6 +57,7 @@ In `runtime/configs/hardware_config.json`, set the `foot_switches` section:
 
 ```json
 "foot_switches": {
+  "enabled": true,
   "left_toe": "D5",
   "left_heel": "D6",
   "right_toe": "D13",
@@ -65,6 +66,11 @@ In `runtime/configs/hardware_config.json`, set the `foot_switches` section:
 ```
 
 If you change wiring, update these values to match (Blinka pin names).
+
+When the switches are not installed, set `"enabled": false`. The runtime then
+skips GPIO initialization and records foot contact as unavailable. This is
+supported by contact-free standing policies such as `wr_obs_v9_standing`;
+policies that consume foot contact fail closed until the switches are enabled.
 
 ## 5) Install deps on the Pi (Blinka GPIO)
 

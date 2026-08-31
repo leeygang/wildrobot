@@ -357,6 +357,9 @@ class StandingPolicyRunner:
             "hardware_target_q_rad": hardware_target_q,
             "signals": signals,
             "hardware_signals": full_signals,
+            "footswitch_available": bool(
+                getattr(self._robot_io, "footswitch_available", True)
+            ),
             "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),

@@ -1920,6 +1920,72 @@ def test_build_hardware_robot_io_wires_concrete_classes(monkeypatch) -> None:
     assert captured["foot"]["pins"]["left_toe"] == "D5"
 
 
+def test_build_hardware_robot_io_skips_gpio_when_footswitches_disabled(
+    monkeypatch,
+) -> None:
+    import configs
+    import wr_runtime.hardware.bno085 as bno_mod
+    import wr_runtime.hardware.foot_switches as fs_mod
+    from wr_runtime.control import run_policy
+
+    captured = {}
+    _patch_ttl_servo_backend(monkeypatch, captured)
+    cfg = _fake_runtime_config()
+    cfg.foot_switches.enabled = False
+
+    class _FakeImu:
+        def __init__(self, **kwargs):
+            pass
+
+    class _UnexpectedFootSwitches:
+        def __init__(self, **kwargs):
+            raise AssertionError("GPIO foot switches must not be opened")
+
+    monkeypatch.setattr(
+        configs.WrRuntimeConfig,
+        "load",
+        staticmethod(lambda path: cfg),
+    )
+    monkeypatch.setattr(bno_mod, "BNO085IMU", _FakeImu)
+    monkeypatch.setattr(fs_mod, "FootSwitches", _UnexpectedFootSwitches)
+
+    io = run_policy._build_hardware_robot_io(
+        runtime_config_path="ignored",
+        actuator_names=["j"],
+        control_dt=0.02,
+    )
+
+    assert io.footswitch_available is False
+    assert io.foot_switches.read().switches == [False, False, False, False]
+
+
+def test_disabled_footswitches_are_allowed_only_for_contact_free_policy() -> None:
+    from wr_runtime.control import run_policy
+
+    contact_free = SimpleNamespace(
+        observation=SimpleNamespace(
+            layout_id="wr_obs_v9_standing",
+            layout=[],
+        )
+    )
+    contact_required = SimpleNamespace(
+        observation=SimpleNamespace(
+            layout_id="wr_obs_v1",
+            layout=[SimpleNamespace(name="foot_switches")],
+        )
+    )
+
+    run_policy._validate_footswitch_configuration(
+        enabled=False,
+        policy_specs=[("standing", contact_free)],
+    )
+    with pytest.raises(SystemExit, match="walking"):
+        run_policy._validate_footswitch_configuration(
+            enabled=False,
+            policy_specs=[("walking", contact_required)],
+        )
+
+
 def test_build_hardware_robot_io_uses_bno_sampling_override(monkeypatch) -> None:
     import configs
     import wr_runtime.hardware.bno085 as bno_mod
@@ -2414,6 +2480,48 @@ def test_hardware_preflight_warns_on_open_footswitch(capsys) -> None:
     out = capsys.readouterr().out
     assert "right_heel=0" in out
     assert "\033[33mWARNING: initial footswitches open at walk start" in out
+    assert "Hardware preflight OK." in out
+
+
+def test_hardware_preflight_skips_disabled_footswitches(capsys) -> None:
+    from wr_runtime.control import run_policy
+    from wr_runtime.hardware.foot_switches import DisabledFootSwitches
+
+    sample = ImuSample(
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeRobotIO:
+        actuators = SimpleNamespace(
+            port="/dev/ttyUSB0",
+            baudrate=9600,
+            servo_ids_list=[7],
+            controller=SimpleNamespace(get_battery_voltage=lambda: None),
+            get_positions_rad=lambda: np.array([0.0], dtype=np.float32),
+        )
+        imu = SimpleNamespace(read=lambda: sample, diag={})
+        foot_switches = DisabledFootSwitches()
+        _last_fresh_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_fresh_imu_sample = sample
+
+    run_policy._run_hardware_preflight(
+        robot_io=_FakeRobotIO(),
+        actuator_names=["left_hip_pitch"],
+        home_q_rad=np.array([0.0], dtype=np.float32),
+        joint_min_rad=np.array([-1.0], dtype=np.float32),
+        joint_max_rad=np.array([1.0], dtype=np.float32),
+        imu_startup_timeout_s=0.1,
+        home_tolerance_deg=25.0,
+    )
+
+    out = capsys.readouterr().out
+    assert "Footswitches: disabled by hardware config" in out
+    assert "initial footswitches open" not in out
     assert "Hardware preflight OK." in out
 
 

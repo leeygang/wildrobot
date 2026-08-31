@@ -159,7 +159,12 @@ def test_main_runs_home_then_policy_for_one_confirmed_trial(
     assert calls[1][2] == 60.0
 
 
-def _write_home_diagnostic_log(path: Path, *, status: str = "complete") -> None:
+def _write_home_diagnostic_log(
+    path: Path,
+    *,
+    status: str = "complete",
+    footswitch_available: bool = True,
+) -> None:
     meta = {
         "schema_version": 1,
         "sample_hz": 1.0,
@@ -168,6 +173,7 @@ def _write_home_diagnostic_log(path: Path, *, status: str = "complete") -> None:
         "max_tilt_deg": 15.0,
         "actuator_names": ["left_hip_pitch", "right_hip_pitch"],
         "home_target_rad": [0.0, 0.0],
+        "footswitch_available": footswitch_available,
         "footswitch_order": [
             "left_toe",
             "left_heel",
@@ -189,7 +195,9 @@ def _write_home_diagnostic_log(path: Path, *, status: str = "complete") -> None:
                 "tilt_deg": pitch,
                 "joint_pos_rad": [0.0, 0.0],
                 "joint_error_deg": [0.5, -0.5],
-                "footswitches": [1, index % 2, 0, 0],
+                "footswitches": (
+                    [1, index % 2, 0, 0] if footswitch_available else None
+                ),
                 "servo_cache_age_max_s": 0.02,
                 "servo_cache_age_leg_max_s": 0.02,
                 "servo_read_fail_count": 0,
@@ -243,6 +251,26 @@ def test_home_diagnostic_summary_reports_distribution(tmp_path: Path) -> None:
     dropped = module._load_home_diagnostic_log(dropped_log)
     assert dropped["sample_rate_hz"] == 1.0
     assert dropped["sample_capture_ratio"] == 0.75
+
+
+def test_home_diagnostic_summary_marks_disabled_footswitches_unavailable(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    trial_log = tmp_path / "disabled_footswitches.log"
+    _write_home_diagnostic_log(trial_log, footswitch_available=False)
+    module._timestamp = lambda: "20260802_120000_000000"
+
+    trial = module._load_home_diagnostic_log(trial_log)
+    summary_path = module._write_home_characterization_summary(
+        log_paths=[trial_log],
+        log_dir=tmp_path,
+        prefix="standing",
+    )
+    summary = json.loads(summary_path.read_text())
+
+    assert trial["final_window_footswitch_pressed_ratio"] is None
+    assert summary["aggregate"]["final_window_footswitch_pressed_ratio"] is None
 
 
 def test_main_home_characterization_runs_home_only_and_writes_summary(

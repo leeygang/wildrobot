@@ -251,6 +251,9 @@ def _run_home_state_diagnostics(
         control_dt=dt_s,
         loaded_runtime_config=cfg,
     )
+    footswitch_available = bool(
+        getattr(robot_io, "footswitch_available", True)
+    )
     meta = {
         "schema_version": 1,
         "sample_hz": 1.0 / dt_s,
@@ -259,6 +262,7 @@ def _run_home_state_diagnostics(
         "max_tilt_deg": max_tilt_deg,
         "actuator_names": actuator_names,
         "home_target_rad": home_ctrl_rad.astype(float).tolist(),
+        "footswitch_available": footswitch_available,
         "footswitch_order": [
             "left_toe",
             "left_heel",
@@ -304,7 +308,11 @@ def _run_home_state_diagnostics(
             quat = np.asarray(signals.quat_wxyz, dtype=np.float32)
             gyro = np.asarray(signals.gyro_rad_s, dtype=np.float32)
             joint_pos = np.asarray(signals.joint_pos_rad, dtype=np.float32)
-            footswitches = np.asarray(signals.foot_switches, dtype=np.int8)
+            footswitches = (
+                np.asarray(signals.foot_switches, dtype=np.int8)
+                if footswitch_available
+                else None
+            )
             rpy_deg = _quat_rpy_deg(quat)
             tilt_rad = _quat_tilt_rad(quat)
             tilt_deg = (
@@ -329,7 +337,11 @@ def _run_home_state_diagnostics(
                 "tilt_deg": tilt_deg,
                 "joint_pos_rad": joint_pos.astype(float).tolist(),
                 "joint_error_deg": joint_err_deg.astype(float).tolist(),
-                "footswitches": footswitches.astype(int).tolist(),
+                "footswitches": (
+                    footswitches.astype(int).tolist()
+                    if footswitches is not None
+                    else None
+                ),
                 "servo_cache_age_max_s": servo_metrics.get(
                     "servo_cache_age_max_s"
                 ),
@@ -350,7 +362,12 @@ def _run_home_state_diagnostics(
                     f"rpy_deg={_fmt_vec(rpy_deg, digits=2)} tilt_deg={tilt_deg:.2f} "
                     f"gyro={_fmt_vec(gyro, digits=4)} "
                     f"joint_err_max_deg={float(np.max(np.abs(joint_err_deg))):.2f} "
-                    f"fs={footswitches.astype(int).tolist()}",
+                    "fs="
+                    + (
+                        str(footswitches.astype(int).tolist())
+                        if footswitches is not None
+                        else "disabled"
+                    ),
                     flush=True,
                 )
 

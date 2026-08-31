@@ -126,6 +126,30 @@ class _LogStream:
         return self._mirror_console and bool(self._console_stream.isatty())
 
 
+def _policy_requires_footswitches(spec) -> bool:
+    if str(spec.observation.layout_id) == "wr_obs_v10_standing_recovery":
+        return True
+    return any(field.name == "foot_switches" for field in spec.observation.layout)
+
+
+def _validate_footswitch_configuration(
+    *,
+    enabled: bool,
+    policy_specs: Sequence[tuple[str, object]],
+) -> None:
+    if enabled:
+        return
+    required_roles = [
+        role for role, spec in policy_specs if _policy_requires_footswitches(spec)
+    ]
+    if required_roles:
+        raise SystemExit(
+            "Hardware foot switches are disabled, but these active policies "
+            f"require foot-contact input: {required_roles}. Re-enable the switches "
+            "before running them."
+        )
+
+
 class _TargetBlendRobotIO:
     """Blend initial walking writes from the final standing target."""
 
@@ -340,7 +364,7 @@ def _build_hardware_robot_io(
     from configs import WrRuntimeConfig
     from wr_runtime.hardware.actuators import HiwonderCachedActuators
     from wr_runtime.hardware.bno085 import BNO085IMU
-    from wr_runtime.hardware.foot_switches import FootSwitches
+    from wr_runtime.hardware.foot_switches import DisabledFootSwitches, FootSwitches
     from wr_runtime.hardware.hiwonder_ttl_bus import (
         RawServoBus,
         RawServoBusConfig,
@@ -497,7 +521,11 @@ def _build_hardware_robot_io(
         init_retries=cfg.bno085.init_retries,
         enable_rotation_vector=cfg.bno085.enable_rotation_vector,
     )
-    foot_switches = FootSwitches(pins=cfg.foot_switches.get_all_pins())
+    foot_switches = (
+        FootSwitches(pins=cfg.foot_switches.get_all_pins())
+        if bool(getattr(cfg.foot_switches, "enabled", True))
+        else DisabledFootSwitches()
+    )
     servo_io.start()
     return HardwareRobotIO(
         actuator_names=actuator_names,
@@ -586,6 +614,8 @@ def _format_leg_values_deg(
 
 
 def _format_foot_switches(info: dict) -> str:
+    if info.get("footswitch_available") is False:
+        return "fs=disabled"
     signals = info.get("signals")
     if signals is None:
         return ""
@@ -597,6 +627,8 @@ def _format_foot_switches(info: dict) -> str:
 
 
 def _footswitch_values(info: dict) -> list[int] | None:
+    if info.get("footswitch_available") is False:
+        return None
     signals = info.get("signals")
     if signals is None:
         return None
@@ -821,12 +853,17 @@ def _startup_home_stability_errors(
     warnings: List[str] = []
     summary: List[str] = [f"window_steps={window_steps}"]
 
-    foot_rows = [
+    footswitch_disabled = any(
+        info.get("footswitch_available") is False for info in window
+    )
+    foot_rows = [] if footswitch_disabled else [
         values
         for info in window
         if (values := _footswitch_values(info)) is not None
     ]
-    if not foot_rows:
+    if footswitch_disabled:
+        summary.append("footswitches=disabled")
+    elif not foot_rows:
         warnings.append(
             "footswitch samples unavailable during final startup home window"
         )
@@ -1397,6 +1434,9 @@ def _preflight_footswitches(
     errors: List[str],
     warnings: List[str],
 ) -> None:
+    if not bool(getattr(robot_io.foot_switches, "available", True)):
+        print("  Footswitches: disabled by hardware config", flush=True)
+        return
     try:
         sample = robot_io.foot_switches.read()
     except Exception as exc:
@@ -2219,6 +2259,18 @@ def _run_deployment_bundle_from_args(
         hardware_config_path,
         robot_config_path=deployment.robot_config_path,
     )
+    if not args.dry_run:
+        _validate_footswitch_configuration(
+            enabled=bool(getattr(hardware_cfg.foot_switches, "enabled", True)),
+            policy_specs=(
+                [("standing", standing_bundle.spec)]
+                if args.stable_only
+                else [
+                    ("standing", standing_bundle.spec),
+                    ("walking", walking_bundle.spec),
+                ]
+            ),
+        )
     walking_names = list(walking_bundle.spec.robot.actuator_names)
     standing_names = list(standing_bundle.spec.robot.actuator_names)
     if walking_names != standing_names:
@@ -2512,6 +2564,14 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"Unsupported runtime layout={layout_id!r}; supported layouts are "
             f"{_WALKING_LAYOUT_ID!r} and {sorted(_STANDING_LAYOUT_IDS)!r}."
+        )
+
+    if not args.dry_run:
+        _validate_footswitch_configuration(
+            enabled=bool(
+                getattr(loaded_hardware_config.foot_switches, "enabled", True)
+            ),
+            policy_specs=[("standing" if stable_only else "walking", bundle.spec)],
         )
 
     if stable_only:

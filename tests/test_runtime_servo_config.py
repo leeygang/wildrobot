@@ -344,6 +344,38 @@ def test_bno_transport_rejects_unknown_value(tmp_path: Path) -> None:
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
+def test_foot_switches_can_be_disabled_and_round_trip(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {
+            "servos": {
+                "left_hip_pitch": {"id": 1},
+            },
+        },
+        "foot_switches": {
+            "enabled": False,
+            "left_toe": "D5",
+            "left_heel": "D6",
+            "right_toe": "D13",
+            "right_heel": "D19",
+        },
+    }
+
+    cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+    assert cfg.foot_switches.enabled is False
+    assert cfg.to_dict()["foot_switches"] == cfg_dict["foot_switches"]
+
+
+def test_foot_switches_enabled_must_be_boolean(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "foot_switches": {"enabled": "false"},
+    }
+
+    with pytest.raises(ValueError, match="foot_switches.enabled"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
 def test_servo_read_schedule_parses_and_serializes(tmp_path: Path) -> None:
     cfg_dict = _base_config() | {
         "servo_controller": {

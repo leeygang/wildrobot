@@ -17,6 +17,7 @@ class FootSwitches:
     """
 
     ORDER = ("left_toe", "left_heel", "right_toe", "right_heel")
+    available = True
 
     def __init__(self, pins: Dict[str, str]):
         import board
@@ -44,3 +45,15 @@ class FootSwitches:
                 dio.deinit()
             except Exception:
                 pass
+
+
+class DisabledFootSwitches:
+    """No-hardware foot-switch source for policies that do not consume contact."""
+
+    available = False
+
+    def read(self) -> FootSwitchSample:
+        return FootSwitchSample(switches=[False, False, False, False])
+
+    def close(self) -> None:
+        pass

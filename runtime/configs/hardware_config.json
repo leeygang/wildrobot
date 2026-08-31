@@ -190,6 +190,7 @@
     }
   },
   "foot_switches": {
+    "enabled": false,
     "left_toe": "D5",
     "left_heel": "D6",
     "right_toe": "D13",

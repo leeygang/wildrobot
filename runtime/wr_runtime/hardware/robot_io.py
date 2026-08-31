@@ -11,7 +11,7 @@ from policy_contract.numpy.frames import normalize_quat_wxyz
 from policy_contract.numpy.signals import Signals
 
 from .actuators import Actuators
-from .foot_switches import FootSwitches
+from .foot_switches import DisabledFootSwitches, FootSwitches
 from .imu import Imu
 
 
@@ -21,7 +21,7 @@ class HardwareRobotIO(RobotIO[Signals]):
     control_dt: float
     actuators: Actuators
     imu: Imu
-    foot_switches: FootSwitches
+    foot_switches: FootSwitches | DisabledFootSwitches
     max_cached_imu_age_s: float = 0.25
 
     _imu_nonfresh_consecutive: int = 0
@@ -30,6 +30,10 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_imu_warn_time_s: float = 0.0
     last_timing_s: dict[str, float] = field(default_factory=dict, init=False)
     last_servo_metrics: dict = field(default_factory=dict, init=False)
+
+    @property
+    def footswitch_available(self) -> bool:
+        return bool(getattr(self.foot_switches, "available", True))
 
     def _imu_sample_is_startup_ready(self, imu_sample: object) -> bool:
         if not bool(getattr(imu_sample, "valid", True)):

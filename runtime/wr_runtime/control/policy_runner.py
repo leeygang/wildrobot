@@ -378,6 +378,9 @@ class RuntimePolicyRunner:
             "applied_action": applied,
             "target_q_rad": target_q,
             "signals": signals,
+            "footswitch_available": bool(
+                getattr(self._robot_io, "footswitch_available", True)
+            ),
             "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),

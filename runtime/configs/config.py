@@ -511,12 +511,14 @@ class FootSwitchConfig:
     Pin names are Blinka board designations (e.g., "D5", "D13").
 
     Attributes:
+        enabled: Whether physical foot switches are installed and should be read
         left_toe: GPIO pin name for left toe switch
         left_heel: GPIO pin name for left heel switch
         right_toe: GPIO pin name for right toe switch
         right_heel: GPIO pin name for right heel switch
     """
 
+    enabled: bool = True
     left_toe: str = "D5"
     left_heel: str = "D6"
     right_toe: str = "D13"
@@ -1079,8 +1081,12 @@ class WrRuntimeConfig:
     def _parse_foot_switch_config(data: dict) -> FootSwitchConfig:
         """Parse foot switch configuration from JSON data."""
         foot = data.get("foot_switches", {})
+        enabled = foot.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("foot_switches.enabled must be true or false")
 
         return FootSwitchConfig(
+            enabled=enabled,
             left_toe=str(foot.get("left_toe", "D5")),
             left_heel=str(foot.get("left_heel", "D6")),
             right_toe=str(foot.get("right_toe", "D13")),
@@ -1156,7 +1162,10 @@ class WrRuntimeConfig:
                 "enable_rotation_vector": bool(self.bno085.enable_rotation_vector),
                 **({"axis_map": self.bno085.axis_map} if self.bno085.axis_map is not None else {}),
             },
-            "foot_switches": self.foot_switches.get_all_pins(),
+            "foot_switches": {
+                "enabled": self.foot_switches.enabled,
+                **self.foot_switches.get_all_pins(),
+            },
             "servo_read_schedule": {
                 "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
             },
