@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
+import os
 import re
 import shlex
 import signal
@@ -14,6 +16,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import TextIO
 
 
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +33,53 @@ class ProcessResult:
     returncode: int
     timed_stop: bool
     fall_abort_seen: bool
+
+
+class _TeeStream:
+    def __init__(self, console: TextIO, log_file: TextIO, lock: threading.Lock):
+        self._console = console
+        self._log_file = log_file
+        self._lock = lock
+
+    @property
+    def encoding(self):
+        return getattr(self._console, "encoding", "utf-8")
+
+    @property
+    def errors(self):
+        return getattr(self._console, "errors", "replace")
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            self._console.write(text)
+            self._console.flush()
+            self._log_file.write(text)
+            self._log_file.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            self._console.flush()
+            self._log_file.flush()
+
+    def isatty(self) -> bool:
+        return bool(self._console.isatty())
+
+
+@contextlib.contextmanager
+def _session_log_context(log_path: Path | None):
+    if log_path is None:
+        yield
+        return
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log_file:
+        lock = threading.Lock()
+        stdout = _TeeStream(sys.stdout, log_file, lock)
+        stderr = _TeeStream(sys.stderr, log_file, lock)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            print(f"Session log: {log_path}", flush=True)
+            yield
 
 
 def _bundle_log_prefix(bundle: Path) -> str:
@@ -374,6 +424,44 @@ def _policy_command(
     ]
 
 
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    python_paths = [str(_RUNTIME_ROOT), str(_REPO_ROOT)]
+    existing = env.get("PYTHONPATH")
+    if existing:
+        python_paths.extend(
+            path
+            for path in existing.split(os.pathsep)
+            if path and path not in python_paths
+        )
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    return env
+
+
+def _preflight_policy_runtime_imports() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        "import policy_contract; import wr_runtime.control.run_policy",
+    ]
+    result = subprocess.run(
+        command,
+        cwd=_RUNTIME_ROOT,
+        env=_subprocess_env(),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        message = (
+            "Policy runtime import preflight failed before loading servos"
+            + (f":\n{detail}" if detail else ".")
+        )
+        print(f"ERROR: {message}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
+    print("Policy runtime import preflight: OK", flush=True)
+
+
 def _run_streaming(
     command: list[str],
     *,
@@ -385,6 +473,7 @@ def _run_streaming(
     process = subprocess.Popen(
         command,
         cwd=_RUNTIME_ROOT,
+        env=_subprocess_env(),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -560,6 +649,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bundle", type=Path, default=_DEFAULT_BUNDLE)
     parser.add_argument("--hardware-config", type=Path, default=_DEFAULT_CONFIG)
     parser.add_argument("--log-dir", type=Path, default=_DEFAULT_LOG_DIR)
+    parser.add_argument(
+        "--session-log",
+        type=Path,
+        default=None,
+        help="Tee the complete paired-test console output to this file.",
+    )
     args = parser.parse_args(argv)
     if args.trials is None:
         args.trials = 10 if args.home_characterization else 3
@@ -576,8 +671,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
+def _run(args: argparse.Namespace) -> int:
     bundle = args.bundle.expanduser().resolve()
     config = args.hardware_config.expanduser().resolve()
     log_dir = args.log_dir.expanduser().resolve()
@@ -587,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
         raise FileNotFoundError(f"Hardware config not found: {config}")
     log_dir.mkdir(parents=True, exist_ok=True)
     prefix = _bundle_log_prefix(bundle)
+    _preflight_policy_runtime_imports()
 
     if args.home_characterization:
         print(
@@ -731,6 +826,17 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\nAll paired trials complete.", flush=True)
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    session_log = (
+        args.session_log.expanduser().resolve()
+        if args.session_log is not None
+        else None
+    )
+    with _session_log_context(session_log):
+        return _run(args)
 
 
 if __name__ == "__main__":

@@ -248,14 +248,18 @@ the same foot placement with:
 
 ```bash
 cd runtime
-uv run python scripts/run_paired_policy_trial.py
+uv run python scripts/run_paired_policy_trial.py \
+  --session-log ../_run_policy_logs/paired_session.log
 ```
 
 The runner prompts before each of three trials, writes paired logs under
-`_run_policy_logs`, rejects home startup or motion above 15 degrees, and stops
-policy control after 60 seconds or at 20 degrees of tilt. Its two-second home
-transition followed by a hold matches ToddlerBot's initial-stand preparation,
-and it preserves the loaded home pose only during the confirmed handoff.
+`_run_policy_logs`, and `--session-log` additionally captures the complete
+wrapper and child-process console output in one shareable file. A policy-runtime
+import preflight runs before any servo is loaded. The runner rejects home
+startup or motion above 15 degrees and stops policy control after 60 seconds or
+at 20 degrees of tilt. Its two-second home transition followed by a hold matches
+ToddlerBot's initial-stand preparation, and it preserves the loaded home pose
+only during the confirmed handoff.
 
 To characterize natural-placement home states without running the policy:
 

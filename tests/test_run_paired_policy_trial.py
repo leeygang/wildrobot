@@ -105,6 +105,21 @@ def test_streaming_runner_drains_all_output_after_child_exit(tmp_path: Path) -> 
     assert sum(line.startswith("ROW ") for line in output_log.read_text().splitlines()) == 5000
 
 
+def test_streaming_runner_exposes_runtime_and_repo_packages(tmp_path: Path) -> None:
+    module = _load_module()
+    output_log = tmp_path / "imports.log"
+    command = [
+        sys.executable,
+        "-c",
+        "import policy_contract; import wr_runtime; print('imports ok')",
+    ]
+
+    result = module._run_streaming(command, output_log=output_log)
+
+    assert result.returncode == 0
+    assert "imports ok" in output_log.read_text()
+
+
 def test_main_runs_home_then_policy_for_one_confirmed_trial(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -157,6 +172,61 @@ def test_main_runs_home_then_policy_for_one_confirmed_trial(
     assert "wr_runtime.control.run_policy" in calls[1][0]
     assert calls[1][1] is None
     assert calls[1][2] == 60.0
+
+
+def test_main_session_log_captures_complete_console(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_module()
+    bundle = tmp_path / "standing_v0227_ckpt200"
+    bundle.mkdir()
+    (bundle / "policy_spec.json").write_text("{}")
+    config = tmp_path / "hardware_config.json"
+    config.write_text("{}")
+    session_log = tmp_path / "paired_session.log"
+    responses = iter(("READY", "RUN"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr(module, "_preflight_policy_runtime_imports", lambda: None)
+
+    def _fake_run(
+        command,
+        *,
+        output_log=None,
+        stop_after_first_step_s=None,
+        quiet_line_prefixes=(),
+    ):
+        print("CHILD OUTPUT", flush=True)
+        print("CHILD STDERR", file=sys.stderr, flush=True)
+        return module.ProcessResult(
+            returncode=0,
+            timed_stop=stop_after_first_step_s is not None,
+            fall_abort_seen=False,
+        )
+
+    monkeypatch.setattr(module, "_run_streaming", _fake_run)
+
+    result = module.main(
+        [
+            "--trials",
+            "1",
+            "--bundle",
+            str(bundle),
+            "--hardware-config",
+            str(config),
+            "--log-dir",
+            str(tmp_path / "logs"),
+            "--session-log",
+            str(session_log),
+        ]
+    )
+
+    assert result == 0
+    session_text = session_log.read_text()
+    assert f"Session log: {session_log}" in session_text
+    assert "Paired hardware test:" in session_text
+    assert session_text.count("CHILD OUTPUT") == 2
+    assert session_text.count("CHILD STDERR") == 2
+    assert "All paired trials complete." in session_text
 
 
 def _write_home_diagnostic_log(
