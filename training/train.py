@@ -563,6 +563,7 @@ def start_training(
         quaternion_tilt_rad,
         summarize_orientation_rollout,
         summarize_walking_orientation_rollout,
+        summarize_walking_torque_rollout,
     )
     from policy_contract.calib import JaxCalibOps
 
@@ -792,6 +793,9 @@ def start_training(
         "walking_fall_terminal_body_tilt_deg_max",
         "walking_time_to_fall_s_mean",
         "walking_time_to_fall_s_min",
+        "walking_stable_max_actuator_torque_sat_frac",
+        "walking_pre_fall_max_actuator_torque_sat_frac",
+        "walking_fall_terminal_max_actuator_torque_sat_frac",
     )
     post_training_checkpoint_label = (
         str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
@@ -1287,6 +1291,40 @@ def start_training(
                                 ctrl_dt=float(training_cfg.env.ctrl_dt),
                             )
                         )
+                        torque_rollout = jnp.stack(
+                            [
+                                rollout["metrics_vec"][
+                                    ...,
+                                    METRIC_INDEX[
+                                        f"torque/{actuator_name}/sat_frac"
+                                    ],
+                                ]
+                                for actuator_name in TORQUE_ACTUATOR_NAMES
+                            ],
+                            axis=-1,
+                        )
+                        torque_summary = summarize_walking_torque_rollout(
+                            torque_rollout,
+                            rollout["done"],
+                            rollout["truncation"],
+                            ctrl_dt=float(training_cfg.env.ctrl_dt),
+                        )
+                        for phase in ("stable", "pre_fall", "fall_terminal"):
+                            values = torque_summary.pop(
+                                f"walking_{phase}_torque_sat_frac_per_actuator"
+                            )
+                            aggregates.update(
+                                {
+                                    (
+                                        f"walking_{phase}_torque/"
+                                        f"{actuator_name}/sat_frac"
+                                    ): value
+                                    for actuator_name, value in zip(
+                                        TORQUE_ACTUATOR_NAMES, values
+                                    )
+                                }
+                            )
+                        aggregates.update(torque_summary)
                     return aggregates
 
                 def _eval_scan_body(policy_params, processor_params):
@@ -1577,6 +1615,18 @@ def start_training(
                                 for name in walking_orientation_metric_names
                             }
                         )
+                        for phase in ("stable", "pre_fall", "fall_terminal"):
+                            eval_metrics[
+                                f"walking_{phase}_torque_sat_frac_by_actuator"
+                            ] = {
+                                actuator_name: float(
+                                    eval_result[
+                                        f"walking_{phase}_torque/"
+                                        f"{actuator_name}/sat_frac"
+                                    ]
+                                )
+                                for actuator_name in TORQUE_ACTUATOR_NAMES
+                            }
                     if post_training_task == "standing":
                         decision = deterministic_standing_eval_gate(
                             eval_metrics=eval_metrics,
@@ -1798,6 +1848,22 @@ def start_training(
                                         for name in walking_orientation_metric_names
                                     }
                                 )
+                                for phase in (
+                                    "stable",
+                                    "pre_fall",
+                                    "fall_terminal",
+                                ):
+                                    probe_eval_metrics[
+                                        f"walking_{phase}_torque_sat_frac_by_actuator"
+                                    ] = {
+                                        actuator_name: float(
+                                            probe_result[
+                                                f"walking_{phase}_torque/"
+                                                f"{actuator_name}/sat_frac"
+                                            ]
+                                        )
+                                        for actuator_name in TORQUE_ACTUATOR_NAMES
+                                    }
                             probe_decision = (
                                 evaluate_lateral_yaw_pass_criterion(
                                     probe_cmd=probe_cmd,
@@ -1950,7 +2016,9 @@ def start_training(
                                 "survivor final max="
                                 f"{eval_metrics['walking_survivor_final_body_tilt_deg_max']:.2f}°  "
                                 f"falls={eval_metrics['walking_fall_env_count']:.0f}/"
-                                f"{post_training_num_envs}"
+                                f"{post_training_num_envs}  "
+                                "stable torque max="
+                                f"{eval_metrics['walking_stable_max_actuator_torque_sat_frac']:.1%}"
                             )
 
                 def _eval_select_score(row: dict[str, Any]) -> float:
@@ -2306,6 +2374,14 @@ def start_training(
                                     ): float(
                                         best_eval_metrics[
                                             "walking_fall_env_frac"
+                                        ]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_walking_stable_max_actuator_torque_sat_frac"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "walking_stable_max_actuator_torque_sat_frac"
                                         ]
                                     ),
                                 }

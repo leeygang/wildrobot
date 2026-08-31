@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict
+from typing import Dict, Tuple
 
 import jax.numpy as jnp
 
@@ -77,6 +77,47 @@ def _masked_percentile(
     return jnp.where(count > 0, sorted_values[rank], jnp.float32(0.0))
 
 
+def _walking_rollout_masks(
+    dones: jnp.ndarray,
+    truncations: jnp.ndarray,
+    *,
+    ctrl_dt: float,
+    stable_start_s: float,
+    pre_fall_window_s: float,
+) -> Tuple[jnp.ndarray, ...]:
+    done = dones > 0.5
+    truncated = truncations > 0.5
+    first_episode = (jnp.cumsum(done, axis=0) - done.astype(jnp.int32)) == 0
+    terminal_event = first_episode & done
+    failure_event = terminal_event & ~truncated
+    failed_env = jnp.any(failure_event, axis=0)
+    survivor_env = ~failed_env
+    step_index = jnp.arange(dones.shape[0], dtype=jnp.int32)[:, None]
+    stable_start_steps = int(math.ceil(stable_start_s / ctrl_dt))
+    stable_mask = (
+        first_episode
+        & survivor_env[None, :]
+        & (step_index >= stable_start_steps)
+    )
+    first_failure_index = jnp.argmax(failure_event, axis=0)
+    pre_fall_steps = max(1, int(math.ceil(pre_fall_window_s / ctrl_dt)))
+    pre_fall_mask = (
+        failed_env[None, :]
+        & (step_index < first_failure_index[None, :])
+        & (step_index >= first_failure_index[None, :] - pre_fall_steps)
+    )
+    return (
+        first_episode,
+        terminal_event,
+        failure_event,
+        failed_env,
+        survivor_env,
+        stable_mask,
+        pre_fall_mask,
+        first_failure_index,
+    )
+
+
 def summarize_walking_orientation_rollout(
     roll_rad: jnp.ndarray,
     pitch_rad: jnp.ndarray,
@@ -108,22 +149,24 @@ def summarize_walking_orientation_rollout(
         raise ValueError("walking rollout arrays must have shape (T, N)")
 
     num_steps, num_envs = roll_rad.shape
-    done = dones > 0.5
-    truncated = truncations > 0.5
-    first_episode = (jnp.cumsum(done, axis=0) - done.astype(jnp.int32)) == 0
-    terminal_event = first_episode & done
-    failure_event = terminal_event & ~truncated
-    failed_env = jnp.any(failure_event, axis=0)
-    survivor_env = ~failed_env
+    (
+        _first_episode,
+        terminal_event,
+        _failure_event,
+        failed_env,
+        survivor_env,
+        stable_mask,
+        pre_fall_mask,
+        first_failure_index,
+    ) = _walking_rollout_masks(
+        dones,
+        truncations,
+        ctrl_dt=ctrl_dt,
+        stable_start_s=stable_start_s,
+        pre_fall_window_s=pre_fall_window_s,
+    )
 
     tilt_deg = jnp.rad2deg(roll_pitch_tilt_rad(roll_rad, pitch_rad))
-    step_index = jnp.arange(num_steps, dtype=jnp.int32)[:, None]
-    stable_start_steps = int(math.ceil(stable_start_s / ctrl_dt))
-    stable_mask = (
-        first_episode
-        & survivor_env[None, :]
-        & (step_index >= stable_start_steps)
-    )
 
     has_terminal_event = jnp.any(terminal_event, axis=0)
     first_terminal_index = jnp.argmax(terminal_event, axis=0)
@@ -134,13 +177,6 @@ def summarize_walking_orientation_rollout(
     )
     final_tilt_deg = tilt_deg[final_index, jnp.arange(num_envs)]
 
-    first_failure_index = jnp.argmax(failure_event, axis=0)
-    pre_fall_steps = max(1, int(math.ceil(pre_fall_window_s / ctrl_dt)))
-    pre_fall_mask = (
-        failed_env[None, :]
-        & (step_index < first_failure_index[None, :])
-        & (step_index >= first_failure_index[None, :] - pre_fall_steps)
-    )
     terminal_fall_tilt_deg = tilt_deg[
         first_failure_index,
         jnp.arange(num_envs),
@@ -190,6 +226,84 @@ def summarize_walking_orientation_rollout(
             jnp.any(failed_env),
             jnp.min(jnp.where(failed_env, time_to_fall_s, jnp.inf)),
             jnp.float32(0.0),
+        ),
+    }
+
+
+def summarize_walking_torque_rollout(
+    torque_sat_frac: jnp.ndarray,
+    dones: jnp.ndarray,
+    truncations: jnp.ndarray,
+    *,
+    ctrl_dt: float,
+    stable_start_s: float = WALKING_STABLE_START_S,
+    pre_fall_window_s: float = WALKING_PRE_FALL_WINDOW_S,
+) -> Dict[str, jnp.ndarray]:
+    """Split per-actuator torque-limit occupancy by stable and fall phases."""
+    if torque_sat_frac.ndim != 3:
+        raise ValueError("torque_sat_frac must have shape (T, N, A)")
+    if (
+        torque_sat_frac.shape[:2] != dones.shape
+        or dones.shape != truncations.shape
+    ):
+        raise ValueError("torque, done, and truncation rollout shapes must match")
+    (
+        _first_episode,
+        _terminal_event,
+        _failure_event,
+        failed_env,
+        _survivor_env,
+        stable_mask,
+        pre_fall_mask,
+        first_failure_index,
+    ) = _walking_rollout_masks(
+        dones,
+        truncations,
+        ctrl_dt=ctrl_dt,
+        stable_start_s=stable_start_s,
+        pre_fall_window_s=pre_fall_window_s,
+    )
+
+    def _phase_mean(mask: jnp.ndarray) -> jnp.ndarray:
+        count = jnp.sum(mask)
+        return jnp.where(
+            count > 0,
+            jnp.sum(
+                jnp.where(mask[..., None], torque_sat_frac, 0.0), axis=(0, 1)
+            )
+            / count,
+            jnp.zeros(torque_sat_frac.shape[-1], dtype=jnp.float32),
+        )
+
+    stable_per_actuator = _phase_mean(stable_mask)
+    pre_fall_per_actuator = _phase_mean(pre_fall_mask)
+    terminal_fall = torque_sat_frac[
+        first_failure_index,
+        jnp.arange(torque_sat_frac.shape[1]),
+    ]
+    terminal_count = jnp.sum(failed_env)
+    terminal_per_actuator = jnp.where(
+        terminal_count > 0,
+        jnp.sum(
+            jnp.where(failed_env[:, None], terminal_fall, 0.0), axis=0
+        )
+        / terminal_count,
+        jnp.zeros(torque_sat_frac.shape[-1], dtype=jnp.float32),
+    )
+    return {
+        "walking_stable_torque_sat_frac_per_actuator": stable_per_actuator,
+        "walking_pre_fall_torque_sat_frac_per_actuator": pre_fall_per_actuator,
+        "walking_fall_terminal_torque_sat_frac_per_actuator": (
+            terminal_per_actuator
+        ),
+        "walking_stable_max_actuator_torque_sat_frac": jnp.max(
+            stable_per_actuator
+        ),
+        "walking_pre_fall_max_actuator_torque_sat_frac": jnp.max(
+            pre_fall_per_actuator
+        ),
+        "walking_fall_terminal_max_actuator_torque_sat_frac": jnp.max(
+            terminal_per_actuator
         ),
     }
 

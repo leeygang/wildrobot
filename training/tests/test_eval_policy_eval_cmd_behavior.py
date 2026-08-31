@@ -1,11 +1,13 @@
 import sys
 from types import SimpleNamespace
 
+import jax.numpy as jnp
 import pytest
 
 from training.eval.eval_policy import (
     _disable_cmd_resample_for_eval,
     _network_activation_name,
+    _startup_action_scale,
     parse_args,
 )
 
@@ -37,6 +39,13 @@ def test_eval_policy_uses_training_activation_contract() -> None:
     assert _network_activation_name(_net_cfg("ELU", "elu")) == "elu"
     with pytest.raises(ValueError, match="must match"):
         _network_activation_name(_net_cfg("elu", "silu"))
+
+
+def test_eval_policy_startup_action_ramp_matches_runtime_scale() -> None:
+    assert float(_startup_action_scale(jnp.asarray(0), 4)) == 0.25
+    assert float(_startup_action_scale(jnp.asarray(2), 4)) == 0.75
+    assert float(_startup_action_scale(jnp.asarray(3), 4)) == 1.0
+    assert float(_startup_action_scale(jnp.asarray(10), 0)) == 1.0
 
 
 def test_eval_policy_cli_requires_config(monkeypatch) -> None:

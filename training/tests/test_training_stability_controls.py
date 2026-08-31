@@ -931,10 +931,12 @@ def test_deterministic_eval_gate_strict_walking_safety() -> None:
 
     fall_aware = {
         **safe,
+        "max_actuator_torque_sat_frac": 0.20,
         "walking_stable_body_tilt_deg_mean": 4.0,
         "walking_stable_body_tilt_deg_max": 11.0,
         "walking_survivor_final_body_tilt_deg_max": 6.0,
         "walking_fall_env_frac": 0.0,
+        "walking_stable_max_actuator_torque_sat_frac": 0.04,
     }
     fall_aware_decision = deterministic_eval_gate(
         fall_aware,

@@ -590,8 +590,8 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
         eval_metrics, "walking_survivor_final_body_tilt_deg_max"
     )
     fall_env_frac = _metric(eval_metrics, "walking_fall_env_frac")
-    max_actuator_torque_sat_frac = _metric(
-        eval_metrics, "max_actuator_torque_sat_frac"
+    stable_max_actuator_torque_sat_frac = _metric(
+        eval_metrics, "walking_stable_max_actuator_torque_sat_frac"
     )
 
     if any(
@@ -601,6 +601,7 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
             stable_tilt_max,
             survivor_final_tilt_max,
             fall_env_frac,
+            stable_max_actuator_torque_sat_frac,
         )
     ):
         return {
@@ -620,9 +621,9 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
                 fall_env_frac is not None
                 and fall_env_frac <= WALKING_FALL_ENV_FRAC_MAX
             ),
-            "max_actuator_torque_sat_frac": (
-                max_actuator_torque_sat_frac is not None
-                and max_actuator_torque_sat_frac
+            "walking_stable_max_actuator_torque_sat_frac": (
+                stable_max_actuator_torque_sat_frac is not None
+                and stable_max_actuator_torque_sat_frac
                 <= WALKING_MAX_ACTUATOR_TORQUE_SAT_FRAC_MAX
             ),
         }
@@ -632,6 +633,9 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
     body_tilt_deg = _metric(eval_metrics, "body_tilt_deg")
     body_tilt_deg_peak = _metric(eval_metrics, "body_tilt_deg_peak")
     body_tilt_deg_final_max = _metric(eval_metrics, "body_tilt_deg_final_max")
+    max_actuator_torque_sat_frac = _metric(
+        eval_metrics, "max_actuator_torque_sat_frac"
+    )
     return {
         "body_tilt_deg": (
             body_tilt_deg is not None

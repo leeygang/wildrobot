@@ -40,6 +40,7 @@ from training.core.rollout import TrajectoryBatch
 from training.envs.env_info import WR_INFO_KEY
 from training.eval.standing_orientation import (
     summarize_walking_orientation_rollout,
+    summarize_walking_torque_rollout,
 )
 
 
@@ -86,6 +87,15 @@ def _network_activation_name(training_cfg) -> str:
 
 def _format_metric(value: float, fmt: str = ".3f") -> str:
     return format(float(value), fmt)
+
+
+def _startup_action_scale(step_index: jax.Array, ramp_steps: int) -> jax.Array:
+    if ramp_steps <= 0:
+        return jnp.float32(1.0)
+    return jnp.minimum(
+        (step_index.astype(jnp.float32) + 1.0) / jnp.float32(ramp_steps),
+        jnp.float32(1.0),
+    )
 
 
 def _policy_std_metrics_from_logits(
@@ -137,6 +147,7 @@ def _collect_eval_rollout(
     deterministic: bool,
     disable_cmd_resample: bool,
     disable_pushes: bool,
+    startup_action_ramp_steps: int = 0,
 ) -> tuple[TrajectoryBatch, object]:
     batch_step = jax.vmap(
         lambda state, action: env.step(
@@ -147,7 +158,7 @@ def _collect_eval_rollout(
         )
     )
 
-    def step_fn(carry, _):
+    def step_fn(carry, step_index):
         state, rng = carry
         rng, action_rng = jax.random.split(rng)
         obs = state.obs
@@ -159,6 +170,10 @@ def _collect_eval_rollout(
             action_rng,
             deterministic=deterministic,
         )
+        if startup_action_ramp_steps > 0:
+            actions = actions * _startup_action_scale(
+                step_index, startup_action_ramp_steps
+            )
         next_state = batch_step(state, actions)
         metrics_vec = next_state.metrics[METRICS_VEC_KEY]
 
@@ -178,7 +193,9 @@ def _collect_eval_rollout(
         return (next_state, rng), step_data
 
     (final_state, _), rollout = jax.lax.scan(
-        step_fn, (env_state, rng), None, length=num_steps
+        step_fn,
+        (env_state, rng),
+        jnp.arange(num_steps, dtype=jnp.int32),
     )
 
     traj = TrajectoryBatch(
@@ -324,6 +341,30 @@ def _compute_eval_metrics(
                 ctrl_dt=ctrl_dt,
             )
         )
+        torque_rollout = jnp.stack(
+            [
+                traj.metrics_vec[..., METRIC_INDEX[f"torque/{name}/sat_frac"]]
+                for name in TORQUE_ACTUATOR_NAMES
+            ],
+            axis=-1,
+        )
+        torque_summary = summarize_walking_torque_rollout(
+            torque_rollout,
+            traj.dones,
+            traj.truncations,
+            ctrl_dt=ctrl_dt,
+        )
+        for phase in ("stable", "pre_fall", "fall_terminal"):
+            values = torque_summary.pop(
+                f"walking_{phase}_torque_sat_frac_per_actuator"
+            )
+            agg_metrics.update(
+                {
+                    f"walking_{phase}_torque/{name}/sat_frac": value
+                    for name, value in zip(TORQUE_ACTUATOR_NAMES, values)
+                }
+            )
+        agg_metrics.update(torque_summary)
 
     return {k: float(v) for k, v in agg_metrics.items()}
 
@@ -360,6 +401,15 @@ def parse_args() -> argparse.Namespace:
             "Disable push perturbations during the eval rollout (passes "
             "disable_pushes=True to env.step).  Use this for clean A/B "
             "comparisons when the training config has push_enabled=true."
+        ),
+    )
+    parser.add_argument(
+        "--startup-action-ramp-s",
+        type=float,
+        default=0.0,
+        help=(
+            "Scale walking policy actions from zero to full authority during "
+            "startup. Use 0.5 to mirror the runtime policy-action ramp."
         ),
     )
     parser.add_argument("--output", type=str, default=None, help="Write metrics JSON to file")
@@ -443,6 +493,15 @@ def main() -> int:
     deterministic = not args.stochastic
     disable_cmd_resample = _disable_cmd_resample_for_eval(training_cfg.env)
     disable_pushes = bool(args.no_push)
+    startup_action_ramp_steps = max(
+        0,
+        int(
+            round(
+                float(args.startup_action_ramp_s)
+                / float(training_cfg.env.ctrl_dt)
+            )
+        ),
+    )
     traj, _ = _collect_eval_rollout(
         env=env,
         env_state=env_state,
@@ -454,6 +513,7 @@ def main() -> int:
         deterministic=deterministic,
         disable_cmd_resample=disable_cmd_resample,
         disable_pushes=disable_pushes,
+        startup_action_ramp_steps=startup_action_ramp_steps,
     )
 
     metrics = _compute_eval_metrics(
@@ -556,6 +616,10 @@ def main() -> int:
     else:
         push_state = "off (config)"
     print(f"  pushes:     {push_state}")
+    print(
+        f"  startup action ramp: {float(args.startup_action_ramp_s):.3f}s "
+        f"({startup_action_ramp_steps} steps)"
+    )
     print("=" * 60)
     print(
         "  reward_per_step="
@@ -763,6 +827,13 @@ def _print_walking_orientation(metrics: Dict[str, float]) -> None:
             f"time min/mean={metrics['walking_time_to_fall_s_min']:.2f}/"
             f"{metrics['walking_time_to_fall_s_mean']:.2f}s"
         )
+    print(
+        "    torque occupancy: "
+        f"stable={metrics['walking_stable_max_actuator_torque_sat_frac']:.1%}  "
+        f"pre-fall={metrics['walking_pre_fall_max_actuator_torque_sat_frac']:.1%}  "
+        "terminal-fall="
+        f"{metrics['walking_fall_terminal_max_actuator_torque_sat_frac']:.1%}"
+    )
 
 
 def _parse_checkpoint_iteration(checkpoint_path: Path) -> int | None:

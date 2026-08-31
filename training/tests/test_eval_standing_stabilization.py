@@ -14,6 +14,7 @@ from training.eval.eval_standing_stabilization import (
 from training.eval.standing_orientation import (
     summarize_orientation_rollout,
     summarize_walking_orientation_rollout,
+    summarize_walking_torque_rollout,
 )
 
 
@@ -268,6 +269,40 @@ def test_walking_orientation_separates_survivors_and_fall_tail() -> None:
     )
     assert np.isclose(float(summary["walking_time_to_fall_s_min"]), 0.4)
     assert np.isclose(float(summary["body_tilt_deg_peak"]), 80.0, atol=1e-3)
+
+
+def test_walking_torque_separates_stable_and_fall_phases() -> None:
+    dones = np.zeros((6, 3), dtype=np.float32)
+    truncations = np.zeros_like(dones)
+    dones[5, 0] = 1.0
+    truncations[5, 0] = 1.0
+    dones[3, 1] = 1.0
+    torque = np.zeros((6, 3, 2), dtype=np.float32)
+    torque[2:4, 0, 0] = 1.0
+    torque[1:4, 1, 1] = 1.0
+    torque[4:, 1, 0] = 1.0  # Post-reset samples must not count as stable.
+
+    summary = summarize_walking_torque_rollout(
+        torque,
+        dones,
+        truncations,
+        ctrl_dt=0.1,
+        stable_start_s=0.2,
+        pre_fall_window_s=0.2,
+    )
+
+    np.testing.assert_allclose(
+        summary["walking_stable_torque_sat_frac_per_actuator"],
+        [0.25, 0.0],
+    )
+    np.testing.assert_allclose(
+        summary["walking_pre_fall_torque_sat_frac_per_actuator"],
+        [0.0, 1.0],
+    )
+    np.testing.assert_allclose(
+        summary["walking_fall_terminal_torque_sat_frac_per_actuator"],
+        [0.0, 1.0],
+    )
 
 
 def test_paired_comparison_counts_policy_and_home_wins() -> None:
