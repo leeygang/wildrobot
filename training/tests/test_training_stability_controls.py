@@ -936,6 +936,7 @@ def test_deterministic_eval_gate_strict_walking_safety() -> None:
         "walking_stable_body_tilt_deg_max": 11.0,
         "walking_survivor_final_body_tilt_deg_max": 6.0,
         "walking_fall_env_frac": 0.0,
+        "walking_stable_sample_count": 100.0,
         "walking_stable_max_actuator_torque_sat_frac": 0.04,
     }
     fall_aware_decision = deterministic_eval_gate(
@@ -955,6 +956,15 @@ def test_deterministic_eval_gate_strict_walking_safety() -> None:
     )
     assert one_fall.passed is False
     assert one_fall.gates["walking_fall_env_frac"] is False
+
+    no_stable_window = deterministic_eval_gate(
+        {**fall_aware, "walking_stable_sample_count": 0.0},
+        eval_velocity_cmd=0.13,
+        eval_num_steps=16,
+        strict_walking_safety=True,
+    )
+    assert no_stable_window.passed is False
+    assert no_stable_window.gates["walking_stable_samples_available"] is False
 
 
 def test_apply_walking_probe_safety_gate() -> None:

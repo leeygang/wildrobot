@@ -120,6 +120,13 @@ def _load_positive_int_range(
     return (low, high)
 
 
+def _load_probability(value: Any, *, default: float, field_name: str) -> float:
+    result = default if value is None else float(value)
+    if not 0.0 <= result <= 1.0:
+        raise ValueError(f"{field_name} must be in [0, 1]; got {result}")
+    return result
+
+
 def _load_float_range(
     value: Any, *, default: Tuple[float, float], field_name: str
 ) -> Tuple[float, float]:
@@ -288,6 +295,11 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
         # v0.21.0 smoke5 — Reference State Initialization (RSI). See dataclass docstring.
         loc_ref_rsi_enabled=bool(env.get("loc_ref_rsi_enabled", False)),
+        loc_ref_rsi_probability=_load_probability(
+            env.get("loc_ref_rsi_probability"),
+            default=1.0,
+            field_name="env.loc_ref_rsi_probability",
+        ),
         # v0.20.1 smoke8b — penalty_pose anchor selector.  See dataclass docstring.
         loc_ref_penalty_pose_anchor=str(
             env.get("loc_ref_penalty_pose_anchor", "q_ref")

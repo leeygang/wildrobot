@@ -806,13 +806,16 @@ def _print_walking_orientation(metrics: Dict[str, float]) -> None:
         return
     print("=" * 60)
     print("  walking orientation (first episode; startup excluded):")
-    print(
-        "    stable survivors: "
-        f"mean={stable_mean:.2f}°  "
-        f"p95={metrics['walking_stable_body_tilt_deg_p95']:.2f}°  "
-        f"max={metrics['walking_stable_body_tilt_deg_max']:.2f}°  "
-        f"final_max={metrics['walking_survivor_final_body_tilt_deg_max']:.2f}°"
-    )
+    if metrics["walking_stable_sample_count"] > 0.0:
+        print(
+            "    stable survivors: "
+            f"mean={stable_mean:.2f}°  "
+            f"p95={metrics['walking_stable_body_tilt_deg_p95']:.2f}°  "
+            f"max={metrics['walking_stable_body_tilt_deg_max']:.2f}°  "
+            f"final_max={metrics['walking_survivor_final_body_tilt_deg_max']:.2f}°"
+        )
+    else:
+        print("    stable survivors: unavailable (rollout ends before 2.0 s)")
     print(
         "    failures:        "
         f"falls={metrics['walking_fall_env_count']:.0f}/"

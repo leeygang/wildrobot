@@ -483,6 +483,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._rsi_enabled = bool(
             getattr(self._config.env, "loc_ref_rsi_enabled", False)
         )
+        self._rsi_probability = float(
+            getattr(self._config.env, "loc_ref_rsi_probability", 1.0)
+        )
+        if not 0.0 <= self._rsi_probability <= 1.0:
+            raise ValueError(
+                "env.loc_ref_rsi_probability must be in [0, 1]; got "
+                f"{self._rsi_probability}."
+            )
         if self._rsi_enabled and self._residual_base_mode not in ("q_ref", "home"):
             raise ValueError(
                 "env.loc_ref_rsi_enabled=True requires loc_ref_residual_base in "
@@ -3324,33 +3332,42 @@ class WildRobotEnv(mjx_env.MjxEnv):
         qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(joint_qpos)
 
         # smoke5 — Reference State Initialization (RSI), train-only.  Gated on
-        # ``perturb_pose`` so clean eval (reset_for_eval's default) keeps the
-        # static standstill reset.  Override qpos with a RANDOM gait frame
-        # f and seed the reference velocity so the robot starts ON the moving
-        # manifold (velocity reward live at step 0).  prev_*/init_root/foot/
-        # touchdown fields in _make_initial_state derive from this qpos+qvel
-        # automatically; path_state_path_rot stays identity (forward-only gait
-        # is straight, so no heading-frame inconsistency).
+        # ``perturb_pose`` so clean eval stays at rest.  A probability below
+        # one mixes static home starts with random moving-reference starts,
+        # covering the deployment standing-to-walking transition without
+        # discarding RSI's full-gait-phase coverage.
         rsi_qvel = None
         rsi_step_idx = None
         if self._rsi_enabled and perturb_pose:
             rng, key_rsi = jax.random.split(rng)
+            use_rsi = jax.random.bernoulli(
+                jax.random.fold_in(key_rsi, 1),
+                p=jp.float32(self._rsi_probability),
+            )
             n_steps = int(self._offline_service.n_steps)
             f = jax.random.randint(key_rsi, (), 0, n_steps).astype(jp.int32)
             win_f = self._lookup_offline_window(f, velocity_cmd=velocity_cmd)
             q_ref_f = win_f["q_ref"].astype(jp.float32)
-            qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(q_ref_f)
+            rsi_qpos = self._init_qpos.at[self._actuator_qpos_addrs].set(q_ref_f)
             # Root = free-base body (index 1; body[0] is world).  body_pos /
             # body_quat are per-body (n_bodies, ...); take the root body's
             # height + orientation (xy stays at the env origin).
-            qpos = qpos.at[2].set(win_f["body_pos"][1, 2].astype(jp.float32))
-            qpos = qpos.at[3:7].set(win_f["body_quat"][1].astype(jp.float32))
-            rsi_qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
+            rsi_qpos = rsi_qpos.at[2].set(
+                win_f["body_pos"][1, 2].astype(jp.float32)
+            )
+            rsi_qpos = rsi_qpos.at[3:7].set(
+                win_f["body_quat"][1].astype(jp.float32)
+            )
+            moving_qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
             # Root LINEAR velocity: use pelvis_vel — the world/path-frame torso
             # velocity (≈ commanded forward).  body_lin_vel is stored
             # root-relative (≈0), so it is NOT the forward velocity.
-            rsi_qvel = rsi_qvel.at[0:3].set(win_f["pelvis_vel"].astype(jp.float32))
-            rsi_qvel = rsi_qvel.at[3:6].set(win_f["body_ang_vel"][1].astype(jp.float32))
+            moving_qvel = moving_qvel.at[0:3].set(
+                win_f["pelvis_vel"].astype(jp.float32)
+            )
+            moving_qvel = moving_qvel.at[3:6].set(
+                win_f["body_ang_vel"][1].astype(jp.float32)
+            )
             # joint velocities via one-frame finite-diff of q_ref (root vel,
             # the load-bearing RSI signal, is taken directly above).
             f_next = jp.minimum(f + 1, jp.asarray(n_steps - 1, dtype=jp.int32))
@@ -3358,8 +3375,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 f_next, velocity_cmd=velocity_cmd
             )["q_ref"].astype(jp.float32)
             joint_vel_f = (q_ref_next - q_ref_f) / jp.float32(self.dt)
-            rsi_qvel = rsi_qvel.at[self._actuator_dof_addrs].set(joint_vel_f)
-            rsi_step_idx = f
+            moving_qvel = moving_qvel.at[self._actuator_dof_addrs].set(
+                joint_vel_f
+            )
+            qpos = jp.where(use_rsi, rsi_qpos, qpos)
+            rsi_qvel = jp.where(
+                use_rsi,
+                moving_qvel,
+                jp.zeros(self._mj_model.nv, dtype=jp.float32),
+            )
+            rsi_step_idx = jp.where(use_rsi, f, jp.int32(0))
 
         # smoke9c follow-up — TB-style reset-time pose perturbation.  Only
         # active when the configured ranges are non-degenerate AND

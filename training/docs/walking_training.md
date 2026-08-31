@@ -1,9 +1,9 @@
 # WildRobot Walking Training Plan
 
-**Status:** `v0.21.0-17d3` short bidirectional-lateral diagnostic is ready.
-Initialize from the v0.21.0-17d2 checkpoint 120 actor; see the newest walking
-entry in `training/CHANGELOG.md` for the run command and promotion gates.
-**Last updated:** 2026-08-29
+**Status:** `v0.21.0-17d4` startup-transition fine-tune is ready. Initialize
+from the v0.21.0-17d2 checkpoint 120 actor; see the newest walking entry in
+`training/CHANGELOG.md` for the run command and promotion gates.
+**Last updated:** 2026-08-31
 
 **Historical sections archived:**
 

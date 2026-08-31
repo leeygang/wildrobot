@@ -8,6 +8,70 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d3-result + 17d4-ready] - 2026-08-31: train the missing startup transition
+
+The v0.21.0-17d3 run is
+`training/wandb/offline-run-20260830_215711-cab1ll8a`.  Its rank-1 checkpoint
+was iteration 60, but no checkpoint passed the strict deployment gate.
+Fall-aware 64-environment deterministic re-evaluation separated established
+walking from first-episode failures and compared checkpoint 60 with its
+v0.21.0-17d2 checkpoint-120 parent:
+
+| Metric | 17d2 checkpoint 120 | 17d3 checkpoint 60 |
+|---|---:|---:|
+| stable-survivor tilt mean | 4.44 deg | 5.07 deg |
+| stable-survivor tilt p95 | 7.12 deg | 8.05 deg |
+| stable-survivor tilt max | 10.17 deg | 12.84 deg |
+| survivor final tilt max | 5.88 deg | 5.90 deg |
+| first-episode falls | 4/64 | 6/64 |
+| forward velocity | 0.1298 m/s | 0.1131 m/s |
+| absolute lateral velocity | 0.1820 m/s | 0.1702 m/s |
+| left-hip-roll saturation | 19.27% | 20.73% |
+
+The larger lateral reward improved absolute lateral velocity by only 0.0119
+m/s while regressing falls, stable tilt, forward speed, and torque saturation.
+Therefore 17d3 is not a continuation seed.
+
+A second 64-environment, six-second screen applied the runtime's 0.5-second
+policy-action ramp.  Both candidates still fell in 6/64 environments.  For
+17d3 the ramp delayed mean failure time from 2.09 to 2.88 seconds but did not
+reduce fall count.  Stable-phase left-hip-roll saturation remained 18.49%,
+confirming that saturation is part of the established gait rather than an
+artifact of fall tails.
+
+The evaluator now uses terminal roll/pitch telemetry preserved before the
+environment auto-reset.  It reports stable-survivor mean/p95/max tilt,
+survivor-final tilt, first-episode fall rate, pre-fall/terminal tilt, and
+stable/pre-fall/terminal per-actuator torque occupancy.  Strict walking safety
+gates use the stable and fall-aware values; historical summaries retain the
+legacy fallback.
+
+`training/configs/ppo_walking_v0210_17d4_startup_mix.yaml` is the next training
+configuration.  It changes one optimization lever from 17d2:
+
+- `loc_ref_rsi_probability: 0.75`, producing approximately 75% random
+  moving-reference starts and 25% randomized static-home starts;
+- lateral reward weight remains at the 17d2 value of 1.0;
+- training remains a short 100-iteration actor initialization with a fresh
+  critic and optimizer;
+- the 64-environment, 1,000-step fall-aware safety gate remains enabled.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d4_startup_mix.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d2_deployment_band_v0210-17d2_20260828_144834-x4wnx6yw/checkpoint_120_2457600.pkl
+```
+
+Rationale: existing training resets exclusively onto moving gait frames, while
+deployment starts from stationary standing.  The mixture exposes the missing
+transition without discarding RSI's gait-cycle coverage.  This follows
+ToddlerBot's use of reference-frame initialization together with an explicit
+runtime preparation phase.  Reference: Peng et al.,
+[DeepMimic](https://arxiv.org/abs/1804.02717), for reference state
+initialization.
+
 ## [v0.21.0-17d3-ready] - 2026-08-29: short lateral-weight diagnostic with walking safety gates
 
 Prepared the next walking experiment from the v0.21.0-17d2 rank-1 diagnostic

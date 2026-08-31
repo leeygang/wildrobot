@@ -245,6 +245,7 @@ def test_walking_orientation_separates_survivors_and_fall_tail() -> None:
     assert float(summary["walking_survivor_env_count"]) == 2.0
     assert float(summary["walking_fall_env_count"]) == 1.0
     assert np.isclose(float(summary["walking_fall_env_frac"]), 1.0 / 3.0)
+    assert float(summary["walking_stable_sample_count"]) == 8.0
     assert np.isclose(
         float(summary["walking_stable_body_tilt_deg_mean"]), 5.25, atol=1e-3
     )

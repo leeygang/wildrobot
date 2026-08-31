@@ -51,6 +51,7 @@ def _root_qvel(state) -> np.ndarray:
 # ---------------------------------------------------------------------------
 def test_smoke5_rsi_levers(cfg) -> None:
     assert cfg.env.loc_ref_rsi_enabled is True
+    assert cfg.env.loc_ref_rsi_probability == pytest.approx(1.0)
     # base must FOLLOW q_ref(t): WR gait amplitude (0.91 rad) >> the ±0.25
     # residual bound, so a static base (home/ref_init) is off-manifold/unreachable.
     assert cfg.env.loc_ref_residual_base == "q_ref"
@@ -119,6 +120,17 @@ def test_smoke5_eval_reset_is_static(env) -> None:
     st = env.reset_for_eval(jax.random.PRNGKey(0))
     vx, vy, vz = _root_qvel(st)
     assert abs(vx) < 1e-6 and abs(vy) < 1e-6 and abs(vz) < 1e-6
+    assert int(np.asarray(st.info[_WR].loc_ref_offline_step_idx)) == 0
+
+
+def test_rsi_probability_zero_selects_static_training_reset(env) -> None:
+    original_probability = env._rsi_probability
+    try:
+        env._rsi_probability = 0.0
+        st = env.reset(jax.random.PRNGKey(123))
+    finally:
+        env._rsi_probability = original_probability
+    assert np.allclose(_root_qvel(st), 0.0, atol=1e-6)
     assert int(np.asarray(st.info[_WR].loc_ref_offline_step_idx)) == 0
 
 

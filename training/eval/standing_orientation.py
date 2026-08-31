@@ -201,6 +201,9 @@ def summarize_walking_orientation_rollout(
         ),
         "walking_fall_env_count": jnp.sum(failed_env.astype(jnp.float32)),
         "walking_fall_env_frac": jnp.mean(failed_env.astype(jnp.float32)),
+        "walking_stable_sample_count": jnp.sum(
+            stable_mask.astype(jnp.float32)
+        ),
         "walking_stable_body_tilt_deg_mean": _masked_mean(
             tilt_deg, stable_mask
         ),

@@ -590,6 +590,7 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
         eval_metrics, "walking_survivor_final_body_tilt_deg_max"
     )
     fall_env_frac = _metric(eval_metrics, "walking_fall_env_frac")
+    stable_sample_count = _metric(eval_metrics, "walking_stable_sample_count")
     stable_max_actuator_torque_sat_frac = _metric(
         eval_metrics, "walking_stable_max_actuator_torque_sat_frac"
     )
@@ -601,10 +602,14 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
             stable_tilt_max,
             survivor_final_tilt_max,
             fall_env_frac,
+            stable_sample_count,
             stable_max_actuator_torque_sat_frac,
         )
     ):
         return {
+            "walking_stable_samples_available": (
+                stable_sample_count is not None and stable_sample_count > 0.0
+            ),
             "walking_stable_body_tilt_deg_mean": (
                 stable_tilt_mean is not None
                 and stable_tilt_mean <= WALKING_BODY_TILT_DEG_MAX

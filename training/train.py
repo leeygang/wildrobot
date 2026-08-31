@@ -785,6 +785,7 @@ def start_training(
         "walking_survivor_env_count",
         "walking_fall_env_count",
         "walking_fall_env_frac",
+        "walking_stable_sample_count",
         "walking_stable_body_tilt_deg_mean",
         "walking_stable_body_tilt_deg_p95",
         "walking_stable_body_tilt_deg_max",
