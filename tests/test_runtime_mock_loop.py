@@ -21,6 +21,7 @@ from runtime.wr_runtime.control.run_policy import (
     _format_leg_targets_deg,
     _output_log_context,
     _print_timing_summary,
+    _startup_home_hold_steps,
     run_policy_loop,
 )
 
@@ -95,6 +96,34 @@ class _WaitableMockRobotIO(MockRobotIO):
 
     def wait_for_valid_imu_sample(self, *, timeout_s: float) -> None:
         self.imu_wait_timeouts.append(float(timeout_s))
+
+
+@pytest.mark.parametrize(
+    ("stable_only", "dry_run", "command_norm", "expected"),
+    [
+        (True, False, 0.0, 500),
+        (False, False, 0.0, 0),
+        (False, False, 0.1, 500),
+        (True, True, 0.0, 0),
+    ],
+)
+def test_startup_home_hold_steps_include_stable_only_hardware(
+    stable_only,
+    dry_run,
+    command_norm,
+    expected,
+) -> None:
+    assert (
+        _startup_home_hold_steps(
+            stable_only=stable_only,
+            dry_run=dry_run,
+            command_norm=command_norm,
+            command_deadzone=0.01,
+            duration_s=10.0,
+            ctrl_dt=0.02,
+        )
+        == expected
+    )
 
 
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):

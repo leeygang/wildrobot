@@ -401,6 +401,8 @@ def _policy_command(
     *,
     config: Path,
     bundle: Path,
+    home_seconds: float,
+    home_max_tilt_deg: float,
     fall_tilt_deg: float,
     log_steps: int,
     log_path: Path,
@@ -414,6 +416,12 @@ def _policy_command(
         "--hardware-config",
         str(config),
         "--stable-only",
+        "--startup-home-hold-s",
+        str(home_seconds),
+        "--startup-pose-blend-s",
+        str(min(2.0, float(home_seconds))),
+        "--startup-stability-max-tilt-deg",
+        str(home_max_tilt_deg),
         "--fall-tilt-deg",
         str(fall_tilt_deg),
         "--diagnostic-log-policy",
@@ -598,8 +606,8 @@ def _abort_after_home(config_path: Path, message: str) -> int:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run paired home-hold/policy trials or repeated natural-placement "
-            "home-state characterization."
+            "Run continuous home-preparation/standing-policy trials or repeated "
+            "natural-placement home-state characterization."
         )
     )
     parser.add_argument(
@@ -623,7 +631,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--home-seconds",
         type=float,
         default=60.0,
-        help="Home-hold duration per trial (default: 60).",
+        help=(
+            "Home-preparation duration before automatic standing-policy activation "
+            "(default: 60)."
+        ),
     )
     parser.add_argument(
         "--policy-seconds",
@@ -692,8 +703,9 @@ def _run(args: argparse.Namespace) -> int:
         )
     else:
         print(
-            "Paired hardware test: keep the slack tether attached and do not touch "
-            "the robot between home hold and policy.",
+            "Continuous hardware test: READY starts home preparation and then "
+            "automatically activates the standing policy in the same process. "
+            "Keep the slack tether attached.",
             flush=True,
         )
     if args.home_characterization:
@@ -715,10 +727,15 @@ def _run(args: argparse.Namespace) -> int:
     try:
         for trial in range(1, int(args.trials) + 1):
             trial_label = f"{trial:02d}"
+            ready_action = (
+                "capture home diagnostics"
+                if args.home_characterization
+                else "start continuous home preparation and standing control"
+            )
             ready = (
                 input(
                     f"\nTrial {trial_label}: place the robot, attach the slack tether, "
-                    "take top/side photos, then type READY: "
+                    f"then type READY to {ready_action}: "
                 )
                 .strip()
                 .upper()
@@ -727,28 +744,28 @@ def _run(args: argparse.Namespace) -> int:
                 print("Test stopped before loading servos.", flush=True)
                 return 0
 
-            home_log = log_dir / f"{prefix}_home_trial{trial_label}_{_timestamp()}.log"
-            print(f"Home log: {home_log}", flush=True)
-            home_result = _run_streaming(
-                _home_command(
-                    config=config,
-                    bundle=bundle,
-                    seconds=args.home_seconds,
-                    max_tilt_deg=args.home_max_tilt_deg,
-                    home_state_diagnostics=bool(args.home_characterization),
-                ),
-                output_log=home_log,
-                quiet_line_prefixes=(
-                    ("HOME_DIAGNOSTIC_SAMPLE ",)
-                    if args.home_characterization
-                    else ()
-                ),
-            )
             if args.home_characterization:
+                home_log = (
+                    log_dir
+                    / f"{prefix}_home_trial{trial_label}_{_timestamp()}.log"
+                )
+                print(f"Home log: {home_log}", flush=True)
+                home_result = _run_streaming(
+                    _home_command(
+                        config=config,
+                        bundle=bundle,
+                        seconds=args.home_seconds,
+                        max_tilt_deg=args.home_max_tilt_deg,
+                        home_state_diagnostics=True,
+                    ),
+                    output_log=home_log,
+                    quiet_line_prefixes=("HOME_DIAGNOSTIC_SAMPLE ",),
+                )
                 if home_result.returncode not in (0, 6):
                     return _abort_after_home(
                         config,
-                        f"Home diagnostics failed with exit code {home_result.returncode}.",
+                        "Home diagnostics failed with exit code "
+                        f"{home_result.returncode}.",
                     )
                 home_characterization_logs.append(home_log)
                 outcome = (
@@ -760,34 +777,20 @@ def _run(args: argparse.Namespace) -> int:
                     flush=True,
                 )
                 continue
-            if home_result.returncode != 0:
-                return _abort_after_home(
-                    config,
-                    f"Home hold failed with exit code {home_result.returncode}; policy will not start.",
-                )
 
-            handoff = (
-                input(
-                    "Home hold complete. Do not touch the robot. Confirm the tether is "
-                    "slack and no foot slid; type RUN to start policy, or ABORT: "
-                )
-                .strip()
-                .upper()
+            paired_log = (
+                log_dir / f"{prefix}_paired_trial{trial_label}_{_timestamp()}.log"
             )
-            if handoff != "RUN":
-                return _abort_after_home(config, "Policy handoff aborted.")
-
-            policy_log = (
-                log_dir / f"{prefix}_policy_trial{trial_label}_{_timestamp()}.log"
-            )
-            print(f"Policy log: {policy_log}", flush=True)
+            print(f"Combined home/policy log: {paired_log}", flush=True)
             policy_result = _run_streaming(
                 _policy_command(
                     config=config,
                     bundle=bundle,
+                    home_seconds=args.home_seconds,
+                    home_max_tilt_deg=args.home_max_tilt_deg,
                     fall_tilt_deg=args.fall_tilt_deg,
                     log_steps=args.log_steps,
-                    log_path=policy_log,
+                    log_path=paired_log,
                 ),
                 stop_after_first_step_s=args.policy_seconds,
             )
@@ -803,15 +806,16 @@ def _run(args: argparse.Namespace) -> int:
             if not clean_timed_stop and not policy_result.fall_abort_seen:
                 return _abort_after_home(
                     config,
-                    f"Policy failed unexpectedly with exit code {policy_result.returncode}.",
+                    "Continuous home/policy runtime failed unexpectedly with exit "
+                    f"code {policy_result.returncode}.",
                 )
             outcome = "fall cutoff" if policy_result.fall_abort_seen else "timed stop"
             print(
-                f"Trial {trial_label} complete ({outcome}); runtime unloaded the servos.",
+                f"Trial {trial_label} complete ({outcome}); runtime unloaded the "
+                "servos.",
                 flush=True,
             )
-            print(f"  home:   {home_log}", flush=True)
-            print(f"  policy: {policy_log}", flush=True)
+            print(f"  combined: {paired_log}", flush=True)
     except KeyboardInterrupt:
         return _abort_after_home(config, "Paired test interrupted.")
 

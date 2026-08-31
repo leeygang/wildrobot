@@ -2430,6 +2430,55 @@ def test_hardware_preflight_prints_all_statuses(capsys) -> None:
     assert "Hardware preflight OK." in out
 
 
+def test_hardware_preflight_rejects_initial_excessive_tilt(capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    half_angle = np.deg2rad(30.0) / 2.0
+    sample = ImuSample(
+        quat_wxyz=np.array(
+            [np.cos(half_angle), 0.0, np.sin(half_angle), 0.0],
+            dtype=np.float32,
+        ),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeRobotIO:
+        actuators = SimpleNamespace(
+            port="/dev/ttyUSB0",
+            baudrate=9600,
+            servo_ids_list=[7],
+            controller=SimpleNamespace(get_battery_voltage=lambda: None),
+            get_positions_rad=lambda: np.array([0.0], dtype=np.float32),
+        )
+        imu = SimpleNamespace(read=lambda: sample, diag={})
+        foot_switches = SimpleNamespace(
+            available=False,
+            read=lambda: SimpleNamespace(switches=np.zeros(4, dtype=np.float32)),
+        )
+        _last_fresh_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_fresh_imu_sample = sample
+
+    with pytest.raises(SystemExit, match=r"initial body tilt 30\.0deg > 15\.0deg"):
+        run_policy._run_hardware_preflight(
+            robot_io=_FakeRobotIO(),
+            actuator_names=["left_hip_pitch"],
+            home_q_rad=np.array([0.0], dtype=np.float32),
+            joint_min_rad=np.array([-1.0], dtype=np.float32),
+            joint_max_rad=np.array([1.0], dtype=np.float32),
+            imu_startup_timeout_s=0.1,
+            home_tolerance_deg=25.0,
+            max_tilt_deg=15.0,
+        )
+
+    out = capsys.readouterr().out
+    assert "tilt=30.0deg" in out
+    assert "Hardware preflight FAILED" in out
+
+
 def test_hardware_preflight_warns_on_open_footswitch(capsys) -> None:
     from wr_runtime.control import run_policy
 

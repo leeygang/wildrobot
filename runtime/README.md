@@ -252,14 +252,16 @@ uv run python scripts/run_paired_policy_trial.py \
   --session-log ../_run_policy_logs/paired_session.log
 ```
 
-The runner prompts before each of three trials, writes paired logs under
-`_run_policy_logs`, and `--session-log` additionally captures the complete
-wrapper and child-process console output in one shareable file. A policy-runtime
-import preflight runs before any servo is loaded. The runner rejects home
-startup or motion above 15 degrees and stops policy control after 60 seconds or
-at 20 degrees of tilt. Its two-second home transition followed by a hold matches
-ToddlerBot's initial-stand preparation, and it preserves the loaded home pose
-only during the confirmed handoff.
+The runner prompts once before each of three trials. `READY` starts a single
+runtime process that blends from measured joint positions to home for two
+seconds, holds home for the remainder of `--home-seconds`, resets policy state,
+and automatically activates the standing policy without restarting the IMU or
+unloading servos. Each trial writes one combined log under `_run_policy_logs`;
+`--session-log` additionally captures the wrapper output in one shareable file.
+A policy-runtime import preflight runs before any servo is loaded. The runner
+rejects startup or motion above 15 degrees and stops policy control after 60
+seconds or at 20 degrees of tilt. This continuous preparation-to-policy handoff
+matches ToddlerBot's initial-stand control-loop pattern.
 
 To characterize natural-placement home states without running the policy:
 

@@ -302,6 +302,23 @@ def _policy_loop_max_steps(
     return int(max_steps)
 
 
+def _startup_home_hold_steps(
+    *,
+    stable_only: bool,
+    dry_run: bool,
+    command_norm: float,
+    command_deadzone: float,
+    duration_s: float,
+    ctrl_dt: float,
+) -> int:
+    """Return startup preparation steps for standing or commanded walking."""
+    if bool(dry_run) or float(duration_s) <= 0.0:
+        return 0
+    if not bool(stable_only) and float(command_norm) <= float(command_deadzone):
+        return 0
+    return max(1, int(round(float(duration_s) / max(float(ctrl_dt), 1e-9))))
+
+
 def _native_17d_runtime_plan(
     spec, *, policy_role: str
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
@@ -1242,6 +1259,7 @@ def _run_hardware_preflight(
     joint_max_rad: np.ndarray,
     imu_startup_timeout_s: float,
     home_tolerance_deg: float,
+    max_tilt_deg: float | None = None,
 ) -> None:
     """Print and validate hardware state before the policy writes commands."""
     errors: List[str] = []
@@ -1261,6 +1279,7 @@ def _run_hardware_preflight(
     _preflight_imu(
         robot_io=robot_io,
         imu_startup_timeout_s=imu_startup_timeout_s,
+        max_tilt_deg=max_tilt_deg,
         errors=errors,
     )
     _preflight_footswitches(
@@ -1380,7 +1399,13 @@ def _preflight_servos(
         )
 
 
-def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str]) -> None:
+def _preflight_imu(
+    *,
+    robot_io,
+    imu_startup_timeout_s: float,
+    max_tilt_deg: float | None,
+    errors: List[str],
+) -> None:
     try:
         if hasattr(robot_io, "wait_for_valid_imu_sample"):
             robot_io.wait_for_valid_imu_sample(timeout_s=float(imu_startup_timeout_s))
@@ -1397,6 +1422,9 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
     quat = np.asarray(getattr(sample, "quat_wxyz", []), dtype=np.float32).reshape(-1)
     gyro = np.asarray(getattr(sample, "gyro_rad_s", []), dtype=np.float32).reshape(-1)
     quat_norm = float(np.linalg.norm(quat)) if quat.size == 4 else float("nan")
+    tilt_rad = _quat_wxyz_tilt_rad(quat)
+    tilt_deg = None if tilt_rad is None else float(math.degrees(tilt_rad))
+    tilt_text = "n/a" if tilt_deg is None else f"{tilt_deg:.1f}deg"
     imu = robot_io.imu
     diag = getattr(imu, "diag", None)
     diag_text = f" diag={diag}" if diag else ""
@@ -1406,6 +1434,7 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
         f"fresh={fresh} "
         f"quat={np.round(quat, 4).tolist()} "
         f"quat_norm={quat_norm:.3f} "
+        f"tilt={tilt_text} "
         f"gyro={np.round(gyro, 4).tolist()} "
         f"errors={getattr(imu, 'error_count', 0)} "
         f"last_error={getattr(imu, 'last_error', None)}"
@@ -1423,6 +1452,14 @@ def _preflight_imu(*, robot_io, imu_startup_timeout_s: float, errors: List[str])
     ):
         errors.append(
             f"IMU quaternion is invalid: quat={quat.tolist()} norm={quat_norm:.3f}"
+        )
+    elif (
+        max_tilt_deg is not None
+        and tilt_deg is not None
+        and tilt_deg > float(max_tilt_deg)
+    ):
+        errors.append(
+            f"initial body tilt {tilt_deg:.1f}deg > {float(max_tilt_deg):.1f}deg"
         )
     if gyro.size != 3 or not np.all(np.isfinite(gyro)):
         errors.append(f"IMU gyro is invalid: gyro={gyro.tolist()}")
@@ -1528,9 +1565,11 @@ def _run_startup_home_hold(
             )
             foot_summary = _format_foot_switches(info)
             foot_text = f" {foot_summary}" if foot_summary else ""
+            orientation = _format_base_orientation(info.get("signals"))
+            orientation_text = f" {orientation}" if orientation else ""
             print(
                 f"[startup_home {step + 1:4d}/{hold_steps:4d}] "
-                f"leg_err|max_deg={err_text}{foot_text} "
+                f"leg_err|max_deg={err_text}{foot_text}{orientation_text} "
                 f"{_format_step_timing(timing_s)}",
                 flush=True,
             )
@@ -2060,9 +2099,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=float,
         default=2.0,
         help=(
-            "Hardware only: for nonzero velocity commands, hold the bundled home "
-            "pose for this many seconds before starting the policy, then reset "
-            "policy state (default: 2.0; set 0 to disable)."
+            "Hardware only: before stable-only control or a nonzero walking "
+            "command, hold the bundled home pose for this many seconds, then "
+            "reset policy state (default: 2.0; set 0 to disable)."
         ),
     )
     parser.add_argument(
@@ -2070,9 +2109,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=float,
         default=_STARTUP_POSE_BLEND_S,
         help=(
-            "Integrated hardware bundle only: linearly blend from the measured "
-            "servo pose to standing policy targets before enforcing the stability "
-            f"gate (default: {_STARTUP_POSE_BLEND_S:.1f}; set 0 to disable)."
+            "Hardware standing startup: linearly blend from the measured servo "
+            "pose to bundled home before enforcing the stability gate "
+            f"(default: {_STARTUP_POSE_BLEND_S:.1f}; set 0 to disable)."
         ),
     )
     parser.add_argument(
@@ -2310,6 +2349,7 @@ def _run_deployment_bundle_from_args(
                     joint_max_rad=hardware_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
+                    max_tilt_deg=float(args.startup_stability_max_tilt_deg),
                 )
             except BaseException:
                 base_robot_io.close()
@@ -2639,6 +2679,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                     joint_max_rad=hardware_joint_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
+                    max_tilt_deg=float(args.startup_stability_max_tilt_deg),
                 )
             except BaseException:
                 try:
@@ -2651,8 +2692,55 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                 f"(timeout {float(args.imu_startup_timeout_s):.1f}s)...",
                 flush=True,
             )
-            robot_io.wait_for_valid_imu_sample(timeout_s=float(args.imu_startup_timeout_s))
+            robot_io.wait_for_valid_imu_sample(
+                timeout_s=float(args.imu_startup_timeout_s)
+            )
         realtime = not args.no_realtime
+
+    startup_pose_blend_steps = 0
+    if (
+        stable_only
+        and not bool(args.dry_run)
+        and float(args.startup_home_hold_s) > 0.0
+        and float(args.startup_pose_blend_s) > 0.0
+    ):
+        startup_home_steps = max(
+            1,
+            int(round(float(args.startup_home_hold_s) / max(float(ctrl_dt), 1e-9))),
+        )
+        startup_pose_blend_steps = min(
+            startup_home_steps,
+            max(
+                1,
+                int(
+                    round(
+                        float(args.startup_pose_blend_s)
+                        / max(float(ctrl_dt), 1e-9)
+                    )
+                ),
+            ),
+        )
+        try:
+            initial_signals = robot_io.read()
+        except BaseException:
+            robot_io.close()
+            raise
+        initial_q = np.asarray(
+            initial_signals.joint_pos_rad, dtype=np.float32
+        ).reshape(-1)
+        if initial_q.size != len(hardware_actuator_names) or not np.all(
+            np.isfinite(initial_q)
+        ):
+            robot_io.close()
+            raise SystemExit(
+                "Cannot start standing pose blend: initial joint readback is invalid "
+                f"(size={initial_q.size}, expected={len(hardware_actuator_names)})."
+            )
+        robot_io = _TargetBlendRobotIO(
+            robot_io,
+            initial_target=initial_q,
+            blend_steps=startup_pose_blend_steps,
+        )
 
     zero_cmd_hold_home_deadzone = (
         None
@@ -2679,16 +2767,14 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     startup_deadzone = 0.0 if zero_cmd_hold_home_deadzone is None else float(
         zero_cmd_hold_home_deadzone
     )
-    startup_home_hold_steps = 0
-    if (
-        not bool(args.dry_run)
-        and cmd_norm > startup_deadzone
-        and float(args.startup_home_hold_s) > 0.0
-    ):
-        startup_home_hold_steps = max(
-            1,
-            int(round(float(args.startup_home_hold_s) / max(float(ctrl_dt), 1e-9))),
-        )
+    startup_home_hold_steps = _startup_home_hold_steps(
+        stable_only=stable_only,
+        dry_run=bool(args.dry_run),
+        command_norm=cmd_norm,
+        command_deadzone=startup_deadzone,
+        duration_s=float(args.startup_home_hold_s),
+        ctrl_dt=float(ctrl_dt),
+    )
     startup_command_ramp_steps = 0
     if cmd_norm > startup_deadzone and float(args.startup_command_ramp_s) > 0.0:
         startup_command_ramp_steps = max(
@@ -2720,6 +2806,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         f"| stable_only={stable_only} "
         f"| zero_cmd_hold_home={zero_cmd_hold_home_deadzone is not None} "
         f"| startup_home_hold_steps={startup_home_hold_steps} "
+        f"| startup_pose_blend_steps={startup_pose_blend_steps} "
         f"| confirm_before_walk={bool(args.confirm_before_walk)} "
         f"| startup_stability_check={not bool(args.disable_startup_stability_check)} "
         f"| startup_stability_max_tilt_deg={startup_stability_max_tilt_deg:.1f} "

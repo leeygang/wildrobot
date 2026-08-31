@@ -50,6 +50,8 @@ def test_paired_trial_commands_use_runtime_frame_cutoff_and_diagnostics(
     policy = module._policy_command(
         config=config,
         bundle=bundle,
+        home_seconds=10.0,
+        home_max_tilt_deg=15.0,
         fall_tilt_deg=20.0,
         log_steps=5,
         log_path=policy_log,
@@ -63,6 +65,9 @@ def test_paired_trial_commands_use_runtime_frame_cutoff_and_diagnostics(
     assert "--home-state-diagnostics" in home_diagnostics
     assert "--stable-only" in policy
     assert "--diagnostic-log-policy" in policy
+    assert policy[policy.index("--startup-home-hold-s") + 1] == "10.0"
+    assert policy[policy.index("--startup-pose-blend-s") + 1] == "2.0"
+    assert policy[policy.index("--startup-stability-max-tilt-deg") + 1] == "15.0"
     assert policy[policy.index("--fall-tilt-deg") + 1] == "20.0"
     assert policy[policy.index("--log") + 1] == str(policy_log)
 
@@ -120,7 +125,7 @@ def test_streaming_runner_exposes_runtime_and_repo_packages(tmp_path: Path) -> N
     assert "imports ok" in output_log.read_text()
 
 
-def test_main_runs_home_then_policy_for_one_confirmed_trial(
+def test_main_runs_home_and_policy_in_one_process_for_one_confirmed_trial(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_module()
@@ -130,8 +135,7 @@ def test_main_runs_home_then_policy_for_one_confirmed_trial(
     config = tmp_path / "hardware_config.json"
     config.write_text("{}")
     log_dir = tmp_path / "logs"
-    responses = iter(("READY", "RUN"))
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "READY")
     monkeypatch.setattr(module, "_timestamp", lambda: "20260802_120000_000000")
 
     calls = []
@@ -166,12 +170,13 @@ def test_main_runs_home_then_policy_for_one_confirmed_trial(
     )
 
     assert result == 0
-    assert len(calls) == 2
-    assert calls[0][1].name.startswith("v0227_ckpt200_home_trial01_")
-    assert calls[0][2] is None
-    assert "wr_runtime.control.run_policy" in calls[1][0]
-    assert calls[1][1] is None
-    assert calls[1][2] == 60.0
+    assert len(calls) == 1
+    assert "wr_runtime.control.run_policy" in calls[0][0]
+    assert calls[0][0][calls[0][0].index("--startup-home-hold-s") + 1] == "60.0"
+    assert calls[0][1] is None
+    assert calls[0][2] == 60.0
+    log_path = Path(calls[0][0][calls[0][0].index("--log") + 1])
+    assert log_path.name.startswith("v0227_ckpt200_paired_trial01_")
 
 
 def test_main_session_log_captures_complete_console(
@@ -184,8 +189,7 @@ def test_main_session_log_captures_complete_console(
     config = tmp_path / "hardware_config.json"
     config.write_text("{}")
     session_log = tmp_path / "paired_session.log"
-    responses = iter(("READY", "RUN"))
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setattr("builtins.input", lambda _prompt: "READY")
     monkeypatch.setattr(module, "_preflight_policy_runtime_imports", lambda: None)
 
     def _fake_run(
@@ -223,9 +227,9 @@ def test_main_session_log_captures_complete_console(
     assert result == 0
     session_text = session_log.read_text()
     assert f"Session log: {session_log}" in session_text
-    assert "Paired hardware test:" in session_text
-    assert session_text.count("CHILD OUTPUT") == 2
-    assert session_text.count("CHILD STDERR") == 2
+    assert "Continuous hardware test:" in session_text
+    assert session_text.count("CHILD OUTPUT") == 1
+    assert session_text.count("CHILD STDERR") == 1
     assert "All paired trials complete." in session_text
 
 
