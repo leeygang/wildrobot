@@ -929,6 +929,31 @@ def test_deterministic_eval_gate_strict_walking_safety() -> None:
     assert missing.passed is False
     assert missing.gates["max_actuator_torque_sat_frac"] is False
 
+    fall_aware = {
+        **safe,
+        "walking_stable_body_tilt_deg_mean": 4.0,
+        "walking_stable_body_tilt_deg_max": 11.0,
+        "walking_survivor_final_body_tilt_deg_max": 6.0,
+        "walking_fall_env_frac": 0.0,
+    }
+    fall_aware_decision = deterministic_eval_gate(
+        fall_aware,
+        eval_velocity_cmd=0.13,
+        eval_num_steps=1000,
+        strict_walking_safety=True,
+    )
+    assert fall_aware_decision.passed is True
+    assert fall_aware_decision.gates["walking_fall_env_frac"] is True
+
+    one_fall = deterministic_eval_gate(
+        {**fall_aware, "walking_fall_env_frac": 1.0 / 64.0},
+        eval_velocity_cmd=0.13,
+        eval_num_steps=1000,
+        strict_walking_safety=True,
+    )
+    assert one_fall.passed is False
+    assert one_fall.gates["walking_fall_env_frac"] is False
+
 
 def test_apply_walking_probe_safety_gate() -> None:
     from training.core.post_training_eval import apply_walking_probe_safety_gate

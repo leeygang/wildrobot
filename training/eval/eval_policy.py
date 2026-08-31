@@ -31,12 +31,16 @@ from training.exports.export_onnx import get_checkpoint_dims
 from training.core.metrics_registry import (
     METRIC_INDEX,
     METRICS_VEC_KEY,
+    TORQUE_ACTUATOR_NAMES,
     aggregate_metrics,
     truncation_from_metrics_vec,
 )
 from training.algos.ppo.ppo_core import create_networks, sample_actions
 from training.core.rollout import TrajectoryBatch
 from training.envs.env_info import WR_INFO_KEY
+from training.eval.standing_orientation import (
+    summarize_walking_orientation_rollout,
+)
 
 
 def _eval_cmd_is_overridden(env_cfg) -> bool:
@@ -195,7 +199,13 @@ def _collect_eval_rollout(
     return traj, final_state
 
 
-def _compute_eval_metrics(traj: TrajectoryBatch, num_steps: int) -> Dict[str, float]:
+def _compute_eval_metrics(
+    traj: TrajectoryBatch,
+    num_steps: int,
+    *,
+    ctrl_dt: float = 0.02,
+    include_walking_orientation: bool = False,
+) -> Dict[str, float]:
     agg_metrics = aggregate_metrics(traj.metrics_vec, traj.dones)
 
     # rollout_reward_sum: per-env sum-over-rollout-window, mean across
@@ -274,6 +284,15 @@ def _compute_eval_metrics(traj: TrajectoryBatch, num_steps: int) -> Dict[str, fl
     debug_action_abs_mean = jnp.mean(action_abs)
     debug_action_abs_max = jnp.max(action_abs)
 
+    max_actuator_torque_sat_frac = jnp.max(
+        jnp.stack(
+            [
+                agg_metrics[f"torque/{name}/sat_frac"]
+                for name in TORQUE_ACTUATOR_NAMES
+            ]
+        )
+    )
+
     agg_metrics.update(
         {
             "rollout_reward_sum": rollout_reward_sum,
@@ -291,9 +310,20 @@ def _compute_eval_metrics(traj: TrajectoryBatch, num_steps: int) -> Dict[str, fl
             "soft_violation_roll_frac": soft_violation_roll_frac,
             "debug/action_abs_mean": debug_action_abs_mean,
             "debug/action_abs_max": debug_action_abs_max,
+            "max_actuator_torque_sat_frac": max_actuator_torque_sat_frac,
             "total_done": total_done,
         }
     )
+    if include_walking_orientation:
+        agg_metrics.update(
+            summarize_walking_orientation_rollout(
+                traj.metrics_vec[..., METRIC_INDEX["debug/roll"]],
+                traj.metrics_vec[..., METRIC_INDEX["debug/pitch"]],
+                traj.dones,
+                traj.truncations,
+                ctrl_dt=ctrl_dt,
+            )
+        )
 
     return {k: float(v) for k, v in agg_metrics.items()}
 
@@ -426,7 +456,17 @@ def main() -> int:
         disable_pushes=disable_pushes,
     )
 
-    metrics = _compute_eval_metrics(traj, training_cfg.ppo.rollout_steps)
+    metrics = _compute_eval_metrics(
+        traj,
+        training_cfg.ppo.rollout_steps,
+        ctrl_dt=float(training_cfg.env.ctrl_dt),
+        include_walking_orientation=(
+            str(
+                getattr(training_cfg.ppo.eval, "post_training_task", "walking")
+            ).lower()
+            == "walking"
+        ),
+    )
     distribution = ppo_network.parametric_action_distribution
     policy_logits = ppo_network.policy_network.apply(
         processor_params, policy_params, traj.obs
@@ -540,6 +580,7 @@ def main() -> int:
     _print_policy_diagnostics(metrics)
     _print_torque_dashboard(metrics)
     _print_walking_dashboard(metrics)
+    _print_walking_orientation(metrics)
 
     if args.compare_metrics:
         compare_path = Path(args.compare_metrics)
@@ -691,6 +732,36 @@ def _print_walking_dashboard(metrics: Dict[str, float]) -> None:
             f"    info ref/body_quat_err_deg < 10°   : "
             f"{_format_metric(bq_err, '.2f')}°  "
             f"{'PASS' if bq_err < 10.0 else 'over'}"
+        )
+
+
+def _print_walking_orientation(metrics: Dict[str, float]) -> None:
+    """Print survivor posture separately from first-episode falls."""
+    stable_mean = metrics.get("walking_stable_body_tilt_deg_mean")
+    if stable_mean is None:
+        return
+    print("=" * 60)
+    print("  walking orientation (first episode; startup excluded):")
+    print(
+        "    stable survivors: "
+        f"mean={stable_mean:.2f}°  "
+        f"p95={metrics['walking_stable_body_tilt_deg_p95']:.2f}°  "
+        f"max={metrics['walking_stable_body_tilt_deg_max']:.2f}°  "
+        f"final_max={metrics['walking_survivor_final_body_tilt_deg_max']:.2f}°"
+    )
+    print(
+        "    failures:        "
+        f"falls={metrics['walking_fall_env_count']:.0f}/"
+        f"{metrics['walking_survivor_env_count'] + metrics['walking_fall_env_count']:.0f} "
+        f"({metrics['walking_fall_env_frac']:.1%})"
+    )
+    if metrics["walking_fall_env_count"] > 0.0:
+        print(
+            "    fall trajectory: "
+            f"pre-fall max={metrics['walking_pre_fall_body_tilt_deg_max']:.2f}°  "
+            f"terminal max={metrics['walking_fall_terminal_body_tilt_deg_max']:.2f}°  "
+            f"time min/mean={metrics['walking_time_to_fall_s_min']:.2f}/"
+            f"{metrics['walking_time_to_fall_s_mean']:.2f}s"
         )
 
 

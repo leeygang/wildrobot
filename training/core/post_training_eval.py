@@ -90,6 +90,7 @@ WORLD_Y_DRIFT_SOFT_CAP_M = 0.30
 WALKING_BODY_TILT_DEG_MAX = 10.0
 WALKING_BODY_TILT_DEG_PEAK_MAX = 15.0
 WALKING_BODY_TILT_DEG_FINAL_MAX = 10.0
+WALKING_FALL_ENV_FRAC_MAX = 0.0
 WALKING_MAX_ACTUATOR_TORQUE_SAT_FRAC_MAX = 0.05
 
 # Deterministic standing promotion thresholds.  Tilt is the angle between the
@@ -578,13 +579,59 @@ def apply_lateral_probe_gate(row: MutableMapping[str, Any]) -> bool:
 
 
 def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
-    """Return yaw-independent tilt and per-actuator saturation gates."""
-    body_tilt_deg = _metric(eval_metrics, "body_tilt_deg")
-    body_tilt_deg_peak = _metric(eval_metrics, "body_tilt_deg_peak")
-    body_tilt_deg_final_max = _metric(eval_metrics, "body_tilt_deg_final_max")
+    """Return fall-aware walking posture and actuator-saturation gates."""
+    stable_tilt_mean = _metric(
+        eval_metrics, "walking_stable_body_tilt_deg_mean"
+    )
+    stable_tilt_max = _metric(
+        eval_metrics, "walking_stable_body_tilt_deg_max"
+    )
+    survivor_final_tilt_max = _metric(
+        eval_metrics, "walking_survivor_final_body_tilt_deg_max"
+    )
+    fall_env_frac = _metric(eval_metrics, "walking_fall_env_frac")
     max_actuator_torque_sat_frac = _metric(
         eval_metrics, "max_actuator_torque_sat_frac"
     )
+
+    if any(
+        value is not None
+        for value in (
+            stable_tilt_mean,
+            stable_tilt_max,
+            survivor_final_tilt_max,
+            fall_env_frac,
+        )
+    ):
+        return {
+            "walking_stable_body_tilt_deg_mean": (
+                stable_tilt_mean is not None
+                and stable_tilt_mean <= WALKING_BODY_TILT_DEG_MAX
+            ),
+            "walking_stable_body_tilt_deg_max": (
+                stable_tilt_max is not None
+                and stable_tilt_max <= WALKING_BODY_TILT_DEG_PEAK_MAX
+            ),
+            "walking_survivor_final_body_tilt_deg_max": (
+                survivor_final_tilt_max is not None
+                and survivor_final_tilt_max <= WALKING_BODY_TILT_DEG_FINAL_MAX
+            ),
+            "walking_fall_env_frac": (
+                fall_env_frac is not None
+                and fall_env_frac <= WALKING_FALL_ENV_FRAC_MAX
+            ),
+            "max_actuator_torque_sat_frac": (
+                max_actuator_torque_sat_frac is not None
+                and max_actuator_torque_sat_frac
+                <= WALKING_MAX_ACTUATOR_TORQUE_SAT_FRAC_MAX
+            ),
+        }
+
+    # Backward compatibility for saved summaries produced before fall-aware
+    # walking metrics were available.
+    body_tilt_deg = _metric(eval_metrics, "body_tilt_deg")
+    body_tilt_deg_peak = _metric(eval_metrics, "body_tilt_deg_peak")
+    body_tilt_deg_final_max = _metric(eval_metrics, "body_tilt_deg_final_max")
     return {
         "body_tilt_deg": (
             body_tilt_deg is not None

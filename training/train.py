@@ -558,8 +558,11 @@ def start_training(
     from training.configs.training_config import get_robot_config
     from training.eval.standing_orientation import (
         STANDING_FINAL_WINDOW_S,
+        WALKING_PRE_FALL_WINDOW_S,
+        WALKING_STABLE_START_S,
         quaternion_tilt_rad,
         summarize_orientation_rollout,
+        summarize_walking_orientation_rollout,
     )
     from policy_contract.calib import JaxCalibOps
 
@@ -776,6 +779,19 @@ def start_training(
             "post_training_strict_walking_safety",
             False,
         )
+    )
+    walking_orientation_metric_names = (
+        "walking_survivor_env_count",
+        "walking_fall_env_count",
+        "walking_fall_env_frac",
+        "walking_stable_body_tilt_deg_mean",
+        "walking_stable_body_tilt_deg_p95",
+        "walking_stable_body_tilt_deg_max",
+        "walking_survivor_final_body_tilt_deg_max",
+        "walking_pre_fall_body_tilt_deg_max",
+        "walking_fall_terminal_body_tilt_deg_max",
+        "walking_time_to_fall_s_mean",
+        "walking_time_to_fall_s_min",
     )
     post_training_checkpoint_label = (
         str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
@@ -1034,6 +1050,7 @@ def start_training(
                     METRIC_INDEX,
                     METRICS_VEC_KEY,
                     TORQUE_ACTUATOR_NAMES,
+                    truncation_from_metrics_vec,
                 )
                 from training.envs.env_info import PRIVILEGED_OBS_DIM, WR_INFO_KEY
 
@@ -1239,14 +1256,35 @@ def start_training(
                             for actuator_name, value in actuator_torque_sat.items()
                         }
                     )
-                    if post_training_task == "standing" or (
-                        post_training_task == "walking"
-                        and post_training_strict_walking_safety
-                    ):
+                    if post_training_task == "standing":
                         aggregates.update(
                             summarize_orientation_rollout(
                                 rollout["root_quat_wxyz"],
                                 final_window_steps=orientation_final_window_steps,
+                            )
+                        )
+                    elif post_training_strict_walking_safety:
+                        # Walking auto-resets return a reset-state quaternion on
+                        # terminal steps.  The metrics vector preserves the
+                        # terminal roll/pitch, so use it for fall-aware posture
+                        # diagnostics and keep quaternion yaw report-only.
+                        aggregates.update(
+                            summarize_orientation_rollout(
+                                rollout["root_quat_wxyz"],
+                                final_window_steps=orientation_final_window_steps,
+                            )
+                        )
+                        aggregates.update(
+                            summarize_walking_orientation_rollout(
+                                rollout["metrics_vec"][
+                                    ..., METRIC_INDEX["debug/roll"]
+                                ],
+                                rollout["metrics_vec"][
+                                    ..., METRIC_INDEX["debug/pitch"]
+                                ],
+                                rollout["done"],
+                                rollout["truncation"],
+                                ctrl_dt=float(training_cfg.env.ctrl_dt),
                             )
                         )
                     return aggregates
@@ -1266,10 +1304,12 @@ def start_training(
                             deterministic=True,
                         )
                         next_env_state = post_eval_clean_step_fn(env_state, action)
+                        metrics_vec = next_env_state.metrics[METRICS_VEC_KEY]
                         step_data = {
                             "reward": next_env_state.reward,
                             "done": next_env_state.done,
-                            "metrics_vec": next_env_state.metrics[METRICS_VEC_KEY],
+                            "truncation": truncation_from_metrics_vec(metrics_vec),
+                            "metrics_vec": metrics_vec,
                             "root_quat_wxyz": next_env_state.data.qpos[..., 3:7],
                         }
                         return (next_env_state, rng_state), step_data
@@ -1527,6 +1567,16 @@ def start_training(
                                 ),
                             }
                         )
+                    if (
+                        post_training_task == "walking"
+                        and post_training_strict_walking_safety
+                    ):
+                        eval_metrics.update(
+                            {
+                                name: float(eval_result[name])
+                                for name in walking_orientation_metric_names
+                            }
+                        )
                     if post_training_task == "standing":
                         decision = deterministic_standing_eval_gate(
                             eval_metrics=eval_metrics,
@@ -1742,6 +1792,12 @@ def start_training(
                                         },
                                     }
                                 )
+                                probe_eval_metrics.update(
+                                    {
+                                        name: float(probe_result[name])
+                                        for name in walking_orientation_metric_names
+                                    }
+                                )
                             probe_decision = (
                                 evaluate_lateral_yaw_pass_criterion(
                                     probe_cmd=probe_cmd,
@@ -1885,6 +1941,17 @@ def start_training(
                             f"{ratio_text:>6}  "
                             f"{'✓' if row['passed'] else '✗'}"
                         )
+                        if post_training_strict_walking_safety:
+                            print(
+                                "      safety: stable tilt mean/p95/max="
+                                f"{eval_metrics['walking_stable_body_tilt_deg_mean']:.2f}/"
+                                f"{eval_metrics['walking_stable_body_tilt_deg_p95']:.2f}/"
+                                f"{eval_metrics['walking_stable_body_tilt_deg_max']:.2f}°  "
+                                "survivor final max="
+                                f"{eval_metrics['walking_survivor_final_body_tilt_deg_max']:.2f}°  "
+                                f"falls={eval_metrics['walking_fall_env_count']:.0f}/"
+                                f"{post_training_num_envs}"
+                            )
 
                 def _eval_select_score(row: dict[str, Any]) -> float:
                     eval_metrics = row["eval_metrics"]
@@ -2043,7 +2110,16 @@ def start_training(
                             "tilt": (
                                 "Angle between torso +Z and world +Z; excludes yaw."
                             ),
-                            "final_window_s": STANDING_FINAL_WINDOW_S,
+                            "episode_scope": (
+                                "First episode per environment; post-reset samples "
+                                "are excluded."
+                            ),
+                            "stable_start_s": WALKING_STABLE_START_S,
+                            "pre_fall_window_s": WALKING_PRE_FALL_WINDOW_S,
+                            "survivor_final": (
+                                "Tilt at first successful truncation, or at rollout "
+                                "end when no terminal event occurs."
+                            ),
                             "max_actuator_torque_sat_frac": (
                                 "Maximum rollout-mean torque-limit occupancy over "
                                 "individual policy actuators."
@@ -2198,6 +2274,38 @@ def start_training(
                                     ): float(
                                         best_eval_metrics[
                                             "max_actuator_torque_sat_frac"
+                                        ]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_walking_stable_body_tilt_deg_mean"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "walking_stable_body_tilt_deg_mean"
+                                        ]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_walking_stable_body_tilt_deg_p95"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "walking_stable_body_tilt_deg_p95"
+                                        ]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_walking_survivor_final_body_tilt_deg_max"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "walking_survivor_final_body_tilt_deg_max"
+                                        ]
+                                    ),
+                                    (
+                                        "post_training_eval/"
+                                        "best_walking_fall_env_frac"
+                                    ): float(
+                                        best_eval_metrics[
+                                            "walking_fall_env_frac"
                                         ]
                                     ),
                                 }

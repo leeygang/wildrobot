@@ -11,7 +11,10 @@ from training.eval.eval_standing_stabilization import (
     _sample_initial_conditions,
     _summarize_rollout,
 )
-from training.eval.standing_orientation import summarize_orientation_rollout
+from training.eval.standing_orientation import (
+    summarize_orientation_rollout,
+    summarize_walking_orientation_rollout,
+)
 
 
 def test_continuous_eval_step_disables_only_eval_time_limit() -> None:
@@ -208,6 +211,63 @@ def test_orientation_rollout_excludes_yaw_and_uses_final_window() -> None:
     assert np.isclose(
         float(summary["body_tilt_deg_final_max"]), 4.0, atol=1e-3
     )
+
+
+def test_walking_orientation_separates_survivors_and_fall_tail() -> None:
+    pitch_deg = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 2.0],
+            [2.0, 10.0, 4.0],
+            [3.0, 30.0, 6.0],
+            [4.0, 80.0, 8.0],
+            [5.0, 80.0, 10.0],
+        ],
+        dtype=np.float32,
+    )
+    dones = np.zeros_like(pitch_deg)
+    truncations = np.zeros_like(pitch_deg)
+    dones[5, 0] = 1.0
+    truncations[5, 0] = 1.0
+    dones[3, 1] = 1.0
+
+    summary = summarize_walking_orientation_rollout(
+        np.zeros_like(pitch_deg),
+        np.deg2rad(pitch_deg),
+        dones,
+        truncations,
+        ctrl_dt=0.1,
+        stable_start_s=0.2,
+        pre_fall_window_s=0.2,
+    )
+
+    assert float(summary["walking_survivor_env_count"]) == 2.0
+    assert float(summary["walking_fall_env_count"]) == 1.0
+    assert np.isclose(float(summary["walking_fall_env_frac"]), 1.0 / 3.0)
+    assert np.isclose(
+        float(summary["walking_stable_body_tilt_deg_mean"]), 5.25, atol=1e-3
+    )
+    assert np.isclose(
+        float(summary["walking_stable_body_tilt_deg_p95"]), 10.0, atol=1e-3
+    )
+    assert np.isclose(
+        float(summary["walking_stable_body_tilt_deg_max"]), 10.0, atol=1e-3
+    )
+    assert np.isclose(
+        float(summary["walking_survivor_final_body_tilt_deg_max"]),
+        10.0,
+        atol=1e-3,
+    )
+    assert np.isclose(
+        float(summary["walking_pre_fall_body_tilt_deg_max"]), 10.0, atol=1e-3
+    )
+    assert np.isclose(
+        float(summary["walking_fall_terminal_body_tilt_deg_max"]),
+        30.0,
+        atol=1e-3,
+    )
+    assert np.isclose(float(summary["walking_time_to_fall_s_min"]), 0.4)
+    assert np.isclose(float(summary["body_tilt_deg_peak"]), 80.0, atol=1e-3)
 
 
 def test_paired_comparison_counts_policy_and_home_wins() -> None:
