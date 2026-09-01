@@ -8,6 +8,94 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d6-result + 17d7-ready] - 2026-09-01: redirect forward balance from hip roll to ankle roll
+
+The v0.21.0-17d6 run is
+`training/wandb/offline-run-20260901_123951-hzfqch9t`.  No checkpoint passed
+the authoritative deterministic deployment gate and no checkpoint was
+promoted.  Checkpoint 25 was the best forward-only candidate: it tracked
+`vx=0.13 m/s` at `0.1233 m/s`, had zero primary-evaluation falls, and passed
+the yaw-independent tilt gates, but stable left-hip-roll torque-limit
+occupancy remained `20.94%` against the `5%` deployment cap.
+
+| Metric | 17d4 checkpoint 40 | 17d6 checkpoint 25 |
+|---|---:|---:|
+| forward velocity | 0.1230 m/s | 0.1233 m/s |
+| primary first-episode falls | 1/64 | 0/64 |
+| stable tilt mean / max | 4.59 / 9.18 deg | 4.24 / 14.25 deg |
+| survivor-final tilt max | 5.97 deg | 7.89 deg |
+| stable left-hip-roll saturation | 20.13% | 20.94% |
+| `+0.065 m/s vy` signed ratio | +0.754 | +0.702 |
+| `-0.065 m/s vy` signed ratio | -0.771 | -0.718 |
+
+The configured reset mixture was correct over the complete run: 786 home and
+2,302 RSI resets, or `25.45%` home.  The mirror objective also optimized in
+the expected direction in the training batches: checkpoint mirror-action RMSE
+fell from `0.477` at checkpoint 7 to `0.422` at checkpoint 52.  It did not,
+however, change closed-loop lateral direction.
+
+An equal-seed/equal-horizon 8-environment, 200-step diagnostic compared the
+17d4 source actor directly with 17d6 checkpoint 25:
+
+| Symmetry metric | 17d4 checkpoint 40 | 17d6 checkpoint 25 |
+|---|---:|---:|
+| actor mirror RMSE | 0.4803 | 0.4544 |
+| leg mirror MAE | 0.2028 | 0.1969 |
+| upper-body mirror MAE | 0.5485 | 0.5049 |
+| closed-loop action mirror MAE | 0.4216 | 0.4205 |
+| achieved `vy`, positive command | +0.0453 m/s | +0.0418 m/s |
+| achieved `vy`, negative command | +0.0450 m/s | +0.0422 m/s |
+
+Thus the full-17D mirror loss mostly reduced shoulder/waist error and improved
+leg symmetry by only about 3%; the fixed positive-y gait remained.  Since the
+deployment scope is now explicitly forward-only, lateral command tracking is
+removed from the hard acceptance contract rather than spending another run on
+that capability.
+
+The remaining forward-only blocker is stable left-hip-roll saturation.  A
+standalone 17d5 saturation penalty reduced it only modestly (best `17.95%`)
+while regressing to 5/64 falls, so increasing that penalty is not the next
+lever.  The existing pose weights instead expose a load-allocation mismatch:
+both hip-roll joints cost `1.0`, while both ankle-roll joints cost `5.0`.
+That ratio was copied from ToddlerBot, whose active walking policy controls
+only 12 leg joints and includes hip-yaw authority.  WR lacks hip yaw, and the
+earlier WR Phase-12C reference diagnostic showed ankle-roll motion removing
+hip-roll saturation at `vx <= 0.15 m/s`.  WR therefore has an explicit
+morphology/control rationale to stop penalizing ankle roll five times more
+than hip roll.
+
+`training/configs/ppo_walking_v0210_17d7_forward_ankle_load_share.yaml` is the
+next training configuration.  Relative to the 17d4 source it:
+
+- restricts training and deployment evaluation to `(vx, 0, 0)`;
+- changes only the optimization-relevant ankle-roll pose weights from `5.0`
+  to `1.0`, symmetrically;
+- keeps the general torque penalty and leaves the 17d5 saturation penalty and
+  17d6 mirror loss disabled;
+- keeps 75% RSI / 25% home starts and strict fall, tilt, and per-actuator
+  torque gates;
+- runs 40 iterations and evaluates all eight five-iteration checkpoint
+  windows.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d7_forward_ankle_load_share.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d4_startup_mix/ppo_walking_v0210_17d4_startup_mix_v0210-17d4_20260831_144954-m558zwn5/checkpoint_40_819200.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d7_forward_ankle_load_share
+```
+
+Promotion requires zero falls, stable tilt mean/max/final at most
+`10/15/10 deg`, and no actuator above `5%` stable torque-limit occupancy at
+`vx=0.13 m/s`.  Before hardware, repeat the same 64-environment, 1,000-step
+gate manually at `vx=0.065 m/s`.  ToddlerBot reference:
+`toddlerbot/locomotion/walk.gin` (`ActionConfig.action_parts=['leg']` and its
+pose weights).  WR reference: Phase 12C in
+`training/docs/reference_architecture_comparison.md`.
+
+---
+
 ## [v0.21.0-17d3-result + 17d4-ready] - 2026-08-31: train the missing startup transition
 
 The v0.21.0-17d3 run is
