@@ -201,6 +201,66 @@ class TestPPOLoss:
         assert metrics.policy_loss.shape == ()
         assert metrics.value_loss.shape == ()
         assert metrics.entropy_loss.shape == ()
+        assert metrics.mirror_loss == pytest.approx(0.0)
+
+    def test_compute_ppo_loss_adds_actor_mirror_regularizer(
+        self, ppo_network, network_params
+    ):
+        processor_params, policy_params, value_params = network_params
+        rng = jax.random.PRNGKey(7)
+        obs_batch = jax.random.normal(rng, (BATCH_SIZE, OBS_DIM))
+        action_batch = jax.random.normal(rng, (BATCH_SIZE, ACTION_DIM))
+        log_prob_batch = jax.random.normal(rng, (BATCH_SIZE,))
+        adv_batch = jax.random.normal(rng, (BATCH_SIZE,))
+        ret_batch = jax.random.normal(rng, (BATCH_SIZE,))
+
+        common = dict(
+            processor_params=processor_params,
+            policy_params=policy_params,
+            value_params=value_params,
+            ppo_network=ppo_network,
+            obs=obs_batch,
+            value_obs=None,
+            actions=action_batch,
+            old_log_probs=log_prob_batch,
+            advantages=adv_batch,
+            returns=ret_batch,
+            rng=rng,
+        )
+        base_loss, _ = compute_ppo_loss(**common)
+        weighted_loss, metrics = compute_ppo_loss(
+            **common,
+            mirror_loss_coef=0.1,
+            mirror_observation_fn=lambda obs: -obs,
+            mirror_action_fn=lambda action: -action,
+        )
+
+        assert metrics.mirror_loss > 0.0
+        assert weighted_loss == pytest.approx(
+            float(base_loss + 0.1 * metrics.mirror_loss), rel=1e-5
+        )
+
+    def test_compute_ppo_loss_requires_both_mirror_transforms(
+        self, ppo_network, network_params
+    ):
+        processor_params, policy_params, value_params = network_params
+        rng = jax.random.PRNGKey(9)
+        obs_batch = jnp.zeros((BATCH_SIZE, OBS_DIM))
+        with pytest.raises(ValueError, match="requires mirror observation/action"):
+            compute_ppo_loss(
+                processor_params=processor_params,
+                policy_params=policy_params,
+                value_params=value_params,
+                ppo_network=ppo_network,
+                obs=obs_batch,
+                value_obs=None,
+                actions=jnp.zeros((BATCH_SIZE, ACTION_DIM)),
+                old_log_probs=jnp.zeros((BATCH_SIZE,)),
+                advantages=jnp.zeros((BATCH_SIZE,)),
+                returns=jnp.zeros((BATCH_SIZE,)),
+                rng=rng,
+                mirror_loss_coef=0.1,
+            )
 
 
 class TestOptimizer:

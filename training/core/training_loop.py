@@ -22,6 +22,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+
+from policy_contract.jax.symmetry import mirror_actions, mirror_observations
 from training.configs.training_config import get_robot_config, TrainingConfig
 
 from training.algos.ppo.ppo_core import (
@@ -244,7 +246,10 @@ def ppo_update_scan(
     update_scale: float,
     target_kl: float,
     kl_early_stop_multiplier: float,
-) -> Tuple[Any, Any, Any, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    mirror_loss_coef: float = 0.0,
+    mirror_observation_fn: Optional[Callable] = None,
+    mirror_action_fn: Optional[Callable] = None,
+) -> tuple:
     """PPO update using jax.lax.scan over epochs and minibatches."""
     batch_size = obs.shape[0]
     minibatch_size = batch_size // num_minibatches
@@ -301,6 +306,9 @@ def ppo_update_scan(
                     clip_epsilon=clip_epsilon,
                     value_loss_coef=value_loss_coef,
                     entropy_coef=entropy_coef,
+                    mirror_loss_coef=mirror_loss_coef,
+                    mirror_observation_fn=mirror_observation_fn,
+                    mirror_action_fn=mirror_action_fn,
                 )
 
             (_total_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
@@ -343,6 +351,7 @@ def ppo_update_scan(
                 policy_loss=zero,
                 value_loss=zero,
                 entropy_loss=zero,
+                mirror_loss=zero,
                 clip_fraction=zero,
                 approx_kl=zero,
             )
@@ -412,6 +421,7 @@ def ppo_update_scan(
         _active_mean(all_metrics.policy_loss),
         _active_mean(all_metrics.value_loss),
         _active_mean(all_metrics.entropy_loss),
+        _active_mean(all_metrics.mirror_loss),
         _active_mean(all_metrics.total_loss),
         _active_mean(all_metrics.clip_fraction),
         _active_mean(all_metrics.approx_kl),
@@ -433,6 +443,27 @@ def make_train_iteration_fn(
     config: TrainingConfig,
 ):
     """Create JIT-compiled training iteration function."""
+
+    mirror_loss_coef = float(config.ppo.mirror_loss_coef)
+    if mirror_loss_coef < 0.0:
+        raise ValueError("ppo.mirror_loss_coef must be >= 0")
+    mirror_observation_fn = None
+    mirror_action_fn = None
+    if mirror_loss_coef > 0.0:
+        robot_cfg = get_robot_config()
+        policy_spec = build_policy_spec_from_training_config(
+            training_cfg=config,
+            robot_cfg=robot_cfg,
+        )
+        if policy_spec.observation.layout_id != "wr_obs_v8_cmd3d":
+            raise ValueError(
+                "ppo.mirror_loss_coef > 0 currently requires "
+                "env.actor_obs_layout_id='wr_obs_v8_cmd3d'"
+            )
+        mirror_observation_fn = functools.partial(
+            mirror_observations, spec=policy_spec
+        )
+        mirror_action_fn = functools.partial(mirror_actions, spec=policy_spec)
 
     @jax.jit
     def train_iteration(
@@ -499,6 +530,7 @@ def make_train_iteration_fn(
             policy_loss,
             value_loss,
             entropy_loss,
+            mirror_loss,
             total_loss,
             clip_fraction,
             approx_kl,
@@ -529,6 +561,9 @@ def make_train_iteration_fn(
             update_scale=learning_rate_scale,
             target_kl=config.ppo.target_kl,
             kl_early_stop_multiplier=config.ppo.kl_early_stop_multiplier,
+            mirror_loss_coef=mirror_loss_coef,
+            mirror_observation_fn=mirror_observation_fn,
+            mirror_action_fn=mirror_action_fn,
         )
 
         # ================================================================
@@ -822,6 +857,14 @@ def make_train_iteration_fn(
             0.0,
         )
         agg_metrics["ppo/active_updates"] = active_updates
+        agg_metrics["ppo/mirror_loss"] = mirror_loss
+        agg_metrics["ppo/mirror_action_rmse"] = jnp.sqrt(
+            jnp.maximum(mirror_loss, 0.0)
+        )
+        agg_metrics["ppo/mirror_loss_weighted"] = (
+            jnp.float32(mirror_loss_coef) * mirror_loss
+        )
+        agg_metrics["ppo/mirror_loss_coef"] = jnp.float32(mirror_loss_coef)
 
         new_state = TrainingState(
             policy_params=new_policy_params,
@@ -934,6 +977,11 @@ def _validate_resume_checkpoint(
         "critic_includes_actor_obs",
         ckpt_config.get("critic_includes_actor_obs", False),
         config.ppo.critic_includes_actor_obs,
+    )
+    _check_mismatch(
+        "mirror_loss_coef",
+        ckpt_config.get("mirror_loss_coef", 0.0),
+        config.ppo.mirror_loss_coef,
     )
     _warn_if_mismatch(
         "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate

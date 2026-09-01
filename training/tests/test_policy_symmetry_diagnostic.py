@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from policy_contract.spec_builder import build_policy_spec
-from training.eval.diagnose_policy_symmetry import (
+from policy_contract.jax.symmetry import (
     joint_mirror_transform,
     mirror_actions,
     mirror_observations,

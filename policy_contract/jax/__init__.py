@@ -11,6 +11,7 @@ from .calib import (
 )
 from .obs import build_observation_from_components
 from .state import PolicyState
+from .symmetry import mirror_actions, mirror_observations
 
 __all__ = [
     "PolicyState",
@@ -20,4 +21,6 @@ __all__ = [
     "ctrl_to_policy_action",
     "normalize_joint_pos",
     "normalize_joint_vel",
+    "mirror_actions",
+    "mirror_observations",
 ]

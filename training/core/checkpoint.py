@@ -130,6 +130,13 @@ def save_checkpoint_from_cpu(
             ),
             "policy_loss": float(metrics.policy_loss),
             "value_loss": float(metrics.value_loss),
+            "ppo/mirror_loss": float(env_metrics.get("ppo/mirror_loss", 0.0)),
+            "ppo/mirror_action_rmse": float(
+                env_metrics.get("ppo/mirror_action_rmse", 0.0)
+            ),
+            "ppo/mirror_loss_weighted": float(
+                env_metrics.get("ppo/mirror_loss_weighted", 0.0)
+            ),
             "tracking/cmd_vs_achieved_forward": cmd_err,
             "tracking/step_length_touchdown_event_m": step_len,
             "tracking/forward_velocity_cmd_ratio": cmd_ratio,
@@ -174,6 +181,7 @@ def save_checkpoint_from_cpu(
             # checkpoint instead of silently loading a wrong-shape
             # value_params and crashing later in value_network.apply.
             "critic_includes_actor_obs": config.ppo.critic_includes_actor_obs,
+            "mirror_loss_coef": config.ppo.mirror_loss_coef,
             "actor_hidden_sizes": config.networks.actor.hidden_sizes,
             "critic_hidden_sizes": config.networks.critic.hidden_sizes,
             "iterations": config.ppo.iterations,

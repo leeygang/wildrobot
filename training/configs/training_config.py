@@ -864,6 +864,7 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         critic_includes_actor_obs=bool(
             ppo.get("critic_includes_actor_obs", False)
         ),
+        mirror_loss_coef=float(ppo.get("mirror_loss_coef", 0.0)),
         eval=PPOEvalConfig(
             enabled=eval_cfg.get("enabled", False),
             interval=eval_cfg.get("interval", 0),

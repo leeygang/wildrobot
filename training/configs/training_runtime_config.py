@@ -915,6 +915,10 @@ class PPOConfig(Freezable):
     # equivalent); v0.21.0 smoke2 opts in.  Only consumed when
     # ``critic_privileged_enabled`` is True.
     critic_includes_actor_obs: bool = False
+    # Optional actor sagittal-equivariance regularizer. The raw loss is
+    # mean((pi(M(obs)) - M(pi(obs)))**2) over deterministic policy actions.
+    # Disabled by default so historical configs remain byte-equivalent.
+    mirror_loss_coef: float = 0.0
 
     eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
     rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())

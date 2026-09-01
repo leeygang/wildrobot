@@ -378,6 +378,7 @@ class PPOLossMetrics(NamedTuple):
     policy_loss: jnp.ndarray
     value_loss: jnp.ndarray
     entropy_loss: jnp.ndarray
+    mirror_loss: jnp.ndarray
     clip_fraction: jnp.ndarray
     approx_kl: jnp.ndarray
 
@@ -398,6 +399,9 @@ def compute_ppo_loss(
     value_loss_coef: float = 0.5,
     entropy_coef: float = 0.01,
     normalize_advantages: bool = True,
+    mirror_loss_coef: float = 0.0,
+    mirror_observation_fn: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
+    mirror_action_fn: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
 ) -> Tuple[jnp.ndarray, PPOLossMetrics]:
     """Compute PPO loss with clipped objective.
 
@@ -425,6 +429,9 @@ def compute_ppo_loss(
         value_loss_coef: Value loss weight
         entropy_coef: Entropy bonus weight
         normalize_advantages: Whether to normalize advantages
+        mirror_loss_coef: Weight on actor sagittal-equivariance MSE.
+        mirror_observation_fn: Transform actor observations under reflection.
+        mirror_action_fn: Transform deterministic actions under reflection.
 
     Returns:
         (total_loss, PPOLossMetrics): Scalar loss and metrics
@@ -461,9 +468,31 @@ def compute_ppo_loss(
     entropy = jnp.mean(ppo_network.parametric_action_distribution.entropy(logits, rng))
     entropy_loss = -entropy
 
+    mirror_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    if float(mirror_loss_coef) > 0.0:
+        if mirror_observation_fn is None or mirror_action_fn is None:
+            raise ValueError(
+                "mirror_loss_coef > 0 requires mirror observation/action functions"
+            )
+        actions_mode = ppo_network.parametric_action_distribution.mode(logits)
+        mirrored_obs = mirror_observation_fn(obs)
+        mirrored_logits = ppo_network.policy_network.apply(
+            processor_params, policy_params, mirrored_obs
+        )
+        mirrored_actions_mode = ppo_network.parametric_action_distribution.mode(
+            mirrored_logits
+        )
+        expected_mirrored_actions = mirror_action_fn(actions_mode)
+        mirror_loss = jnp.mean(
+            jnp.square(mirrored_actions_mode - expected_mirrored_actions)
+        )
+
     # Total loss
     total_loss = (
-        policy_loss + value_loss_coef * value_loss + entropy_coef * entropy_loss
+        policy_loss
+        + value_loss_coef * value_loss
+        + entropy_coef * entropy_loss
+        + float(mirror_loss_coef) * mirror_loss
     )
 
     # Metrics
@@ -475,6 +504,7 @@ def compute_ppo_loss(
         policy_loss=policy_loss,
         value_loss=value_loss,
         entropy_loss=entropy_loss,
+        mirror_loss=mirror_loss,
         clip_fraction=clip_fraction,
         approx_kl=approx_kl,
     )
