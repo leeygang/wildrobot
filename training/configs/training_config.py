@@ -987,7 +987,9 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         collapse_height=rewards.get("collapse_height", -0.2),
         collapse_vz=rewards.get("collapse_vz", -0.2),
         torque=rewards.get("torque", -0.001),
-        saturation=rewards.get("saturation", -0.1),
+        # The saturation field existed before its reward term was wired. Keep
+        # missing YAML keys behavior-compatible with those historical runs.
+        saturation=rewards.get("saturation", 0.0),
         action_rate=rewards.get("action_rate", -0.01),
         joint_velocity=rewards.get("joint_velocity", -0.001),
         slip=rewards.get("slip", -0.5),

@@ -115,6 +115,7 @@ try:
         pending_action: jnp.ndarray        # (action_size,) — next filtered action
         truncated: jnp.ndarray             # () — sticky through auto-reset
         velocity_cmd: jnp.ndarray          # (3,) — episode target velocity [vx, vy, wz] (m/s, m/s, rad/s)
+        reset_is_rsi: jnp.ndarray           # () — 1 for moving-reference reset, 0 for home
 
         # H7: incremental path-state for runtime-correct integration
         # under ``cmd_resample_steps > 0``.  Updated in ``step`` from
@@ -274,6 +275,7 @@ except ImportError:
         pending_action: jnp.ndarray
         truncated: jnp.ndarray
         velocity_cmd: jnp.ndarray  # (3,) [vx, vy, wz]
+        reset_is_rsi: jnp.ndarray
         # H7: incremental path-state (see flax dataclass above).
         path_state_torso_pos: jnp.ndarray   # (3,)
         path_state_path_rot: jnp.ndarray    # (4,) wxyz
@@ -357,6 +359,7 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "pending_action": (action_size,),
         "truncated": (),
         "velocity_cmd": (3,),
+        "reset_is_rsi": (),
         # H7: incremental path-state (see WildRobotInfo).
         "path_state_torso_pos": (3,),
         "path_state_path_rot": (4,),

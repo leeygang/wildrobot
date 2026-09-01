@@ -163,6 +163,8 @@ ENV_METRICS_KEYS = {
     "height": "Root height above ground",
     "forward_velocity": "Current forward velocity",
     "episode_step_count": "Steps in current episode",
+    "reset/is_rsi": "1 for a moving-reference RSI episode, 0 for a home-start episode",
+    "reset/event": "1 on the first policy step after an episode reset",
     # Reward components
     "reward/total": "Total weighted reward",
     "reward/alive": "Strict ToddlerBot survival term: 0 while alive, -alive_w*dt on termination",
@@ -1601,6 +1603,7 @@ def build_wandb_metrics(
             or key.startswith("soft_violation_")
             or key.startswith("recovery/")
             or key.startswith("teacher/")
+            or key.startswith("reset/")
             or key.startswith("ppo/")
             or key.startswith("eval/")
             or key.startswith("eval_push/")

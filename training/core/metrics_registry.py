@@ -2201,6 +2201,26 @@ METRIC_SPECS.extend(
     ]
 )
 
+# v0.21.0-17d5 reset-mixture diagnostics (append-only). ``reset/event`` is
+# one only on an episode's first policy step; ``reset/is_rsi`` is carried for
+# every step so terminal outcomes can be attributed to the reset origin.
+METRIC_SPECS.extend(
+    [
+        MetricSpec(
+            name="reset/is_rsi",
+            reducer=Reducer.MEAN,
+            log_prefix="reset",
+            description="Fraction of rollout steps belonging to RSI-start episodes",
+        ),
+        MetricSpec(
+            name="reset/event",
+            reducer=Reducer.SUM,
+            log_prefix="reset",
+            description="Episode reset events observed in the rollout",
+        ),
+    ]
+)
+
 # =============================================================================
 # Derived constants
 # =============================================================================

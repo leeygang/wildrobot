@@ -1031,7 +1031,10 @@ class RewardWeightsConfig(Freezable):
 
     # Effort and safety
     torque: float = -0.001
-    saturation: float = -0.1
+    # Opt-in. Historically this field was not wired into the reward sum, so
+    # zero preserves existing training behavior; safety-focused configs set an
+    # explicit negative weight.
+    saturation: float = 0.0
 
     # Smoothness
     action_rate: float = -0.01

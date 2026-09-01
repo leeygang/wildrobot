@@ -105,12 +105,41 @@ __all__ = [
     "WildRobotEnv",
     "WildRobotEnvState",
     "get_assets",
+    "torque_saturation_penalty",
 ]
 
 
 # =============================================================================
 # Module-level helpers
 # =============================================================================
+
+
+TORQUE_SOFT_LIMIT_RATIO = 0.95
+
+
+def torque_saturation_penalty(
+    actuator_force: jax.Array,
+    force_limits: jax.Array,
+    *,
+    soft_limit_ratio: float = TORQUE_SOFT_LIMIT_RATIO,
+) -> jax.Array:
+    """Return normalized squared torque excess above a soft limit.
+
+    The deployment evaluator counts occupancy above 95% of each actuator's
+    own force limit. This bounded soft-limit penalty uses the same boundary,
+    but retains resolution between 95% and 100% so PPO receives a graded
+    signal instead of only a binary threshold crossing.
+    """
+    ratio = jp.abs(actuator_force) / jp.maximum(
+        jp.abs(force_limits), jp.float32(1e-6)
+    )
+    remaining_margin = jp.float32(1.0 - soft_limit_ratio)
+    normalized_excess = jp.clip(
+        (ratio - jp.float32(soft_limit_ratio)) / remaining_margin,
+        jp.float32(0.0),
+        jp.float32(1.0),
+    )
+    return jp.sum(normalized_excess * normalized_excess).astype(jp.float32)
 
 
 def get_assets(root_path: Path) -> Dict[str, bytes]:
@@ -2617,6 +2646,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         delta_action = applied_action - prev_applied_action
         penalty_action_rate = jp.sum(delta_action * delta_action)
         penalty_torque = jp.sum(data.actuator_force * data.actuator_force)
+        penalty_saturation = torque_saturation_penalty(
+            data.actuator_force[self._cal._actuator_ids],
+            self._cal._force_limits,
+        )
         joint_vel = data.qvel[self._actuator_dof_addrs]
         penalty_joint_vel = jp.sum(joint_vel * joint_vel)
 
@@ -2978,6 +3011,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             r_yaw_rate_track=r_yaw_rate_track.astype(jp.float32),
             penalty_action_rate=penalty_action_rate,
             penalty_torque=penalty_torque,
+            penalty_saturation=penalty_saturation,
             penalty_joint_vel=penalty_joint_vel,
             penalty_slip=penalty_slip.astype(jp.float32),
             penalty_pitch_rate=penalty_pitch_rate.astype(jp.float32),
@@ -3141,6 +3175,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * terms["r_yaw_rate_track"],
             action_rate=jp.float32(w.action_rate) * terms["penalty_action_rate"],
             torque=jp.float32(w.torque) * terms["penalty_torque"],
+            saturation=jp.float32(w.saturation) * terms["penalty_saturation"],
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
             slip=jp.float32(w.slip) * terms["penalty_slip"],
             pitch_rate=jp.float32(w.pitch_rate) * terms["penalty_pitch_rate"],
@@ -3338,6 +3373,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # discarding RSI's full-gait-phase coverage.
         rsi_qvel = None
         rsi_step_idx = None
+        reset_is_rsi = jp.bool_(False)
         if self._rsi_enabled and perturb_pose:
             rng, key_rsi = jax.random.split(rng)
             use_rsi = jax.random.bernoulli(
@@ -3385,6 +3421,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 jp.zeros(self._mj_model.nv, dtype=jp.float32),
             )
             rsi_step_idx = jp.where(use_rsi, f, jp.int32(0))
+            reset_is_rsi = use_rsi
 
         # smoke9c follow-up — TB-style reset-time pose perturbation.  Only
         # active when the configured ranges are non-degenerate AND
@@ -3439,6 +3476,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             joint_feedback_rng=key_joint_feedback,
             rsi_qvel=rsi_qvel,
             rsi_step_idx=rsi_step_idx,
+            reset_is_rsi=reset_is_rsi,
         )
 
     # ----------------------------------------------------- reset perturbation
@@ -4036,6 +4074,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_feedback_rng: jax.Array,
         rsi_qvel: Optional[jax.Array] = None,
         rsi_step_idx: Optional[jax.Array] = None,
+        reset_is_rsi: Optional[jax.Array] = None,
     ) -> WildRobotEnvState:
         # smoke5 RSI: when the caller seeds an initial velocity / gait frame,
         # start ON the moving reference manifold (qvel from the reference,
@@ -4046,6 +4085,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.asarray(0, dtype=jp.int32)
             if rsi_step_idx is None
             else rsi_step_idx.astype(jp.int32)
+        )
+        reset_is_rsi = (
+            jp.asarray(False)
+            if reset_is_rsi is None
+            else reset_is_rsi.astype(jp.bool_)
         )
         randomized_model = self._get_randomized_mjx_model(dr_params)
 
@@ -4232,6 +4276,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             pending_action=default_action,
             truncated=jp.zeros(()),
             velocity_cmd=velocity_cmd,
+            reset_is_rsi=reset_is_rsi.astype(jp.float32),
             # H7: start the incremental path-state at the world origin /
             # identity rotation so step 1's incremental update matches
             # the closed-form integrator's value at t = dt (assuming
@@ -4398,6 +4443,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         metrics_dict["tracking/nominal_q_abs_mean"] = jp.mean(jp.abs(q_ref0)).astype(jp.float32)
         metrics_dict["tracking/residual_q_abs_mean"] = jp.float32(0.0)
         metrics_dict["tracking/residual_q_abs_max"] = jp.float32(0.0)
+        metrics_dict["reset/is_rsi"] = reset_is_rsi.astype(jp.float32)
+        metrics_dict["reset/event"] = jp.float32(1.0)
         # v0.21.0 P3: velocity_cmd is (3,) [vx, vy, wz]; the
         # forward-only diagnostics use [0].  Per-axis variants are
         # logged below as ``tracking/velocity_cmd_v{x,y}_abs`` /
@@ -5134,6 +5181,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict.update(term_info)
         terminal_metrics_dict["forward_velocity"] = forward_velocity
         terminal_metrics_dict["episode_step_count"] = new_step_count.astype(jp.float32)
+        terminal_metrics_dict["reset/is_rsi"] = wr.reset_is_rsi.astype(jp.float32)
+        terminal_metrics_dict["reset/event"] = (
+            wr.step_count == jp.int32(0)
+        ).astype(jp.float32)
         terminal_metrics_dict["tracking/loc_ref_phase_progress"] = (
             next_step_idx.astype(jp.float32) / jp.float32(self._offline_n_steps)
         )
@@ -5425,6 +5476,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         terminal_metrics_dict["reward/action_rate"] = reward_contrib["action_rate"]
         terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
+        terminal_metrics_dict["reward/saturation"] = reward_contrib["saturation"]
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]
         terminal_metrics_dict["reward/slip"] = reward_contrib["slip"]
         terminal_metrics_dict["reward/pitch_rate"] = reward_contrib["pitch_rate"]

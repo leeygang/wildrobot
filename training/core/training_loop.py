@@ -105,6 +105,58 @@ def _format_hhmmss(seconds: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
+def _aggregate_reset_origin_metrics(
+    metrics_vec: jnp.ndarray,
+    dones: jnp.ndarray,
+    truncations: jnp.ndarray,
+) -> Dict[str, jnp.ndarray]:
+    """Split reset exposure and completed-episode outcomes by origin."""
+    is_rsi = jnp.clip(
+        metrics_vec[..., METRIC_INDEX["reset/is_rsi"]], 0.0, 1.0
+    )
+    is_home = 1.0 - is_rsi
+    reset_event = metrics_vec[..., METRIC_INDEX["reset/event"]]
+    episode_steps = metrics_vec[..., METRIC_INDEX["episode_step_count"]]
+
+    home_reset_count = jnp.sum(reset_event * is_home)
+    rsi_reset_count = jnp.sum(reset_event * is_rsi)
+    reset_count = home_reset_count + rsi_reset_count
+
+    def _outcomes(prefix: str, origin_mask: jnp.ndarray) -> Dict[str, jnp.ndarray]:
+        completed = dones * origin_mask
+        episode_count = jnp.sum(completed)
+        successful = jnp.sum(truncations * origin_mask)
+        success_rate = jnp.where(
+            episode_count > 0.0, successful / episode_count, 0.0
+        )
+        return {
+            f"reset/{prefix}_episode_count": episode_count,
+            f"reset/{prefix}_episode_length": jnp.where(
+                episode_count > 0.0,
+                jnp.sum(episode_steps * completed) / episode_count,
+                0.0,
+            ),
+            f"reset/{prefix}_success_rate": success_rate,
+            f"reset/{prefix}_failure_rate": jnp.where(
+                episode_count > 0.0, 1.0 - success_rate, 0.0
+            ),
+        }
+
+    result = {
+        "reset/home_reset_count": home_reset_count,
+        "reset/rsi_reset_count": rsi_reset_count,
+        "reset/home_reset_frac": jnp.where(
+            reset_count > 0.0, home_reset_count / reset_count, 0.0
+        ),
+        "reset/rsi_reset_frac": jnp.where(
+            reset_count > 0.0, rsi_reset_count / reset_count, 0.0
+        ),
+    }
+    result.update(_outcomes("home", is_home))
+    result.update(_outcomes("rsi", is_rsi))
+    return result
+
+
 def _effective_ppo_epochs(
     base_epochs: int,
     previous_approx_kl: float,
@@ -487,6 +539,13 @@ def make_train_iteration_fn(
         # v0.10.4: Use registry-based metrics aggregation
         # Aggregate all metrics from packed vector using registry reducers
         agg_metrics = aggregate_metrics(trajectory.metrics_vec, trajectory.dones)
+        agg_metrics.update(
+            _aggregate_reset_origin_metrics(
+                trajectory.metrics_vec,
+                trajectory.dones,
+                trajectory.truncations,
+            )
+        )
 
         # 2026-05-18 metric-correctness sweep: the prior name
         # ``episode_reward`` was misleading.  ``jnp.sum(trajectory.
@@ -2416,6 +2475,26 @@ def train(
                 f"xy_err={xy_err:.3f} yaw_err={yaw_err:.3f} | "
                 f"drift y={drift_y:+.2f}m yaw={drift_yaw:+.3f}rad"
             )
+
+            home_reset_count = _g("reset/home_reset_count")
+            rsi_reset_count = _g("reset/rsi_reset_count")
+            if home_reset_count + rsi_reset_count > 0.0:
+                print(
+                    f"  └─ reset: home={_g('reset/home_reset_frac'):.0%} "
+                    f"({home_reset_count:.0f}) | "
+                    f"RSI={_g('reset/rsi_reset_frac'):.0%} "
+                    f"({rsi_reset_count:.0f})"
+                )
+
+            home_episode_count = _g("reset/home_episode_count")
+            rsi_episode_count = _g("reset/rsi_episode_count")
+            if home_episode_count + rsi_episode_count > 0.0:
+                print(
+                    f"  └─ outcome: home len={_g('reset/home_episode_length'):.0f} "
+                    f"fail={_g('reset/home_failure_rate'):.0%} n={home_episode_count:.0f} | "
+                    f"RSI len={_g('reset/rsi_episode_length'):.0f} "
+                    f"fail={_g('reset/rsi_failure_rate'):.0%} n={rsi_episode_count:.0f}"
+                )
 
             # Residual magnitudes — printed only when a leg residual exceeds
             # the 0.20 rad bound (the historical exploit signal), as a plain
