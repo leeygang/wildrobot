@@ -182,6 +182,7 @@ class V6EvalAdapter:
         self._init_home_q_rad()
         self._init_walking_joint_offsets()
         self._init_ref_init_q_rad()
+        self._init_reference_roll_walking_base()
         self._init_ctrl_mapper()
         self._init_reset_perturbation()
         self._init_dr_joint_offsets()
@@ -230,6 +231,12 @@ class V6EvalAdapter:
             RuntimeReferenceService,
         )
         offline_path = getattr(self._cfg.env, "loc_ref_offline_library_path", None)
+        from training.configs.zmp_reference import zmp_walk_config_from_env
+
+        zmp_config = zmp_walk_config_from_env(
+            self._cfg.env,
+            offline_library_path=offline_path,
+        )
         offline_vx = float(getattr(self._cfg.env, "loc_ref_offline_command_vx", 0.20))
         # Mirror env _init_offline_service gate (training/envs/
         # wildrobot_env.py:835): the 3D library only stands up when BOTH
@@ -294,7 +301,11 @@ class V6EvalAdapter:
                     {round(float(v), 6) for v in arange_vals}
                     | {round(offline_vx, 6)}
                 )
-                lib = ZMPWalkGenerator().build_library_for_3d_values(
+                lib = ZMPWalkGenerator(
+                    config=zmp_config,
+                    scene_xml_path=self._cfg.env.scene_xml_path,
+                    robot_config_path=self._cfg.env.robot_config_path,
+                ).build_library_for_3d_values(
                     vx_values=vx_grid,
                     vy_values=vy_grid_cfg,
                     yaw_rate_values=wz_grid_cfg,
@@ -336,7 +347,11 @@ class V6EvalAdapter:
             lib = ReferenceLibrary.load(offline_path)
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
-            lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
+            lib = ZMPWalkGenerator(
+                config=zmp_config,
+                scene_xml_path=self._cfg.env.scene_xml_path,
+                robot_config_path=self._cfg.env.robot_config_path,
+            ).build_library_for_vx_values([offline_vx])
         traj = lib.lookup(offline_vx)
         self._service = RuntimeReferenceService(traj, n_anchor=2)
         self._services_by_bin = [self._service]
@@ -481,6 +496,39 @@ class V6EvalAdapter:
     def _init_ref_init_q_rad(self) -> None:
         win0 = self._service.lookup_np(0)
         self._ref_init_q_rad = self._apply_walking_joint_offsets(win0.q_ref)
+
+    def _init_reference_roll_walking_base(self) -> None:
+        from training.configs.zmp_reference import reference_roll_base_offsets
+
+        enabled = bool(
+            getattr(
+                self._cfg.env,
+                "loc_ref_walking_base_from_ref_init_roll",
+                False,
+            )
+        )
+        offsets = reference_roll_base_offsets(
+            actuator_names=list(self._policy_spec.robot.actuator_names),
+            home_q_rad=self._home_q_rad,
+            ref_init_q_rad=self._ref_init_q_rad,
+            enabled=enabled,
+            explicit_offsets=dict(
+                getattr(
+                    self._cfg.env,
+                    "loc_ref_walking_joint_offsets_rad",
+                    {},
+                )
+                or {}
+            ),
+        )
+        if not enabled:
+            return
+        walking_home = self._home_q_rad + offsets
+        if np.any(walking_home < self._joint_min) or np.any(
+            walking_home > self._joint_max
+        ):
+            raise ValueError("frame-zero roll walking base exceeds a joint range")
+        self._walking_home_q_rad = walking_home.astype(np.float32)
 
     def _init_ctrl_mapper(self) -> None:
         self._ctrl_mapper = CtrlOrderMapper(

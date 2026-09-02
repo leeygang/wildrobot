@@ -63,6 +63,28 @@ def test_zero_action_maps_to_walking_base_offset_while_hold_stays_home(v8_spec):
     np.testing.assert_allclose(held, runner.home_q_rad, atol=1e-6)
     np.testing.assert_allclose(held_action, 0.0, atol=1e-6)
 
+
+def test_exported_reference_roll_base_maps_zero_action_while_hold_stays_home(v8_spec):
+    names = list(v8_spec.robot.actuator_names)
+    offsets = np.zeros(v8_spec.model.action_dim, dtype=np.float32)
+    offsets[names.index("left_hip_roll")] = 0.012
+    offsets[names.index("left_ankle_roll")] = -0.012
+    offsets[names.index("right_hip_roll")] = -0.010
+    offsets[names.index("right_ankle_roll")] = 0.010
+    cfg = make_runtime_policy_config(
+        v8_spec,
+        residual_base_offset_per_actuator=offsets.tolist(),
+    )
+    runner = _runner(v8_spec, cfg)
+
+    target, _ = runner.compose_and_apply(
+        np.zeros(v8_spec.model.action_dim, dtype=np.float32)
+    )
+    np.testing.assert_allclose(target, runner.home_q_rad + offsets, atol=1e-6)
+    held, _ = runner.hold_home_step()
+    np.testing.assert_allclose(held, runner.home_q_rad, atol=1e-6)
+
+
 def test_one_step_delay_applies_previous_filtered(v8_spec, runtime_policy_config):
     runner = _runner(v8_spec, runtime_policy_config)
     n = v8_spec.model.action_dim

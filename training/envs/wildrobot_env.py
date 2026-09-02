@@ -361,6 +361,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._init_torque_saturation_penalty()
         self._init_foot_body_ids()
         self._init_offline_service()
+        self._init_reference_roll_walking_base()
         # Must run AFTER both _load_model (home_q_rad, scales, rsi flags) and
         # _init_offline_service (the library) are built.
         self._assert_rsi_reachable_from_home()
@@ -996,6 +997,40 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._walking_joint_offsets_rad = jp.asarray(values, dtype=jp.float32)
         self._walking_home_q_rad = jp.asarray(walking_home, dtype=jp.float32)
 
+    def _init_reference_roll_walking_base(self) -> None:
+        """Optionally align the static walking base with frame-zero roll IK."""
+        from training.configs.zmp_reference import reference_roll_base_offsets
+
+        enabled = bool(
+            getattr(
+                self._config.env,
+                "loc_ref_walking_base_from_ref_init_roll",
+                False,
+            )
+        )
+        generated_offsets = reference_roll_base_offsets(
+            actuator_names=list(self._policy_spec.robot.actuator_names),
+            home_q_rad=np.asarray(self._home_q_rad),
+            ref_init_q_rad=np.asarray(self._ref_init_q_rad),
+            enabled=enabled,
+            explicit_offsets=dict(
+                getattr(
+                    self._config.env,
+                    "loc_ref_walking_joint_offsets_rad",
+                    {},
+                )
+                or {}
+            ),
+        )
+        if not enabled:
+            return
+        walking_home = np.asarray(self._home_q_rad) + generated_offsets
+        if np.any(walking_home < np.asarray(self._joint_range_mins)) or np.any(
+            walking_home > np.asarray(self._joint_range_maxs)
+        ):
+            raise ValueError("frame-zero roll walking base exceeds a joint range")
+        self._walking_home_q_rad = jp.asarray(walking_home, dtype=jp.float32)
+
     # --------------------------------------------------------- residual scale
 
     def _init_residual_scale(self) -> None:
@@ -1228,6 +1263,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
 
         offline_path = getattr(self._config.env, "loc_ref_offline_library_path", None)
+        from training.configs.zmp_reference import zmp_walk_config_from_env
+
+        zmp_config = zmp_walk_config_from_env(
+            self._config.env,
+            offline_library_path=offline_path,
+        )
         # Fallback default 0.20 = Phase 9D operating point.  Should never
         # fire under a normal config (the dataclass default at
         # training_runtime_config.py is also 0.20), but kept defensive.
@@ -1333,6 +1374,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     and len(wz_grid_cfg) > 0
                 )
                 lib = ZMPWalkGenerator(
+                    config=zmp_config,
                     scene_xml_path=self._config.env.scene_xml_path,
                     robot_config_path=self._config.env.robot_config_path,
                 ).build_library_for_3d_values(
@@ -1367,6 +1409,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             from control.zmp.zmp_walk import ZMPWalkGenerator
             lib = ZMPWalkGenerator(
+                config=zmp_config,
                 scene_xml_path=self._config.env.scene_xml_path,
                 robot_config_path=self._config.env.robot_config_path,
             ).build_library_for_vx_values(list(vx_grid))

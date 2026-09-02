@@ -8,6 +8,85 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d10-result + 17d11-ready] - 2026-09-02: make stance geometry drive the walking action base
+
+The v0.21.0-17d10 run is
+`training/wandb/offline-run-20260901_222114-mil2cg1q`.  Its authoritative
+post-training evaluation selected no checkpoint.  Every candidate failed the
+zero-fall and per-actuator saturation gates; later optimization did not
+converge to a safer gait.
+
+| Candidate | Forward velocity | Falls | Stable tilt mean/max/final | Stable left-hip-roll saturation |
+|---|---:|---:|---:|---:|
+| 17d4 checkpoint 40 | 0.1230 m/s | 1/64 | 4.59/9.18/5.97 deg | 20.13% |
+| 17d10 checkpoint 14 | 0.1211 m/s | 2/64 | 4.26/8.85/5.22 deg | 19.12% |
+| 17d10 checkpoint 94 | 0.1311 m/s | 21/64 | 6.02/15.45/15.45 deg | 20.69% |
+
+Checkpoint 14 is the best practical 17d10 seed, but it is not deployable.
+Checkpoint 94's rank-1 training score is rejected by deterministic safety.
+At iteration 100 the training split had learned most home starts
+(`8%` failure) but still failed `44.7%` of RSI starts, consistent with the
+late deterministic instability.
+
+The corrected bilateral hip/ankle-roll IK had a measurable but insufficient
+effect.  In the same-seed 8x500 load-conditioned diagnostic, 17d10 checkpoint
+14 versus 17d4 checkpoint 40 changed left-support COM leverage
+`54.1 -> 52.1 mm`, left-hip saturation `39.09% -> 36.04%`, and right-hip
+saturation `15.50% -> 11.62%`.  Ankle-roll saturation remained zero.
+
+Code inspection explains the limited response: 17d10 retained
+`loc_ref_residual_base: home`, had no walking-base offsets, used an actor
+layout without q_ref, and kept `ref_q_track: 0`.  Corrected q_ref therefore
+reached RSI and the privileged critic, but zero policy residual still
+commanded the original high-load physical home stance.  This fixed the
+reference contract without changing the actor's mechanical operating point.
+
+The new 17d11 stage-1 contract changes that operating point coherently:
+
+- `env.loc_ref_default_stance_width_m` overrides the ZMP generator's per-side
+  stance target; stage 1 uses `0.0495 m` instead of `0.0536 m`.
+- The generator produces approximately `+/-0.0113 rad` bilateral hip roll and
+  the coupled opposite ankle roll, then reruns FK for consistent body, foot,
+  contact, RSI, and critic reference signals.
+- `env.loc_ref_walking_base_from_ref_init_roll: true` copies only those four
+  generated frame-zero roll channels into the static walking action base.
+  Physical home remains unchanged for standing/home hold and non-RSI starts.
+- Export resolves the same generated roll base into actuator order, so the
+  hardware runtime receives exactly the training/evaluation action base.
+- Explicit post-hoc walking offsets are rejected when this mode is active.
+
+A no-training Mac screen using 17d10 checkpoint 14 under the stage-1 contract
+preserved the gait: `0/8` falls over 500 steps, `0.1179 m/s`, stable tilt
+mean/p95/max/final `3.76/7.12/9.09/6.77 deg`, and stable max saturation
+`12.8%`.  The same screen from 17d4 checkpoint 40 also had `0/8` falls and
+`0.1206 m/s`, but higher stable saturation (`15.3%`), so checkpoint 14 is the
+selected initialization.
+
+The load-conditioned stage-1 screen confirms the intended mechanism without
+training: left-support COM leverage falls `52.13 -> 47.98 mm`, left-hip
+saturation `36.04% -> 25.33%`, and right-hip saturation
+`11.62% -> 4.43%`; ankle-roll saturation remains zero.  This is still above
+the deployment gate, so 17d11 is a 20-iteration causal adaptation stage, not a
+deployment candidate.  Advance to a narrower stage only if the authoritative
+64x1000 evaluation improves falls, forward speed, and saturation together.
+A three-iteration `--verify` training run also completed successfully on the
+Mac CPU, including checkpoint initialization and post-training evaluation.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d11_native_stance_stage1
+```
+
+References: Shi et al., *ToddlerBot* (arXiv:2502.00893), ToddlerBot
+`algorithms/zmp_walk.py::foot_ik` and `locomotion/mjx_env.py::reset`, and
+Kajita et al., ZMP preview control (ICRA 2003).
+
+---
+
 ## [v0.21.0-17d9-result + 17d10-ready] - 2026-09-01: reject the hard stance shift and correct roll IK
 
 The v0.21.0-17d9 run is

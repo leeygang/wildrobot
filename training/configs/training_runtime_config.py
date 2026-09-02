@@ -228,6 +228,17 @@ class EnvConfig(Freezable):
     # keyed by policy actuator name. Non-empty offsets require a home base.
     loc_ref_walking_joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
 
+    # Optional generator-native walking stance.  This is the per-side lateral
+    # foot target used by ZMPWalkConfig (nominal target separation is 2x this
+    # value), not the final FK foot-center separation.
+    loc_ref_default_stance_width_m: Optional[float] = None
+
+    # Use the generated frame-zero hip/ankle-roll pose as the static walking
+    # residual base while retaining the physical home pose for non-RSI resets
+    # and hardware home hold.  This changes only the four roll channels; all
+    # other action-base joints remain at the calibrated home pose.
+    loc_ref_walking_base_from_ref_init_roll: bool = False
+
     # Reset/init base selector for actuator-joint qpos.
     #   "home"     - historical reset: default pose + noise + DR offsets.
     #   "ref_init" - smoke9c: actuator joints start exactly at offline

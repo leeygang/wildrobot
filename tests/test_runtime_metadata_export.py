@@ -101,6 +101,61 @@ def test_metadata_resolves_walking_offsets_in_actuator_order(tmp_path) -> None:
     ]
     assert runtime_config.residual_base_offset_per_actuator == pytest.approx(resolved)
 
+
+def test_metadata_derives_generator_native_roll_base_from_frame_zero(tmp_path) -> None:
+    from runtime.wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
+
+    env = _smoke9_env()
+    env["loc_ref_default_stance_width_m"] = 0.0495
+    env["loc_ref_walking_base_from_ref_init_roll"] = True
+    spec = make_v8_spec()
+    names = list(spec.robot.actuator_names)
+    q_ref0 = list(spec.robot.home_ctrl_rad)
+    expected_roll = {
+        "left_hip_roll": 0.0113,
+        "left_ankle_roll": -0.0113,
+        "right_hip_roll": -0.0113,
+        "right_ankle_roll": 0.0113,
+    }
+    for name, value in expected_roll.items():
+        q_ref0[names.index(name)] = value
+    reference = make_reference_dict()
+    reference["primary_q_ref0"] = q_ref0
+
+    meta = build_runtime_metadata(env=env, spec=spec, reference=reference)
+    offsets = meta["residual_base_offset_per_actuator"]
+    for name, value in expected_roll.items():
+        idx = names.index(name)
+        assert spec.robot.home_ctrl_rad is not None
+        assert offsets[idx] == pytest.approx(
+            value - spec.robot.home_ctrl_rad[idx], abs=1e-7
+        )
+    for idx, name in enumerate(names):
+        if name not in expected_roll:
+            assert offsets[idx] == pytest.approx(0.0)
+    assert meta["loc_ref_default_stance_width_m"] == pytest.approx(0.0495)
+    assert meta["loc_ref_walking_base_from_ref_init_roll"] is True
+
+    path = tmp_path / "runtime_policy_config.json"
+    path.write_text(json.dumps(meta), encoding="utf-8")
+    runtime_config = RuntimePolicyConfig.from_json(path)
+    assert runtime_config.loc_ref_default_stance_width_m == pytest.approx(0.0495)
+    assert runtime_config.loc_ref_walking_base_from_ref_init_roll is True
+
+
+def test_generator_native_roll_base_rejects_explicit_offsets() -> None:
+    env = _smoke9_env()
+    env["loc_ref_default_stance_width_m"] = 0.0495
+    env["loc_ref_walking_base_from_ref_init_roll"] = True
+    env["loc_ref_walking_joint_offsets_rad"] = {"left_hip_roll": 0.01}
+    spec = make_v8_spec()
+    reference = make_reference_dict()
+    reference["primary_q_ref0"] = list(spec.robot.home_ctrl_rad)
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        build_runtime_metadata(env=env, spec=spec, reference=reference)
+
+
 def test_metadata_reference_block_roundtrips_into_runtime_config(tmp_path) -> None:
     """The metadata 'reference' block must load into the runtime loader."""
     from runtime.wr_runtime.control.runtime_policy_config import (

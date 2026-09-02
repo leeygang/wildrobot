@@ -83,6 +83,8 @@ class RuntimePolicyConfig:
     reference: ReferencePhaseTable
     loc_ref_walking_joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
     residual_base_offset_per_actuator: List[float] = field(default_factory=list)
+    loc_ref_default_stance_width_m: float | None = None
+    loc_ref_walking_base_from_ref_init_roll: bool = False
 
     @classmethod
     def from_json(cls, path: str | Path) -> "RuntimePolicyConfig":
@@ -131,6 +133,14 @@ class RuntimePolicyConfig:
                 float(v)
                 for v in data.get("residual_base_offset_per_actuator", [])
             ],
+            loc_ref_default_stance_width_m=(
+                None
+                if data.get("loc_ref_default_stance_width_m") is None
+                else float(data["loc_ref_default_stance_width_m"])
+            ),
+            loc_ref_walking_base_from_ref_init_roll=bool(
+                data.get("loc_ref_walking_base_from_ref_init_roll", False)
+            ),
         )
 
 

@@ -295,6 +295,14 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_walking_joint_offsets_rad=dict(
             env.get("loc_ref_walking_joint_offsets_rad", {}) or {}
         ),
+        loc_ref_default_stance_width_m=(
+            None
+            if env.get("loc_ref_default_stance_width_m") is None
+            else float(env["loc_ref_default_stance_width_m"])
+        ),
+        loc_ref_walking_base_from_ref_init_roll=bool(
+            env.get("loc_ref_walking_base_from_ref_init_roll", False)
+        ),
         loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
         # v0.21.0 smoke5 — Reference State Initialization (RSI). See dataclass docstring.
         loc_ref_rsi_enabled=bool(env.get("loc_ref_rsi_enabled", False)),

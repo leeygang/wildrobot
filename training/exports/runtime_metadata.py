@@ -55,6 +55,8 @@ def build_reference_phase_table(env: Dict[str, Any]) -> Dict[str, Any]:
       - ``cmd_keys``: ``[[vx, vy, wz], ...]`` per bin (nearest-bin selection)
       - ``per_bin_n_steps``: ``[n_i, ...]`` per bin (absorbing-boundary clamp)
       - ``phase_sin`` / ``phase_cos``: shared length-``n_steps`` clock arrays
+      - ``primary_q_ref0``: frame-zero joint reference for the canonical
+        straight-walk bin, used to freeze a generator-native roll action base
 
     Raises if the per-bin phase clocks diverge beyond ``_PHASE_BIN_TOL`` —
     that would mean a single shared clock is unsafe and the schema must move
@@ -88,6 +90,16 @@ def build_reference_phase_table(env: Dict[str, Any]) -> Dict[str, Any]:
         per_bin_n_steps.append(int(phase.shape[0]))
         phases.append(phase)
 
+    anchor = np.asarray([offline_vx, 0.0, 0.0], dtype=np.float64)
+    primary_idx = int(
+        np.argmin(
+            np.linalg.norm(np.asarray(cmd_keys, dtype=np.float64) - anchor, axis=1)
+        )
+    )
+    primary_q_ref0 = np.asarray(
+        trajectories[primary_idx].q_ref[0], dtype=np.float32
+    ).reshape(-1)
+
     # Canonical (longest) phase; verify all multi-step bins agree on the
     # overlap so a single shared clock is provably exact.
     canonical = max(phases, key=lambda p: p.shape[0])
@@ -115,6 +127,7 @@ def build_reference_phase_table(env: Dict[str, Any]) -> Dict[str, Any]:
         "per_bin_n_steps": per_bin_n_steps,
         "phase_sin": [float(v) for v in phase_sin],
         "phase_cos": [float(v) for v in phase_cos],
+        "primary_q_ref0": [float(v) for v in primary_q_ref0],
     }
 
 
@@ -127,6 +140,12 @@ def _build_trajectories(
     env: Dict[str, Any],
 ) -> List[Any]:
     """Mirror V6EvalAdapter._init_offline_service trajectory construction."""
+    from training.configs.zmp_reference import zmp_walk_config_from_env
+
+    zmp_config = zmp_walk_config_from_env(
+        env,
+        offline_library_path=offline_path,
+    )
     if offline_path:
         from control.references.reference_library import ReferenceLibrary
 
@@ -137,7 +156,6 @@ def _build_trajectories(
 
     if cmd_conditioned and axes_3d:
         from control.zmp.zmp_walk import ZMPWalkGenerator
-
         vy_grid = list(_env_get(env, "loc_ref_offline_command_vy_grid", ())) or [0.0]
         wz_grid = list(
             _env_get(env, "loc_ref_offline_command_yaw_rate_grid", ())
@@ -153,7 +171,11 @@ def _build_trajectories(
         vx_grid = sorted(
             {round(float(v), 6) for v in arange_vals} | {round(offline_vx, 6)}
         )
-        lib = ZMPWalkGenerator().build_library_for_3d_values(
+        lib = ZMPWalkGenerator(
+            config=zmp_config,
+            scene_xml_path=_env_get(env, "scene_xml_path", None),
+            robot_config_path=_env_get(env, "robot_config_path", None),
+        ).build_library_for_3d_values(
             vx_values=vx_grid,
             vy_values=vy_grid,
             yaw_rate_values=wz_grid,
@@ -161,8 +183,11 @@ def _build_trajectories(
         return list(lib._entries.values())
 
     from control.zmp.zmp_walk import ZMPWalkGenerator
-
-    lib = ZMPWalkGenerator().build_library_for_vx_values([offline_vx])
+    lib = ZMPWalkGenerator(
+        config=zmp_config,
+        scene_xml_path=_env_get(env, "scene_xml_path", None),
+        robot_config_path=_env_get(env, "robot_config_path", None),
+    ).build_library_for_vx_values([offline_vx])
     return [lib.lookup(offline_vx)]
 
 
@@ -215,6 +240,40 @@ def build_runtime_metadata(
     residual_base_offset_per_actuator = [
         float(base_offsets.get(name, 0.0)) for name in actuator_names
     ]
+    use_reference_roll_base = bool(
+        _env_get(env, "loc_ref_walking_base_from_ref_init_roll", False)
+    )
+    if use_reference_roll_base:
+        from training.configs.zmp_reference import reference_roll_base_offsets
+
+        if residual_base != "home":
+            raise ValueError(
+                "env.loc_ref_walking_base_from_ref_init_roll requires "
+                "loc_ref_residual_base='home'"
+            )
+        if _env_get(env, "loc_ref_default_stance_width_m", None) is None:
+            raise ValueError(
+                "env.loc_ref_walking_base_from_ref_init_roll requires "
+                "loc_ref_default_stance_width_m"
+            )
+        home_q = spec.robot.home_ctrl_rad
+        if home_q is None:
+            raise ValueError(
+                "policy_spec.robot.home_ctrl_rad is required for the "
+                "frame-zero roll walking base"
+            )
+        if "primary_q_ref0" not in reference:
+            raise ValueError(
+                "reference.primary_q_ref0 is required for the frame-zero "
+                "roll walking base"
+            )
+        residual_base_offset_per_actuator = reference_roll_base_offsets(
+            actuator_names=actuator_names,
+            home_q_rad=np.asarray(home_q, dtype=np.float32),
+            ref_init_q_rad=np.asarray(reference["primary_q_ref0"], dtype=np.float32),
+            enabled=True,
+            explicit_offsets=base_offsets,
+        ).astype(float).tolist()
     if not np.all(np.isfinite(residual_base_offset_per_actuator)):
         raise ValueError(
             "env.loc_ref_walking_joint_offsets_rad values must be finite"
@@ -242,6 +301,10 @@ def build_runtime_metadata(
         "loc_ref_walking_joint_offsets_rad": {
             k: float(v) for k, v in base_offsets.items()
         },
+        "loc_ref_default_stance_width_m": _env_get(
+            env, "loc_ref_default_stance_width_m", None
+        ),
+        "loc_ref_walking_base_from_ref_init_roll": use_reference_roll_base,
         "residual_base_offset_per_actuator": residual_base_offset_per_actuator,
         "loc_ref_command_conditioned": bool(
             _env_get(env, "loc_ref_command_conditioned", False)
