@@ -1,5 +1,8 @@
 from __future__ import annotations
+
+import numpy as np
 import pytest
+
 from control.zmp.zmp_walk import ZMPWalkConfig, ZMPWalkGenerator
 
 
@@ -26,6 +29,52 @@ def test_generate_defaults_vy_and_yaw_to_zero() -> None:
     traj = gen.generate(command_vx=0.20)
     assert traj.command_vy == pytest.approx(0.0)
     assert traj.command_yaw_rate == pytest.approx(0.0)
+
+
+def test_forward_reference_lateral_targets_match_realized_fk() -> None:
+    """Both feet must move laterally in the direction planned by ZMP.
+
+    Compare deltas from frame zero because ``left_foot_pos`` / ``right_foot_pos``
+    are COM-relative planner targets while ``body_pos`` contains FK-realized
+    body origins with a fixed model-dependent lateral offset.
+    """
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.13)
+    body_index = {name: i for i, name in enumerate(traj.body_names)}
+    waist_y = traj.body_pos[:, body_index["waist"], 1]
+
+    for side in ("left", "right"):
+        planned_y = np.asarray(getattr(traj, f"{side}_foot_pos")[:, 1])
+        realized_y = (
+            np.asarray(traj.body_pos[:, body_index[f"{side}_foot"], 1])
+            - np.asarray(waist_y)
+        )
+        planned_delta = planned_y - planned_y[0]
+        realized_delta = realized_y - realized_y[0]
+        correlation = float(np.corrcoef(planned_delta, realized_delta)[0, 1])
+        rmse_m = float(np.sqrt(np.mean((planned_delta - realized_delta) ** 2)))
+
+        assert correlation > 0.99, (
+            f"{side} lateral FK moves opposite the planned foot target: "
+            f"correlation={correlation:.6f}"
+        )
+        assert rmse_m < 0.001, (
+            f"{side} lateral FK differs from the planned foot target by "
+            f"{rmse_m * 1000.0:.3f} mm RMS"
+        )
+
+
+def test_forward_reference_ankle_roll_keeps_feet_level() -> None:
+    """Mirror ToddlerBot's coupled hip/ankle roll IK for zero foot roll."""
+    gen = ZMPWalkGenerator()
+    traj = gen.generate(command_vx=0.13)
+    names = gen._load_actuator_layout()["actuator_names"]
+
+    for side in ("left", "right"):
+        hip_roll = np.asarray(traj.q_ref[:, names.index(f"{side}_hip_roll")])
+        ankle_roll = np.asarray(traj.q_ref[:, names.index(f"{side}_ankle_roll")])
+        assert np.max(np.abs(hip_roll)) > 1e-3
+        np.testing.assert_allclose(ankle_roll, -hip_roll, atol=1e-6)
 
 
 def test_pure_lateral_command_does_not_short_circuit_to_standing() -> None:

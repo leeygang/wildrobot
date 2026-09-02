@@ -8,6 +8,84 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d9-result + 17d10-ready] - 2026-09-01: reject the hard stance shift and correct roll IK
+
+The v0.21.0-17d9 run is
+`training/wandb/offline-run-20260901_205201-h33axrxo`.  Its authoritative
+post-training evaluation selected no checkpoint: all four retained candidates
+failed forward locomotion, survival, and/or per-actuator torque gates.
+
+| Candidate | Forward velocity | First-episode falls | Stable max saturation |
+|---|---:|---:|---:|
+| 17d4 checkpoint 40 | 0.1230 m/s | 1/64 | 20.13% |
+| 17d8 checkpoint 13 | 0.1133 m/s | 2/64 | 18.32% |
+| 17d9 checkpoint 2 | 0.0764 m/s | 41/64 | 8.18% |
+| 17d9 checkpoint 7 | 0.0591 m/s | 42/64 | 5.65% |
+| 17d9 checkpoint 19 | 0.0122 m/s | 55/64 | 5.93% |
+
+The 20-iteration screen answered its intended question.  The narrow stance
+reduced hip-roll saturation, but the policy did not adapt into a viable gait.
+From iteration 2 onward, every completed home-reset and RSI-reset episode was
+a failure.  By iteration 20, home/RSI episode lengths had improved to
+`145/229` steps while training forward velocity fell to `-0.005 m/s`: PPO was
+learning to move less and postpone failure rather than recover locomotion.
+Continuing the same run is therefore not justified.
+
+A controlled 8-environment, 500-step deterministic evaluation used the same
+17d9 checkpoint-2 actor under both action bases:
+
+| Action base | Forward velocity | Falls | Stable max saturation |
+|---|---:|---:|---:|
+| original home | 0.1303 m/s | 0/8 | 19.91% |
+| 0.030 rad narrow | 0.0627 m/s | 5/8 | 5.08% |
+| narrow + 0.5 s action ramp | 0.0547 m/s | 4/8 | 2.94% |
+
+This isolates the failure to the stance/action-reference change rather than
+early corruption of the initialized actor.  The runtime-like action ramp only
+delayed falls and further reduced speed; it did not repair the gait.
+
+Reference-source inspection then found a concrete pre-existing roll-IK
+contract defect.  At `vx=0.13`, the left foot's planned versus FK-realized
+lateral displacement agreed (`r=+0.996`, `0.19 mm` RMS), while the right foot
+moved in the opposite direction (`r=-0.998`, `3.90 mm` RMS).  The WR generator
+also left both ankle-roll reference channels at zero.  ToddlerBot's
+`foot_ik` computes the bilateral hip-roll signs and coupled ankle-roll
+counter-rotation together before MuJoCo replay.
+
+The WR ZMP generator now validates its own FK and follows that structure using
+WR's measured model signs: both hips use `-hip_r`, and each ankle roll uses
+`+hip_r` for a zero-roll foot target.  After the correction, left/right
+lateral correlations are `+0.996/+0.999` with `0.19/0.14 mm` RMS errors, and
+`ankle_roll == -hip_roll` for forward walking.  Regression tests enforce both
+properties.
+
+`training/configs/ppo_walking_v0210_17d10_roll_ik_contract.yaml` is the next
+training configuration.  It removes the rejected 17d9 walking-base offsets,
+restores the proven physical home action base and `0.146 m` close-feet
+threshold, keeps the saturation reward disabled, and trains for 100 iterations
+from 17d4 checkpoint 40.  A pre-training 8x500 deterministic check under the
+corrected config preserved the source gait: `0/8` falls, `0.1271 m/s`, stable
+tilt mean/max `4.35/9.30 deg`, and `19.8%` stable max saturation.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d10_roll_ik_contract.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d4_startup_mix/ppo_walking_v0210_17d4_startup_mix_v0210-17d4_20260831_144954-m558zwn5/checkpoint_40_819200.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract
+```
+
+Promotion remains forward-only and requires zero falls, at least `0.11 m/s`,
+stable tilt mean/max/final at most `10/15/10 deg`, and every actuator at or
+below `5%` stable 95%-torque-limit occupancy.  If the corrected reference
+preserves gait but does not sufficiently lower saturation, stance narrowing
+will be reintroduced incrementally rather than as another hard `0.030 rad`
+shift.  References: Shi et al., *ToddlerBot* (arXiv:2502.00893), ToddlerBot
+`algorithms/zmp_walk.py::foot_ik`, and Kajita et al., ICRA 2003.
+
+---
+
 ## [v0.21.0-17d8-result + 17d9-ready] - 2026-09-01: replace torque suppression with WR-specific walking geometry
 
 The v0.21.0-17d8 run is

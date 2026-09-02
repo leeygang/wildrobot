@@ -361,15 +361,15 @@ class ZMPWalkGenerator:
     _DEFAULT_SCENE_XML = "assets/v2/scene_flat_terrain.xml"
     _DEFAULT_ROBOT_CONFIG = "assets/v2/mujoco_robot_config.json"
 
-    # Sagittal IK + hip-roll IK fill these 8 leg joints in PolicySpec
-    # actuator order; all other actuators (waist, arms, ankle_roll) keep
-    # the default-zero q_ref slot.  ankle_roll was added by the v20
-    # ankle_roll merge; the ZMP family does not plan a non-zero roll
-    # target, so it remains at 0 and the policy's residual is the only
-    # control signal on that joint.
+    # Sagittal IK + coupled hip/ankle-roll IK fill these 10 leg joints in
+    # PolicySpec actuator order; all other actuators (waist and arms) keep
+    # the default-zero q_ref slot.  The ankle-roll target counter-rotates
+    # hip roll so a zero requested foot roll remains level, matching
+    # ToddlerBot's ``foot_ik`` contract.
     _LEG_JOINT_NAMES = (
         "left_hip_pitch", "left_hip_roll", "left_knee_pitch", "left_ankle_pitch",
-        "right_hip_pitch", "right_hip_roll", "right_knee_pitch", "right_ankle_pitch",
+        "left_ankle_roll", "right_hip_pitch", "right_hip_roll",
+        "right_knee_pitch", "right_ankle_pitch", "right_ankle_roll",
     )
 
     def __init__(
@@ -406,7 +406,7 @@ class ZMPWalkGenerator:
         Returns a dict with:
           * ``n_joints`` — total actuator count (= ``q_ref.shape[1]``)
           * ``actuator_names`` — full list in PolicySpec order
-          * ``leg_idx`` — name -> slot index for the 8 leg joints
+          * ``leg_idx`` — name -> slot index for the 10 leg joints
           * ``leg_clip_min`` / ``leg_clip_max`` — length-``n_joints``
             arrays with leg slots set to the joint's MJCF range and all
             other slots at ``±inf`` (so a single ``np.clip`` over the
@@ -1265,21 +1265,23 @@ class ZMPWalkGenerator:
                 hip_r = np.arctan2(foot_rel_y, -hip_to_foot_z)
                 hip_r = np.clip(hip_r, -0.15, 0.15)
 
-                # Apply WildRobot sign conventions (from
-                # nominal_ik_adapter.py): the hip-pitch and hip-roll
-                # axes are mirrored across L/R in the MJCF, so the
-                # left side negates both; knee + ankle_pitch share
-                # sign across L/R.
+                # Apply WildRobot sign conventions.  FK validation shows
+                # ``-hip_r`` moves both feet toward their requested lateral
+                # targets; using ``+hip_r`` on the right reverses that foot's
+                # motion.  Counter-rotate ankle roll to keep a zero-roll foot
+                # target level, matching ToddlerBot's coupled roll IK.
                 if side == "left":
                     q_ref[i, leg_idx["left_hip_pitch"]] = -hip_p
                     q_ref[i, leg_idx["left_hip_roll"]] = -hip_r
                     q_ref[i, leg_idx["left_knee_pitch"]] = knee_p
                     q_ref[i, leg_idx["left_ankle_pitch"]] = ank_p
+                    q_ref[i, leg_idx["left_ankle_roll"]] = hip_r
                 else:
                     q_ref[i, leg_idx["right_hip_pitch"]] = hip_p
-                    q_ref[i, leg_idx["right_hip_roll"]] = hip_r
+                    q_ref[i, leg_idx["right_hip_roll"]] = -hip_r
                     q_ref[i, leg_idx["right_knee_pitch"]] = knee_p
                     q_ref[i, leg_idx["right_ankle_pitch"]] = ank_p
+                    q_ref[i, leg_idx["right_ankle_roll"]] = hip_r
 
         # Safety clip — catches any residual IK rounding.  Joint ranges
         # are read from ``mujoco_robot_config.json`` (radians) by
