@@ -948,6 +948,20 @@ class PPOConfig(Freezable):
     # mean((pi(M(obs)) - M(pi(obs)))**2) over deterministic policy actions.
     # Disabled by default so historical configs remain byte-equivalent.
     mirror_loss_coef: float = 0.0
+    # Actor-only fine-tuning can start from a good policy with a fresh critic.
+    # Keep the actor fixed for these initial iterations so the value function
+    # learns on-policy returns before its advantages are allowed to move the
+    # inherited behavior.
+    critic_warmup_iterations: int = 0
+    # Fixed KL anchor to the actor supplied through --init-policy.  Unlike
+    # PPO's moving old-policy clip, this limits cumulative drift away from the
+    # known-safe source policy.  Zero preserves historical behavior.
+    source_policy_kl_coef: float = 0.0
+    # Stop the current PPO minibatch scan when exact KL(source || current)
+    # exceeds this bound.  This is independent of the sampled PPO approx-KL
+    # and directly caps cumulative drift from an --init-policy actor.
+    # Zero disables the bound.
+    source_policy_kl_limit: float = 0.0
 
     eval: "PPOEvalConfig" = field(default_factory=lambda: PPOEvalConfig())
     rollback: "PPORollbackConfig" = field(default_factory=lambda: PPORollbackConfig())
@@ -995,6 +1009,10 @@ class PPORollbackConfig(Freezable):
     enabled: bool = False
     patience: int = 2
     success_rate_drop_threshold: float = 0.05
+    # Roll back an equally stable policy when its worst stable actuator
+    # saturation occupancy increases by more than this absolute fraction.
+    # The default 1.0 effectively disables this additional trigger.
+    stable_saturation_increase_threshold: float = 1.0
     lr_factor: float = 0.5
 
 

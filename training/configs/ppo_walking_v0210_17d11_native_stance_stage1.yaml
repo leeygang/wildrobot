@@ -1,5 +1,5 @@
 # =============================================================================
-# WildRobot v0.21.0-17d11 generator-native stance curriculum, stage 1
+# WildRobot v0.21.0-17d11-safe behavior-preserving asymmetric fine-tune
 # =============================================================================
 # 17d10 corrected the bilateral roll IK and restored ankle-roll
 # counter-rotation, but did not solve the deployment blocker.  Its best
@@ -13,13 +13,30 @@
 # operating around the high-load stance rather than receiving more mechanical
 # hip-roll headroom.
 #
-# 17d11 stage 1 changes one physical lever coherently:
+# The first 17d11 run proved that the geometry change is viable before PPO:
+# the inherited actor completed 0/8 deterministic 1000-step episodes at
+# 0.1144 m/s, but still used the left hip above the deployment margin
+# (13.46% stable saturation).  PPO then regressed the inherited gait: every
+# retained checkpoint had 10-16/64 falls.  The frozen run configuration used
+# an actor-only initialization with a fresh critic, no fixed source-policy
+# anchor, target_kl=0, no periodic evaluation, and no rollback.
+#
+# This safe retry keeps the proven geometry and changes the adaptation path:
+#   * warm the fresh critic for two iterations while the actor is frozen;
+#   * anchor the actor to the source distribution with KL(source || current);
+#   * use a low actor learning rate and active PPO KL early stopping;
+#   * evaluate all 64 deterministic episodes every iteration and roll back on
+#     either survival regression or a >2 percentage-point saturation increase;
+#   * penalize only the measured left-hip-roll bottleneck above 80% torque;
+#   * keep lateral/world-y drift report-only.
+#
+# The unchanged geometry still:
 #   * narrow ZMPWalkConfig.default_stance_width_m 0.0536 -> 0.0495 m;
 #   * let the generator jointly solve hip roll + ankle counter-rotation;
 #   * derive the four roll channels of the static walking action base from
 #     generated frame zero, while retaining physical home for startup resets;
-#   * keep reward weights, forward task, RSI mix, and residual scales unchanged;
-#   * run a 10-iteration adaptation before attempting a larger narrowing.
+#   * keeps the forward task, RSI mix, and residual scales unchanged;
+#   * runs 10 total iterations: 2 critic-only + 8 guarded actor iterations.
 #
 # At vx=0.13, 0.0495 m produces approximately +/-0.0113 rad coupled roll
 # targets.  This is intentionally much smaller than 17d9's failed immediate
@@ -31,7 +48,7 @@
 #   uv run python training/train.py \
 #     --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
 #     --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl \
-#     --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d11_native_stance_stage1
+#     --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d11_safe_asymmetric_finetune
 #
 # Acceptance: zero falls, >=0.11 m/s forward speed, stable tilt
 # mean/max/final <=10/15/10 deg, and every actuator's stable >=95%-limit
@@ -369,8 +386,8 @@
 # -----------------------------------------------------------------------------
 # Reference: training/docs/v0210_lateral_yaw_prior_plan-final-r2.md
 # =============================================================================
-version: "0.21.0-17d11"
-version_name: "v0.21.0 native 17D generator-native stance curriculum stage 1"
+version: "0.21.0-17d11-safe"
+version_name: "v0.21.0 native 17D guarded asymmetric stance fine-tune"
 
 seed: 42
 
@@ -415,6 +432,15 @@ env:
     right_ankle_pitch: 5.0
     left_ankle_roll: 5.0
     right_ankle_roll: 5.0
+
+  # Measured load-conditioned evaluation isolates the remaining blocker to
+  # left support (25.33% left-hip saturation versus 4.43% on the right).
+  # Target only that bottleneck; the fixed-source KL and deterministic
+  # rollback prevent the earlier reward exploit of slowing/falling.
+  torque_saturation_soft_limit_ratio: 0.8
+  torque_saturation_weight_default: 0.0
+  torque_saturation_weights_per_joint:
+    left_hip_roll: 1.0
 
   # Keep the proven 0.065 basin-entry floor, but cap training at the current
   # deployment maximum 0.13.  The source run learned a nearly fixed gait speed
@@ -590,20 +616,20 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 20
-  # Short adaptation: 10 * 1024 * 20 = 204,800 env-steps.  The frozen-policy
-  # width sweep already established the safe geometry boundary; PPO only needs
-  # to re-center the inherited gait around this small roll-base change.
+  # 2 critic-only iterations followed by 8 guarded actor iterations.
   iterations: 10
 
-  learning_rate: 1.0e-5
+  learning_rate: 2.0e-6
   gamma: 0.97
   gae_lambda: 0.95
 
   clip_epsilon: 0.2
-  entropy_coef: 1.0e-4
+  # Do not inflate exploration variance during this narrow fine-tune; the
+  # source actor already carries its learned stochastic scale.
+  entropy_coef: 0.0
   value_loss_coef: 0.5
 
-  epochs: 4
+  epochs: 2
   num_minibatches: 16
   max_grad_norm: 1.0
 
@@ -619,26 +645,29 @@ ppo:
   # ``Lever 7 (option A): critic sees actor obs + privileged'' for
   # the full rationale.
   critic_includes_actor_obs: true
+  critic_warmup_iterations: 2
+  source_policy_kl_coef: 1.0
+  source_policy_kl_limit: 0.003
+  target_kl: 0.003
+  kl_early_stop_multiplier: 1.0
+  kl_lr_backoff_multiplier: 1.5
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
 
   eval:
-    # Training-time eval DISABLED (decision 2026-05-30): avoid the in-flight
-    # wall-clock overhead.  smoke5's decisive risk IS a from-rest one (train
-    # resets start ON the RSI manifold; eval/deploy start from REST), so the
-    # rest→walk transition must still be checked at the 3–5M early-stop — but
-    # OUT-OF-BAND on a saved checkpoint, not in the training loop:
-    #   uv run python training/eval/eval_policy.py --config <this> \
-    #     --checkpoint <ckpt> --num-steps 1000   # uses reset_for_eval (from rest)
-    # (or visualize_policy.py --velocity-cmd 0.13 0 0).  Authoritative
-    # post-training eval (post_training_enabled=true) still runs at the end.
-    enabled: false
-    interval: 10
+    # Stability is the primary objective, so pay the evaluation cost and grade
+    # the complete deployment horizon after every iteration.  Iterations 1-2
+    # evaluate the unchanged source actor and establish the rollback baseline.
+    enabled: true
+    interval: 1
     num_envs: 64
     num_steps: 1000
     deterministic: true
     seed_offset: 10000
     post_training_enabled: true
-    # Five regular checkpoints are produced; evaluate all of them.
-    post_training_top_k: 5
+    # Save/evaluate every short-run checkpoint, including the critic-only
+    # source-policy baselines at iterations 1 and 2.
+    post_training_top_k: 10
     # The source 8-env evaluation missed falls reproduced with 64 environments.
     post_training_num_envs: 64
     # smoke2 fb #1: must match max_episode_steps=1000.  At 500 a healthy
@@ -655,6 +684,13 @@ ppo:
     # Also require yaw-independent tilt and every individual actuator's
     # torque-limit occupancy to clear deployment thresholds.
     post_training_strict_walking_safety: true
+
+  rollback:
+    enabled: true
+    patience: 1
+    success_rate_drop_threshold: 0.01
+    stable_saturation_increase_threshold: 0.02
+    lr_factor: 0.5
 
 networks:
   actor:
@@ -737,8 +773,9 @@ reward_weights:
   torso_pitch_soft: 0.0
   torso_roll_soft: 0.0
   torque: -0.001
-  # Keep optimization reward-neutral for the contract correction.
-  saturation: 0.0
+  # Conservative half-strength of the failed 17d8 penalty, now left-only and
+  # protected by source-policy KL plus deterministic rollback.
+  saturation: -0.025
   joint_velocity: 0.0
   slip: 0.0
   pitch_rate: 0.0
@@ -748,14 +785,14 @@ reward:
   task_reward_clip: null
 
 checkpoints:
-  dir: training/checkpoints/ppo_walking_v0210_17d11_native_stance_stage1
-  interval: 2
+  dir: training/checkpoints/ppo_walking_v0210_17d11_safe_asymmetric_finetune
+  interval: 1
 
 wandb:
   enabled: true
   project: wildrobot-ppo
   mode: offline
-  tags: [ppo, v0.21.0, native_17d, 17d11, forward_only, generator_native_stance, stance_stage1, checkpoint14_init, wrist_free_policy, latency_finetune, sample_hold_feedback, domain_randomization, tb_contract, mixed_home_rsi_reset, home_base_residual, strict_walking_safety, eval_64, obs_v8_cmd3d, ep_1000]
+  tags: [ppo, v0.21.0, native_17d, 17d11_safe, forward_only, generator_native_stance, asymmetric_left_hip_margin, critic_warmup, source_policy_kl, checkpoint14_init, wrist_free_policy, latency_finetune, sample_hold_feedback, domain_randomization, tb_contract, mixed_home_rsi_reset, home_base_residual, strict_walking_safety, eval_each_iteration, eval_64, obs_v8_cmd3d, ep_1000]
 
 video:
   enabled: false

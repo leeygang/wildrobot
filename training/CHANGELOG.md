@@ -8,6 +8,63 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d11-result + guarded asymmetric retry] - 2026-09-02: preserve the safe source gait while targeting left-hip margin
+
+The v0.21.0-17d11 run is
+`training/wandb/offline-run-20260902_084040-es2vm2gz`.  Its frozen
+20-iteration configuration selected no checkpoint.  Checkpoints 2, 7, 14,
+and 19 had respectively `13/64`, `16/64`, `14/64`, and `10/64` deterministic
+falls; their stable left-hip-roll saturation was `12.88%`, `12.09%`,
+`10.27%`, and `15.76%`.  Checkpoint 19 had acceptable yaw-independent stable
+tilt (`3.67/9.56/4.41 deg` mean/max/final), but failed survival and saturation.
+
+A control evaluation kept the 17d10 checkpoint-14 actor frozen while applying
+the exact 17d11 `0.0495 m` generator-native stance.  It completed `0/8` falls
+over 1000 steps at `0.1144 m/s`, with stable tilt
+`3.69/9.09/4.29 deg` and `13.46%` left-hip saturation.  The three-seed
+500-step screen also remained `0/24` falls.  This isolates the new regression
+to PPO adaptation rather than the stance geometry.
+
+The training trace explains why reducing the same run from 20 to 10
+iterations is insufficient.  From iteration 3 through 20, every completed
+home and RSI episode was a failure; at iteration 10 forward velocity was only
+`0.0454 m/s` and reference-body orientation error was `14.72 deg`.  The
+actor-only initialization created a fresh critic and optimizer, while
+`target_kl`, periodic deterministic evaluation, rollback, and the saturation
+reward were all disabled.  Iteration 1 already reported approximate KL
+`0.0225` and a `24.6%` PPO clip fraction.
+
+The next 10-iteration retry keeps the `0.0495 m` geometry and makes adaptation
+behavior-preserving:
+
+- iterations 1-2 update only the fresh critic; the actor and its optimizer are
+  unchanged;
+- `KL(source || current)` anchors the actor to the original checkpoint and has
+  a hard `0.003` minibatch-stop limit;
+- learning rate is `2e-6`, PPO epochs are reduced to 2, entropy pressure is
+  disabled, and the moving-policy target KL is `0.003`;
+- a deterministic 64x1000 evaluation runs every iteration; rollback restores
+  the best survival-first, saturation-second state after either a >1% survival
+  drop or >2 percentage-point stable-saturation regression;
+- only `left_hip_roll` receives the 80%-of-limit saturation penalty, at
+  conservative weight `-0.025`; lateral and yaw drift remain report-only.
+
+The unchanged GPU command is:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d11_safe_asymmetric_finetune
+```
+
+References: Schulman et al., *Proximal Policy Optimization Algorithms*
+(arXiv:1707.06347); Zhu and Matsubara, *Cautious Policy Programming*
+(arXiv:2107.05798); Shi et al., *ToddlerBot* (arXiv:2502.00893), especially
+ToddlerBot's first-reference-frame action base in `locomotion/mjx_env.py`.
+
+---
+
 ## [v0.21.0-17d10-result + 17d11-ready] - 2026-09-02: make stance geometry drive the walking action base
 
 The v0.21.0-17d10 run is

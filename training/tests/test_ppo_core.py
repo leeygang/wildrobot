@@ -202,6 +202,46 @@ class TestPPOLoss:
         assert metrics.value_loss.shape == ()
         assert metrics.entropy_loss.shape == ()
         assert metrics.mirror_loss == pytest.approx(0.0)
+        assert metrics.source_policy_kl == pytest.approx(0.0)
+
+    def test_compute_ppo_loss_adds_fixed_source_policy_kl(
+        self, ppo_network, network_params
+    ):
+        processor_params, source_policy_params, value_params = network_params
+        rng = jax.random.PRNGKey(11)
+        obs_batch = jax.random.normal(rng, (BATCH_SIZE, OBS_DIM))
+        action_batch = jax.random.normal(rng, (BATCH_SIZE, ACTION_DIM))
+        log_prob_batch = jax.random.normal(rng, (BATCH_SIZE,))
+        adv_batch = jax.random.normal(rng, (BATCH_SIZE,))
+        ret_batch = jax.random.normal(rng, (BATCH_SIZE,))
+        shifted_policy_params = jax.tree_util.tree_map(
+            lambda value: value + jnp.asarray(1.0e-3, dtype=value.dtype),
+            source_policy_params,
+        )
+        common = dict(
+            processor_params=processor_params,
+            policy_params=shifted_policy_params,
+            value_params=value_params,
+            ppo_network=ppo_network,
+            obs=obs_batch,
+            value_obs=None,
+            actions=action_batch,
+            old_log_probs=log_prob_batch,
+            advantages=adv_batch,
+            returns=ret_batch,
+            rng=rng,
+        )
+        base_loss, _ = compute_ppo_loss(**common)
+        anchored_loss, metrics = compute_ppo_loss(
+            **common,
+            source_policy_params=source_policy_params,
+            source_policy_kl_coef=0.5,
+        )
+
+        assert metrics.source_policy_kl > 0.0
+        assert anchored_loss == pytest.approx(
+            float(base_loss + 0.5 * metrics.source_policy_kl), rel=1e-5
+        )
 
     def test_compute_ppo_loss_adds_actor_mirror_regularizer(
         self, ppo_network, network_params

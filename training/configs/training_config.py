@@ -885,6 +885,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
             ppo.get("critic_includes_actor_obs", False)
         ),
         mirror_loss_coef=float(ppo.get("mirror_loss_coef", 0.0)),
+        critic_warmup_iterations=int(ppo.get("critic_warmup_iterations", 0)),
+        source_policy_kl_coef=float(ppo.get("source_policy_kl_coef", 0.0)),
+        source_policy_kl_limit=float(ppo.get("source_policy_kl_limit", 0.0)),
         eval=PPOEvalConfig(
             enabled=eval_cfg.get("enabled", False),
             interval=eval_cfg.get("interval", 0),
@@ -925,6 +928,9 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
             patience=rollback_cfg.get("patience", 2),
             success_rate_drop_threshold=rollback_cfg.get(
                 "success_rate_drop_threshold", 0.05
+            ),
+            stable_saturation_increase_threshold=rollback_cfg.get(
+                "stable_saturation_increase_threshold", 1.0
             ),
             lr_factor=rollback_cfg.get("lr_factor", 0.5),
         ),

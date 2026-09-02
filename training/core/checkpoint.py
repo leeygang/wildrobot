@@ -137,6 +137,15 @@ def save_checkpoint_from_cpu(
             "ppo/mirror_loss_weighted": float(
                 env_metrics.get("ppo/mirror_loss_weighted", 0.0)
             ),
+            "ppo/source_policy_kl": float(
+                env_metrics.get("ppo/source_policy_kl", 0.0)
+            ),
+            "ppo/source_policy_kl_weighted": float(
+                env_metrics.get("ppo/source_policy_kl_weighted", 0.0)
+            ),
+            "ppo/actor_update_enabled": float(
+                env_metrics.get("ppo/actor_update_enabled", 1.0)
+            ),
             "tracking/cmd_vs_achieved_forward": cmd_err,
             "tracking/step_length_touchdown_event_m": step_len,
             "tracking/forward_velocity_cmd_ratio": cmd_ratio,
@@ -157,6 +166,7 @@ def save_checkpoint_from_cpu(
         "metrics": metrics_dict,
         "policy_spec_json": policy_spec_json,
         "policy_params": state_cpu.policy_params,
+        "source_policy_params": getattr(state_cpu, "source_policy_params", None),
         "value_params": state_cpu.value_params,
         "processor_params": state_cpu.processor_params,
         "policy_opt_state": state_cpu.policy_opt_state,
@@ -182,6 +192,9 @@ def save_checkpoint_from_cpu(
             # value_params and crashing later in value_network.apply.
             "critic_includes_actor_obs": config.ppo.critic_includes_actor_obs,
             "mirror_loss_coef": config.ppo.mirror_loss_coef,
+            "critic_warmup_iterations": config.ppo.critic_warmup_iterations,
+            "source_policy_kl_coef": config.ppo.source_policy_kl_coef,
+            "source_policy_kl_limit": config.ppo.source_policy_kl_limit,
             "actor_hidden_sizes": config.networks.actor.hidden_sizes,
             "critic_hidden_sizes": config.networks.critic.hidden_sizes,
             "iterations": config.ppo.iterations,

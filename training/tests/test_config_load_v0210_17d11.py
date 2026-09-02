@@ -34,12 +34,32 @@ def env(cfg):
     return WildRobotEnv(config=cfg)
 
 
-def test_17d11_is_a_short_generator_native_stance_stage(cfg) -> None:
-    assert cfg.version == "0.21.0-17d11"
+def test_17d11_is_a_guarded_asymmetric_finetune(cfg) -> None:
+    assert cfg.version == "0.21.0-17d11-safe"
     assert cfg.ppo.iterations == 10
-    assert cfg.checkpoints.interval == 2
-    assert cfg.ppo.eval.post_training_top_k == 5
-    assert cfg.reward_weights.saturation == pytest.approx(0.0)
+    assert cfg.checkpoints.interval == 1
+    assert cfg.ppo.critic_warmup_iterations == 2
+    assert cfg.ppo.source_policy_kl_coef == pytest.approx(1.0)
+    assert cfg.ppo.source_policy_kl_limit == pytest.approx(0.003)
+    assert cfg.ppo.learning_rate == pytest.approx(2.0e-6)
+    assert cfg.ppo.epochs == 2
+    assert cfg.ppo.target_kl == pytest.approx(0.003)
+    assert cfg.ppo.entropy_coef == pytest.approx(0.0)
+    assert cfg.ppo.eval.enabled is True
+    assert cfg.ppo.eval.interval == 1
+    assert cfg.ppo.eval.num_envs == 64
+    assert cfg.ppo.eval.num_steps == 1000
+    assert cfg.ppo.eval.post_training_top_k == 10
+    assert cfg.ppo.rollback.enabled is True
+    assert cfg.ppo.rollback.patience == 1
+    assert cfg.ppo.rollback.success_rate_drop_threshold == pytest.approx(0.01)
+    assert cfg.ppo.rollback.stable_saturation_increase_threshold == pytest.approx(
+        0.02
+    )
+    assert cfg.reward_weights.saturation == pytest.approx(-0.025)
+    assert cfg.env.torque_saturation_soft_limit_ratio == pytest.approx(0.8)
+    assert cfg.env.torque_saturation_weight_default == pytest.approx(0.0)
+    assert cfg.env.torque_saturation_weights_per_joint == {"left_hip_roll": 1.0}
     assert cfg.env.loc_ref_default_stance_width_m == pytest.approx(0.0495)
     assert cfg.env.loc_ref_walking_base_from_ref_init_roll is True
     assert cfg.env.loc_ref_walking_joint_offsets_rad == {}

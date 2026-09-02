@@ -379,6 +379,7 @@ class PPOLossMetrics(NamedTuple):
     value_loss: jnp.ndarray
     entropy_loss: jnp.ndarray
     mirror_loss: jnp.ndarray
+    source_policy_kl: jnp.ndarray
     clip_fraction: jnp.ndarray
     approx_kl: jnp.ndarray
 
@@ -402,6 +403,8 @@ def compute_ppo_loss(
     mirror_loss_coef: float = 0.0,
     mirror_observation_fn: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
     mirror_action_fn: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
+    source_policy_params: Optional[Any] = None,
+    source_policy_kl_coef: float = 0.0,
 ) -> Tuple[jnp.ndarray, PPOLossMetrics]:
     """Compute PPO loss with clipped objective.
 
@@ -432,6 +435,10 @@ def compute_ppo_loss(
         mirror_loss_coef: Weight on actor sagittal-equivariance MSE.
         mirror_observation_fn: Transform actor observations under reflection.
         mirror_action_fn: Transform deterministic actions under reflection.
+        source_policy_params: Frozen actor used as a behavior anchor.
+        source_policy_kl_coef: Weight on KL(source || current).  The tanh
+            transform is shared and bijective, so the transformed-policy KL
+            equals the KL between their underlying diagonal Gaussians.
 
     Returns:
         (total_loss, PPOLossMetrics): Scalar loss and metrics
@@ -487,12 +494,41 @@ def compute_ppo_loss(
             jnp.square(mirrored_actions_mode - expected_mirrored_actions)
         )
 
+    source_policy_kl = jnp.asarray(0.0, dtype=jnp.float32)
+    if float(source_policy_kl_coef) > 0.0:
+        if source_policy_params is None:
+            raise ValueError(
+                "source_policy_kl_coef > 0 requires source_policy_params"
+            )
+        source_logits = jax.lax.stop_gradient(
+            ppo_network.policy_network.apply(
+                processor_params, source_policy_params, obs
+            )
+        )
+        source_dist = ppo_network.parametric_action_distribution.create_dist(
+            source_logits
+        )
+        current_dist = ppo_network.parametric_action_distribution.create_dist(logits)
+        source_var = jnp.square(source_dist.scale)
+        current_var = jnp.square(current_dist.scale)
+        kl_per_action = (
+            jnp.log(current_dist.scale / source_dist.scale)
+            + (
+                source_var
+                + jnp.square(source_dist.loc - current_dist.loc)
+            )
+            / (2.0 * current_var)
+            - 0.5
+        )
+        source_policy_kl = jnp.mean(jnp.sum(kl_per_action, axis=-1))
+
     # Total loss
     total_loss = (
         policy_loss
         + value_loss_coef * value_loss
         + entropy_coef * entropy_loss
         + float(mirror_loss_coef) * mirror_loss
+        + float(source_policy_kl_coef) * source_policy_kl
     )
 
     # Metrics
@@ -505,6 +541,7 @@ def compute_ppo_loss(
         value_loss=value_loss,
         entropy_loss=entropy_loss,
         mirror_loss=mirror_loss,
+        source_policy_kl=source_policy_kl,
         clip_fraction=clip_fraction,
         approx_kl=approx_kl,
     )

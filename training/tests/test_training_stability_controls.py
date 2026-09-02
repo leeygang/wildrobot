@@ -20,6 +20,7 @@ from training.core.training_loop import (
     _format_hhmmss,
     _is_eval_better,
     _linear_schedule_factor,
+    _policy_update_scale,
     _should_fire_callback,
     _should_trigger_rollback,
 )
@@ -43,9 +44,39 @@ def test_eval_comparison_tie_breaks_on_episode_length():
     assert not _is_eval_better(0.8, 299.0, 0.8, 300.0)
 
 
+def test_eval_comparison_uses_stable_saturation_after_survival_ties():
+    assert _is_eval_better(1.0, 1000.0, 1.0, 1000.0, 0.04, 0.10)
+    assert not _is_eval_better(1.0, 1000.0, 1.0, 1000.0, 0.12, 0.10)
+
+
 def test_should_trigger_rollback_uses_success_drop_threshold():
     assert _should_trigger_rollback(0.70, 0.80, 0.05)
     assert not _should_trigger_rollback(0.76, 0.80, 0.05)
+
+
+def test_should_trigger_rollback_uses_stable_saturation_regression():
+    assert _should_trigger_rollback(
+        1.0,
+        1.0,
+        0.01,
+        current_stable_saturation=0.13,
+        best_stable_saturation=0.10,
+        stable_saturation_increase_threshold=0.02,
+    )
+    assert not _should_trigger_rollback(
+        1.0,
+        1.0,
+        0.01,
+        current_stable_saturation=0.115,
+        best_stable_saturation=0.10,
+        stable_saturation_increase_threshold=0.02,
+    )
+
+
+def test_policy_update_scale_freezes_actor_during_critic_warmup():
+    assert _policy_update_scale(1, 2) == 0.0
+    assert _policy_update_scale(2, 2) == 0.0
+    assert _policy_update_scale(3, 2) == 1.0
 
 
 def test_format_hhmmss_formats_elapsed_time():
@@ -348,6 +379,9 @@ def test_parse_new_ppo_stability_fields():
         {
             "ppo": {
                 "target_kl": 0.02,
+                "critic_warmup_iterations": 3,
+                "source_policy_kl_coef": 0.75,
+                "source_policy_kl_limit": 0.004,
                 "kl_early_stop_multiplier": 1.7,
                 "kl_lr_backoff_multiplier": 2.1,
                 "kl_lr_backoff_factor": 0.4,
@@ -370,6 +404,7 @@ def test_parse_new_ppo_stability_fields():
                     "enabled": True,
                     "patience": 3,
                     "success_rate_drop_threshold": 0.07,
+                    "stable_saturation_increase_threshold": 0.03,
                     "lr_factor": 0.6,
                 },
             }
@@ -377,6 +412,9 @@ def test_parse_new_ppo_stability_fields():
     )
 
     assert cfg.ppo.target_kl == 0.02
+    assert cfg.ppo.critic_warmup_iterations == 3
+    assert cfg.ppo.source_policy_kl_coef == pytest.approx(0.75)
+    assert cfg.ppo.source_policy_kl_limit == pytest.approx(0.004)
     assert cfg.ppo.kl_early_stop_multiplier == 1.7
     assert cfg.ppo.kl_lr_backoff_multiplier == 2.1
     assert cfg.ppo.kl_lr_backoff_factor == 0.4
@@ -395,6 +433,9 @@ def test_parse_new_ppo_stability_fields():
     assert cfg.ppo.rollback.enabled
     assert cfg.ppo.rollback.patience == 3
     assert cfg.ppo.rollback.success_rate_drop_threshold == 0.07
+    assert cfg.ppo.rollback.stable_saturation_increase_threshold == pytest.approx(
+        0.03
+    )
     assert cfg.ppo.rollback.lr_factor == 0.6
 
 

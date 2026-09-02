@@ -59,6 +59,7 @@ class TrainingState(NamedTuple):
 
     # Network parameters
     policy_params: Any
+    source_policy_params: Any
     value_params: Any
     processor_params: Any
 
@@ -178,12 +179,20 @@ def _is_eval_better(
     episode_length: float,
     best_success_rate: float,
     best_episode_length: float,
+    stable_saturation: float = float("inf"),
+    best_stable_saturation: float = float("inf"),
     eps: float = 1e-6,
 ) -> bool:
-    """Lexicographic compare: success_rate first, then episode_length."""
+    """Prefer survival, then episode length, then lower stable saturation."""
     if success_rate > best_success_rate + eps:
         return True
     if abs(success_rate - best_success_rate) <= eps and episode_length > best_episode_length + eps:
+        return True
+    if (
+        abs(success_rate - best_success_rate) <= eps
+        and abs(episode_length - best_episode_length) <= eps
+        and stable_saturation < best_stable_saturation - eps
+    ):
         return True
     return False
 
@@ -192,9 +201,23 @@ def _should_trigger_rollback(
     current_success_rate: float,
     best_success_rate: float,
     threshold: float,
+    current_stable_saturation: float = 0.0,
+    best_stable_saturation: float = 0.0,
+    stable_saturation_increase_threshold: float = 1.0,
 ) -> bool:
-    """Return True when eval success-rate regressed enough to consider rollback."""
-    return current_success_rate < (best_success_rate - threshold)
+    """Return True when survival or stable actuator margin regresses."""
+    success_regressed = current_success_rate < (best_success_rate - threshold)
+    saturation_regressed = (
+        current_success_rate >= (best_success_rate - threshold)
+        and current_stable_saturation
+        > best_stable_saturation + stable_saturation_increase_threshold
+    )
+    return success_regressed or saturation_regressed
+
+
+def _policy_update_scale(iteration: int, critic_warmup_iterations: int) -> float:
+    """Freeze the actor while a fresh critic learns the inherited policy."""
+    return 0.0 if int(iteration) <= int(critic_warmup_iterations) else 1.0
 
 
 def _should_fire_callback(
@@ -244,11 +267,15 @@ def ppo_update_scan(
     value_loss_coef: float,
     entropy_coef: float,
     update_scale: float,
+    policy_update_scale: float,
     target_kl: float,
     kl_early_stop_multiplier: float,
     mirror_loss_coef: float = 0.0,
     mirror_observation_fn: Optional[Callable] = None,
     mirror_action_fn: Optional[Callable] = None,
+    source_policy_params: Optional[Any] = None,
+    source_policy_kl_coef: float = 0.0,
+    source_policy_kl_limit: float = 0.0,
 ) -> tuple:
     """PPO update using jax.lax.scan over epochs and minibatches."""
     batch_size = obs.shape[0]
@@ -256,11 +283,15 @@ def ppo_update_scan(
     num_updates = num_epochs * num_minibatches
     active_epochs = jnp.clip(jnp.asarray(active_epochs, dtype=jnp.int32), 1, num_epochs)
     update_scale = jnp.asarray(update_scale, dtype=jnp.float32)
+    policy_update_scale = jnp.asarray(policy_update_scale, dtype=jnp.float32)
 
     rng, perm_rng = jax.random.split(rng)
     epoch_rngs = jax.random.split(perm_rng, num_epochs)
     epoch_perms = jax.vmap(lambda key: jax.random.permutation(key, batch_size))(epoch_rngs)
     target_kl = jnp.asarray(float(target_kl), dtype=jnp.float32)
+    source_policy_kl_limit = jnp.asarray(
+        float(source_policy_kl_limit), dtype=jnp.float32
+    )
     kl_stop_threshold = target_kl * jnp.asarray(
         float(kl_early_stop_multiplier), dtype=jnp.float32
     )
@@ -309,19 +340,33 @@ def ppo_update_scan(
                     mirror_loss_coef=mirror_loss_coef,
                     mirror_observation_fn=mirror_observation_fn,
                     mirror_action_fn=mirror_action_fn,
+                    source_policy_params=source_policy_params,
+                    source_policy_kl_coef=source_policy_kl_coef,
                 )
 
             (_total_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
                 loss_fn, argnums=(0, 1), has_aux=True
             )(policy_p, value_p)
 
-            policy_updates, next_policy_opt = policy_optimizer.update(
-                policy_grads, policy_opt
+            def _update_policy(_):
+                policy_updates, updated_policy_opt = policy_optimizer.update(
+                    policy_grads, policy_opt
+                )
+                policy_updates = jax.tree_util.tree_map(
+                    lambda u: u * update_scale * policy_update_scale,
+                    policy_updates,
+                )
+                return optax.apply_updates(policy_p, policy_updates), updated_policy_opt
+
+            def _keep_policy(_):
+                return policy_p, policy_opt
+
+            next_policy_p, next_policy_opt = jax.lax.cond(
+                policy_update_scale > 0.0,
+                _update_policy,
+                _keep_policy,
+                operand=None,
             )
-            policy_updates = jax.tree_util.tree_map(
-                lambda u: u * update_scale, policy_updates
-            )
-            next_policy_p = optax.apply_updates(policy_p, policy_updates)
 
             value_updates, next_value_opt = value_optimizer.update(
                 value_grads, value_opt
@@ -352,6 +397,7 @@ def ppo_update_scan(
                 value_loss=zero,
                 entropy_loss=zero,
                 mirror_loss=zero,
+                source_policy_kl=zero,
                 clip_fraction=zero,
                 approx_kl=zero,
             )
@@ -376,7 +422,15 @@ def ppo_update_scan(
             target_kl > 0.0,
             metrics.approx_kl > kl_stop_threshold,
         )
+        source_stop_now = jnp.logical_and(
+            source_policy_kl_limit > 0.0,
+            metrics.source_policy_kl > source_policy_kl_limit,
+        )
         updated_stop = jnp.logical_or(next_carry[5], jnp.logical_and(is_active, stop_now))
+        updated_stop = jnp.logical_or(
+            updated_stop,
+            jnp.logical_and(is_active, source_stop_now),
+        )
         next_carry = (
             next_carry[0],
             next_carry[1],
@@ -422,6 +476,7 @@ def ppo_update_scan(
         _active_mean(all_metrics.value_loss),
         _active_mean(all_metrics.entropy_loss),
         _active_mean(all_metrics.mirror_loss),
+        _active_mean(all_metrics.source_policy_kl),
         _active_mean(all_metrics.total_loss),
         _active_mean(all_metrics.clip_fraction),
         _active_mean(all_metrics.approx_kl),
@@ -441,6 +496,7 @@ def make_train_iteration_fn(
     policy_optimizer: optax.GradientTransformation,
     value_optimizer: optax.GradientTransformation,
     config: TrainingConfig,
+    source_policy_params: Optional[Any] = None,
 ):
     """Create JIT-compiled training iteration function."""
 
@@ -465,6 +521,21 @@ def make_train_iteration_fn(
         )
         mirror_action_fn = functools.partial(mirror_actions, spec=policy_spec)
 
+    source_policy_kl_coef = float(config.ppo.source_policy_kl_coef)
+    source_policy_kl_limit = float(config.ppo.source_policy_kl_limit)
+    if source_policy_kl_coef < 0.0:
+        raise ValueError("ppo.source_policy_kl_coef must be >= 0")
+    if source_policy_kl_coef > 0.0 and source_policy_params is None:
+        raise ValueError(
+            "ppo.source_policy_kl_coef > 0 requires training with --init-policy"
+        )
+    if source_policy_kl_limit < 0.0:
+        raise ValueError("ppo.source_policy_kl_limit must be >= 0")
+    if source_policy_kl_limit > 0.0 and source_policy_params is None:
+        raise ValueError(
+            "ppo.source_policy_kl_limit > 0 requires training with --init-policy"
+        )
+
     @jax.jit
     def train_iteration(
         state: TrainingState,
@@ -472,6 +543,7 @@ def make_train_iteration_fn(
         active_ppo_epochs: int,
         entropy_coef: float,
         learning_rate_scale: float,
+        actor_update_scale: float,
     ) -> Tuple[TrainingState, Any, IterationMetrics]:
         """Execute one training iteration (fully on GPU)."""
 
@@ -531,6 +603,7 @@ def make_train_iteration_fn(
             value_loss,
             entropy_loss,
             mirror_loss,
+            source_policy_kl,
             total_loss,
             clip_fraction,
             approx_kl,
@@ -559,11 +632,15 @@ def make_train_iteration_fn(
             value_loss_coef=config.ppo.value_loss_coef,
             entropy_coef=entropy_coef,
             update_scale=learning_rate_scale,
+            policy_update_scale=actor_update_scale,
             target_kl=config.ppo.target_kl,
             kl_early_stop_multiplier=config.ppo.kl_early_stop_multiplier,
             mirror_loss_coef=mirror_loss_coef,
             mirror_observation_fn=mirror_observation_fn,
             mirror_action_fn=mirror_action_fn,
+            source_policy_params=source_policy_params,
+            source_policy_kl_coef=source_policy_kl_coef,
+            source_policy_kl_limit=source_policy_kl_limit,
         )
 
         # ================================================================
@@ -865,9 +942,23 @@ def make_train_iteration_fn(
             jnp.float32(mirror_loss_coef) * mirror_loss
         )
         agg_metrics["ppo/mirror_loss_coef"] = jnp.float32(mirror_loss_coef)
+        agg_metrics["ppo/source_policy_kl"] = source_policy_kl
+        agg_metrics["ppo/source_policy_kl_weighted"] = (
+            jnp.float32(source_policy_kl_coef) * source_policy_kl
+        )
+        agg_metrics["ppo/source_policy_kl_coef"] = jnp.float32(
+            source_policy_kl_coef
+        )
+        agg_metrics["ppo/source_policy_kl_limit"] = jnp.float32(
+            source_policy_kl_limit
+        )
+        agg_metrics["ppo/actor_update_enabled"] = jnp.asarray(
+            actor_update_scale > 0.0, dtype=jnp.float32
+        )
 
         new_state = TrainingState(
             policy_params=new_policy_params,
+            source_policy_params=state.source_policy_params,
             value_params=new_value_params,
             processor_params=state.processor_params,
             policy_opt_state=new_policy_opt,
@@ -983,6 +1074,21 @@ def _validate_resume_checkpoint(
         ckpt_config.get("mirror_loss_coef", 0.0),
         config.ppo.mirror_loss_coef,
     )
+    _check_mismatch(
+        "critic_warmup_iterations",
+        ckpt_config.get("critic_warmup_iterations", 0),
+        config.ppo.critic_warmup_iterations,
+    )
+    _check_mismatch(
+        "source_policy_kl_coef",
+        ckpt_config.get("source_policy_kl_coef", 0.0),
+        config.ppo.source_policy_kl_coef,
+    )
+    _check_mismatch(
+        "source_policy_kl_limit",
+        ckpt_config.get("source_policy_kl_limit", 0.0),
+        config.ppo.source_policy_kl_limit,
+    )
     _warn_if_mismatch(
         "learning_rate", ckpt_config.get("learning_rate"), config.ppo.learning_rate
     )
@@ -1087,6 +1193,23 @@ def train(
         raise ValueError(
             "resume_checkpoint and initial_policy_params are mutually exclusive"
         )
+    if int(config.ppo.critic_warmup_iterations) < 0:
+        raise ValueError("ppo.critic_warmup_iterations must be >= 0")
+    if float(config.ppo.source_policy_kl_coef) < 0.0:
+        raise ValueError("ppo.source_policy_kl_coef must be >= 0")
+    if float(config.ppo.source_policy_kl_limit) < 0.0:
+        raise ValueError("ppo.source_policy_kl_limit must be >= 0")
+    source_policy_params = initial_policy_params
+    if resume_checkpoint is not None:
+        source_policy_params = resume_checkpoint.get("source_policy_params")
+    if (
+        float(config.ppo.source_policy_kl_coef) > 0.0
+        or float(config.ppo.source_policy_kl_limit) > 0.0
+    ) and source_policy_params is None:
+        raise ValueError(
+            "source-policy KL controls require --init-policy, or a resume "
+            "checkpoint containing source_policy_params"
+        )
 
     robot_config = get_robot_config()
     spec = build_policy_spec_from_training_config(
@@ -1136,6 +1259,9 @@ def train(
     print(f"  num_envs: {config.ppo.num_envs}")
     print(f"  rollout_steps: {config.ppo.rollout_steps}")
     print(f"  iterations: {config.ppo.iterations}")
+    print(f"  critic_warmup_iterations: {config.ppo.critic_warmup_iterations}")
+    print(f"  source_policy_kl_coef: {config.ppo.source_policy_kl_coef}")
+    print(f"  source_policy_kl_limit: {config.ppo.source_policy_kl_limit}")
     print("=" * 60)
 
     # Initialize RNG
@@ -1249,6 +1375,7 @@ def train(
         # Restore state from checkpoint
         state = TrainingState(
             policy_params=resume_checkpoint["policy_params"],
+            source_policy_params=source_policy_params,
             value_params=resume_checkpoint["value_params"],
             processor_params=resume_checkpoint.get("processor_params", processor_params),
             policy_opt_state=resume_checkpoint["policy_opt_state"],
@@ -1263,6 +1390,7 @@ def train(
         # Create fresh training state
         state = TrainingState(
             policy_params=policy_params,
+            source_policy_params=source_policy_params,
             value_params=value_params,
             processor_params=processor_params,
             policy_opt_state=policy_opt_state,
@@ -1283,6 +1411,7 @@ def train(
         policy_optimizer=policy_optimizer,
         value_optimizer=value_optimizer,
         config=config,
+        source_policy_params=state.source_policy_params,
     )
 
     eval_step_push_fn = eval_env_step_fn or env_step_fn
@@ -1941,6 +2070,10 @@ def train(
         config.ppo.epochs,
         config.ppo.entropy_coef,
         1.0,
+        _policy_update_scale(
+            start_iteration + 1,
+            config.ppo.critic_warmup_iterations,
+        ),
     )
     jax.block_until_ready(_)
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
@@ -1979,6 +2112,7 @@ def train(
     best_eval = {
         "success_rate": -1.0,
         "episode_length": 0.0,
+        "stable_saturation": float("inf"),
         "state": None,
         "iteration": 0,
     }
@@ -2007,6 +2141,10 @@ def train(
         )
         learning_rate_scale = lr_backoff_scale
         entropy_coef = float(config.ppo.entropy_coef) * entropy_schedule_factor
+        actor_update_scale = _policy_update_scale(
+            iteration,
+            config.ppo.critic_warmup_iterations,
+        )
         active_epochs = _effective_ppo_epochs(
             base_epochs=config.ppo.epochs,
             previous_approx_kl=last_approx_kl,
@@ -2020,6 +2158,7 @@ def train(
             active_epochs,
             entropy_coef,
             learning_rate_scale,
+            actor_update_scale,
         )
         jax.block_until_ready(state.total_steps)
 
@@ -2351,15 +2490,24 @@ def train(
             # Use survival metrics for short-horizon probes (eval_steps < max_episode_steps).
             gate_success = eval_push_survival_rate_f if use_eval_survival_metric else eval_push_success_f
             gate_len = eval_push_survival_steps_f if use_eval_survival_metric else eval_push_ep_len_f
+            gate_stable_saturation = float(
+                eval_clean_walking.get(
+                    "walking_stable_max_actuator_torque_sat_frac",
+                    float("inf"),
+                )
+            )
 
-            if _is_eval_better(
+            if actor_update_scale == 0.0 or _is_eval_better(
                 success_rate=gate_success,
                 episode_length=gate_len,
                 best_success_rate=best_eval["success_rate"],
                 best_episode_length=best_eval["episode_length"],
+                stable_saturation=gate_stable_saturation,
+                best_stable_saturation=best_eval["stable_saturation"],
             ):
                 best_eval["success_rate"] = gate_success
                 best_eval["episode_length"] = gate_len
+                best_eval["stable_saturation"] = gate_stable_saturation
                 best_eval["state"] = jax.device_get(state)
                 best_eval["iteration"] = iteration
                 rollback_bad_count = 0
@@ -2368,6 +2516,11 @@ def train(
                     current_success_rate=gate_success,
                     best_success_rate=float(best_eval["success_rate"]),
                     threshold=float(config.ppo.rollback.success_rate_drop_threshold),
+                    current_stable_saturation=gate_stable_saturation,
+                    best_stable_saturation=float(best_eval["stable_saturation"]),
+                    stable_saturation_increase_threshold=float(
+                        config.ppo.rollback.stable_saturation_increase_threshold
+                    ),
                 ):
                     rollback_bad_count += 1
                 else:
@@ -2377,6 +2530,7 @@ def train(
                     snap = best_eval["state"]
                     state = TrainingState(
                         policy_params=snap.policy_params,
+                        source_policy_params=snap.source_policy_params,
                         value_params=snap.value_params,
                         processor_params=snap.processor_params,
                         policy_opt_state=snap.policy_opt_state,
@@ -2567,10 +2721,15 @@ def train(
             # PPO internals — only on anomaly (early stop or rollback).
             ppo_early_stop = int(_g("ppo/early_stop_epoch"))
             ppo_rollback = int(_g("ppo/rollback_triggered"))
+            actor_update_enabled = int(_g("ppo/actor_update_enabled"))
+            if actor_update_enabled == 0:
+                print("  └─ ppo: actor frozen; critic warm-up only")
             if ppo_early_stop > 0 or ppo_rollback > 0:
                 print(
                     f"  └─ ppo: kl={float(metrics.approx_kl):>6.4f} "
                     f"(target={_g('ppo/target_kl'):>6.4f}) | "
+                    f"source_kl={_g('ppo/source_policy_kl'):>6.4f} "
+                    f"(limit={_g('ppo/source_policy_kl_limit'):>6.4f}) | "
                     f"epochs={int(_g('ppo/epochs_used')):>2} | "
                     f"lr={_g('ppo/lr'):>8.6f}"
                     f"{' | EARLY_STOP' if ppo_early_stop > 0 else ''}"
