@@ -425,6 +425,7 @@ def _build_policy_spec(
         "source_checkpoint": {"format": "pkl", "path": str(checkpoint_path)},
         "robot_config": str(robot_config_path),
     }
+    provenance.update(_load_training_job_provenance(checkpoint_path))
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
         actuated_joint_specs=actuated_joint_specs,
@@ -434,6 +435,30 @@ def _build_policy_spec(
         home_ctrl_rad=home_ctrl_rad,
         provenance=provenance,
     )
+
+
+def _load_training_job_provenance(checkpoint_path: Path) -> Dict[str, Any]:
+    """Load immutable remote-training provenance when the checkpoint has it."""
+    manifest_path = checkpoint_path.parent / "training_job_manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+
+    fields = {
+        "git_commit": manifest.get("git_sha"),
+        "git_dirty": manifest.get("git_dirty"),
+        "training_job_id": manifest.get("job_id"),
+        "training_run_id": manifest.get("wandb_run_id"),
+        "source_config_sha256": manifest.get("source_config_sha256"),
+        "effective_config_sha256": manifest.get("effective_config_sha256"),
+        "initial_checkpoint_sha256": manifest.get("start_checkpoint_sha256"),
+    }
+    return {key: value for key, value in fields.items() if value is not None}
 
 
 def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> list[float]:

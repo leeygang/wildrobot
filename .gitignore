@@ -34,6 +34,7 @@ training_logs/
 **/checkpoints/ppo_*/
 training/configs/auto/
 training/checkpoints/
+training/remote_jobs/
 # OS
 .DS_Store
 Thumbs.db

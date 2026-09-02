@@ -1,5 +1,75 @@
 # Training Loop Agent
 
+## Mac ↔ GPU supervised loop
+
+`remote_training_loop.py` is the cross-machine controller. It uses Git for
+code/config provenance and rsync only for generated artifacts. Every GPU run is
+checked out at an exact commit in a dedicated worktree, launched through a
+transient user `systemd` service, and described by an atomic JSON manifest.
+
+The controller deliberately does not push a generated change, launch the next
+changed experiment, update `training/CHANGELOG.md`, or deploy hardware without
+review.
+
+### Submit the current walking retry
+
+Commit and push the Mac worktree first, then run:
+
+```bash
+uv run python wildrobot/agents/remote_training_loop.py submit \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl
+```
+
+The default GPU target matches the existing transfer scripts:
+`leeygang@linux-pc.local:/home/leeygang/projects/wildrobot`. Override it with
+`--host`, `--user`, `--port`, or `--remote-repo`. Use `--dry-run` to print the
+exact remote checkout and launch commands without connecting.
+
+The GPU must have Git access to `origin`, an existing repository `.venv`,
+`systemd-run --user`, and the initial checkpoint path. Enable user lingering if
+the service must survive all SSH sessions. Only one training worker runs at a
+time; a second job fails its global GPU lock instead of competing for the
+device.
+
+### Monitor, sync, and analyze
+
+```bash
+uv run python wildrobot/agents/remote_training_loop.py status
+uv run python wildrobot/agents/remote_training_loop.py sync
+uv run python wildrobot/agents/remote_training_loop.py analyze
+```
+
+Summary sync retrieves the manifest, log, frozen configs, W&B metrics, and
+deterministic evaluation JSON. It does not retrieve `.pkl` files. A promoted
+checkpoint can be copied only after the authoritative selector passes:
+
+```bash
+uv run python wildrobot/agents/remote_training_loop.py sync --selected-checkpoint
+```
+
+Local control state and analysis reports live in ignored
+`training/remote_jobs/`. W&B and checkpoint summaries are restored to their
+normal `training/wandb/` and `training/checkpoints/` locations so the existing
+`wildrobot-training-analyze` workflow remains the source of truth.
+
+### Codex scheduled watcher
+
+Use the durable prompt in `CODEX_SCHEDULED_TASK.md` for a project-scoped Codex
+scheduled task. Run the task in the local project so it can access the ignored
+job state and synchronized artifacts. The Mac must remain powered on with the
+ChatGPT desktop app running.
+
+References: [OpenAI scheduled tasks](https://developers.openai.com/codex/automations),
+[systemd-run](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html),
+[Git worktrees](https://git-scm.com/docs/git-worktree), and
+[ToddlerBot](https://arxiv.org/abs/2502.00893). ToddlerBot similarly snapshots
+arguments, training/environment configuration, code state, and checkpoints per
+run; WildRobot adds an explicit cross-machine manifest and deterministic
+promotion state.
+
+## Legacy single-machine tuning loop
+
 `wildrobot/agents/training_loop_agent.py` automates a **train → eval → tune → resume** loop for
 `training/train.py` runs, using W&B **offline** `metrics.jsonl` to decide the next knob change.
 

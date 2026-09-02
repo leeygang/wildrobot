@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+"""Supervised Mac-to-GPU training loop for WildRobot."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any, Sequence
+
+import yaml
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+AGENT_REL_PATH = "wildrobot/agents/remote_training_loop.py"
+DEFAULT_GPU_HOST = "linux-pc.local"
+DEFAULT_GPU_USER = "leeygang"
+DEFAULT_REMOTE_REPO = "/home/leeygang/projects/wildrobot"
+LOCAL_JOB_ROOT = REPO_ROOT / "training" / "remote_jobs"
+MANIFEST_NAME = "job_manifest.json"
+CHECKPOINT_MANIFEST_NAME = "training_job_manifest.json"
+
+
+class TrainingLoopError(RuntimeError):
+    """A user-actionable orchestration failure."""
+
+
+@dataclass(frozen=True)
+class RemoteContext:
+    job_id: str
+    host: str
+    user: str
+    port: int | None
+    remote_repo: str
+
+    @property
+    def jobs_root(self) -> str:
+        repo = PurePosixPath(self.remote_repo)
+        return str(repo.parent / f"{repo.name}-training-jobs")
+
+    @property
+    def job_root(self) -> str:
+        return f"{self.jobs_root}/{self.job_id}"
+
+    @property
+    def target(self) -> str:
+        return f"{self.user}@{self.host}"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise TrainingLoopError(f"Missing job manifest: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise TrainingLoopError(f"Invalid job manifest: {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise TrainingLoopError(f"Job manifest must be a JSON object: {path}")
+    return payload
+
+
+def _run(
+    command: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    capture_output: bool = True,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        cwd=cwd,
+        text=True,
+        capture_output=capture_output,
+        check=check,
+    )
+
+
+def _git_output(*args: str, cwd: Path = REPO_ROOT) -> str:
+    return _run(["git", *args], cwd=cwd).stdout.strip()
+
+
+def _safe_job_id(value: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-")
+    if not safe or safe != value or len(safe) > 100:
+        raise TrainingLoopError(
+            "Job IDs may contain only letters, digits, '_' and '-' (max 100)."
+        )
+    return safe
+
+
+def _new_job_id(config_path: str, git_sha: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return _safe_job_id(f"{Path(config_path).stem}-{git_sha[:8]}-{timestamp}")
+
+
+def _checkpoint_series(checkpoint_dir: str) -> str:
+    path = PurePosixPath(checkpoint_dir)
+    if path.is_absolute() or ".." in path.parts:
+        raise TrainingLoopError("Checkpoint directory must be repository-relative.")
+    parts = path.parts
+    if parts[:2] == ("training", "checkpoints"):
+        parts = parts[2:]
+    if not parts:
+        raise TrainingLoopError("Checkpoint directory must name a training series.")
+    return PurePosixPath(*parts).as_posix()
+
+
+def _checkpoint_artifact_relative(value: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise TrainingLoopError(f"Unsafe checkpoint artifact path: {value}")
+    if path.parts[0] != "checkpoints":
+        raise TrainingLoopError(f"Unexpected checkpoint artifact path: {value}")
+    return path
+
+
+def _repo_config(path_text: str) -> str:
+    path = Path(path_text)
+    resolved = path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
+    try:
+        relative = resolved.relative_to(REPO_ROOT)
+    except ValueError as exc:
+        raise TrainingLoopError(f"Config must be inside the repository: {path_text}") from exc
+    if not resolved.is_file():
+        raise TrainingLoopError(f"Config not found: {relative}")
+    if _run(
+        ["git", "ls-files", "--error-unmatch", relative.as_posix()],
+        cwd=REPO_ROOT,
+        check=False,
+    ).returncode:
+        raise TrainingLoopError(f"Training config must be tracked by Git: {relative}")
+    return relative.as_posix()
+
+
+def _config_checkpoint_series(config_path: Path) -> str:
+    config = yaml.safe_load(config_path.read_text())
+    checkpoints = config.get("checkpoints") if isinstance(config, dict) else None
+    if not isinstance(checkpoints, dict) or not checkpoints.get("dir"):
+        raise TrainingLoopError(f"Training config has no checkpoints.dir: {config_path}")
+    return _checkpoint_series(str(checkpoints["dir"]))
+
+
+def _ssh_command(context: RemoteContext, remote_command: str) -> list[str]:
+    command = ["ssh"]
+    if context.port is not None:
+        command.extend(["-p", str(context.port)])
+    command.extend([context.target, remote_command])
+    return command
+
+
+def _rsync_command(context: RemoteContext) -> list[str]:
+    command = ["rsync", "-az"]
+    if context.port is not None:
+        command.extend(["-e", f"ssh -p {context.port}"])
+    return command
+
+
+def _shell_join(command: Sequence[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def _initial_manifest(
+    *,
+    context: RemoteContext,
+    git_sha: str,
+    config: str,
+    checkpoint_series: str,
+    init_policy: str | None,
+    resume: str | None,
+) -> dict[str, Any]:
+    job_root = context.job_root
+    artifact_root = f"{job_root}/artifacts"
+    return {
+        "schema_version": 1,
+        "job_id": context.job_id,
+        "status": "queued",
+        "created_at": _utc_now(),
+        "git_sha": git_sha,
+        "git_dirty": False,
+        "remote_repo": context.remote_repo,
+        "worktree": f"{job_root}/src",
+        "job_root": job_root,
+        "artifact_root": artifact_root,
+        "source_config": config,
+        "checkpoint_series": checkpoint_series,
+        "checkpoint_series_dir": f"{artifact_root}/checkpoints/{checkpoint_series}",
+        "start_mode": "init_policy" if init_policy else "resume" if resume else None,
+        "start_checkpoint_request": init_policy or resume,
+        "systemd_unit": f"wildrobot-train-{context.job_id}"[:240],
+        "simulation_candidate_ready": False,
+    }
+
+
+def _build_remote_submit_script(
+    *,
+    remote_repo: str,
+    jobs_root: str,
+    job_id: str,
+    git_sha: str,
+    config: str,
+    checkpoint_dir: str,
+    init_policy: str | None,
+    resume: str | None,
+) -> str:
+    context = RemoteContext(job_id, "unused", "unused", None, remote_repo)
+    if context.jobs_root != jobs_root:
+        raise TrainingLoopError(
+            f"Jobs root must be derived from the remote repository: {context.jobs_root}"
+        )
+    manifest = _initial_manifest(
+        context=context,
+        git_sha=git_sha,
+        config=config,
+        checkpoint_series=checkpoint_dir,
+        init_policy=init_policy,
+        resume=resume,
+    )
+    encoded = base64.b64encode(
+        (json.dumps(manifest, sort_keys=True) + "\n").encode()
+    ).decode()
+    job_root = context.job_root
+    worktree = manifest["worktree"]
+    python_path = f"{remote_repo}/.venv/bin/python"
+    worker = [
+        "systemd-run",
+        "--user",
+        f"--unit={manifest['systemd_unit']}",
+        "--collect",
+        "--property=Type=exec",
+        f"--property=WorkingDirectory={worktree}",
+        f"--setenv=PYTHONPATH={worktree}",
+        python_path,
+        f"{worktree}/{AGENT_REL_PATH}",
+        "_gpu-worker",
+        "--job-root",
+        job_root,
+    ]
+    return "\n".join(
+        [
+            "set -eu",
+            f"test ! -e {shlex.quote(job_root)} || "
+            f"{{ echo 'Job already exists: {job_id}' >&2; exit 2; }}",
+            f"git -C {shlex.quote(remote_repo)} fetch origin",
+            f"git -C {shlex.quote(remote_repo)} cat-file -e "
+            f"{shlex.quote(git_sha + '^{commit}')}",
+            f"test -x {shlex.quote(python_path)} || "
+            f"{{ echo 'GPU virtual environment missing: {python_path}' >&2; exit 2; }}",
+            f"mkdir -p {shlex.quote(job_root)}",
+            f"git -C {shlex.quote(remote_repo)} worktree add --detach "
+            f"{shlex.quote(worktree)} {shlex.quote(git_sha)}",
+            f"printf %s {shlex.quote(encoded)} | base64 -d > "
+            f"{shlex.quote(job_root + '/' + MANIFEST_NAME)}",
+            _shell_join(worker),
+        ]
+    )
+
+
+def _active_job_path() -> Path:
+    return LOCAL_JOB_ROOT / "active_job.json"
+
+
+def _save_active_context(context: RemoteContext) -> None:
+    _write_json_atomic(_active_job_path(), asdict(context))
+
+
+def _context_from_args(args: argparse.Namespace) -> RemoteContext:
+    saved: dict[str, Any] = {}
+    try:
+        saved = _read_json(_active_job_path())
+    except TrainingLoopError:
+        pass
+    job_id = args.job_id or saved.get("job_id")
+    if not job_id:
+        raise TrainingLoopError("Pass --job-id or submit a job first.")
+    port = args.port if args.port is not None else saved.get("port")
+    return RemoteContext(
+        job_id=_safe_job_id(str(job_id)),
+        host=str(
+            args.host
+            or saved.get("host")
+            or os.environ.get("WILDROBOT_GPU_HOST", DEFAULT_GPU_HOST)
+        ),
+        user=str(
+            args.user
+            or saved.get("user")
+            or os.environ.get("WILDROBOT_GPU_USER", DEFAULT_GPU_USER)
+        ),
+        port=int(port) if port is not None else None,
+        remote_repo=str(
+            args.remote_repo
+            or saved.get("remote_repo")
+            or os.environ.get("WILDROBOT_GPU_REPO", DEFAULT_REMOTE_REPO)
+        ),
+    )
+
+
+def _fetch_manifest(context: RemoteContext) -> dict[str, Any]:
+    path = f"{context.job_root}/{MANIFEST_NAME}"
+    result = _run(_ssh_command(context, f"cat {shlex.quote(path)}"), check=False)
+    if result.returncode:
+        raise TrainingLoopError(
+            f"Could not read remote job {context.job_id}: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise TrainingLoopError(f"Remote manifest is invalid: {path}") from exc
+    if not isinstance(payload, dict):
+        raise TrainingLoopError(f"Remote manifest must be a JSON object: {path}")
+    return payload
+
+
+def _remote_exists(context: RemoteContext, path: str, *, directory: bool) -> bool:
+    flag = "-d" if directory else "-f"
+    return (
+        _run(
+            _ssh_command(context, f"test {flag} {shlex.quote(path)}"),
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _rsync_file(context: RemoteContext, remote: str, local: Path) -> None:
+    local.parent.mkdir(parents=True, exist_ok=True)
+    command = _rsync_command(context)
+    command.extend([f"{context.target}:{remote}", str(local)])
+    if _run(command, capture_output=False, check=False).returncode:
+        raise TrainingLoopError(f"rsync failed for {remote}")
+
+
+def _rsync_tree(
+    context: RemoteContext,
+    remote: str,
+    local: Path,
+    includes: Sequence[str],
+) -> None:
+    local.mkdir(parents=True, exist_ok=True)
+    command = _rsync_command(context)
+    command.append("--prune-empty-dirs")
+    command.extend(f"--include={pattern}" for pattern in includes)
+    command.append("--exclude=*")
+    command.extend([f"{context.target}:{remote.rstrip('/')}/", f"{local}/"])
+    if _run(command, capture_output=False, check=False).returncode:
+        raise TrainingLoopError(f"rsync failed for {remote}")
+
+
+def _resolve_start_checkpoint(manifest: dict[str, Any]) -> Path | None:
+    request = manifest.get("start_checkpoint_request")
+    if not request:
+        return None
+    path = Path(str(request))
+    if not path.is_absolute():
+        path = Path(manifest["remote_repo"]) / path
+    path = path.resolve()
+    if not path.is_file() or path.suffix != ".pkl":
+        raise TrainingLoopError(
+            "Remote --init-policy/--resume must resolve to one checkpoint .pkl "
+            f"file: {path}"
+        )
+    return path
+
+
+def _write_effective_config(
+    source_path: Path, destination: Path, *, wandb_log_dir: Path
+) -> None:
+    config = yaml.safe_load(source_path.read_text())
+    if not isinstance(config, dict):
+        raise TrainingLoopError(f"Training config is not a mapping: {source_path}")
+    wandb = config.setdefault("wandb", {})
+    if not isinstance(wandb, dict):
+        raise TrainingLoopError(f"wandb config is not a mapping: {source_path}")
+    wandb["log_dir"] = str(wandb_log_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
+def _gpu_name() -> str | None:
+    try:
+        result = _run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _latest_dir(root: Path, prefixes: tuple[str, ...] | None = None) -> Path | None:
+    if not root.is_dir():
+        return None
+    candidates = [path for path in root.iterdir() if path.is_dir()]
+    if prefixes:
+        candidates = [
+            path for path in candidates if any(path.name.startswith(p) for p in prefixes)
+        ]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def _artifact_relative(path: Path | None, artifact_root: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.resolve().relative_to(artifact_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _collect_training_results(manifest: dict[str, Any]) -> None:
+    artifact_root = Path(manifest["artifact_root"])
+    checkpoint_run = _latest_dir(Path(manifest["checkpoint_series_dir"]))
+    wandb_run = _latest_dir(
+        artifact_root / "wandb", prefixes=("offline-run-", "run-")
+    )
+    manifest.update(
+        {
+            "checkpoint_run_dir": str(checkpoint_run) if checkpoint_run else None,
+            "checkpoint_run_relpath": _artifact_relative(checkpoint_run, artifact_root),
+            "wandb_run_dir": str(wandb_run) if wandb_run else None,
+            "wandb_run_name": wandb_run.name if wandb_run else None,
+            "wandb_run_id": wandb_run.name.rsplit("-", 1)[-1]
+            if wandb_run
+            else None,
+        }
+    )
+
+    summary_path = (
+        checkpoint_run / "post_training_eval_summary.json"
+        if checkpoint_run
+        else None
+    )
+    selected_path: Path | None = None
+    if summary_path and summary_path.is_file():
+        summary = json.loads(summary_path.read_text())
+        selected = summary.get("selected_checkpoint_path")
+        if selected:
+            selected_path = Path(str(selected))
+            if not selected_path.is_absolute():
+                selected_path = Path(manifest["worktree"]) / selected_path
+            selected_path = selected_path.resolve()
+    manifest.update(
+        {
+            "post_training_eval_summary": str(summary_path)
+            if summary_path and summary_path.is_file()
+            else None,
+            "selected_checkpoint_path": str(selected_path)
+            if selected_path
+            else None,
+            "selected_checkpoint_relpath": _artifact_relative(
+                selected_path, artifact_root
+            ),
+            "simulation_candidate_ready": bool(
+                selected_path and selected_path.is_file()
+            ),
+            "result_complete": bool(summary_path and summary_path.is_file()),
+        }
+    )
+
+
+def _copy_manifest_to_checkpoint(path: Path, manifest: dict[str, Any]) -> None:
+    checkpoint_run = manifest.get("checkpoint_run_dir")
+    if checkpoint_run:
+        shutil.copy2(path, Path(checkpoint_run) / CHECKPOINT_MANIFEST_NAME)
+
+
+def _prepare_worker(manifest: dict[str, Any]) -> list[str]:
+    worktree = Path(manifest["worktree"]).resolve()
+    expected_sha = str(manifest["git_sha"])
+    if _git_output("rev-parse", "HEAD", cwd=worktree) != expected_sha:
+        raise TrainingLoopError("GPU worktree does not match the submitted Git SHA.")
+    if _git_output("status", "--porcelain", cwd=worktree):
+        raise TrainingLoopError(f"GPU worktree is dirty: {worktree}")
+
+    config_rel = PurePosixPath(str(manifest["source_config"]))
+    if config_rel.is_absolute() or ".." in config_rel.parts:
+        raise TrainingLoopError(f"Unsafe source config: {config_rel}")
+    source_config = (worktree / Path(*config_rel.parts)).resolve()
+    try:
+        source_config.relative_to(worktree)
+    except ValueError as exc:
+        raise TrainingLoopError(f"Source config escapes the worktree: {config_rel}") from exc
+    if not source_config.is_file():
+        raise TrainingLoopError(f"Config is absent from commit {expected_sha}: {config_rel}")
+
+    job_root = Path(manifest["job_root"])
+    artifact_root = Path(manifest["artifact_root"])
+    checkpoint_dir = Path(manifest["checkpoint_series_dir"])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    source_snapshot = job_root / "source_training_config.yaml"
+    effective_config = job_root / "effective_training_config.yaml"
+    shutil.copy2(source_config, source_snapshot)
+    _write_effective_config(
+        source_config, effective_config, wandb_log_dir=artifact_root / "wandb"
+    )
+
+    checkpoint = _resolve_start_checkpoint(manifest)
+    python_path = Path(manifest["remote_repo"]) / ".venv" / "bin" / "python"
+    if not python_path.is_file():
+        raise TrainingLoopError(f"GPU virtual environment missing: {python_path}")
+    command = [
+        str(python_path),
+        "training/train.py",
+        "--config",
+        str(effective_config),
+        "--checkpoint-dir",
+        str(checkpoint_dir),
+    ]
+    if checkpoint is not None:
+        command.extend(
+            [
+                "--init-policy"
+                if manifest.get("start_mode") == "init_policy"
+                else "--resume",
+                str(checkpoint),
+            ]
+        )
+    manifest.update(
+        {
+            "source_config_sha256": _sha256(source_snapshot),
+            "effective_config": str(effective_config),
+            "effective_config_sha256": _sha256(effective_config),
+            "start_checkpoint": str(checkpoint) if checkpoint else None,
+            "start_checkpoint_sha256": _sha256(checkpoint) if checkpoint else None,
+            "training_command": command,
+        }
+    )
+    return command
+
+
+def _gpu_worker(args: argparse.Namespace) -> int:
+    job_root = Path(args.job_root).resolve()
+    manifest_path = job_root / MANIFEST_NAME
+    manifest = _read_json(manifest_path)
+    lock_path = job_root.parent / ".gpu-training.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            manifest.update(
+                status="failed",
+                finished_at=_utc_now(),
+                error="Another WildRobot GPU training job is active.",
+            )
+            _write_json_atomic(manifest_path, manifest)
+            return 2
+
+        try:
+            command = _prepare_worker(manifest)
+            manifest.update(
+                status="running",
+                started_at=_utc_now(),
+                hostname=socket.gethostname(),
+                gpu_name=_gpu_name(),
+                python_version=sys.version,
+                worker_pid=os.getpid(),
+            )
+            _write_json_atomic(manifest_path, manifest)
+            env = os.environ.copy()
+            env.update(PYTHONUNBUFFERED="1", PYTHONPATH=manifest["worktree"])
+            with (job_root / "train.log").open("a", encoding="utf-8") as log:
+                log.write(f"[{_utc_now()}] {_shell_join(command)}\n")
+                log.flush()
+                result = subprocess.run(
+                    command,
+                    cwd=manifest["worktree"],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    env=env,
+                    check=False,
+                )
+            manifest["exit_code"] = int(result.returncode)
+            _collect_training_results(manifest)
+            manifest["status"] = "completed" if result.returncode == 0 else "failed"
+            if result.returncode:
+                manifest["error"] = f"training/train.py exited with {result.returncode}"
+        except Exception as exc:
+            manifest.update(
+                status="failed",
+                exit_code=1,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        manifest["finished_at"] = _utc_now()
+        _write_json_atomic(manifest_path, manifest)
+        _copy_manifest_to_checkpoint(manifest_path, manifest)
+        return 0 if manifest["status"] == "completed" else 1
+
+
+def _submit(args: argparse.Namespace) -> int:
+    if _git_output("status", "--porcelain", "--untracked-files=normal"):
+        raise TrainingLoopError("Commit or remove local changes before submission.")
+    config = _repo_config(args.config)
+    git_sha = _git_output("rev-parse", "HEAD")
+    context = RemoteContext(
+        job_id=_safe_job_id(args.job_id)
+        if args.job_id
+        else _new_job_id(config, git_sha),
+        host=args.host or os.environ.get("WILDROBOT_GPU_HOST", DEFAULT_GPU_HOST),
+        user=args.user or os.environ.get("WILDROBOT_GPU_USER", DEFAULT_GPU_USER),
+        port=args.port,
+        remote_repo=args.remote_repo
+        or os.environ.get("WILDROBOT_GPU_REPO", DEFAULT_REMOTE_REPO),
+    )
+    script = _build_remote_submit_script(
+        remote_repo=context.remote_repo,
+        jobs_root=context.jobs_root,
+        job_id=context.job_id,
+        git_sha=git_sha,
+        config=config,
+        checkpoint_dir=_config_checkpoint_series(REPO_ROOT / config),
+        init_policy=args.init_policy,
+        resume=args.resume,
+    )
+    if args.dry_run:
+        print(json.dumps({**asdict(context), "git_sha": git_sha}, indent=2))
+        print(script)
+        return 0
+    result = _run(_ssh_command(context, script), check=False)
+    if result.returncode:
+        raise TrainingLoopError(
+            f"GPU submission failed: {(result.stderr or result.stdout).strip()}"
+        )
+    _save_active_context(context)
+    print(result.stdout.strip())
+    print(f"Submitted {context.job_id} at commit {git_sha[:12]}")
+    return 0
+
+
+def _status(args: argparse.Namespace) -> int:
+    manifest = _fetch_manifest(_context_from_args(args))
+    if args.json:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    for label, key in (
+        ("Job", "job_id"),
+        ("Status", "status"),
+        ("Commit", "git_sha"),
+        ("Config", "source_config"),
+        ("Started", "started_at"),
+        ("Finished", "finished_at"),
+        ("W&B run", "wandb_run_name"),
+        ("Selected checkpoint", "selected_checkpoint_path"),
+        ("Error", "error"),
+    ):
+        if manifest.get(key) is not None:
+            print(f"{label}: {manifest[key]}")
+    print(f"Simulation candidate ready: {bool(manifest.get('simulation_candidate_ready'))}")
+    return 0
+
+
+def _sync_job(
+    context: RemoteContext, *, selected_checkpoint: bool
+) -> dict[str, Any]:
+    manifest = _fetch_manifest(context)
+    local_job = LOCAL_JOB_ROOT / context.job_id
+    _write_json_atomic(local_job / MANIFEST_NAME, manifest)
+    for name in (
+        "train.log",
+        "source_training_config.yaml",
+        "effective_training_config.yaml",
+    ):
+        remote = f"{context.job_root}/{name}"
+        if _remote_exists(context, remote, directory=False):
+            _rsync_file(context, remote, local_job / name)
+
+    if manifest.get("wandb_run_dir") and manifest.get("wandb_run_name"):
+        run_name = _safe_job_id(str(manifest["wandb_run_name"]))
+        destination = REPO_ROOT / "training" / "wandb" / run_name
+        _rsync_tree(
+            context,
+            str(manifest["wandb_run_dir"]),
+            destination,
+            (
+                "*/",
+                "config.json",
+                "metrics.jsonl",
+                "wandb-summary.json",
+                "wandb-metadata.json",
+            ),
+        )
+        manifest["local_wandb_run_dir"] = str(destination.relative_to(REPO_ROOT))
+
+    if manifest.get("checkpoint_run_dir") and manifest.get("checkpoint_run_relpath"):
+        relative = _checkpoint_artifact_relative(
+            str(manifest["checkpoint_run_relpath"])
+        )
+        destination = REPO_ROOT / "training" / "checkpoints" / Path(*relative.parts[1:])
+        _rsync_tree(
+            context,
+            str(manifest["checkpoint_run_dir"]),
+            destination,
+            ("*/", "*.json", "*.yaml"),
+        )
+        manifest["local_checkpoint_run_dir"] = str(destination.relative_to(REPO_ROOT))
+
+    if selected_checkpoint:
+        if not manifest.get("simulation_candidate_ready"):
+            raise TrainingLoopError(
+                "The deterministic selector did not promote a checkpoint."
+            )
+        relative = _checkpoint_artifact_relative(
+            str(manifest["selected_checkpoint_relpath"])
+        )
+        destination = REPO_ROOT / "training" / "checkpoints" / Path(*relative.parts[1:])
+        _rsync_file(context, str(manifest["selected_checkpoint_path"]), destination)
+        manifest["local_selected_checkpoint"] = str(destination.relative_to(REPO_ROOT))
+
+    _write_json_atomic(local_job / MANIFEST_NAME, manifest)
+    return manifest
+
+
+def _sync(args: argparse.Namespace) -> int:
+    context = _context_from_args(args)
+    manifest = _sync_job(context, selected_checkpoint=args.selected_checkpoint)
+    print(f"Synced summary artifacts for {context.job_id}.")
+    for key in (
+        "local_wandb_run_dir",
+        "local_checkpoint_run_dir",
+        "local_selected_checkpoint",
+    ):
+        if manifest.get(key):
+            print(manifest[key])
+    return 0
+
+
+def _analyze(args: argparse.Namespace) -> int:
+    context = _context_from_args(args)
+    manifest = _sync_job(context, selected_checkpoint=False)
+    run_dir = manifest.get("local_wandb_run_dir")
+    if not run_dir:
+        raise TrainingLoopError("The job has no synchronized W&B run yet.")
+    command = [
+        shutil.which("uv") or "uv",
+        "run",
+        "python",
+        "skills/wildrobot-training-analyze/scripts/analyze_offline_run.py",
+        "--run-dir",
+        str(REPO_ROOT / run_dir),
+        "--wandb-root",
+        str(REPO_ROOT / "training" / "wandb"),
+        "--checkpoints-root",
+        str(REPO_ROOT / "training" / "checkpoints"),
+    ]
+    result = _run(command, cwd=REPO_ROOT, check=False)
+    report = result.stdout + ("\n" + result.stderr if result.stderr else "")
+    report_path = LOCAL_JOB_ROOT / context.job_id / "analysis.txt"
+    report_path.write_text(report)
+    print(report, end="" if report.endswith("\n") else "\n")
+    print(f"Analysis saved to {report_path.relative_to(REPO_ROOT)}")
+    if result.returncode:
+        raise TrainingLoopError(f"Training analyzer exited with {result.returncode}")
+    return 0
+
+
+def _add_remote_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--job-id")
+    parser.add_argument("--host")
+    parser.add_argument("--user")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--remote-repo")
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Supervised WildRobot Mac-to-GPU training loop"
+    )
+    commands = parser.add_subparsers(
+        dest="command", required=True, metavar="{submit,status,sync,analyze}"
+    )
+    submit = commands.add_parser("submit", help="submit an exact Git commit")
+    submit.add_argument("--config", required=True)
+    start = submit.add_mutually_exclusive_group()
+    start.add_argument("--init-policy")
+    start.add_argument("--resume")
+    submit.add_argument("--job-id")
+    submit.add_argument("--host")
+    submit.add_argument("--user")
+    submit.add_argument("--port", type=int)
+    submit.add_argument("--remote-repo")
+    submit.add_argument("--dry-run", action="store_true")
+    submit.set_defaults(func=_submit)
+
+    status = commands.add_parser("status", help="show the remote job manifest")
+    _add_remote_args(status)
+    status.add_argument("--json", action="store_true")
+    status.set_defaults(func=_status)
+
+    sync = commands.add_parser("sync", help="sync analysis-sized artifacts")
+    _add_remote_args(sync)
+    sync.add_argument("--selected-checkpoint", action="store_true")
+    sync.set_defaults(func=_sync)
+
+    analyze = commands.add_parser("analyze", help="sync and run the analyzer")
+    _add_remote_args(analyze)
+    analyze.set_defaults(func=_analyze)
+
+    worker = commands.add_parser("_gpu-worker", add_help=False)
+    worker.add_argument("--job-root", required=True)
+    worker.set_defaults(func=_gpu_worker)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        args = _parse_args(argv)
+        return int(args.func(args))
+    except (FileNotFoundError, TrainingLoopError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
