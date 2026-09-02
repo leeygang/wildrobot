@@ -122,6 +122,7 @@ def torque_saturation_penalty(
     force_limits: jax.Array,
     *,
     soft_limit_ratio: float = TORQUE_SOFT_LIMIT_RATIO,
+    actuator_weights: Optional[jax.Array] = None,
 ) -> jax.Array:
     """Return normalized squared torque excess above a soft limit.
 
@@ -133,13 +134,21 @@ def torque_saturation_penalty(
     ratio = jp.abs(actuator_force) / jp.maximum(
         jp.abs(force_limits), jp.float32(1e-6)
     )
+    if not 0.0 <= soft_limit_ratio < 1.0:
+        raise ValueError("soft_limit_ratio must be in [0, 1)")
     remaining_margin = jp.float32(1.0 - soft_limit_ratio)
     normalized_excess = jp.clip(
         (ratio - jp.float32(soft_limit_ratio)) / remaining_margin,
         jp.float32(0.0),
         jp.float32(1.0),
     )
-    return jp.sum(normalized_excess * normalized_excess).astype(jp.float32)
+    squared_excess = normalized_excess * normalized_excess
+    if actuator_weights is not None:
+        weights = jp.asarray(actuator_weights, dtype=jp.float32)
+        if weights.shape != squared_excess.shape:
+            raise ValueError("actuator_weights must match actuator_force shape")
+        squared_excess = squared_excess * weights
+    return jp.sum(squared_excess).astype(jp.float32)
 
 
 def get_assets(root_path: Path) -> Dict[str, bytes]:
@@ -348,6 +357,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._load_model()
         self._init_residual_scale()
         self._init_pose_weights()
+        self._init_torque_saturation_penalty()
         self._init_foot_body_ids()
         self._init_offline_service()
         # Must run AFTER both _load_model (home_q_rad, scales, rsi flags) and
@@ -1014,6 +1024,49 @@ class WildRobotEnv(mjx_env.MjxEnv):
             dtype=np.float32,
         )
         self._pose_weights_per_joint = jp.asarray(per_joint_arr, dtype=jp.float32)
+
+    def _init_torque_saturation_penalty(self) -> None:
+        """Cache the configurable normalized soft-limit penalty in policy order."""
+        self._torque_saturation_soft_limit_ratio = float(
+            getattr(
+                self._config.env,
+                "torque_saturation_soft_limit_ratio",
+                TORQUE_SOFT_LIMIT_RATIO,
+            )
+        )
+        if not 0.0 <= self._torque_saturation_soft_limit_ratio < 1.0:
+            raise ValueError(
+                "env.torque_saturation_soft_limit_ratio must be in [0, 1)"
+            )
+        overrides = dict(
+            getattr(
+                self._config.env,
+                "torque_saturation_weights_per_joint",
+                {},
+            )
+            or {}
+        )
+        actuator_names = tuple(self._policy_spec.robot.actuator_names)
+        unknown = sorted(set(overrides) - set(actuator_names))
+        if unknown:
+            raise ValueError(
+                "env.torque_saturation_weights_per_joint contains unknown "
+                f"actuators: {unknown}"
+            )
+        scalar_default = float(
+            getattr(
+                self._config.env,
+                "torque_saturation_weight_default",
+                1.0,
+            )
+        )
+        weights = np.asarray(
+            [float(overrides.get(name, scalar_default)) for name in actuator_names],
+            dtype=np.float32,
+        )
+        if np.any(weights < 0.0):
+            raise ValueError("torque saturation weights must be non-negative")
+        self._torque_saturation_weights = jp.asarray(weights, dtype=jp.float32)
 
     # ---------------------------------------------------------- foot body ids
 
@@ -2649,6 +2702,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         penalty_saturation = torque_saturation_penalty(
             data.actuator_force[self._cal._actuator_ids],
             self._cal._force_limits,
+            soft_limit_ratio=self._torque_saturation_soft_limit_ratio,
+            actuator_weights=self._torque_saturation_weights,
         )
         joint_vel = data.qvel[self._actuator_dof_addrs]
         penalty_joint_vel = jp.sum(joint_vel * joint_vel)

@@ -868,6 +868,17 @@ class EnvConfig(Freezable):
     # standing stabilizer can opt into a small deployment posture tolerance.
     penalty_pose_deadzone_rad: float = 0.0
 
+    # Optional per-joint shaping for the normalized torque-saturation reward.
+    # Defaults preserve the historical all-actuator 95%-of-limit penalty.
+    # A lower soft limit provides a denser warning signal before hardware
+    # saturation; per-joint weights let WR target a measured bottleneck without
+    # suppressing torque on every actuator in the gait.
+    torque_saturation_soft_limit_ratio: float = 0.95
+    torque_saturation_weights_per_joint: Dict[str, float] = field(
+        default_factory=dict
+    )
+    torque_saturation_weight_default: float = 1.0
+
 
 # =============================================================================
 # PPO Config

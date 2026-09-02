@@ -8,6 +8,85 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d7-result + 17d8-ready] - 2026-09-01: target hip-roll torque margin directly
+
+The v0.21.0-17d7 run is
+`training/wandb/offline-run-20260901_152323-jjs57vyz`.  No checkpoint passed
+the authoritative deterministic deployment gate and no checkpoint was
+promoted.  Checkpoint 12 was the best practical candidate, but it traded away
+gait quality for only a modest reduction in the remaining torque blocker:
+
+| Metric | 17d4 checkpoint 40 | 17d7 checkpoint 12 |
+|---|---:|---:|
+| forward velocity | 0.1230 m/s | 0.1169 m/s |
+| command error | 0.0070 m/s | 0.0364 m/s |
+| episode length | 986.7 | 974.3 |
+| primary first-episode falls | 1/64 | 2/64 |
+| stable tilt mean / max | 4.59 / 9.18 deg | 3.85 / 10.33 deg |
+| survivor-final tilt max | 5.97 deg | 4.24 deg |
+| stable left-hip-roll saturation | 20.13% | 18.18% |
+| stable right-hip-roll saturation | 5.38% | 4.92% |
+| stable ankle-roll saturation | 0% / 0% | 0% / 0% |
+
+The configured forward-only command contract and reset mixture were correct:
+all 40 training rows reported `tracking/velocity_cmd_vy_abs=0`, and 473 home
+plus 1,498 RSI resets gave `24.00%` home starts.  Checkpoint 36 reached the
+lowest left-hip-roll saturation (`16.64%`) but regressed to 10/64 falls,
+`0.1025 m/s` forward velocity, and `10.86 deg` survivor-final tilt.  Across
+all eight deterministic checkpoints, left-hip-roll saturation correlated
+negatively with falls (`r=-0.740`) and positively with forward speed
+(`r=+0.795`): lower occupancy came from weakening/changing the gait, not a
+free safety improvement.
+
+A new measured-support diagnostic,
+`training/eval/diagnose_roll_load_sharing.py`, then compared the unchanged
+17d4 source and 17d7 checkpoint 12 with the same seed, 8 environments, 500
+steps, no pushes, and a fixed `(0.13, 0, 0)` command.  Its stable-survivor
+window excludes startup, terminal/reset samples, and failed environments.
+
+| Stable measured phase | Metric | 17d4 ckpt 40 | 17d7 ckpt 12 |
+|---|---|---:|---:|
+| left-only support | left-hip-roll saturation | 39.09% | 33.31% |
+| left-only support | left-hip-roll mean torque | 3.324 Nm | 3.274 Nm |
+| left-only support | left-ankle-roll mean torque | 0.668 Nm | 0.611 Nm |
+| left-only support | left-ankle applied action | 0.431 | 0.437 |
+| right-only support | right-hip-roll saturation | 15.50% | 13.78% |
+| right-only support | right-ankle-roll mean torque | 0.744 Nm | 0.650 Nm |
+
+Thus changing ankle-roll pose weight from ToddlerBot's `5.0` to `1.0` did
+not transfer support load into the ankle: ankle action was effectively
+unchanged and ankle torque decreased.  The modest hip reduction was part of a
+general gait weakening.  The next run restores ankle-roll pose weight `5.0`
+and starts again from 17d4 checkpoint 40.
+
+`training/configs/ppo_walking_v0210_17d8_hip_roll_margin.yaml` is the next
+training configuration.  It adds a symmetric, hip-roll-only normalized
+torque-margin penalty beginning at 80% of each actuator's own limit and uses a
+`-0.05` reward weight.  This is half the failed 17d5 `-0.1` weight, but its
+earlier onset supplies a dense gradient before the evaluator's 95% saturation
+boundary.  Non-hip-roll weights are zero; the forward-only task, 75% RSI / 25%
+home reset mixture, general torque term, dynamics randomization, and strict
+safety gates remain unchanged.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d8_hip_roll_margin.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d4_startup_mix/ppo_walking_v0210_17d4_startup_mix_v0210-17d4_20260831_144954-m558zwn5/checkpoint_40_819200.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d8_hip_roll_margin
+```
+
+Promotion remains zero falls, stable tilt mean/max/final at most
+`10/15/10 deg`, and every actuator at or below `5%` stable 95%-limit
+occupancy at `vx=0.13 m/s`, followed by the same manual gate at `0.065 m/s`.
+ToddlerBot comparison: `toddlerbot/locomotion/mjx_env.py::_reward_motor_torque`
+uses a smooth squared torque cost, while `toddlerbot/locomotion/walk.gin`
+leaves that optional reward commented out and has no WR-specific occupancy
+gate.  Public reference: Shi et al., *ToddlerBot* (arXiv:2502.00893).
+
+---
+
 ## [v0.21.0-17d6-result + 17d7-ready] - 2026-09-01: redirect forward balance from hip roll to ankle roll
 
 The v0.21.0-17d6 run is

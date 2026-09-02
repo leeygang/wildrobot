@@ -28,6 +28,7 @@ from training.envs.wildrobot_env import (
 
 _SOURCE_CONFIG = "training/configs/ppo_walking_v0210_17d4_startup_mix.yaml"
 _FINETUNE_CONFIG = "training/configs/ppo_walking_v0210_17d5_saturation_finetune.yaml"
+_HIP_MARGIN_CONFIG = "training/configs/ppo_walking_v0210_17d8_hip_roll_margin.yaml"
 
 
 def test_torque_saturation_penalty_uses_normalized_soft_limit_excess() -> None:
@@ -38,6 +39,33 @@ def test_torque_saturation_penalty_uses_normalized_soft_limit_excess() -> None:
 
     # Ratios [0, .95, .975, 1] map to normalized excess [0, 0, .5, 1].
     assert float(penalty) == pytest.approx(1.25)
+
+
+def test_torque_saturation_penalty_supports_targeted_early_margin() -> None:
+    penalty = torque_saturation_penalty(
+        actuator_force=jnp.asarray([7.9, 8.0, 9.0, 10.0]),
+        force_limits=jnp.asarray([10.0, 10.0, 10.0, 10.0]),
+        soft_limit_ratio=0.8,
+        actuator_weights=jnp.asarray([1.0, 1.0, 2.0, 0.0]),
+    )
+
+    # Excess ratios [0, 0, .5, 1] are squared, then joint-weighted.
+    assert float(penalty) == pytest.approx(0.5)
+
+
+def test_torque_saturation_penalty_rejects_invalid_configuration() -> None:
+    with pytest.raises(ValueError, match="soft_limit_ratio"):
+        torque_saturation_penalty(
+            actuator_force=jnp.ones(2),
+            force_limits=jnp.ones(2),
+            soft_limit_ratio=1.0,
+        )
+    with pytest.raises(ValueError, match="actuator_weights"):
+        torque_saturation_penalty(
+            actuator_force=jnp.ones(2),
+            force_limits=jnp.ones(2),
+            actuator_weights=jnp.ones(3),
+        )
 
 
 def test_saturation_reward_is_weighted_and_included_in_total() -> None:
@@ -95,6 +123,29 @@ def test_saturation_is_opt_in_and_17d5_is_the_only_optimization_change() -> None
         raw["checkpoints"].pop("dir")
         raw["wandb"].pop("tags")
     assert finetune_raw == source_raw
+
+
+def test_17d8_targets_only_symmetric_hip_roll_margin() -> None:
+    source = load_training_config(_SOURCE_CONFIG)
+    finetune = load_training_config(_HIP_MARGIN_CONFIG)
+
+    assert finetune.reward_weights.saturation == pytest.approx(-0.05)
+    assert finetune.env.torque_saturation_soft_limit_ratio == pytest.approx(0.8)
+    assert finetune.env.torque_saturation_weight_default == pytest.approx(0.0)
+    assert finetune.env.torque_saturation_weights_per_joint == {
+        "left_hip_roll": 1.0,
+        "right_hip_roll": 1.0,
+    }
+    assert finetune.env.penalty_pose_weights_per_joint[
+        "left_ankle_roll"
+    ] == pytest.approx(5.0)
+    assert finetune.env.penalty_pose_weights_per_joint[
+        "right_ankle_roll"
+    ] == pytest.approx(5.0)
+    assert finetune.reward_weights.torque == source.reward_weights.torque
+    assert finetune.env.loc_ref_rsi_probability == pytest.approx(0.75)
+    assert finetune.ppo.iterations == 40
+    assert finetune.ppo.eval.post_training_strict_walking_safety is True
 
 
 @pytest.mark.parametrize("rsi_probability,expected_rsi", [(0.0, 0.0), (1.0, 1.0)])

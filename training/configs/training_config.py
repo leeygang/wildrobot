@@ -826,6 +826,15 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         penalty_pose_deadzone_rad=float(
             env.get("penalty_pose_deadzone_rad", 0.0)
         ),
+        torque_saturation_soft_limit_ratio=float(
+            env.get("torque_saturation_soft_limit_ratio", 0.95)
+        ),
+        torque_saturation_weights_per_joint=dict(
+            env.get("torque_saturation_weights_per_joint", {}) or {}
+        ),
+        torque_saturation_weight_default=float(
+            env.get("torque_saturation_weight_default", 1.0)
+        ),
         domain_rand_backlash_range=env.get(
             "domain_rand_backlash_range", [0.0, 0.0]
         ),
