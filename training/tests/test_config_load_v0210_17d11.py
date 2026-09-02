@@ -36,9 +36,9 @@ def env(cfg):
 
 def test_17d11_is_a_short_generator_native_stance_stage(cfg) -> None:
     assert cfg.version == "0.21.0-17d11"
-    assert cfg.ppo.iterations == 20
-    assert cfg.checkpoints.interval == 5
-    assert cfg.ppo.eval.post_training_top_k == 4
+    assert cfg.ppo.iterations == 10
+    assert cfg.checkpoints.interval == 2
+    assert cfg.ppo.eval.post_training_top_k == 5
     assert cfg.reward_weights.saturation == pytest.approx(0.0)
     assert cfg.env.loc_ref_default_stance_width_m == pytest.approx(0.0495)
     assert cfg.env.loc_ref_walking_base_from_ref_init_roll is True

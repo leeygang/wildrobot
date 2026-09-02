@@ -390,6 +390,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument(
+        "--stance-width-m",
+        type=float,
+        default=None,
+        help=(
+            "Override env.loc_ref_default_stance_width_m before environment "
+            "construction; intended for deterministic geometry sweeps."
+        ),
+    )
+    parser.add_argument(
         "--stochastic",
         action="store_true",
         help="Use stochastic sampling instead of deterministic actions",
@@ -455,6 +464,8 @@ def main() -> int:
     training_cfg.ppo.num_envs = int(args.num_envs)
     if args.num_steps is not None:
         training_cfg.ppo.rollout_steps = int(args.num_steps)
+    if args.stance_width_m is not None:
+        training_cfg.env.loc_ref_default_stance_width_m = float(args.stance_width_m)
     training_cfg.freeze()
 
     env = WildRobotEnv(config=training_cfg)
@@ -603,6 +614,11 @@ def main() -> int:
     residual_base = getattr(training_cfg.env, "loc_ref_residual_base", None)
     if residual_base is not None:
         print(f"  residual_base: {residual_base}")
+    stance_width = getattr(
+        training_cfg.env, "loc_ref_default_stance_width_m", None
+    )
+    if stance_width is not None:
+        print(f"  reference stance width: {float(stance_width):.4f} m")
     if disable_cmd_resample:
         # v0.21.0 P3 / H3: eval_velocity_cmd is (vx, vy, wz).
         _ecv = training_cfg.env.eval_velocity_cmd

@@ -19,7 +19,7 @@
 #   * derive the four roll channels of the static walking action base from
 #     generated frame zero, while retaining physical home for startup resets;
 #   * keep reward weights, forward task, RSI mix, and residual scales unchanged;
-#   * run a 20-iteration causal screen before attempting a larger narrowing.
+#   * run a 10-iteration adaptation before attempting a larger narrowing.
 #
 # At vx=0.13, 0.0495 m produces approximately +/-0.0113 rad coupled roll
 # targets.  This is intentionally much smaller than 17d9's failed immediate
@@ -590,9 +590,10 @@ env:
 ppo:
   num_envs: 1024
   rollout_steps: 20
-  # Causal stage screen: 20 * 1024 * 20 = 409,600 env-steps.  Advance to a
-  # narrower stage only if deterministic falls, speed, and saturation improve.
-  iterations: 20
+  # Short adaptation: 10 * 1024 * 20 = 204,800 env-steps.  The frozen-policy
+  # width sweep already established the safe geometry boundary; PPO only needs
+  # to re-center the inherited gait around this small roll-base change.
+  iterations: 10
 
   learning_rate: 1.0e-5
   gamma: 0.97
@@ -636,8 +637,8 @@ ppo:
     deterministic: true
     seed_offset: 10000
     post_training_enabled: true
-    # Four regular checkpoints are produced; evaluate all of them.
-    post_training_top_k: 4
+    # Five regular checkpoints are produced; evaluate all of them.
+    post_training_top_k: 5
     # The source 8-env evaluation missed falls reproduced with 64 environments.
     post_training_num_envs: 64
     # smoke2 fb #1: must match max_episode_steps=1000.  At 500 a healthy
@@ -748,7 +749,7 @@ reward:
 
 checkpoints:
   dir: training/checkpoints/ppo_walking_v0210_17d11_native_stance_stage1
-  interval: 5
+  interval: 2
 
 wandb:
   enabled: true

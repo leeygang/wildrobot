@@ -66,8 +66,17 @@ The load-conditioned stage-1 screen confirms the intended mechanism without
 training: left-support COM leverage falls `52.13 -> 47.98 mm`, left-hip
 saturation `36.04% -> 25.33%`, and right-hip saturation
 `11.62% -> 4.43%`; ankle-roll saturation remains zero.  This is still above
-the deployment gate, so 17d11 is a 20-iteration causal adaptation stage, not a
-deployment candidate.  Advance to a narrower stage only if the authoritative
+the deployment gate, so 17d11 is an adaptation stage, not a deployment
+candidate.
+
+A same-checkpoint width sweep found a sharp stability boundary before
+training.  At `0.0495 m`, three 8x500 seeds completed with `0/24` falls,
+`0.1146-0.1187 m/s` forward velocity, and `9.4-13.1%` stable maximum
+saturation.  Narrowing to `0.0485 m` caused `1/8` falls and `0.1078 m/s`; at
+`0.0475 m` it caused `3/8` falls and only `0.0942 m/s`.  Therefore stage 1
+keeps `0.0495 m` and reduces PPO from 20 to 10 iterations (`204,800`
+environment steps), saving every two iterations and evaluating all five
+checkpoints.  Advance to another stance stage only if the authoritative
 64x1000 evaluation improves falls, forward speed, and saturation together.
 A three-iteration `--verify` training run also completed successfully on the
 Mac CPU, including checkpoint initialization and post-training evaluation.
