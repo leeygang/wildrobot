@@ -24,6 +24,8 @@ def test_roll_load_summary_splits_support_and_excludes_startup() -> None:
     policy_action = torque_nm / 10.0
     applied_action = policy_action / 2.0
     target_error_rad = torque_nm / 100.0
+    com_to_left_foot_lateral_m = np.full((5, 1), -0.08, dtype=np.float32)
+    com_to_right_foot_lateral_m = np.full((5, 1), 0.07, dtype=np.float32)
     left_loaded = np.asarray([[1], [1], [1], [0], [1]], dtype=np.float32)
     right_loaded = np.asarray([[1], [1], [0], [1], [1]], dtype=np.float32)
     dones = np.zeros((5, 1), dtype=np.float32)
@@ -36,11 +38,14 @@ def test_roll_load_summary_splits_support_and_excludes_startup() -> None:
         policy_action=policy_action,
         applied_action=applied_action,
         target_error_rad=target_error_rad,
+        com_to_left_foot_lateral_m=com_to_left_foot_lateral_m,
+        com_to_right_foot_lateral_m=com_to_right_foot_lateral_m,
         left_loaded=left_loaded,
         right_loaded=right_loaded,
         dones=dones,
         truncations=truncations,
         ctrl_dt=1.0,
+        robot_weight_n=40.0,
         stable_start_s=2.0,
         pre_fall_window_s=1.0,
     )
@@ -50,13 +55,14 @@ def test_roll_load_summary_splits_support_and_excludes_startup() -> None:
     assert stable["support_phases"]["left_only"]["sample_count"] == 1
     assert stable["support_phases"]["right_only"]["sample_count"] == 1
     assert stable["support_phases"]["double_support"]["sample_count"] == 1
-    left_hip = stable["support_phases"]["left_only"]["joints"][
-        "left_hip_roll"
-    ]
+    left_hip = stable["support_phases"]["left_only"]["joints"]["left_hip_roll"]
     assert left_hip["torque_abs_mean_nm"] == pytest.approx(9.6)
     assert left_hip["torque_saturation_frac"] == pytest.approx(1.0)
     assert left_hip["applied_action_abs_mean"] == pytest.approx(0.48)
     assert left_hip["target_error_abs_mean_rad"] == pytest.approx(0.096)
+    leverage = stable["support_phases"]["left_only"]["com_to_loaded_foot"]
+    assert leverage["lateral_lever_signed_mean_m"] == pytest.approx(-0.08)
+    assert leverage["quasi_static_gravity_moment_abs_mean_nm"] == pytest.approx(3.2)
 
 
 def test_roll_load_summary_uses_only_pre_terminal_pre_fall_samples() -> None:
@@ -71,6 +77,8 @@ def test_roll_load_summary_uses_only_pre_terminal_pre_fall_samples() -> None:
     dones = np.zeros((5, 1), dtype=np.float32)
     dones[4, 0] = 1.0
     truncations = np.zeros_like(dones)
+    com_to_left_foot_lateral_m = np.full((5, 1), -0.08, dtype=np.float32)
+    com_to_right_foot_lateral_m = np.full((5, 1), 0.07, dtype=np.float32)
 
     result = summarize_roll_load_sharing(
         joint_names=JOINT_NAMES,
@@ -79,11 +87,14 @@ def test_roll_load_summary_uses_only_pre_terminal_pre_fall_samples() -> None:
         policy_action=np.zeros(shape, dtype=np.float32),
         applied_action=np.zeros(shape, dtype=np.float32),
         target_error_rad=np.zeros(shape, dtype=np.float32),
+        com_to_left_foot_lateral_m=com_to_left_foot_lateral_m,
+        com_to_right_foot_lateral_m=com_to_right_foot_lateral_m,
         left_loaded=left_loaded,
         right_loaded=right_loaded,
         dones=dones,
         truncations=truncations,
         ctrl_dt=1.0,
+        robot_weight_n=40.0,
         stable_start_s=0.0,
         pre_fall_window_s=2.0,
     )
@@ -92,8 +103,6 @@ def test_roll_load_summary_uses_only_pre_terminal_pre_fall_samples() -> None:
     assert result["windows"]["stable_survivors"]["sample_count"] == 0
     pre_fall = result["windows"]["pre_fall"]
     assert pre_fall["sample_count"] == 2
-    left_hip = pre_fall["support_phases"]["left_only"]["joints"][
-        "left_hip_roll"
-    ]
+    left_hip = pre_fall["support_phases"]["left_only"]["joints"]["left_hip_roll"]
     assert left_hip["torque_abs_mean_nm"] == pytest.approx(5.8)
     assert left_hip["torque_saturation_frac"] == pytest.approx(0.5)
