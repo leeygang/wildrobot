@@ -128,7 +128,7 @@ def _reference_symmetry_metrics(
     phase_shift = int(np.argmin(phase_errors))
 
     q_ref = np.asarray(arrays["q_ref"], dtype=np.float32)
-    homes = np.asarray(env._home_q_rad, dtype=np.float32)
+    homes = np.asarray(env._walking_home_q_rad, dtype=np.float32)
     pos_residual = q_ref[pos_idx] - homes
     neg_residual = np.roll(q_ref[neg_idx] - homes, -phase_shift, axis=0)
     expected_neg = np.asarray(mirror_actions(jnp.asarray(pos_residual), env._policy_spec))

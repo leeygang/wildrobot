@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from conftest import SMOKE9_RESIDUAL_SCALAR
+from conftest import SMOKE9_RESIDUAL_SCALAR, make_runtime_policy_config
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 
 
@@ -38,6 +38,30 @@ def test_zero_action_maps_exactly_to_home(v8_spec, runtime_policy_config):
     np.testing.assert_allclose(target, runner.home_q_rad, atol=1e-6)
     np.testing.assert_allclose(applied, 0.0, atol=1e-6)
 
+
+def test_zero_action_maps_to_walking_base_offset_while_hold_stays_home(v8_spec):
+    names = list(v8_spec.robot.actuator_names)
+    offsets = np.zeros(v8_spec.model.action_dim, dtype=np.float32)
+    offsets[names.index("left_hip_roll")] = 0.03
+    offsets[names.index("right_hip_roll")] = -0.03
+    offsets[names.index("left_ankle_roll")] = -0.03
+    offsets[names.index("right_ankle_roll")] = 0.03
+    cfg = make_runtime_policy_config(
+        v8_spec,
+        residual_base_offset_per_actuator=offsets.tolist(),
+    )
+    runner = _runner(v8_spec, cfg)
+
+    target, applied = runner.compose_and_apply(
+        np.zeros(v8_spec.model.action_dim, dtype=np.float32)
+    )
+    np.testing.assert_allclose(target, runner.home_q_rad + offsets, atol=1e-6)
+    np.testing.assert_allclose(target, runner.residual_base_q_rad, atol=1e-6)
+    np.testing.assert_allclose(applied, 0.0, atol=1e-6)
+
+    held, held_action = runner.hold_home_step()
+    np.testing.assert_allclose(held, runner.home_q_rad, atol=1e-6)
+    np.testing.assert_allclose(held_action, 0.0, atol=1e-6)
 
 def test_one_step_delay_applies_previous_filtered(v8_spec, runtime_policy_config):
     runner = _runner(v8_spec, runtime_policy_config)

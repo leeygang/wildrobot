@@ -355,6 +355,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._model_path = Path(self._config.env.scene_xml_path)
 
         self._load_model()
+        self._init_walking_joint_offsets()
         self._init_residual_scale()
         self._init_pose_weights()
         self._init_torque_saturation_penalty()
@@ -392,7 +393,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if not (self._rsi_enabled and self._residual_base_mode == "home"):
             return
         qref_all = np.asarray(self._offline_jax_arrays["q_ref"])
-        home_np = np.asarray(self._home_q_rad)
+        home_np = np.asarray(self._walking_home_q_rad)
         scale_np = np.asarray(self._residual_q_scale_per_joint)
         amp = np.max(np.abs(qref_all - home_np[None, None, :]), axis=(0, 1))
         over = amp - scale_np
@@ -936,6 +937,64 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     raise ValueError(f"Push body '{body_name}' not found in model.")
                 push_body_ids.append(int(body_id))
             self._push_body_ids = jp.asarray(push_body_ids, dtype=jp.int32)
+
+    # ------------------------------------------------ walking neutral offsets
+
+    def _init_walking_joint_offsets(self) -> None:
+        """Build the optional walking-only offset in policy actuator order.
+
+        The physical reset/home pose remains _home_q_rad. The shifted pose
+        is used by the walking residual action base, home-anchored pose
+        regularization, and the offline q_ref joint poses used for RSI.
+        """
+        overrides = dict(
+            getattr(
+                self._config.env,
+                "loc_ref_walking_joint_offsets_rad",
+                {},
+            )
+            or {}
+        )
+        actuator_names = tuple(self._policy_spec.robot.actuator_names)
+        unknown = sorted(set(overrides) - set(actuator_names))
+        if unknown:
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad contains unknown "
+                f"actuators: {unknown}"
+            )
+        if overrides and self._residual_base_mode != "home":
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad requires "
+                "loc_ref_residual_base='home'"
+            )
+        if overrides and self._policy_spec.observation.layout_id in {
+            "wr_obs_v1",
+            "wr_obs_v9_standing",
+            "wr_obs_v10_standing_recovery",
+        }:
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad is walking-only and "
+                "cannot be used with a standing observation layout"
+            )
+        values = np.asarray(
+            [float(overrides.get(name, 0.0)) for name in actuator_names],
+            dtype=np.float32,
+        )
+        if not np.all(np.isfinite(values)):
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad values must be finite"
+            )
+        walking_home = np.asarray(self._home_q_rad) + values
+        if np.any(walking_home < np.asarray(self._joint_range_mins)) or np.any(
+            walking_home > np.asarray(self._joint_range_maxs)
+        ):
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad moves the walking base "
+                "outside a configured joint range"
+            )
+        self._walking_joint_offsets_enabled = bool(overrides)
+        self._walking_joint_offsets_rad = jp.asarray(values, dtype=jp.float32)
+        self._walking_home_q_rad = jp.asarray(walking_home, dtype=jp.float32)
 
     # --------------------------------------------------------- residual scale
 
@@ -1555,10 +1614,18 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ].set(ctrl_policy_order)
 
     def _q_ref_in_policy_order(self, q_ref: jax.Array) -> jax.Array:
-        """Return q_ref with its final axis in PolicySpec actuator order."""
+        """Return q_ref in policy order with the walking offset applied."""
         if int(q_ref.shape[-1]) == len(self._policy_spec.robot.actuator_names):
-            return q_ref.astype(jp.float32)
-        return jp.take(q_ref, self._policy_signal_indices, axis=-1).astype(jp.float32)
+            ordered = q_ref.astype(jp.float32)
+        else:
+            ordered = jp.take(q_ref, self._policy_signal_indices, axis=-1).astype(jp.float32)
+        if not self._walking_joint_offsets_enabled:
+            return ordered
+        return jp.clip(
+            ordered + self._walking_joint_offsets_rad,
+            self._joint_range_mins,
+            self._joint_range_maxs,
+        ).astype(jp.float32)
 
     def _slice_offline_q_ref_to_policy_order(
         self, arrays: Dict[str, jax.Array]
@@ -1611,7 +1678,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             * self._residual_q_scale_per_joint
         )
         if self._residual_base_mode == "home":
-            base_q = self._home_q_rad
+            base_q = self._walking_home_q_rad
         elif self._residual_base_mode == "ref_init":
             base_q = self._ref_init_q_rad
         else:
@@ -2364,7 +2431,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # alternating contact mask.  The v9 task is stationary standing,
             # so its critic target is the home pose with both feet expected
             # loaded; actual per-foot forces remain in contacts above.
-            motor_pos_error = (q_actual - self._home_q_rad).astype(jp.float32)
+            motor_pos_error = (q_actual - self._walking_home_q_rad).astype(jp.float32)
             ref_stance = jp.ones((2,), dtype=jp.float32)
         elif self._critic_imitation_refs:
             motor_pos_error = (q_actual - nominal_q_ref).astype(jp.float32)
@@ -2372,7 +2439,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         else:
             # Clean WR/dehybridized critic option: home-anchored
             # error + phase-derived alternating stance.
-            motor_pos_error = (q_actual - self._home_q_rad).astype(jp.float32)
+            motor_pos_error = (q_actual - self._walking_home_q_rad).astype(jp.float32)
             phase_sin = phase_sin_cos[0].astype(jp.float32)
             # Alternating single-support convention used by the WR
             # gait clock (matches ``_lookup_offline_window`` stance_id
@@ -2843,7 +2910,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         #     pose, NOT from the gait reference.  Required for honest
         #     "TB-pure" reward semantics in smoke8b.
         if self._penalty_pose_anchor_mode == "home":
-            q_err_pp = q_actual - self._home_q_rad
+            q_err_pp = q_actual - self._walking_home_q_rad
         else:
             q_err_pp = q_err
         q_err_pp_excess = jp.maximum(
@@ -4163,7 +4230,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         q_ref0 = win0["q_ref"].astype(jp.float32)
         if self._residual_base_mode == "home":
-            ctrl_init = self._home_q_rad
+            ctrl_init = self._walking_home_q_rad
         elif self._residual_base_mode == "ref_init":
             ctrl_init = self._ref_init_q_rad
         else:
@@ -4783,7 +4850,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 spec=self._policy_spec,
                 action=applied_action,
             )
-            applied_residual_delta = applied_target_q - self._home_q_rad
+            applied_residual_delta = applied_target_q - self._walking_home_q_rad
         else:
             applied_target_q, applied_residual_delta = (
                 self._compose_target_q_from_residual(

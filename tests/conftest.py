@@ -106,6 +106,7 @@ def make_runtime_policy_config(
     residual_base: str = "home",
     action_delay_steps: int = 1,
     action_filter_alpha: float = 0.0,
+    residual_base_offset_per_actuator: list[float] | None = None,
     reference: dict | None = None,
 ):
     """Build a RuntimePolicyConfig with smoke9-aligned residual scales."""
@@ -136,6 +137,11 @@ def make_runtime_policy_config(
         loc_ref_command_axes_3d=True,
         default_velocity_cmd=[0.13, 0.0, 0.0],
         reference=ReferencePhaseTable.from_dict(ref),
+        residual_base_offset_per_actuator=(
+            []
+            if residual_base_offset_per_actuator is None
+            else list(residual_base_offset_per_actuator)
+        ),
     )
 
 

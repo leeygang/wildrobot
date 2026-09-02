@@ -5,9 +5,10 @@ that must NOT import the training-side ``control`` / JAX stack.  But the latest
 ``wr_obs_v8_cmd3d`` home-base-residual contract needs a handful of training
 quantities that are NOT encoded in ``policy_spec.json``:
 
-  - the action path: ``loc_ref_residual_base`` (home), per-joint residual
-    scales (``loc_ref_residual_scale_per_joint`` + scalar fallback),
-    ``action_delay_steps``, ``action_filter_alpha``
+  - the action path: ``loc_ref_residual_base`` (home), optional walking-only
+    base offsets, per-joint residual scales
+    (``loc_ref_residual_scale_per_joint`` + scalar fallback), action delay,
+    and action filtering
   - the gait clock: ``loc_ref_phase_sin_cos`` per offline step index, which
     requires the offline ZMP reference library to generate.
 
@@ -196,6 +197,28 @@ def build_runtime_metadata(
     residual_scale_per_actuator = [
         float(per_joint.get(name, scalar_scale)) for name in actuator_names
     ]
+    base_offsets = dict(
+        _env_get(env, "loc_ref_walking_joint_offsets_rad", {}) or {}
+    )
+    residual_base = str(_env_get(env, "loc_ref_residual_base", "q_ref"))
+    if base_offsets and residual_base != "home":
+        raise ValueError(
+            "env.loc_ref_walking_joint_offsets_rad requires "
+            "loc_ref_residual_base='home'"
+        )
+    unknown_base_offsets = sorted(set(base_offsets) - set(actuator_names))
+    if unknown_base_offsets:
+        raise ValueError(
+            "env.loc_ref_walking_joint_offsets_rad contains unknown actuators: "
+            f"{unknown_base_offsets}"
+        )
+    residual_base_offset_per_actuator = [
+        float(base_offsets.get(name, 0.0)) for name in actuator_names
+    ]
+    if not np.all(np.isfinite(residual_base_offset_per_actuator)):
+        raise ValueError(
+            "env.loc_ref_walking_joint_offsets_rad values must be finite"
+        )
 
     default_cmd = _as_three_vec(_env_get(env, "eval_velocity_cmd", [0.0, 0.0, 0.0]))
 
@@ -207,7 +230,7 @@ def build_runtime_metadata(
         "control_hz": 1.0 / ctrl_dt,
         "action_delay_steps": int(_env_get(env, "action_delay_steps", 0)),
         "action_filter_alpha": float(_env_get(env, "action_filter_alpha", 0.0)),
-        "loc_ref_residual_base": str(_env_get(env, "loc_ref_residual_base", "q_ref")),
+        "loc_ref_residual_base": residual_base,
         "loc_ref_residual_mode": str(
             _env_get(env, "loc_ref_residual_mode", "absolute")
         ),
@@ -216,6 +239,10 @@ def build_runtime_metadata(
         # Resolved into actuator order so the runtime can apply it without
         # re-deriving the name->index map.
         "residual_scale_per_actuator": residual_scale_per_actuator,
+        "loc_ref_walking_joint_offsets_rad": {
+            k: float(v) for k, v in base_offsets.items()
+        },
+        "residual_base_offset_per_actuator": residual_base_offset_per_actuator,
         "loc_ref_command_conditioned": bool(
             _env_get(env, "loc_ref_command_conditioned", False)
         ),

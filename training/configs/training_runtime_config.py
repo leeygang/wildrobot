@@ -221,6 +221,13 @@ class EnvConfig(Freezable):
     #                Constant over time (does NOT follow q_ref(t)).
     loc_ref_residual_base: str = "q_ref"
 
+    # Optional walking-only joint offsets added to the residual action base
+    # and offline q_ref joint poses. This lets a walking policy use a
+    # morphology-specific neutral stance without changing the robot's global
+    # home pose, standing policy, or servo calibration. Values are radians,
+    # keyed by policy actuator name. Non-empty offsets require a home base.
+    loc_ref_walking_joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
+
     # Reset/init base selector for actuator-joint qpos.
     #   "home"     - historical reset: default pose + noise + DR offsets.
     #   "ref_init" - smoke9c: actuator joints start exactly at offline

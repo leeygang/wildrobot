@@ -1,8 +1,9 @@
 """Loader for the exported ``runtime_policy_config.json`` bundle metadata.
 
 This is the runtime-side mirror of ``training/exports/runtime_metadata.py``.
-It carries the home-base residual action contract and the gait phase clock the
-``wr_obs_v8_cmd3d`` policy needs — quantities that are NOT in
+It carries the home-base residual action contract, optional walking-only base
+offsets, and the gait phase clock the ``wr_obs_v8_cmd3d`` policy needs —
+quantities that are NOT in
 ``policy_spec.json``.  Loading it (rather than re-parsing the full
 ``training_config.yaml``) keeps the runtime decoupled from the training config
 schema and the JAX/``control`` stack.
@@ -80,6 +81,8 @@ class RuntimePolicyConfig:
     loc_ref_command_axes_3d: bool
     default_velocity_cmd: List[float]
     reference: ReferencePhaseTable
+    loc_ref_walking_joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
+    residual_base_offset_per_actuator: List[float] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, path: str | Path) -> "RuntimePolicyConfig":
@@ -118,6 +121,16 @@ class RuntimePolicyConfig:
                 float(v) for v in data.get("default_velocity_cmd", [0.0, 0.0, 0.0])
             ],
             reference=ReferencePhaseTable.from_dict(data["reference"]),
+            loc_ref_walking_joint_offsets_rad={
+                str(k): float(v)
+                for k, v in dict(
+                    data.get("loc_ref_walking_joint_offsets_rad", {}) or {}
+                ).items()
+            },
+            residual_base_offset_per_actuator=[
+                float(v)
+                for v in data.get("residual_base_offset_per_actuator", [])
+            ],
         )
 
 

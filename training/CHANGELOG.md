@@ -8,6 +8,88 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-17d8-result + 17d9-ready] - 2026-09-01: replace torque suppression with WR-specific walking geometry
+
+The v0.21.0-17d8 run is
+`training/wandb/offline-run-20260901_173534-8epgu2az`.  No checkpoint passed
+the authoritative deterministic deployment gate.  Checkpoint 13 was the best
+practical candidate; the report's rank-1 checkpoint 19 is not deployable
+because it had 11/64 falls.
+
+| Metric | 17d4 checkpoint 40 | 17d7 checkpoint 12 | 17d8 checkpoint 13 |
+|---|---:|---:|---:|
+| forward velocity | 0.1230 m/s | 0.1169 m/s | 0.1133 m/s |
+| command error | 0.0340 m/s | 0.0364 m/s | 0.0373 m/s |
+| episode length | 985.8 | 974.3 | 974.4 |
+| first-episode falls | 1/64 | 2/64 | 2/64 |
+| stable tilt mean / max | 4.59 / 9.18 deg | 3.85 / 10.33 deg | 4.17 / 8.88 deg |
+| survivor-final tilt max | 5.97 deg | 4.24 deg | 4.61 deg |
+| stable left-hip-roll saturation | 20.13% | 18.18% | 18.32% |
+
+The 17d8 saturation reward was active, but training reduced its penalty by
+slowing the gait: training forward velocity fell from `0.0986 m/s` at
+iteration 1 to `-0.0190 m/s` at iteration 40.  Across the eight evaluated
+checkpoints, left-hip-roll saturation correlated strongly with forward speed
+(`r=+0.986`) and negatively with falls (`r=-0.961`).  Lower saturation was
+therefore a symptom of gait collapse rather than successful load sharing.
+
+MuJoCo forward kinematics exposed the morphology mismatch behind the plateau.
+At the current home pose, WR's approximately `0.1794 m` foot-center separation
+creates a quasi-static COM-to-support-foot gravity moment near `3.59 Nm`, or
+`89.8%` of the `4 Nm` hip-roll actuator limit.  The analogous ToddlerBot load
+is about `1.41 Nm`, or `48%` of its `2.95 Nm` actuator limit.  ToddlerBot's
+active walking recipe also leaves its generic motor-torque penalty disabled,
+so increasing WR's penalty was not a mechanically equivalent intervention.
+
+The new `training/eval/verify_walking_stance_geometry.py` sweep found that a
+walking-only `0.030 rad` symmetric roll offset is the conservative candidate:
+
+| Offset | Foot separation | Current threshold margin | Support ratio | Result |
+|---:|---:|---:|---:|---|
+| 0.000 rad | 0.1794 m | 33.4 mm | 89.8% | fail |
+| 0.030 rad | 0.1564 m | 10.4 mm | 78.4% | pass |
+| 0.035 rad | 0.1526 m | 6.6 mm | 76.5% | pass |
+| 0.040 rad | 0.1487 m | 2.7 mm | 74.6% | pass |
+
+The verifier also checks physical inner-foot clearance, foot orientation,
+sole-height symmetry, joint limits, and self-collision.  The roll-load
+diagnostic now records COM-to-loaded-foot lateral leverage and its equivalent
+quasi-static gravity moment by measured support phase.
+
+A same-seed, 8-environment, 500-step pre-training A/B applied the new base to
+the unchanged 17d4 checkpoint 40 actor.  Relative to its original geometry,
+the new base reduced stable left-support COM leverage `54.1 -> 46.5 mm`, left
+hip-roll torque `3.324 -> 2.810 Nm`, and left hip saturation `39.09% ->
+16.96%`; right-support leverage fell `122.3 -> 109.7 mm` and right hip
+saturation `15.50% -> 0.67%`.  The unadapted actor also regressed from 1/8 to
+6/8 falls, which is expected when its action origin changes and confirms that
+the offset must be fine-tuned rather than directly deployed.
+
+`training/configs/ppo_walking_v0210_17d9_narrow_walking_base.yaml` is the next
+training configuration.  It introduces the verified `0.030 rad` walking-only
+offsets, preserves the physical home/standing pose, shifts RSI joint poses by
+the same offsets, removes 17d8's saturation reward, and changes the close-feet
+threshold to `0.127 m` to preserve ToddlerBot's `0.06/0.074` ratio under the
+new nominal stance.  Training, native evaluation, export metadata, runtime
+action composition, and calibration diagnostics share this contract.
+
+Run on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_17d9_narrow_walking_base.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d4_startup_mix/ppo_walking_v0210_17d4_startup_mix_v0210-17d4_20260831_144954-m558zwn5/checkpoint_40_819200.pkl \
+  --checkpoint-dir training/checkpoints/ppo_walking_v0210_17d9_narrow_walking_base
+```
+
+This is a 20-iteration causal screen.  Promotion still requires zero falls,
+at least `0.11 m/s` forward speed for this experiment, stable tilt
+mean/max/final at most `10/15/10 deg`, and every actuator at or below `5%`
+stable 95%-limit occupancy.  Public references: Shi et al., *ToddlerBot*
+(arXiv:2502.00893) and Kajita et al., ZMP preview control (ICRA 2003).
+
+---
+
 ## [v0.21.0-17d7-result + 17d8-ready] - 2026-09-01: target hip-roll torque margin directly
 
 The v0.21.0-17d7 run is

@@ -10,17 +10,20 @@ were removed. Use the console scripts (`wildrobot-run-policy`, `wildrobot-valida
 ## Latest contract (v0.21.0, `wr_obs_v8_cmd3d`)
 
 The current walking policy is a **home-base residual** policy (smoke9): the
-network outputs a residual that is scaled per-joint and added to the home pose,
-NOT a direct midpoint-range target.  The runtime composes the control target as
+network outputs a residual that is scaled per-joint and added to the walking
+base pose, NOT a direct midpoint-range target.  By default the walking base is
+the physical home pose; a bundle can carry small walking-only joint offsets
+without changing standing/home calibration.  The runtime composes the target as
 
 ```
 filtered = postprocess(raw_action)                    # action_filter_alpha=0 -> identity
 applied   = previous filtered action                  # action_delay_steps=1
 delta     = clip(applied, -1, 1) * residual_scale_per_joint
-target_q  = clip(home_q_rad + delta, joint_min, joint_max)
+walking_base_q = home_q_rad + residual_base_offset_per_actuator
+target_q  = clip(walking_base_q + delta, joint_min, joint_max)
 ```
 
-These quantities (residual base/scale/per-joint, action delay/filter, the 3D
+These quantities (residual base/scale/offsets, action delay/filter, the 3D
 `(vx, vy, wz)` command, and the gait phase clock) are NOT in `policy_spec.json`.
 They are frozen at export time into **`runtime_policy_config.json`** inside the
 bundle (see `training/exports/runtime_metadata.py`).  The runner refuses to fall

@@ -1520,6 +1520,20 @@ def load_policy_action_setup(
                     joint: float(scale_by_bundle_joint.get(joint, scalar))
                     for joint in joint_names
                 }
+
+            base_offsets = (
+                runtime_cfg.get("residual_base_offset_per_actuator", []) or []
+            )
+            if isinstance(base_offsets, list) and len(base_offsets) == len(bundle_names):
+                offset_by_bundle_joint = {
+                    name: float(offset)
+                    for name, offset in zip(bundle_names, base_offsets, strict=True)
+                }
+                base_rad_by_joint = {
+                    joint: float(base_rad_by_joint[joint])
+                    + float(offset_by_bundle_joint.get(joint, 0.0))
+                    for joint in joint_names
+                }
             source = str(runtime_cfg_path)
 
     return PolicyActionSetup(

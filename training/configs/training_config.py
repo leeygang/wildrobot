@@ -292,6 +292,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         critic_obs_history_frames=int(env.get("critic_obs_history_frames", 1)),
         # v0.20.1 smoke8 — residual base selector.  See dataclass docstring.
         loc_ref_residual_base=str(env.get("loc_ref_residual_base", "q_ref")),
+        loc_ref_walking_joint_offsets_rad=dict(
+            env.get("loc_ref_walking_joint_offsets_rad", {}) or {}
+        ),
         loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
         # v0.21.0 smoke5 — Reference State Initialization (RSI). See dataclass docstring.
         loc_ref_rsi_enabled=bool(env.get("loc_ref_rsi_enabled", False)),

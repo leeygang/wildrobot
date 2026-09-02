@@ -10,12 +10,13 @@ policy needs:
   - the 15-frame proprio history (rolled oldest -> newest)
   - the pending filtered action for the 1-step action delay
 
-and composes the control target as a residual around the home pose:
+and composes the control target as a residual around the walking base pose:
 
     filtered = postprocess(raw)                      # action_filter_alpha=0 -> identity
     applied  = prev_filtered if delay else filtered  # action_delay_steps=1
     delta    = clip(applied, -1, 1) * residual_scale_per_joint
-    target_q = clip(home_q_rad + delta, joint_min, joint_max)
+    base_q   = home_q_rad + residual_base_offset_per_actuator
+    target_q = clip(base_q + delta, joint_min, joint_max)
 
 This is NOT the generic ``pos_target_rad_v1`` midpoint mapping
 (``NumpyCalibOps.action_to_ctrl``).  The smoke9 env commands residuals around
@@ -101,6 +102,7 @@ class RuntimePolicyRunner:
 
         self._init_joint_ranges()
         self._init_home_q_rad()
+        self._init_residual_base_offset()
         self._init_residual_scale()
         self.reset()
 
@@ -130,6 +132,40 @@ class RuntimePolicyRunner:
             np.asarray(home, dtype=np.float32), self._joint_min, self._joint_max
         ).astype(np.float32)
 
+    def _init_residual_base_offset(self) -> None:
+        names = tuple(self._spec.robot.actuator_names)
+        named = dict(self._cfg.loc_ref_walking_joint_offsets_rad or {})
+        unknown = sorted(set(named) - set(names))
+        if unknown:
+            raise ValueError(
+                "loc_ref_walking_joint_offsets_rad contains unknown actuators: "
+                f"{unknown}"
+            )
+        named_offset = np.asarray(
+            [float(named.get(name, 0.0)) for name in names], dtype=np.float32
+        )
+        values = self._cfg.residual_base_offset_per_actuator
+        if values:
+            offset = np.asarray(values, dtype=np.float32).reshape(-1)
+            if offset.size != self._action_dim:
+                raise ValueError(
+                    "residual_base_offset_per_actuator length "
+                    f"{offset.size} != action_dim {self._action_dim}"
+                )
+            if named and not np.allclose(offset, named_offset, atol=1e-7, rtol=0.0):
+                raise ValueError(
+                    "named and actuator-ordered residual base offsets disagree"
+                )
+        else:
+            offset = named_offset
+        if not np.all(np.isfinite(offset)):
+            raise ValueError("residual base offsets must be finite")
+        base = self._home_q_rad + offset
+        if np.any(base < self._joint_min) or np.any(base > self._joint_max):
+            raise ValueError("residual base offsets move a joint outside its range")
+        self._residual_base_offset = offset
+        self._residual_base_q_rad = base.astype(np.float32)
+
     def _init_residual_scale(self) -> None:
         per_actuator = self._cfg.residual_scale_per_actuator
         if per_actuator and len(per_actuator) == self._action_dim:
@@ -151,6 +187,10 @@ class RuntimePolicyRunner:
     @property
     def home_q_rad(self) -> np.ndarray:
         return self._home_q_rad.copy()
+
+    @property
+    def residual_base_q_rad(self) -> np.ndarray:
+        return self._residual_base_q_rad.copy()
 
     @property
     def spec(self) -> PolicySpec:
@@ -251,7 +291,9 @@ class RuntimePolicyRunner:
 
         residual = np.clip(applied, -1.0, 1.0) * self._residual_scale
         target_q = np.clip(
-            self._home_q_rad + residual, self._joint_min, self._joint_max
+            self._residual_base_q_rad + residual,
+            self._joint_min,
+            self._joint_max,
         ).astype(np.float32)
 
         self._state.pending_action = filtered

@@ -179,8 +179,9 @@ class V6EvalAdapter:
         self._init_offline_service()
         self._init_residual_scale()
         self._init_joint_ranges()
-        self._init_ref_init_q_rad()
         self._init_home_q_rad()
+        self._init_walking_joint_offsets()
+        self._init_ref_init_q_rad()
         self._init_ctrl_mapper()
         self._init_reset_perturbation()
         self._init_dr_joint_offsets()
@@ -430,13 +431,56 @@ class V6EvalAdapter:
             home_rad, self._joint_min, self._joint_max
         ).astype(np.float32)
 
-    def _init_ref_init_q_rad(self) -> None:
-        win0 = self._service.lookup_np(0)
-        self._ref_init_q_rad = np.clip(
-            np.asarray(win0.q_ref, dtype=np.float32),
+    def _init_walking_joint_offsets(self) -> None:
+        overrides = dict(
+            getattr(
+                self._cfg.env,
+                "loc_ref_walking_joint_offsets_rad",
+                {},
+            )
+            or {}
+        )
+        actuator_names = tuple(self._policy_spec.robot.actuator_names)
+        unknown = sorted(set(overrides) - set(actuator_names))
+        if unknown:
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad contains unknown "
+                f"actuators: {unknown}"
+            )
+        if overrides and self._residual_base_mode != "home":
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad requires "
+                "loc_ref_residual_base='home'"
+            )
+        offsets = np.asarray(
+            [float(overrides.get(name, 0.0)) for name in actuator_names],
+            dtype=np.float32,
+        )
+        if not np.all(np.isfinite(offsets)):
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad values must be finite"
+            )
+        walking_home = self._home_q_rad + offsets
+        if np.any(walking_home < self._joint_min) or np.any(
+            walking_home > self._joint_max
+        ):
+            raise ValueError(
+                "env.loc_ref_walking_joint_offsets_rad moves the walking base "
+                "outside a configured joint range"
+            )
+        self._walking_joint_offsets_rad = offsets
+        self._walking_home_q_rad = walking_home.astype(np.float32)
+
+    def _apply_walking_joint_offsets(self, q_ref: np.ndarray) -> np.ndarray:
+        return np.clip(
+            np.asarray(q_ref, dtype=np.float32) + self._walking_joint_offsets_rad,
             self._joint_min,
             self._joint_max,
         ).astype(np.float32)
+
+    def _init_ref_init_q_rad(self) -> None:
+        win0 = self._service.lookup_np(0)
+        self._ref_init_q_rad = self._apply_walking_joint_offsets(win0.q_ref)
 
     def _init_ctrl_mapper(self) -> None:
         self._ctrl_mapper = CtrlOrderMapper(
@@ -682,7 +726,7 @@ class V6EvalAdapter:
 
     def _ctrl_init_policy_order(self) -> np.ndarray:
         if self._residual_base_mode == "home":
-            return self._home_q_rad.copy()
+            return self._walking_home_q_rad.copy()
         # q_ref and ref_init both use the frame-0 offline reference.
         return self._ref_init_q_rad.copy()
 
@@ -910,7 +954,7 @@ class V6EvalAdapter:
             loc_ref_swing_vel=swing_vel,
             loc_ref_pelvis_targets=pelvis_targets,
             loc_ref_history=history_4,
-            loc_ref_q_ref=np.asarray(win.q_ref, dtype=np.float32),
+            loc_ref_q_ref=self._apply_walking_joint_offsets(win.q_ref),
             loc_ref_pelvis_pos=np.asarray(win.pelvis_pos, dtype=np.float32),
             loc_ref_pelvis_vel=np.asarray(win.pelvis_vel, dtype=np.float32),
             loc_ref_left_foot_pos=np.asarray(win.left_foot_pos, dtype=np.float32),
@@ -989,11 +1033,11 @@ class V6EvalAdapter:
         self._state.step_idx = min(self._state.step_idx + 1, self._n_steps - 1)
 
         win = self._service.lookup_np(self._state.step_idx)
-        q_ref = np.asarray(win.q_ref, dtype=np.float32)
+        q_ref = self._apply_walking_joint_offsets(win.q_ref)
         clipped = np.clip(applied, -1.0, 1.0)
         residual = clipped * self._scale_per_joint
         if self._residual_base_mode == "home":
-            base_q = self._home_q_rad
+            base_q = self._walking_home_q_rad
         elif self._residual_base_mode == "ref_init":
             base_q = self._ref_init_q_rad
         else:
