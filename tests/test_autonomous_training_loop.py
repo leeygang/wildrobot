@@ -75,6 +75,34 @@ def test_completed_job_must_match_mac_and_state_commit(
         auto._require_training_commit(state, {"git_sha": "a" * 40})
 
 
+def test_adopted_job_allows_only_control_plane_commits_after_training(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state["initial_run_adopted"] = True
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        auto,
+        "_git_output",
+        lambda *args: "wildrobot/agents/remote_training_loop.py",
+    )
+
+    assert auto._require_training_commit(state, {"git_sha": "a" * 40}) == "b" * 40
+
+    monkeypatch.setattr(
+        auto,
+        "_git_output",
+        lambda *args: "training/envs/wildrobot_env.py",
+    )
+    with pytest.raises(remote.TrainingLoopError, match="training-relevant"):
+        auto._require_training_commit(state, {"git_sha": "a" * 40})
+
+
 def test_next_checkpoint_must_come_from_deterministic_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -265,3 +293,77 @@ def test_mac_service_installer_writes_launch_agent(
     assert "autonomous_training_loop.py" in plist
     assert "<integer>120</integer>" in plist
     assert "<string>step</string>" in plist
+
+
+def test_start_can_adopt_an_already_completed_gpu_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_sha = "a" * 40
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: git_sha)
+    monkeypatch.setattr(
+        auto,
+        "_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(auto.shutil, "which", lambda _name: "/usr/local/bin/codex")
+    monkeypatch.setattr(
+        auto.remote,
+        "_adopt_remote",
+        lambda context, **_kwargs: {
+            "job_id": context.job_id,
+            "status": "completed",
+            "git_sha": git_sha,
+            "wandb_run_name": "offline-run-20260902_120000-runid123",
+        },
+    )
+    monkeypatch.setattr(
+        auto, "_push", lambda _branch: pytest.fail("adoption must not push")
+    )
+    monkeypatch.setattr(
+        auto, "_enqueue", lambda *_args, **_kwargs: pytest.fail("must not enqueue")
+    )
+    monkeypatch.setattr(auto, "_save_state", lambda state: saved.append(dict(state)))
+    args = argparse.Namespace(
+        config="training/configs/walking.yaml",
+        init_policy=None,
+        resume=None,
+        adopt_completed="offline-run-20260902_120000-runid123",
+        training_git_sha=git_sha,
+        branch="main",
+        host="gpu",
+        user="robot",
+        port=None,
+        remote_repo="/srv/wildrobot",
+        max_cycles=4,
+        max_training_failures=2,
+        codex_path=None,
+        codex_model=None,
+        codex_timeout_minutes=5,
+        standing_checkpoint=None,
+        standing_config=None,
+        new_run=False,
+    )
+
+    auto._start(args)
+
+    assert saved[-1]["status"] == "active"
+    assert saved[-1]["cycle"] == 1
+    assert saved[-1]["active_job_id"].startswith("auto-01-walking-")
+    assert saved[-1]["active_git_sha"] == git_sha
+    assert saved[-1]["initial_run_adopted"] is True
+
+
+def test_start_parser_uses_latest_completed_run_when_name_is_omitted() -> None:
+    args = auto._parse_args(
+        [
+            "start",
+            "--config",
+            "training/configs/walking.yaml",
+            "--adopt-completed",
+        ]
+    )
+
+    assert args.adopt_completed == "latest"

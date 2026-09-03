@@ -32,6 +32,13 @@ DEFAULT_REMOTE_REPO = "/home/leeygang/projects/wildrobot"
 LOCAL_JOB_ROOT = REPO_ROOT / "training" / "remote_jobs"
 MANIFEST_NAME = "job_manifest.json"
 CHECKPOINT_MANIFEST_NAME = "training_job_manifest.json"
+ADOPTION_CONTROL_PLANE_PATHS = (
+    ".gitignore",
+    "tests/test_autonomous_training_loop.py",
+    "tests/test_remote_training_loop.py",
+    "training/exports/export_policy_bundle.py",
+    "wildrobot/agents/",
+)
 
 
 class TrainingLoopError(RuntimeError):
@@ -362,6 +369,44 @@ def _enqueue_remote(
     return manifest
 
 
+def _adopt_remote(
+    context: RemoteContext,
+    *,
+    git_sha: str,
+    config: str,
+    run_name: str | None,
+) -> dict[str, Any]:
+    command = [
+        f"{context.remote_repo}/.venv/bin/python",
+        f"{context.remote_repo}/{AGENT_REL_PATH}",
+        "_adopt-completed-worker",
+        "--remote-repo",
+        context.remote_repo,
+        "--job-id",
+        context.job_id,
+        "--config",
+        config,
+        "--training-git-sha",
+        git_sha,
+    ]
+    if run_name is not None:
+        command.extend(["--run-name", run_name])
+    result = _run(_ssh_command(context, _shell_join(command)), check=False)
+    if result.returncode:
+        raise TrainingLoopError(
+            "GPU completed-run adoption failed: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    try:
+        manifest = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise TrainingLoopError("GPU adoption returned an invalid manifest.") from exc
+    if not isinstance(manifest, dict) or manifest.get("status") != "completed":
+        raise TrainingLoopError("GPU adoption did not return a completed job manifest.")
+    _save_active_context(context)
+    return manifest
+
+
 def _remote_exists(context: RemoteContext, path: str, *, directory: bool) -> bool:
     flag = "-d" if directory else "-f"
     return (
@@ -447,6 +492,233 @@ def _latest_dir(root: Path, prefixes: tuple[str, ...] | None = None) -> Path | N
             path for path in candidates if any(path.name.startswith(p) for p in prefixes)
         ]
     return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
+def _is_adoption_control_plane_path(path: str) -> bool:
+    return any(
+        path == allowed or (allowed.endswith("/") and path.startswith(allowed))
+        for allowed in ADOPTION_CONTROL_PLANE_PATHS
+    )
+
+
+def _wandb_run_id(run_name: str) -> str:
+    if Path(run_name).name != run_name:
+        raise TrainingLoopError(f"Invalid W&B run name: {run_name}")
+    match = re.fullmatch(r"(?:offline-)?run-.+-([a-zA-Z0-9]+)", run_name)
+    if match is None:
+        raise TrainingLoopError(f"Invalid W&B run name: {run_name}")
+    return match.group(1)
+
+
+def _find_completed_run(
+    remote_repo: Path, *, run_name: str | None
+) -> tuple[Path, Path]:
+    wandb_root = remote_repo / "training/wandb"
+    checkpoint_root = remote_repo / "training/checkpoints"
+    if run_name is not None:
+        _wandb_run_id(run_name)
+        candidates = [wandb_root / run_name]
+    else:
+        candidates = sorted(
+            (
+                path
+                for path in wandb_root.iterdir()
+                if path.is_dir()
+                and path.name.startswith(("offline-run-", "run-"))
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ) if wandb_root.is_dir() else []
+
+    for wandb_run in candidates:
+        if not wandb_run.is_dir():
+            continue
+        run_id = _wandb_run_id(wandb_run.name)
+        if not (wandb_run / "files/metrics.jsonl").is_file():
+            continue
+        checkpoint_runs = sorted(
+            (
+                path
+                for path in checkpoint_root.rglob(f"*-{run_id}")
+                if path.is_dir()
+                and (path / "post_training_eval_summary.json").is_file()
+                and (path / "training_config.yaml").is_file()
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ) if checkpoint_root.is_dir() else []
+        if checkpoint_runs:
+            return wandb_run.resolve(), checkpoint_runs[0].resolve()
+
+    requested = run_name or "the latest W&B run"
+    raise TrainingLoopError(
+        f"Could not find a completed training result for {requested}; required "
+        "metrics.jsonl, training_config.yaml, and "
+        "post_training_eval_summary.json were not all present."
+    )
+
+
+def _adopt_completed_run(
+    *,
+    remote_repo: Path,
+    job_id: str,
+    source_config: str,
+    expected_git_sha: str,
+    run_name: str | None,
+) -> dict[str, Any]:
+    remote_repo = remote_repo.resolve()
+    expected_git_sha = expected_git_sha.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", expected_git_sha):
+        raise TrainingLoopError("--training-git-sha must be a full 40-character SHA.")
+    if _git_output("status", "--porcelain", "--untracked-files=normal", cwd=remote_repo):
+        raise TrainingLoopError("GPU repository must be clean before adoption.")
+    if _run(
+        ["git", "cat-file", "-e", f"{expected_git_sha}^{{commit}}"],
+        cwd=remote_repo,
+        check=False,
+    ).returncode:
+        raise TrainingLoopError(
+            f"Training commit is not available on the GPU: {expected_git_sha}"
+        )
+    current_git_sha = _git_output("rev-parse", "HEAD", cwd=remote_repo)
+    if current_git_sha != expected_git_sha:
+        if _run(
+            ["git", "merge-base", "--is-ancestor", expected_git_sha, current_git_sha],
+            cwd=remote_repo,
+            check=False,
+        ).returncode:
+            raise TrainingLoopError(
+                "The declared training commit is not an ancestor of GPU HEAD."
+            )
+        changed = _git_output(
+            "diff", "--name-only", f"{expected_git_sha}..{current_git_sha}", cwd=remote_repo
+        ).splitlines()
+        disallowed = [path for path in changed if not _is_adoption_control_plane_path(path)]
+        if disallowed:
+            raise TrainingLoopError(
+                "GPU HEAD changed training-relevant files after the completed run: "
+                + ", ".join(disallowed)
+            )
+
+    config_rel = PurePosixPath(source_config)
+    if config_rel.is_absolute() or ".." in config_rel.parts:
+        raise TrainingLoopError(f"Unsafe source config: {source_config}")
+    config_path = (remote_repo / Path(*config_rel.parts)).resolve()
+    if not config_path.is_file():
+        raise TrainingLoopError(f"Training config not found on GPU: {source_config}")
+    if _run(
+        ["git", "ls-files", "--error-unmatch", config_rel.as_posix()],
+        cwd=remote_repo,
+        check=False,
+    ).returncode:
+        raise TrainingLoopError(f"Training config is not tracked: {source_config}")
+
+    wandb_run, checkpoint_run = _find_completed_run(
+        remote_repo, run_name=run_name
+    )
+    source_payload = yaml.safe_load(config_path.read_text())
+    frozen_config = checkpoint_run / "training_config.yaml"
+    frozen_payload = yaml.safe_load(frozen_config.read_text())
+    source_version = source_payload.get("version") if isinstance(source_payload, dict) else None
+    frozen_version = frozen_payload.get("version") if isinstance(frozen_payload, dict) else None
+    if not source_version or source_version != frozen_version:
+        raise TrainingLoopError(
+            "The supplied source config does not match the completed run's frozen "
+            f"version ({source_version!r} != {frozen_version!r})."
+        )
+
+    summary_path = checkpoint_run / "post_training_eval_summary.json"
+    summary = _read_json(summary_path)
+    selected_path: Path | None = None
+    if summary.get("selected_checkpoint_path"):
+        selected_path = Path(str(summary["selected_checkpoint_path"]))
+        if not selected_path.is_absolute():
+            selected_path = remote_repo / selected_path
+        selected_path = selected_path.resolve()
+        try:
+            selected_path.relative_to(checkpoint_run)
+        except ValueError as exc:
+            raise TrainingLoopError(
+                "The deterministic summary selected a checkpoint outside its run directory."
+            ) from exc
+        if not selected_path.is_file() or selected_path.suffix != ".pkl":
+            raise TrainingLoopError(
+                f"The deterministic selected checkpoint is missing: {selected_path}"
+            )
+
+    context = RemoteContext(
+        job_id=_safe_job_id(job_id),
+        host="localhost",
+        user="local",
+        port=None,
+        remote_repo=str(remote_repo),
+    )
+    job_root = Path(context.job_root)
+    if job_root.exists():
+        raise TrainingLoopError(f"Job already exists: {context.job_id}")
+    artifact_root = remote_repo / "training"
+    checkpoint_root = artifact_root / "checkpoints"
+    checkpoint_series_dir = checkpoint_run.parent
+    source_snapshot = job_root / "source_training_config.yaml"
+    effective_snapshot = job_root / "effective_training_config.yaml"
+    job_root.mkdir(parents=True)
+    shutil.copy2(config_path, source_snapshot)
+    shutil.copy2(frozen_config, effective_snapshot)
+    run_id = _wandb_run_id(wandb_run.name)
+    manifest = {
+        "schema_version": 1,
+        "job_id": context.job_id,
+        "status": "completed",
+        "created_at": _utc_now(),
+        "finished_at": datetime.fromtimestamp(
+            summary_path.stat().st_mtime, timezone.utc
+        ).isoformat(),
+        "adopted_at": _utc_now(),
+        "adopted_from_existing_run": True,
+        "provenance_mode": "declared_training_commit",
+        "provenance_note": (
+            "The run predates the queue manifest. Its Git SHA was supplied at "
+            "adoption and checked against the current control-plane-only diff."
+        ),
+        "git_sha": expected_git_sha,
+        "adoption_host_git_sha": current_git_sha,
+        "git_dirty": False,
+        "remote_repo": str(remote_repo),
+        "worktree": str(remote_repo),
+        "job_root": str(job_root),
+        "artifact_root": str(artifact_root),
+        "source_config": config_rel.as_posix(),
+        "source_config_sha256": _sha256(source_snapshot),
+        "effective_config": str(effective_snapshot),
+        "effective_config_sha256": _sha256(effective_snapshot),
+        "checkpoint_series": checkpoint_series_dir.relative_to(
+            checkpoint_root
+        ).as_posix(),
+        "checkpoint_series_dir": str(checkpoint_series_dir),
+        "checkpoint_run_dir": str(checkpoint_run),
+        "checkpoint_run_relpath": checkpoint_run.relative_to(
+            artifact_root
+        ).as_posix(),
+        "wandb_run_dir": str(wandb_run),
+        "wandb_run_name": wandb_run.name,
+        "wandb_run_id": run_id,
+        "post_training_eval_summary": str(summary_path),
+        "selected_checkpoint_path": str(selected_path) if selected_path else None,
+        "selected_checkpoint_relpath": _artifact_relative(
+            selected_path, artifact_root
+        ),
+        "simulation_candidate_ready": selected_path is not None,
+        "result_complete": True,
+        "exit_code": 0,
+        "start_mode": None,
+        "start_checkpoint_request": None,
+        "start_checkpoint": None,
+        "start_checkpoint_sha256": None,
+    }
+    manifest_path = job_root / MANIFEST_NAME
+    _write_json_atomic(manifest_path, manifest)
+    _copy_manifest_to_checkpoint(manifest_path, manifest)
+    return manifest
 
 
 def _artifact_relative(path: Path | None, artifact_root: Path) -> str | None:
@@ -832,6 +1104,46 @@ def _submit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _adopt(args: argparse.Namespace) -> int:
+    if _git_output("status", "--porcelain", "--untracked-files=normal"):
+        raise TrainingLoopError("Commit or remove local changes before adoption.")
+    config = _repo_config(args.config)
+    git_sha = args.training_git_sha or _git_output("rev-parse", "HEAD")
+    context = RemoteContext(
+        job_id=_safe_job_id(args.job_id)
+        if args.job_id
+        else _new_job_id(config, git_sha),
+        host=args.host or os.environ.get("WILDROBOT_GPU_HOST", DEFAULT_GPU_HOST),
+        user=args.user or os.environ.get("WILDROBOT_GPU_USER", DEFAULT_GPU_USER),
+        port=args.port,
+        remote_repo=args.remote_repo
+        or os.environ.get("WILDROBOT_GPU_REPO", DEFAULT_REMOTE_REPO),
+    )
+    manifest = _adopt_remote(
+        context,
+        git_sha=git_sha,
+        config=config,
+        run_name=args.run_name,
+    )
+    print(
+        f"Adopted completed run {manifest['wandb_run_name']} as job "
+        f"{context.job_id} at training commit {git_sha[:12]}"
+    )
+    return 0
+
+
+def _adopt_completed_worker(args: argparse.Namespace) -> int:
+    manifest = _adopt_completed_run(
+        remote_repo=Path(args.remote_repo),
+        job_id=args.job_id,
+        source_config=args.config,
+        expected_git_sha=args.training_git_sha,
+        run_name=args.run_name,
+    )
+    print(json.dumps(manifest, sort_keys=True))
+    return 0
+
+
 def _status(args: argparse.Namespace) -> int:
     manifest = _fetch_manifest(_context_from_args(args))
     if args.json:
@@ -973,7 +1285,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     commands = parser.add_subparsers(
         dest="command",
         required=True,
-        metavar="{submit,status,sync,analyze,gpu-serve,install-gpu-service}",
+        metavar=(
+            "{submit,adopt-completed,status,sync,analyze,gpu-serve,"
+            "install-gpu-service}"
+        ),
     )
     submit = commands.add_parser("submit", help="submit an exact Git commit")
     submit.add_argument("--config", required=True)
@@ -987,6 +1302,20 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     submit.add_argument("--remote-repo")
     submit.add_argument("--dry-run", action="store_true")
     submit.set_defaults(func=_submit)
+
+    adopt = commands.add_parser(
+        "adopt-completed",
+        help="adopt an already-completed GPU run into the job queue",
+    )
+    adopt.add_argument("--config", required=True)
+    adopt.add_argument("--run-name")
+    adopt.add_argument("--training-git-sha")
+    adopt.add_argument("--job-id")
+    adopt.add_argument("--host")
+    adopt.add_argument("--user")
+    adopt.add_argument("--port", type=int)
+    adopt.add_argument("--remote-repo")
+    adopt.set_defaults(func=_adopt)
 
     status = commands.add_parser("status", help="show the remote job manifest")
     _add_remote_args(status)
@@ -1020,6 +1349,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     worker = commands.add_parser("_gpu-worker", add_help=False)
     worker.add_argument("--job-root", required=True)
     worker.set_defaults(func=_gpu_worker)
+
+    adopt_worker = commands.add_parser("_adopt-completed-worker", add_help=False)
+    adopt_worker.add_argument("--remote-repo", required=True)
+    adopt_worker.add_argument("--job-id", required=True)
+    adopt_worker.add_argument("--config", required=True)
+    adopt_worker.add_argument("--training-git-sha", required=True)
+    adopt_worker.add_argument("--run-name")
+    adopt_worker.set_defaults(func=_adopt_completed_worker)
     return parser.parse_args(argv)
 
 

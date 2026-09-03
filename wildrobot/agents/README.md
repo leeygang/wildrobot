@@ -54,6 +54,47 @@ from the LaunchAgent environment.
 
 ### Start the first autonomous walking job
 
+If training has already completed outside the queue, adopt that result instead
+of launching it again. Before updating the GPU checkout, record the commit that
+was used for training:
+
+```bash
+# Ubuntu, immediately after the manual training run finishes
+cd ~/projects/wildrobot
+git rev-parse HEAD
+```
+
+Update the GPU checkout and service as described above. Then start the Mac
+controller from the completed result:
+
+```bash
+cd ~/projects/wildrobot
+uv run python wildrobot/agents/autonomous_training_loop.py start \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --adopt-completed \
+  --training-git-sha <40-character-training-commit> \
+  --max-cycles 8
+
+# Process immediately instead of waiting for the next LaunchAgent interval.
+uv run python wildrobot/agents/autonomous_training_loop.py step
+```
+
+`--adopt-completed` discovers the newest W&B run that has `metrics.jsonl` and a
+matching checkpoint directory containing both `training_config.yaml` and
+`post_training_eval_summary.json`. To avoid selecting by recency, pass the
+exact name:
+
+```bash
+--adopt-completed offline-run-YYYYMMDD_HHMMSS-RUNID
+```
+
+The non-Codex controller creates the job manifest, synchronizes the result, and
+runs the deterministic analyzer before invoking Codex. The adoption is rejected
+if training-relevant files changed between the declared training commit and the
+current automation checkout.
+
+To launch a new GPU run through the queue instead, use:
+
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
@@ -124,6 +165,17 @@ holds a global GPU lock to prevent accidental competition for the device.
 ```bash
 uv run python wildrobot/agents/remote_training_loop.py status
 uv run python wildrobot/agents/remote_training_loop.py sync
+uv run python wildrobot/agents/remote_training_loop.py analyze
+```
+
+An already-completed manual run can also be adopted into this supervised
+single-run controller without enabling the autonomous loop:
+
+```bash
+uv run python wildrobot/agents/remote_training_loop.py adopt-completed \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --run-name offline-run-YYYYMMDD_HHMMSS-RUNID \
+  --training-git-sha <40-character-training-commit>
 uv run python wildrobot/agents/remote_training_loop.py analyze
 ```
 

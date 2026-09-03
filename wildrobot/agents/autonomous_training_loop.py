@@ -56,6 +56,28 @@ def _require_clean_branch(branch: str) -> str:
     return _git_output("rev-parse", "HEAD")
 
 
+def _require_adoption_compatible(training_sha: str, current_sha: str) -> None:
+    if training_sha == current_sha:
+        return
+    if _git(
+        "merge-base", "--is-ancestor", training_sha, current_sha, check=False
+    ).returncode:
+        raise remote.TrainingLoopError(
+            "The adopted training commit is not an ancestor of Mac HEAD."
+        )
+    changed = _git_output(
+        "diff", "--name-only", f"{training_sha}..{current_sha}"
+    ).splitlines()
+    disallowed = [
+        path for path in changed if not remote._is_adoption_control_plane_path(path)
+    ]
+    if disallowed:
+        raise remote.TrainingLoopError(
+            "Mac HEAD changed training-relevant files after the adopted run: "
+            + ", ".join(disallowed)
+        )
+
+
 def _load_state() -> dict[str, Any]:
     return remote._read_json(STATE_PATH)
 
@@ -93,11 +115,18 @@ def _push(branch: str) -> None:
 def _require_training_commit(state: dict[str, Any], manifest: dict[str, Any]) -> str:
     head = _require_clean_branch(str(state["branch"]))
     expected = str(manifest.get("git_sha", ""))
-    if not expected or head != expected or state.get("active_git_sha") != expected:
+    if not expected or state.get("active_git_sha") != expected:
         raise remote.TrainingLoopError(
             "Mac HEAD, autonomous state, and the completed GPU job must use the "
             "same Git commit before analysis or export."
         )
+    if head != expected:
+        if not state.get("initial_run_adopted"):
+            raise remote.TrainingLoopError(
+                "Mac HEAD, autonomous state, and the completed GPU job must use the "
+                "same Git commit before analysis or export."
+            )
+        _require_adoption_compatible(expected, head)
     return head
 
 
@@ -208,6 +237,8 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         "max_cycles": state["max_cycles"],
         "job_status": manifest.get("status"),
         "training_git_sha": manifest.get("git_sha"),
+        "provenance_mode": manifest.get("provenance_mode"),
+        "provenance_note": manifest.get("provenance_note"),
         "remote_job_manifest": str(job_dir / remote.MANIFEST_NAME),
         "analysis_report": str(job_dir / "analysis.txt"),
         "local_wandb_run_dir": manifest.get("local_wandb_run_dir"),
@@ -505,6 +536,10 @@ def _start(args: argparse.Namespace) -> int:
         raise remote.TrainingLoopError("--codex-timeout-minutes must be at least 1.")
     if not PurePosixPath(args.remote_repo).is_absolute():
         raise remote.TrainingLoopError("--remote-repo must be an absolute Ubuntu path.")
+    if args.training_git_sha and not args.adopt_completed:
+        raise remote.TrainingLoopError(
+            "--training-git-sha is only valid with --adopt-completed."
+        )
     config = remote._repo_config(args.config)
     codex_path = (
         shutil.which(args.codex_path) if args.codex_path else shutil.which("codex")
@@ -556,6 +591,42 @@ def _start(args: argparse.Namespace) -> int:
         "standing_config": standing_config,
         "initial_git_sha": git_sha,
     }
+    if args.adopt_completed:
+        training_git_sha = args.training_git_sha or git_sha
+        if _git(
+            "cat-file", "-e", f"{training_git_sha}^{{commit}}", check=False
+        ).returncode:
+            raise remote.TrainingLoopError(
+                f"Training commit is not available on the Mac: {training_git_sha}"
+            )
+        _require_adoption_compatible(training_git_sha, git_sha)
+        job_id = _job_id(1, config, training_git_sha)
+        manifest = remote._adopt_remote(
+            _context(state, job_id),
+            git_sha=training_git_sha,
+            config=config,
+            run_name=(
+                None if args.adopt_completed == "latest" else args.adopt_completed
+            ),
+        )
+        if manifest.get("git_sha") != training_git_sha:
+            raise remote.TrainingLoopError(
+                "Adopted manifest does not match the requested training commit."
+            )
+        state.update(
+            cycle=1,
+            active_job_id=job_id,
+            active_git_sha=training_git_sha,
+            active_config=config,
+            initial_run_adopted=True,
+            last_decision=None,
+        )
+        _save_state(state)
+        print(
+            f"Autonomous loop adopted completed run {manifest['wandb_run_name']} "
+            f"as job {job_id}"
+        )
+        return 0
     mode = "init_policy" if args.init_policy else "resume" if args.resume else "none"
     checkpoint = args.init_policy or args.resume or ""
     if checkpoint:
@@ -637,11 +708,24 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Autonomous WildRobot training loop")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    start = commands.add_parser("start", help="push and enqueue the first job")
+    start = commands.add_parser(
+        "start", help="enqueue a new job or adopt an already-completed GPU run"
+    )
     start.add_argument("--config", required=True)
     checkpoint = start.add_mutually_exclusive_group()
     checkpoint.add_argument("--init-policy")
     checkpoint.add_argument("--resume")
+    checkpoint.add_argument(
+        "--adopt-completed",
+        nargs="?",
+        const="latest",
+        metavar="RUN_NAME",
+        help="start from the latest or named completed GPU W&B run",
+    )
+    start.add_argument(
+        "--training-git-sha",
+        help="Git commit used by a manually launched completed run",
+    )
     start.add_argument("--branch", default="main")
     start.add_argument("--host", default=remote.DEFAULT_GPU_HOST)
     start.add_argument("--user", default=remote.DEFAULT_GPU_USER)

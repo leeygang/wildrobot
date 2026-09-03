@@ -14,11 +14,13 @@ from wildrobot.agents.remote_training_loop import (
     CHECKPOINT_MANIFEST_NAME,
     MANIFEST_NAME,
     TrainingLoopError,
+    _adopt_completed_run,
     _build_remote_submit_script,
     _checkpoint_artifact_relative,
     _checkpoint_series,
     _collect_training_results,
     _copy_manifest_to_checkpoint,
+    _find_completed_run,
     _initial_manifest,
     _write_effective_config,
     _write_json_atomic,
@@ -379,3 +381,110 @@ def test_prepare_worker_freezes_config_and_checkpoint_hash(tmp_path: Path) -> No
     )
     effective = yaml.safe_load(Path(manifest["effective_config"]).read_text())
     assert effective["wandb"]["log_dir"] == str(artifact_root / "wandb")
+
+
+def _completed_manual_run(
+    repo: Path,
+    *,
+    run_name: str,
+    checkpoint_series: str = "walking",
+    complete: bool = True,
+) -> tuple[Path, Path]:
+    run_id = run_name.rsplit("-", 1)[-1]
+    wandb_run = repo / "training/wandb" / run_name
+    files = wandb_run / "files"
+    files.mkdir(parents=True)
+    (files / "metrics.jsonl").write_text("{}\n")
+    (files / "config.json").write_text(
+        json.dumps({"config": {"version": "0.21.0-test"}})
+    )
+    checkpoint_run = (
+        repo
+        / "training/checkpoints"
+        / checkpoint_series
+        / f"walking_v0210_20260902-{run_id}"
+    )
+    checkpoint_run.mkdir(parents=True)
+    (checkpoint_run / "training_config.yaml").write_text(
+        yaml.safe_dump({"version": "0.21.0-test"})
+    )
+    if complete:
+        checkpoint = checkpoint_run / "checkpoint_10_204800.pkl"
+        checkpoint.write_bytes(b"policy")
+        (checkpoint_run / "post_training_eval_summary.json").write_text(
+            json.dumps({"selected_checkpoint_path": str(checkpoint)})
+        )
+    return wandb_run, checkpoint_run
+
+
+def test_find_completed_run_skips_newer_incomplete_run(tmp_path: Path) -> None:
+    repo = tmp_path / "wildrobot"
+    completed, checkpoint_run = _completed_manual_run(
+        repo, run_name="offline-run-20260902_120000-complete1"
+    )
+    incomplete, _ = _completed_manual_run(
+        repo,
+        run_name="offline-run-20260902_130000-running2",
+        complete=False,
+    )
+    completed.touch()
+    incomplete.touch()
+
+    found_wandb, found_checkpoint = _find_completed_run(repo, run_name=None)
+
+    assert found_wandb == completed
+    assert found_checkpoint == checkpoint_run
+
+
+def test_find_completed_run_rejects_non_run_path(tmp_path: Path) -> None:
+    repo = tmp_path / "wildrobot"
+    with pytest.raises(TrainingLoopError, match="Invalid W&B run name"):
+        _find_completed_run(repo, run_name="../offline-run-escape")
+
+
+def test_adopt_completed_run_publishes_syncable_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "wildrobot"
+    config = repo / "training/configs/walking.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "version": "0.21.0-test",
+                "checkpoints": {"dir": "training/checkpoints/walking"},
+            }
+        )
+    )
+    wandb_run, checkpoint_run = _completed_manual_run(
+        repo, run_name="offline-run-20260902_120000-runid123"
+    )
+    git_sha = "a" * 40
+    monkeypatch.setattr(
+        remote_training_loop,
+        "_git_output",
+        lambda *args, **kwargs: git_sha if args[:2] == ("rev-parse", "HEAD") else "",
+    )
+    monkeypatch.setattr(
+        remote_training_loop,
+        "_run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+
+    manifest = _adopt_completed_run(
+        remote_repo=repo,
+        job_id="adopt-runid123",
+        source_config="training/configs/walking.yaml",
+        expected_git_sha=git_sha,
+        run_name=wandb_run.name,
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["adopted_from_existing_run"] is True
+    assert manifest["git_sha"] == git_sha
+    assert manifest["wandb_run_name"] == wandb_run.name
+    assert manifest["checkpoint_run_dir"] == str(checkpoint_run)
+    assert manifest["simulation_candidate_ready"] is True
+    assert Path(manifest["selected_checkpoint_path"]).is_file()
+    assert Path(manifest["job_root"], MANIFEST_NAME).is_file()
+    assert (checkpoint_run / CHECKPOINT_MANIFEST_NAME).is_file()
