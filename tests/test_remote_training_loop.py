@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 from pathlib import Path
 import subprocess
@@ -125,6 +126,31 @@ def test_gpu_dispatcher_runs_one_valid_queued_job(
     assert json.loads(manifest_path.read_text())["status"] == "completed"
     assert ["git", "fetch", "origin"] in git_commands
     assert any(command[:3] == ["git", "worktree", "add"] for command in git_commands)
+
+
+def test_gpu_dispatcher_reuses_matching_recovered_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    worktree = tmp_path / "job/src"
+    worktree.mkdir(parents=True)
+    git_sha = "a" * 40
+    commands: list[list[str]] = []
+
+    def fake_git_output(*args, **_kwargs):
+        return git_sha if args[:2] == ("rev-parse", "HEAD") else ""
+
+    monkeypatch.setattr(remote_training_loop, "_git_output", fake_git_output)
+    monkeypatch.setattr(
+        remote_training_loop,
+        "_run",
+        lambda command, **_kwargs: commands.append(list(command))
+        or subprocess.CompletedProcess(command, 0, "", ""),
+    )
+
+    remote_training_loop._ensure_job_worktree(remote_repo, worktree, git_sha)
+
+    assert not any(command[:3] == ["git", "worktree", "add"] for command in commands)
 
 
 def test_gpu_dispatcher_rejects_manifest_paths_outside_job(
@@ -311,6 +337,7 @@ def test_gpu_worker_records_completed_run_without_promotion(
     assert completed["status"] == "completed"
     assert completed["simulation_candidate_ready"] is False
     assert completed["selected_checkpoint_path"] is None
+    assert completed["training_attempt"] == 1
     checkpoint_manifest = (
         checkpoint_series
         / "walking_v0210_20260902-runid123"
@@ -318,6 +345,106 @@ def test_gpu_worker_records_completed_run_without_promotion(
     )
     assert checkpoint_manifest.is_file()
     assert "training output" in (job_root / "train.log").read_text()
+    assert "attempt=1" in (job_root / "train.log").read_text()
+
+
+def test_gpu_restart_requeues_interrupted_training_from_declared_start(
+    tmp_path: Path,
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    jobs_root = tmp_path / "wildrobot-training-jobs"
+    job_root = jobs_root / "walking-job"
+    artifact_root = job_root / "artifacts"
+    manifest = {
+        "job_id": "walking-job",
+        "status": "running",
+        "remote_repo": str(remote_repo),
+        "job_root": str(job_root),
+        "worktree": str(job_root / "src"),
+        "artifact_root": str(artifact_root),
+        "checkpoint_series_dir": str(artifact_root / "checkpoints/walking"),
+        "start_mode": "init_policy",
+        "start_checkpoint_request": "training/checkpoints/source.pkl",
+        "worker_pid": 123,
+        "started_at": "old",
+    }
+    manifest_path = job_root / MANIFEST_NAME
+    _write_json_atomic(manifest_path, manifest)
+
+    remote_training_loop._recover_interrupted_jobs(remote_repo)
+
+    recovered = json.loads(manifest_path.read_text())
+    assert recovered["status"] == "queued"
+    assert recovered["start_mode"] == "init_policy"
+    assert recovered["start_checkpoint_request"].endswith("source.pkl")
+    assert recovered["recovery_action"] == "requeued_same_training_job"
+    assert recovered["recovery_events"][0]["previous_status"] == "running"
+    assert recovered["recovery_events"][0]["action"] == (
+        "requeued_same_training_job"
+    )
+    assert "worker_pid" not in recovered
+
+
+def test_gpu_restart_leaves_a_live_locked_worker_unchanged(tmp_path: Path) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    jobs_root = tmp_path / "wildrobot-training-jobs"
+    job_root = jobs_root / "walking-job"
+    manifest_path = job_root / MANIFEST_NAME
+    manifest = {
+        "job_id": "walking-job",
+        "status": "running",
+        "remote_repo": str(remote_repo),
+        "job_root": str(job_root),
+        "worktree": str(job_root / "src"),
+        "artifact_root": str(job_root / "artifacts"),
+        "checkpoint_series_dir": str(job_root / "artifacts/checkpoints/walking"),
+    }
+    _write_json_atomic(manifest_path, manifest)
+    lock_path = jobs_root / ".gpu-training.lock"
+    with lock_path.open("w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        remote_training_loop._recover_interrupted_jobs(remote_repo)
+
+    assert json.loads(manifest_path.read_text()) == manifest
+
+
+def test_gpu_restart_accepts_a_complete_result_written_before_crash(
+    tmp_path: Path,
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    jobs_root = tmp_path / "wildrobot-training-jobs"
+    job_root = jobs_root / "walking-job"
+    artifact_root = job_root / "artifacts"
+    checkpoint_series = artifact_root / "checkpoints/walking"
+    checkpoint_run = checkpoint_series / "walking-runid123"
+    checkpoint_run.mkdir(parents=True)
+    checkpoint = checkpoint_run / "checkpoint_10.pkl"
+    checkpoint.write_bytes(b"policy")
+    (checkpoint_run / "post_training_eval_summary.json").write_text(
+        json.dumps({"selected_checkpoint_path": str(checkpoint)})
+    )
+    wandb_run = artifact_root / "wandb/offline-run-20260902-runid123"
+    wandb_run.mkdir(parents=True)
+    manifest = {
+        "job_id": "walking-job",
+        "status": "running",
+        "remote_repo": str(remote_repo),
+        "job_root": str(job_root),
+        "worktree": str(job_root / "src"),
+        "artifact_root": str(artifact_root),
+        "checkpoint_series_dir": str(checkpoint_series),
+    }
+    manifest_path = job_root / MANIFEST_NAME
+    _write_json_atomic(manifest_path, manifest)
+
+    remote_training_loop._recover_interrupted_jobs(remote_repo)
+
+    recovered = json.loads(manifest_path.read_text())
+    assert recovered["status"] == "completed"
+    assert recovered["result_complete"] is True
+    assert recovered["recovery_action"] == "accepted_complete_result"
+    assert (checkpoint_run / CHECKPOINT_MANIFEST_NAME).is_file()
 
 
 def test_streamed_command_prints_and_logs_output(

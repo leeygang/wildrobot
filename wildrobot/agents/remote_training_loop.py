@@ -917,6 +917,7 @@ def _gpu_worker(args: argparse.Namespace) -> int:
 
         try:
             command = _prepare_worker(manifest)
+            training_attempt = int(manifest.get("training_attempt", 0)) + 1
             manifest.update(
                 status="running",
                 started_at=_utc_now(),
@@ -924,13 +925,18 @@ def _gpu_worker(args: argparse.Namespace) -> int:
                 gpu_name=_gpu_name(),
                 python_version=sys.version,
                 worker_pid=os.getpid(),
+                training_attempt=training_attempt,
             )
+            manifest.pop("recovery_action", None)
             _write_json_atomic(manifest_path, manifest)
             env = os.environ.copy()
             env.update(PYTHONUNBUFFERED="1", PYTHONPATH=manifest["worktree"])
             train_log_path = job_root / "train.log"
             with train_log_path.open("a", encoding="utf-8") as log:
-                log.write(f"[{_utc_now()}] {_shell_join(command)}\n")
+                log.write(
+                    f"[{_utc_now()}] attempt={training_attempt} "
+                    f"{_shell_join(command)}\n"
+                )
                 log.flush()
             print(f"Starting GPU training job {manifest['job_id']}...", flush=True)
             returncode = _run_streamed(
@@ -988,6 +994,26 @@ def _validate_queued_manifest(
         raise TrainingLoopError("Queued job has an invalid checkpoint series path.")
 
 
+def _ensure_job_worktree(
+    remote_repo: Path, worktree: Path, git_sha: str
+) -> None:
+    if not worktree.exists():
+        _run(
+            ["git", "worktree", "add", "--detach", str(worktree), git_sha],
+            cwd=remote_repo,
+        )
+        return
+    if not worktree.is_dir():
+        raise TrainingLoopError(f"GPU worktree path is not a directory: {worktree}")
+    if _git_output("rev-parse", "HEAD", cwd=worktree) != git_sha:
+        raise TrainingLoopError(
+            f"Existing GPU worktree does not match submitted commit: {worktree}"
+        )
+    if _git_output("status", "--porcelain", cwd=worktree):
+        raise TrainingLoopError(f"Existing GPU worktree is dirty: {worktree}")
+    print(f"Reusing recovered GPU worktree {worktree}.", flush=True)
+
+
 def _dispatch_queued_job(remote_repo: Path) -> bool:
     jobs_root = remote_repo.parent / f"{remote_repo.name}-training-jobs"
     jobs_root.mkdir(parents=True, exist_ok=True)
@@ -1009,17 +1035,7 @@ def _dispatch_queued_job(remote_repo: Path) -> bool:
                 check=False,
             ).returncode:
                 raise TrainingLoopError(f"Commit is not available on GPU: {git_sha}")
-            _run(
-                [
-                    "git",
-                    "worktree",
-                    "add",
-                    "--detach",
-                    str(worktree),
-                    git_sha,
-                ],
-                cwd=remote_repo,
-            )
+            _ensure_job_worktree(remote_repo, worktree, git_sha)
             python_path = remote_repo / ".venv" / "bin" / "python"
             if not python_path.is_file():
                 raise TrainingLoopError(
@@ -1053,12 +1069,81 @@ def _recover_interrupted_jobs(remote_repo: Path) -> None:
     jobs_root = remote_repo.parent / f"{remote_repo.name}-training-jobs"
     if not jobs_root.is_dir():
         return
-    for manifest_path in jobs_root.glob(f"*/{MANIFEST_NAME}"):
+    interrupted = []
+    for manifest_path in sorted(jobs_root.glob(f"*/{MANIFEST_NAME}")):
         manifest = _read_json(manifest_path)
         if manifest.get("status") in {"dispatching", "running"}:
-            _fail_manifest(
-                manifest_path,
-                "GPU dispatcher restarted while this job was active.",
+            interrupted.append((manifest_path, manifest))
+    if not interrupted:
+        return
+
+    lock_path = jobs_root / ".gpu-training.lock"
+    with lock_path.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+
+        for manifest_path, manifest in interrupted:
+            previous_status = str(manifest["status"])
+            _collect_training_results(manifest)
+            if manifest.get("result_complete"):
+                recovery_action = "accepted_complete_result"
+                manifest.setdefault("recovery_events", []).append(
+                    {
+                        "recovered_at": _utc_now(),
+                        "previous_status": previous_status,
+                        "action": recovery_action,
+                    }
+                )
+                manifest.update(
+                    status="completed",
+                    finished_at=_utc_now(),
+                    recovery_action=recovery_action,
+                )
+                _write_json_atomic(manifest_path, manifest)
+                _copy_manifest_to_checkpoint(manifest_path, manifest)
+                print(
+                    f"Recovered completed GPU job {manifest['job_id']} from artifacts.",
+                    flush=True,
+                )
+                continue
+
+            for key in (
+                "worker_pid",
+                "started_at",
+                "finished_at",
+                "exit_code",
+                "error",
+                "checkpoint_run_dir",
+                "checkpoint_run_relpath",
+                "wandb_run_dir",
+                "wandb_run_name",
+                "wandb_run_id",
+                "post_training_eval_summary",
+                "selected_checkpoint_path",
+                "selected_checkpoint_relpath",
+            ):
+                manifest.pop(key, None)
+            recovery_action = "requeued_same_training_job"
+            manifest.setdefault("recovery_events", []).append(
+                {
+                    "recovered_at": _utc_now(),
+                    "previous_status": previous_status,
+                    "action": recovery_action,
+                }
+            )
+            manifest.update(
+                status="queued",
+                simulation_candidate_ready=False,
+                result_complete=False,
+                recovery_action=recovery_action,
+            )
+            _write_json_atomic(manifest_path, manifest)
+            print(
+                f"Requeued interrupted GPU job {manifest['job_id']} from its "
+                "declared starting checkpoint.",
+                flush=True,
             )
 
 
@@ -1066,8 +1151,8 @@ def _gpu_serve(args: argparse.Namespace) -> int:
     remote_repo = Path(args.remote_repo).resolve()
     if args.poll_seconds <= 0:
         raise TrainingLoopError("--poll-seconds must be positive.")
-    _recover_interrupted_jobs(remote_repo)
     while True:
+        _recover_interrupted_jobs(remote_repo)
         dispatched = _dispatch_queued_job(remote_repo)
         if args.once or (args.exit_when_idle and not dispatched):
             return 0
@@ -1207,6 +1292,8 @@ def _status(args: argparse.Namespace) -> int:
         ("Config", "source_config"),
         ("Started", "started_at"),
         ("Finished", "finished_at"),
+        ("Training attempt", "training_attempt"),
+        ("Recovery action", "recovery_action"),
         ("W&B run", "wandb_run_name"),
         ("Selected checkpoint", "selected_checkpoint_path"),
         ("Error", "error"),

@@ -29,6 +29,15 @@ DECISION_SCHEMA = Path(__file__).with_name("autonomous_decision.schema.json")
 CODEX_INSTRUCTIONS = Path(__file__).with_name("AUTONOMOUS_CODEX_PROMPT.md")
 AUTOMATION_PREFIX = "wildrobot/agents/"
 FORBIDDEN_AUTONOMOUS_CHANGES = (AUTOMATION_PREFIX, "training/CHANGELOG.md")
+PIPELINE_STAGES = {
+    "adopt",
+    "training",
+    "analysis",
+    "fix",
+    "push",
+    "enqueue",
+    "export",
+}
 
 
 def _utc_now() -> str:
@@ -113,6 +122,13 @@ def _push(branch: str) -> None:
         )
 
 
+def _stage(state: dict[str, Any]) -> str:
+    stage = str(state.get("stage", "training"))
+    if stage not in PIPELINE_STAGES:
+        raise remote.TrainingLoopError(f"Unknown autonomous stage: {stage}")
+    return stage
+
+
 def _require_training_commit(state: dict[str, Any], manifest: dict[str, Any]) -> str:
     head = _require_clean_branch(str(state["branch"]))
     expected = str(manifest.get("git_sha", ""))
@@ -131,6 +147,97 @@ def _require_training_commit(state: dict[str, Any], manifest: dict[str, Any]) ->
     return head
 
 
+def _prepare_pending_job(
+    state: dict[str, Any],
+    *,
+    cycle: int,
+    config: str,
+    start_mode: str,
+    checkpoint: str,
+) -> dict[str, Any]:
+    git_sha = _require_clean_branch(str(state["branch"]))
+    config = remote._repo_config(config)
+    return {
+        "cycle": cycle,
+        "job_id": _job_id(cycle, config, git_sha),
+        "git_sha": git_sha,
+        "config": config,
+        "checkpoint_series": remote._config_checkpoint_series(REPO_ROOT / config),
+        "start_mode": start_mode,
+        "checkpoint": checkpoint,
+    }
+
+
+def _validate_existing_submission(
+    existing: dict[str, Any], pending: dict[str, Any]
+) -> None:
+    expected = {
+        "job_id": pending["job_id"],
+        "git_sha": pending["git_sha"],
+        "source_config": pending["config"],
+        "checkpoint_series": pending["checkpoint_series"],
+        "start_mode": pending["start_mode"] if pending["checkpoint"] else None,
+        "start_checkpoint_request": pending["checkpoint"] or None,
+    }
+    mismatched = [key for key, value in expected.items() if existing.get(key) != value]
+    if mismatched:
+        raise remote.TrainingLoopError(
+            "Existing GPU job does not match the persisted enqueue intent: "
+            + ", ".join(mismatched)
+        )
+
+
+def _resume_enqueue(state: dict[str, Any]) -> str:
+    pending = state.get("pending_job")
+    if not isinstance(pending, dict):
+        raise remote.TrainingLoopError("enqueue stage is missing pending_job state.")
+    context = _context(state, str(pending["job_id"]))
+    try:
+        manifest = remote._enqueue_remote(
+            context,
+            git_sha=str(pending["git_sha"]),
+            config=str(pending["config"]),
+            checkpoint_series=str(pending["checkpoint_series"]),
+            init_policy=(
+                str(pending["checkpoint"])
+                if pending["start_mode"] == "init_policy"
+                else None
+            ),
+            resume=(
+                str(pending["checkpoint"])
+                if pending["start_mode"] == "resume"
+                else None
+            ),
+        )
+    except remote.TrainingLoopError as submit_error:
+        try:
+            manifest = remote._fetch_manifest(context)
+        except remote.TrainingLoopError:
+            raise submit_error
+        _validate_existing_submission(manifest, pending)
+        print(f"Recovered existing GPU job {pending['job_id']}.", flush=True)
+
+    state.update(
+        cycle=int(pending["cycle"]),
+        active_job_id=str(pending["job_id"]),
+        active_git_sha=str(pending["git_sha"]),
+        active_config=str(pending["config"]),
+        stage="training",
+        last_remote_status=str(manifest.get("status", "queued")),
+        last_poll_at=None,
+    )
+    for key in (
+        "pending_job",
+        "terminal_job_id",
+        "fix_base_sha",
+        "fix_commit_sha",
+        "fix_attempts",
+    ):
+        state.pop(key, None)
+    _save_state(state)
+    return str(state["active_job_id"])
+
+
 def _enqueue(
     state: dict[str, Any],
     *,
@@ -139,29 +246,60 @@ def _enqueue(
     start_mode: str,
     checkpoint: str,
 ) -> str:
-    git_sha = _require_clean_branch(str(state["branch"]))
-    config = remote._repo_config(config)
-    job_id = _job_id(cycle, config, git_sha)
-    context = _context(state, job_id)
-    remote._enqueue_remote(
-        context,
-        git_sha=git_sha,
-        config=config,
-        checkpoint_series=remote._config_checkpoint_series(REPO_ROOT / config),
-        init_policy=checkpoint if start_mode == "init_policy" else None,
-        resume=checkpoint if start_mode == "resume" else None,
-    )
     state.update(
-        cycle=cycle,
-        active_job_id=job_id,
-        active_git_sha=git_sha,
-        active_config=config,
-        last_decision=None,
-        last_remote_status="queued",
-        last_poll_at=None,
+        stage="enqueue",
+        pending_job=_prepare_pending_job(
+            state,
+            cycle=cycle,
+            config=config,
+            start_mode=start_mode,
+            checkpoint=checkpoint,
+        ),
     )
     _save_state(state)
-    return job_id
+    return _resume_enqueue(state)
+
+
+def _resume_adoption(state: dict[str, Any]) -> dict[str, Any]:
+    context = _context(state)
+    try:
+        manifest = remote._adopt_remote(
+            context,
+            git_sha=str(state["active_git_sha"]),
+            config=str(state["active_config"]),
+            run_name=state.get("adoption_run_name"),
+        )
+    except remote.TrainingLoopError as adoption_error:
+        try:
+            manifest = remote._fetch_manifest(context)
+        except remote.TrainingLoopError:
+            raise adoption_error
+        print(f"Recovered adopted GPU job {context.job_id}.", flush=True)
+
+    expected = {
+        "job_id": state["active_job_id"],
+        "git_sha": state["active_git_sha"],
+        "source_config": state["active_config"],
+        "adopted_from_existing_run": True,
+    }
+    if state.get("adoption_run_name"):
+        expected["wandb_run_name"] = state["adoption_run_name"]
+    mismatched = [
+        key for key, value in expected.items() if manifest.get(key) != value
+    ]
+    if mismatched:
+        raise remote.TrainingLoopError(
+            "Adopted GPU job does not match persisted intent: "
+            + ", ".join(mismatched)
+        )
+    state.update(
+        stage="training",
+        last_remote_status=str(manifest.get("status", "completed")),
+        last_poll_at=None,
+    )
+    state.pop("adoption_run_name", None)
+    _save_state(state)
+    return manifest
 
 
 def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
@@ -253,8 +391,13 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
     return f"{instructions}\n\nIteration context:\n{json.dumps(context, indent=2)}"
 
 
-def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
-    before_sha = _require_training_commit(state, manifest)
+def _invoke_codex(
+    state: dict[str, Any],
+    manifest: dict[str, Any],
+    *,
+    before_sha: str | None = None,
+) -> dict[str, Any]:
+    before_sha = before_sha or _require_training_commit(state, manifest)
     codex_path = str(state.get("codex_path") or shutil.which("codex") or "")
     if not codex_path:
         raise remote.TrainingLoopError("codex executable not found on the Mac.")
@@ -278,13 +421,24 @@ def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, 
     ]
     if state.get("codex_model"):
         command.extend(["--model", str(state["codex_model"])])
-    command.append(_codex_prompt(state, manifest))
+    prompt = _codex_prompt(state, manifest)
+    if int(state.get("fix_attempts", 0)) > 1:
+        prompt += (
+            "\n\nRecovery context:\n"
+            f"A previous apply-fix attempt started from Git commit {before_sha}. "
+            "Inspect and preserve any existing working-tree changes or commit "
+            "after that base, finish the same bounded experiment, and leave "
+            "exactly one clean commit after the base. Do not reset or discard "
+            "the interrupted work."
+        )
+    command.append(prompt)
     print(f"Invoking Codex for job {manifest['job_id']}...", flush=True)
     returncode = remote._run_streamed(
         command,
         cwd=REPO_ROOT,
         log_path=log_path,
         timeout_s=int(state["codex_timeout_minutes"]) * 60,
+        append=log_path.is_file(),
     )
     if returncode:
         raise remote.TrainingLoopError(
@@ -295,6 +449,33 @@ def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, 
     decision = remote._read_json(decision_path)
     _validate_codex_result(state, decision, before_sha, manifest)
     return decision
+
+
+def _resume_codex_decision(
+    state: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    before_sha = str(state.get("fix_base_sha", ""))
+    if not before_sha:
+        raise remote.TrainingLoopError("fix stage is missing fix_base_sha state.")
+    decision_path = (
+        remote.LOCAL_JOB_ROOT / str(manifest["job_id"]) / "codex_decision.json"
+    )
+    if decision_path.is_file():
+        try:
+            decision = remote._read_json(decision_path)
+            _validate_codex_result(state, decision, before_sha, manifest)
+        except remote.TrainingLoopError:
+            pass
+        else:
+            print(
+                f"Recovered completed Codex decision for job {manifest['job_id']}.",
+                flush=True,
+            )
+            return decision
+
+    state["fix_attempts"] = int(state.get("fix_attempts", 0)) + 1
+    _save_state(state)
+    return _invoke_codex(state, manifest, before_sha=before_sha)
 
 
 def _validate_checkpoint_path(state: dict[str, Any], checkpoint: str) -> None:
@@ -380,6 +561,35 @@ def _export_ready_bundle(
     checkpoint_dir = REPO_ROOT / str(manifest["local_checkpoint_run_dir"])
     config = checkpoint_dir / "training_config.yaml"
     bundle = remote.LOCAL_JOB_ROOT / context.job_id / "deployment_bundle"
+    staging_bundle = bundle.with_name(f".{bundle.name}.staging")
+    validation_command = [
+        str(REPO_ROOT / ".venv/bin/python"),
+        "runtime/wr_runtime/validation/validate_bundle.py",
+        "--bundle",
+        str(bundle),
+    ]
+    if bundle.is_dir():
+        validate = subprocess.run(
+            validation_command,
+            cwd=REPO_ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if validate.returncode == 0:
+            return {
+                "bundle_path": str(bundle),
+                "readiness": (
+                    "deployment_bundle_ready"
+                    if state.get("standing_checkpoint")
+                    else "walking_bundle_ready"
+                ),
+            }
+        raise remote.TrainingLoopError(
+            "Existing deployment bundle is incomplete or invalid."
+        )
+    if staging_bundle.exists():
+        shutil.rmtree(staging_bundle)
     command = [
         str(REPO_ROOT / ".venv/bin/python"),
         "training/exports/export_policy_bundle_cli.py",
@@ -388,7 +598,7 @@ def _export_ready_bundle(
         "--training-config",
         str(config),
         "--bundle-path",
-        str(bundle),
+        str(staging_bundle),
     ]
     if state.get("standing_checkpoint"):
         command.extend(
@@ -407,13 +617,9 @@ def _export_ready_bundle(
     )
     if export.returncode:
         raise remote.TrainingLoopError("Deployment bundle export failed.")
+    validation_command[-1] = str(staging_bundle)
     validate = subprocess.run(
-        [
-            str(REPO_ROOT / ".venv/bin/python"),
-            "runtime/wr_runtime/validation/validate_bundle.py",
-            "--bundle",
-            str(bundle),
-        ],
+        validation_command,
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
@@ -424,6 +630,7 @@ def _export_ready_bundle(
     )
     if validate.returncode:
         raise remote.TrainingLoopError("Deployment bundle validation failed.")
+    staging_bundle.rename(bundle)
     return {
         "bundle_path": str(bundle),
         "readiness": (
@@ -434,43 +641,131 @@ def _export_ready_bundle(
     }
 
 
-def _process_terminal_job(state: dict[str, Any], manifest: dict[str, Any]) -> None:
-    _require_training_commit(state, manifest)
-    context = _context(state)
-    manifest = _run_analyzer(context)
-    _require_training_commit(state, manifest)
-    state["processed_job_id"] = context.job_id
-    if manifest.get("status") == "completed" and manifest.get(
-        "simulation_candidate_ready"
-    ):
-        state.update(status="ready", **_export_ready_bundle(state, context))
-        _save_state(state)
-        return
+def _local_terminal_manifest(state: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(state.get("terminal_job_id") or state["active_job_id"])
+    path = remote.LOCAL_JOB_ROOT / job_id / remote.MANIFEST_NAME
+    if path.is_file():
+        return remote._read_json(path)
+    return remote._fetch_manifest(_context(state, job_id))
 
-    if manifest.get("status") == "failed":
-        state["training_failures"] = int(state.get("training_failures", 0)) + 1
-        if state["training_failures"] >= int(state["max_training_failures"]):
-            state.update(status="stopped", stop_reason="training failure limit")
+
+def _process_terminal_job(
+    state: dict[str, Any], manifest: dict[str, Any] | None = None
+) -> None:
+    if _stage(state) == "training":
+        if manifest is None:
+            raise remote.TrainingLoopError(
+                "training stage requires a terminal GPU manifest."
+            )
+        _require_training_commit(state, manifest)
+        state.update(
+            stage="analysis",
+            terminal_job_id=str(manifest["job_id"]),
+        )
+        _save_state(state)
+
+    while state.get("status") == "active":
+        stage = _stage(state)
+        if stage == "analysis":
+            current = manifest or _local_terminal_manifest(state)
+            _require_training_commit(state, current)
+            current = _run_analyzer(
+                _context(state, str(state["terminal_job_id"]))
+            )
+            fix_base_sha = _require_training_commit(state, current)
+            state["processed_job_id"] = str(state["terminal_job_id"])
+            if current.get("status") == "completed" and current.get(
+                "simulation_candidate_ready"
+            ):
+                state["stage"] = "export"
+                _save_state(state)
+                manifest = current
+                continue
+
+            if current.get("status") == "failed":
+                state["training_failures"] = int(
+                    state.get("training_failures", 0)
+                ) + 1
+                if state["training_failures"] >= int(
+                    state["max_training_failures"]
+                ):
+                    state.update(
+                        status="stopped",
+                        stop_reason="training failure limit",
+                    )
+                    _save_state(state)
+                    return
+            if int(state["cycle"]) >= int(state["max_cycles"]):
+                state.update(
+                    status="stopped",
+                    stop_reason="maximum cycle count reached",
+                )
+                _save_state(state)
+                return
+
+            state.update(
+                stage="fix",
+                fix_base_sha=fix_base_sha,
+                fix_attempts=0,
+            )
+            _save_state(state)
+            manifest = current
+            continue
+
+        if stage == "export":
+            context = _context(state, str(state["terminal_job_id"]))
+            state.update(status="ready", **_export_ready_bundle(state, context))
             _save_state(state)
             return
-    if int(state["cycle"]) >= int(state["max_cycles"]):
-        state.update(status="stopped", stop_reason="maximum cycle count reached")
-        _save_state(state)
-        return
 
-    decision = _invoke_codex(state, manifest)
-    state["last_decision"] = decision
-    _push(str(state["branch"]))
-    start_mode = str(decision["start_mode"])
-    checkpoint = str(decision["checkpoint"])
-    next_job = _enqueue(
-        state,
-        cycle=int(state["cycle"]) + 1,
-        config=str(decision["config"]),
-        start_mode=start_mode,
-        checkpoint=checkpoint,
-    )
-    print(f"Enqueued next autonomous job: {next_job}")
+        if stage == "enqueue":
+            next_job = _resume_enqueue(state)
+            print(f"Recovered enqueue of autonomous job: {next_job}")
+            return
+
+        current = manifest or _local_terminal_manifest(state)
+        if stage == "fix":
+            decision = _resume_codex_decision(state, current)
+            state.update(
+                stage="push",
+                last_decision=decision,
+                fix_commit_sha=_require_clean_branch(str(state["branch"])),
+            )
+            _save_state(state)
+            manifest = current
+            continue
+
+        if stage == "push":
+            decision = state.get("last_decision")
+            if not isinstance(decision, dict):
+                raise remote.TrainingLoopError(
+                    "push stage is missing the validated Codex decision."
+                )
+            current_sha = _require_clean_branch(str(state["branch"]))
+            if state.get("fix_commit_sha") and state["fix_commit_sha"] != current_sha:
+                raise remote.TrainingLoopError(
+                    "Git HEAD changed after the Codex decision was persisted."
+                )
+            _validate_codex_result(
+                state,
+                decision,
+                str(state.get("fix_base_sha", "")),
+                current,
+            )
+            _push(str(state["branch"]))
+            next_job = _enqueue(
+                state,
+                cycle=int(state["cycle"]) + 1,
+                config=str(decision["config"]),
+                start_mode=str(decision["start_mode"]),
+                checkpoint=str(decision["checkpoint"]),
+            )
+            print(f"Enqueued next autonomous job: {next_job}")
+            return
+
+        raise remote.TrainingLoopError(
+            f"Stage {stage!r} cannot process a terminal GPU job."
+        )
 
 
 def _step_once(
@@ -484,6 +779,22 @@ def _step_once(
     if state.get("status") != "active":
         return state
     try:
+        stage = _stage(state)
+        state.setdefault("stage", stage)
+        if stage != "training":
+            if print_progress:
+                print(
+                    f"[{_utc_now()}] cycle={state.get('cycle')}/"
+                    f"{state.get('max_cycles')} job="
+                    f"{state.get('terminal_job_id') or state.get('active_job_id')} "
+                    f"pipeline_stage={stage}",
+                    flush=True,
+                )
+            if stage == "adopt":
+                _resume_adoption(state)
+                return state
+            _process_terminal_job(state)
+            return state
         try:
             manifest = remote._fetch_manifest(_context(state))
         except remote.TrainingLoopError as exc:
@@ -639,8 +950,9 @@ def _start(args: argparse.Namespace) -> int:
         standing_config = str(standing_config_path)
     git_sha = _require_clean_branch(args.branch)
     state: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "active",
+        "stage": "training",
         "created_at": _utc_now(),
         "branch": args.branch,
         "host": args.host,
@@ -671,27 +983,24 @@ def _start(args: argparse.Namespace) -> int:
             )
         _require_adoption_compatible(training_git_sha, git_sha)
         job_id = _job_id(1, config, training_git_sha)
-        manifest = remote._adopt_remote(
-            _context(state, job_id),
-            git_sha=training_git_sha,
-            config=config,
-            run_name=(
-                None if args.adopt_completed == "latest" else args.adopt_completed
-            ),
-        )
-        if manifest.get("git_sha") != training_git_sha:
-            raise remote.TrainingLoopError(
-                "Adopted manifest does not match the requested training commit."
-            )
         state.update(
+            stage="adopt",
             cycle=1,
             active_job_id=job_id,
             active_git_sha=training_git_sha,
             active_config=config,
             initial_run_adopted=True,
+            adoption_run_name=(
+                None if args.adopt_completed == "latest" else args.adopt_completed
+            ),
             last_decision=None,
         )
         _save_state(state)
+        manifest = _resume_adoption(state)
+        if manifest.get("git_sha") != training_git_sha:
+            raise remote.TrainingLoopError(
+                "Adopted manifest does not match the requested training commit."
+            )
         print(
             f"Autonomous loop adopted completed run {manifest['wandb_run_name']} "
             f"as job {job_id}"
@@ -733,9 +1042,16 @@ def _retry(_args: argparse.Namespace) -> int:
         raise remote.TrainingLoopError(
             "retry is only valid after a stopped loop."
         )
+    legacy_state = "stage" not in state
+    if state.get("status") == "stopped" and not legacy_state:
+        raise remote.TrainingLoopError(
+            "retry cannot override a configured stop limit; start a new run instead."
+        )
     state["status"] = "active"
-    state["processed_job_id"] = None
-    state["last_decision"] = None
+    if legacy_state:
+        state["stage"] = "training"
+        state["processed_job_id"] = None
+        state["last_decision"] = None
     state.pop("stop_reason", None)
     _save_state(state)
     print(f"Autonomous loop reactivated for job {state['active_job_id']}.")

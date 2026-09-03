@@ -129,6 +129,30 @@ poll used by the LaunchAgent and for debugging. `retry` only changes a stopped
 loop back to active; use `run` afterward to watch it. GPU training output is
 likewise teed to both `train.log` and the systemd journal shown above.
 
+The Mac state records durable stages: `adopt`, `training`, `analysis`, `fix`,
+`push`, `enqueue`, and `export`. Restarting `run` resumes the recorded stage.
+Analysis is rerun safely if interrupted. An interrupted Codex fix preserves its
+existing diff or commit and starts a recovery invocation; a completed
+structured decision is reused. Push is idempotent, and enqueue records its
+exact job ID and inputs before contacting the GPU, so a lost SSH response
+cannot duplicate a job.
+
+The GPU service also recovers interrupted `dispatching` and `running` jobs. If
+the post-training summary was already written, it accepts that completed
+result. Otherwise it requeues the same job, reuses its exact-commit worktree,
+and restarts from the originally declared `--init-policy` or `--resume`
+checkpoint. Partial checkpoints are deliberately not trusted as a new resume
+source.
+
+After a process or machine restart, run the same foreground command again. If
+the prior process recorded an actual stage error, reactivate that exact stage
+first:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py retry
+uv run python wildrobot/agents/autonomous_training_loop.py run
+```
+
 The Mac controller invokes Codex with `--approve-for-me`, which selects the
 workspace-write sandbox in the installed CLI. Codex may analyze, edit, test,
 and create one local commit;
@@ -136,7 +160,7 @@ the controller—not Codex—validates that commit, pushes it, and enqueues the 
 job. Automation files and `training/CHANGELOG.md` are protected from autonomous
 changes.
 
-References: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive),
+References: [Codex non-interactive mode](https://developers.openai.com/codex/non-interactive-mode),
 [systemd services](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html),
 [Git worktrees](https://git-scm.com/docs/git-worktree), and
 [ToddlerBot](https://arxiv.org/abs/2502.00893).

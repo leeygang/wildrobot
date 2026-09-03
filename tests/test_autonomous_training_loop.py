@@ -14,6 +14,8 @@ from wildrobot.agents import remote_training_loop as remote
 def _state(tmp_path: Path) -> dict:
     return {
         "branch": "main",
+        "status": "active",
+        "stage": "training",
         "cycle": 1,
         "max_cycles": 4,
         "max_training_failures": 2,
@@ -268,11 +270,44 @@ def test_terminal_ready_job_exports_and_stops(
     assert saved[-1]["readiness"] == "walking_bundle_ready"
 
 
+def test_export_stage_reuses_an_already_valid_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    local_root = tmp_path / "remote_jobs"
+    bundle = local_root / "job-1/deployment_bundle"
+    bundle.mkdir(parents=True)
+    commands: list[list[str]] = []
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(
+        auto.remote,
+        "_sync_job",
+        lambda *_args, **_kwargs: {
+            "local_selected_checkpoint": "training/checkpoints/run/checkpoint.pkl",
+            "local_checkpoint_run_dir": "training/checkpoints/run",
+        },
+    )
+
+    def fake_run(command, **_kwargs):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "valid", "")
+
+    monkeypatch.setattr(auto.subprocess, "run", fake_run)
+
+    result = auto._export_ready_bundle(state, auto._context(state))
+
+    assert result["bundle_path"] == str(bundle)
+    assert result["readiness"] == "walking_bundle_ready"
+    assert len(commands) == 1
+    assert "runtime/wr_runtime/validation/validate_bundle.py" in commands[0]
+
+
 def test_terminal_failed_gate_can_commit_push_and_enqueue_next(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(tmp_path)
     events: list[str] = []
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
     monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
     monkeypatch.setattr(
         auto,
@@ -286,7 +321,7 @@ def test_terminal_failed_gate_can_commit_push_and_enqueue_next(
     monkeypatch.setattr(
         auto,
         "_invoke_codex",
-        lambda *_args: {
+        lambda *_args, **_kwargs: {
             "decision": "continue",
             "summary": "target the measured failure",
             "config": "training/configs/next.yaml",
@@ -295,6 +330,8 @@ def test_terminal_failed_gate_can_commit_push_and_enqueue_next(
             "verification": ["focused tests passed"],
         },
     )
+    monkeypatch.setattr(auto, "_validate_codex_result", lambda *_args: None)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
     monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
     monkeypatch.setattr(
         auto,
@@ -328,6 +365,188 @@ def test_enqueue_resets_status_for_the_new_job(
 
     assert state["last_remote_status"] == "queued"
     assert state["last_poll_at"] is None
+
+
+def test_enqueue_recovers_an_already_published_matching_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    pending = {
+        "cycle": 2,
+        "job_id": "job-2",
+        "git_sha": "b" * 40,
+        "config": "training/configs/next.yaml",
+        "checkpoint_series": "walking/next",
+        "start_mode": "init_policy",
+        "checkpoint": "training/checkpoints/source/checkpoint.pkl",
+    }
+    state.update(stage="enqueue", pending_job=pending)
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        auto.remote,
+        "_enqueue_remote",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            remote.TrainingLoopError("Job already exists")
+        ),
+    )
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: {
+            "job_id": "job-2",
+            "git_sha": "b" * 40,
+            "source_config": "training/configs/next.yaml",
+            "checkpoint_series": "walking/next",
+            "start_mode": "init_policy",
+            "start_checkpoint_request": (
+                "training/checkpoints/source/checkpoint.pkl"
+            ),
+            "status": "running",
+        },
+    )
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    assert auto._resume_enqueue(state) == "job-2"
+
+    assert saved[-1]["stage"] == "training"
+    assert saved[-1]["active_job_id"] == "job-2"
+    assert saved[-1]["last_remote_status"] == "running"
+    assert "pending_job" not in saved[-1]
+
+
+def test_fix_stage_recovers_completed_codex_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(stage="fix", fix_base_sha="a" * 40)
+    decision = {
+        "decision": "continue",
+        "summary": "reuse completed fix",
+        "config": "training/configs/next.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": "training/checkpoints/source/checkpoint.pkl",
+        "verification": ["tests passed"],
+    }
+    local_root = tmp_path / "remote_jobs"
+    job_dir = local_root / "job-1"
+    job_dir.mkdir(parents=True)
+    (job_dir / "codex_decision.json").write_text(json.dumps(decision))
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto, "_validate_codex_result", lambda *_args: None)
+    monkeypatch.setattr(
+        auto,
+        "_invoke_codex",
+        lambda *_args, **_kwargs: pytest.fail("must reuse persisted decision"),
+    )
+
+    recovered = auto._resume_codex_decision(state, {"job_id": "job-1"})
+
+    assert recovered == decision
+
+
+def test_push_stage_reuses_persisted_decision_without_reanalysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    decision = {
+        "decision": "continue",
+        "summary": "persisted fix",
+        "config": "training/configs/next.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": "training/checkpoints/source/checkpoint.pkl",
+        "verification": ["tests passed"],
+    }
+    state = {
+        **_state(tmp_path),
+        "stage": "push",
+        "terminal_job_id": "job-1",
+        "fix_base_sha": "a" * 40,
+        "last_decision": decision,
+    }
+    local_root = tmp_path / "remote_jobs"
+    job_dir = local_root / "job-1"
+    job_dir.mkdir(parents=True)
+    (job_dir / remote.MANIFEST_NAME).write_text(
+        json.dumps({"job_id": "job-1", "status": "completed"})
+    )
+    events: list[str] = []
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto, "_validate_codex_result", lambda *_args: None)
+    monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
+    monkeypatch.setattr(
+        auto,
+        "_enqueue",
+        lambda *_args, **_kwargs: events.append("enqueue") or "job-2",
+    )
+    monkeypatch.setattr(
+        auto,
+        "_run_analyzer",
+        lambda *_args: pytest.fail("must not rerun analysis"),
+    )
+    monkeypatch.setattr(
+        auto,
+        "_invoke_codex",
+        lambda *_args, **_kwargs: pytest.fail("must not rerun Codex"),
+    )
+
+    auto._process_terminal_job(state)
+
+    assert events == ["push", "enqueue"]
+
+
+def test_analysis_stage_remains_resumable_after_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = {
+        **_state(tmp_path),
+        "stage": "analysis",
+        "terminal_job_id": "job-1",
+    }
+    local_root = tmp_path / "remote_jobs"
+    job_dir = local_root / "job-1"
+    job_dir.mkdir(parents=True)
+    (job_dir / remote.MANIFEST_NAME).write_text(
+        json.dumps({"job_id": "job-1", "status": "completed"})
+    )
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_run_analyzer",
+        lambda *_args: (_ for _ in ()).throw(
+            remote.TrainingLoopError("analysis interrupted")
+        ),
+    )
+
+    with pytest.raises(remote.TrainingLoopError, match="analysis interrupted"):
+        auto._process_terminal_job(state)
+
+    assert state["stage"] == "analysis"
+
+
+def test_step_resumes_persisted_pipeline_stage_without_polling_gpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = {**_state(tmp_path), "stage": "push"}
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    calls: list[str] = []
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: pytest.fail("must resume local pipeline stage"),
+    )
+    monkeypatch.setattr(
+        auto,
+        "_process_terminal_job",
+        lambda *_args: calls.append("resume"),
+    )
+
+    assert auto._step_once() is state
+    assert calls == ["resume"]
 
 
 def test_mac_service_installer_writes_launch_agent(
@@ -367,6 +586,8 @@ def test_start_can_adopt_an_already_completed_gpu_run(
             "job_id": context.job_id,
             "status": "completed",
             "git_sha": git_sha,
+            "source_config": "training/configs/walking.yaml",
+            "adopted_from_existing_run": True,
             "wandb_run_name": "offline-run-20260902_120000-runid123",
         },
     )
@@ -405,6 +626,45 @@ def test_start_can_adopt_an_already_completed_gpu_run(
     assert saved[-1]["active_job_id"].startswith("auto-01-walking-")
     assert saved[-1]["active_git_sha"] == git_sha
     assert saved[-1]["initial_run_adopted"] is True
+
+
+def test_adoption_recovers_an_already_published_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = {
+        **_state(tmp_path),
+        "stage": "adopt",
+        "active_config": "training/configs/walking.yaml",
+        "active_git_sha": "a" * 40,
+        "adoption_run_name": "offline-run-20260902-runid123",
+    }
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        auto.remote,
+        "_adopt_remote",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            remote.TrainingLoopError("Job already exists")
+        ),
+    )
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: {
+            "job_id": "job-1",
+            "status": "completed",
+            "git_sha": "a" * 40,
+            "source_config": "training/configs/walking.yaml",
+            "adopted_from_existing_run": True,
+            "wandb_run_name": "offline-run-20260902-runid123",
+        },
+    )
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    manifest = auto._resume_adoption(state)
+
+    assert manifest["status"] == "completed"
+    assert saved[-1]["stage"] == "training"
+    assert "adoption_run_name" not in saved[-1]
 
 
 def test_start_parser_uses_latest_completed_run_when_name_is_omitted() -> None:
@@ -518,8 +778,11 @@ def test_retry_reactivates_failed_job(
     state = _state(tmp_path)
     state.update(
         status="stopped_error",
+        stage="fix",
         processed_job_id="job-1",
         stop_reason="codex failed",
+        fix_base_sha="a" * 40,
+        fix_attempts=1,
     )
     saved: list[dict] = []
     monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
@@ -528,14 +791,45 @@ def test_retry_reactivates_failed_job(
     auto._retry(argparse.Namespace())
 
     assert saved[-1]["status"] == "active"
-    assert saved[-1]["processed_job_id"] is None
+    assert saved[-1]["stage"] == "fix"
+    assert saved[-1]["processed_job_id"] == "job-1"
+    assert saved[-1]["fix_base_sha"] == "a" * 40
+    assert saved[-1]["fix_attempts"] == 1
     assert "stop_reason" not in saved[-1]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["adopt", "training", "analysis", "fix", "push", "enqueue", "export"],
+)
+def test_retry_preserves_every_durable_pipeline_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    state = _state(tmp_path)
+    state.update(
+        status="stopped_error",
+        stage=stage,
+        pending_job={"job_id": "job-2"},
+        last_decision={"decision": "continue"},
+        stop_reason="interrupted",
+    )
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    auto._retry(argparse.Namespace())
+
+    assert saved[-1]["status"] == "active"
+    assert saved[-1]["stage"] == stage
+    assert saved[-1]["pending_job"] == {"job_id": "job-2"}
+    assert saved[-1]["last_decision"] == {"decision": "continue"}
 
 
 def test_retry_reactivates_a_previous_codex_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(tmp_path)
+    state.pop("stage")
     state.update(
         status="stopped",
         processed_job_id="job-1",
