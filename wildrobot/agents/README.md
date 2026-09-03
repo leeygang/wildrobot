@@ -10,10 +10,11 @@ The full loop uses two manually installed services:
   results, runs the deterministic analyzer, invokes `codex exec` to implement
   and commit the next experiment, pushes it, and queues the next GPU run.
 
-The loop is bounded by `--max-cycles` and `--max-training-failures`. It stops on
-a deterministically promoted checkpoint, an explicit Codex stop decision, an
-unexpected orchestration error, or either limit. It exports and validates a
-bundle after promotion. It never starts robot hardware.
+The loop is bounded by `--max-cycles` and `--max-training-failures`. A completed
+run that misses deployment gates must produce one bounded follow-up experiment;
+the loop stops only on a deterministically promoted checkpoint, an unexpected
+orchestration error, an explicit manual stop, or either configured limit. It
+exports and validates a bundle after promotion. It never starts robot hardware.
 
 ### Deploy and start the Ubuntu service
 

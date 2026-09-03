@@ -351,31 +351,22 @@ def _validate_codex_result(
 
     if not str(decision.get("summary", "")).strip():
         raise remote.TrainingLoopError("Codex returned an empty decision summary.")
-    if decision.get("decision") == "stop":
-        if after_sha != before_sha:
-            raise remote.TrainingLoopError("Codex committed changes but returned stop.")
-        return
     if decision.get("decision") != "continue":
         raise remote.TrainingLoopError(
-            f"Unknown Codex decision: {decision.get('decision')}"
+            "Codex must provide the next bounded experiment; got decision "
+            f"{decision.get('decision')!r}."
         )
     remote._repo_config(str(decision.get("config", "")))
     start_mode = str(decision.get("start_mode"))
     checkpoint = str(decision.get("checkpoint", ""))
-    if start_mode not in {"init_policy", "resume", "none"}:
+    if start_mode not in {"init_policy", "resume"}:
         raise remote.TrainingLoopError(f"Invalid next start mode: {start_mode}")
-    if start_mode == "none":
-        if checkpoint:
-            raise remote.TrainingLoopError(
-                "start_mode=none requires an empty checkpoint."
-            )
-    else:
-        _validate_checkpoint_path(state, checkpoint)
-        if checkpoint not in _allowed_next_checkpoints(manifest):
-            raise remote.TrainingLoopError(
-                "Next checkpoint is not recorded in the job manifest or "
-                "deterministic evaluation summary."
-            )
+    _validate_checkpoint_path(state, checkpoint)
+    if checkpoint not in _allowed_next_checkpoints(manifest):
+        raise remote.TrainingLoopError(
+            "Next checkpoint is not recorded in the job manifest or "
+            "deterministic evaluation summary."
+        )
 
 
 def _export_ready_bundle(
@@ -466,12 +457,6 @@ def _process_terminal_job(state: dict[str, Any], manifest: dict[str, Any]) -> No
 
     decision = _invoke_codex(state, manifest)
     state["last_decision"] = decision
-    if decision["decision"] == "stop":
-        state.update(status="stopped", stop_reason=decision["summary"])
-        _save_state(state)
-        print(f"Autonomous loop stopped: {decision['summary']}", flush=True)
-        return
-
     _push(str(state["branch"]))
     start_mode = str(decision["start_mode"])
     checkpoint = str(decision["checkpoint"])
@@ -659,12 +644,13 @@ def _stop(args: argparse.Namespace) -> int:
 
 def _retry(_args: argparse.Namespace) -> int:
     state = _load_state()
-    if state.get("status") != "stopped_error":
+    if state.get("status") not in {"stopped", "stopped_error"}:
         raise remote.TrainingLoopError(
-            "retry is only valid after an orchestration error."
+            "retry is only valid after a stopped loop."
         )
     state["status"] = "active"
     state["processed_job_id"] = None
+    state["last_decision"] = None
     state.pop("stop_reason", None)
     _save_state(state)
     print(f"Autonomous loop reactivated for job {state['active_job_id']}.")

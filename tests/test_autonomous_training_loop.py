@@ -145,6 +145,29 @@ def test_next_checkpoint_must_come_from_deterministic_summary(
         auto._validate_codex_result(state, decision, "a" * 40, manifest)
 
 
+def test_codex_cannot_stop_on_an_ordinary_failed_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    decision = {
+        "decision": "stop",
+        "summary": "no obvious reward change",
+        "config": "",
+        "start_mode": "none",
+        "checkpoint": "",
+        "verification": [],
+    }
+
+    with pytest.raises(remote.TrainingLoopError, match="next bounded experiment"):
+        auto._validate_codex_result(
+            state,
+            decision,
+            "a" * 40,
+            {"job_id": "job-1", "status": "completed"},
+        )
+
+
 def test_codex_exec_uses_structured_workspace_write_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -164,11 +187,11 @@ def test_codex_exec_uses_structured_workspace_write_mode(
         output_path.write_text(
             json.dumps(
                 {
-                    "decision": "stop",
-                    "summary": "no safe next step",
-                    "config": "",
-                    "start_mode": "none",
-                    "checkpoint": "",
+                    "decision": "continue",
+                    "summary": "run the next bounded experiment",
+                    "config": "training/configs/walking.yaml",
+                    "start_mode": "init_policy",
+                    "checkpoint": "/srv/wildrobot-training-jobs/job-1/checkpoint.pkl",
                     "verification": [],
                 }
             )
@@ -180,7 +203,7 @@ def test_codex_exec_uses_structured_workspace_write_mode(
 
     decision = auto._invoke_codex(state, manifest)
 
-    assert decision["decision"] == "stop"
+    assert decision["decision"] == "continue"
     assert "--approve-for-me" in commands[0]
     assert "--sandbox" not in commands[0]
     log = (local_root / "job-1" / "codex_exec.log").read_text()
@@ -392,3 +415,24 @@ def test_retry_reactivates_failed_job(
     assert saved[-1]["status"] == "active"
     assert saved[-1]["processed_job_id"] is None
     assert "stop_reason" not in saved[-1]
+
+
+def test_retry_reactivates_a_previous_codex_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(
+        status="stopped",
+        processed_job_id="job-1",
+        stop_reason="legacy Codex stop decision",
+        last_decision={"decision": "stop"},
+    )
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    auto._retry(argparse.Namespace())
+
+    assert saved[-1]["status"] == "active"
+    assert saved[-1]["processed_job_id"] is None
+    assert saved[-1]["last_decision"] is None

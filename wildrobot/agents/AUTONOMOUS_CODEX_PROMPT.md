@@ -12,7 +12,8 @@ analysis report. Treat `post_training_eval_summary.json` and
 `selected_checkpoint_path` as authoritative. Make metrics accurate before
 drawing conclusions.
 
-If another experiment is justified:
+The supervisor calls you only after a run fails its deterministic deployment
+gates. You must prepare one bounded next experiment:
 
 1. Identify one dominant failure mode using concrete metrics and code evidence.
 2. Make only the smallest justified code/config change.
@@ -21,8 +22,20 @@ If another experiment is justified:
 5. Return `decision=continue`, the tracked config path, and exactly one starting
    mode/checkpoint for the next GPU job.
 
-If the result does not support a safe next experiment, make no changes and
-return `decision=stop` with a concrete reason.
+Use `start_mode=resume` only when the complete training contract is unchanged.
+Use `start_mode=init_policy` when changing rewards, environment behavior,
+reference generation, or another training-contract input. The checkpoint must
+come from the synchronized manifest or deterministic top-k summary.
+
+Do not stop merely because no checkpoint was promoted, a previous reward change
+failed, or the evidence is incomplete. In those cases, choose the smallest
+high-information experiment that preserves the best measured behavior. A
+configuration-only continuation without a code change is valid when justified.
+Prefer 5-10 iteration diagnostic fine-tunes rather than speculative long runs.
+
+Optimization priority is: zero falls and stable torso orientation first,
+actuator saturation second, forward tracking third. Lateral/world-y drift is
+report-only for this forward-only deployment stage.
 
 Constraints:
 
@@ -33,5 +46,7 @@ Constraints:
 - Do not invent a checkpoint. It must be a `.pkl` path present in the remote
   manifest or deterministic evaluation summary.
 - Leave the Git worktree clean. Any code/config change must be committed.
+- Always return `decision=continue`; the supervisor enforces the configured
+  cycle and training-failure limits.
 - Prefer ToddlerBot-aligned behavior unless the evidence requires a documented
   WildRobot-specific divergence.

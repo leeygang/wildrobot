@@ -4,7 +4,7 @@
   "properties": {
     "decision": {
       "type": "string",
-      "enum": ["continue", "stop"]
+      "enum": ["continue"]
     },
     "summary": {
       "type": "string"
@@ -14,7 +14,7 @@
     },
     "start_mode": {
       "type": "string",
-      "enum": ["init_policy", "resume", "none"]
+      "enum": ["init_policy", "resume"]
     },
     "checkpoint": {
       "type": "string"
