@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -246,42 +247,29 @@ def _build_remote_submit_script(
         init_policy=init_policy,
         resume=resume,
     )
+    return _build_remote_enqueue_script(manifest)
+
+
+def _build_remote_enqueue_script(manifest: dict[str, Any]) -> str:
+    job_root = str(manifest["job_root"])
+    remote_repo = str(manifest["remote_repo"])
+    manifest_path = f"{job_root}/{MANIFEST_NAME}"
+    temporary_path = f"{job_root}/.{MANIFEST_NAME}.tmp"
     encoded = base64.b64encode(
         (json.dumps(manifest, sort_keys=True) + "\n").encode()
     ).decode()
-    job_root = context.job_root
-    worktree = manifest["worktree"]
-    python_path = f"{remote_repo}/.venv/bin/python"
-    worker = [
-        "systemd-run",
-        "--user",
-        f"--unit={manifest['systemd_unit']}",
-        "--collect",
-        "--property=Type=exec",
-        f"--property=WorkingDirectory={worktree}",
-        f"--setenv=PYTHONPATH={worktree}",
-        python_path,
-        f"{worktree}/{AGENT_REL_PATH}",
-        "_gpu-worker",
-        "--job-root",
-        job_root,
-    ]
     return "\n".join(
         [
             "set -eu",
             f"test ! -e {shlex.quote(job_root)} || "
-            f"{{ echo 'Job already exists: {job_id}' >&2; exit 2; }}",
+            f"{{ echo 'Job already exists: {manifest['job_id']}' >&2; exit 2; }}",
             f"git -C {shlex.quote(remote_repo)} fetch origin",
             f"git -C {shlex.quote(remote_repo)} cat-file -e "
-            f"{shlex.quote(git_sha + '^{commit}')}",
-            f"test -x {shlex.quote(python_path)} || "
-            f"{{ echo 'GPU virtual environment missing: {python_path}' >&2; exit 2; }}",
+            f"{shlex.quote(str(manifest['git_sha']) + '^{commit}')}",
             f"mkdir -p {shlex.quote(job_root)}",
-            f"git -C {shlex.quote(remote_repo)} worktree add --detach "
-            f"{shlex.quote(worktree)} {shlex.quote(git_sha)}",
             f"printf %s {shlex.quote(encoded)} | base64 -d > "
-            f"{shlex.quote(job_root + '/' + MANIFEST_NAME)}",
-            _shell_join(worker),
+            f"{shlex.quote(temporary_path)}",
+            f"mv {shlex.quote(temporary_path)} {shlex.quote(manifest_path)}",
         ]
     )
 
@@ -340,6 +328,38 @@ def _fetch_manifest(context: RemoteContext) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise TrainingLoopError(f"Remote manifest must be a JSON object: {path}")
     return payload
+
+
+def _enqueue_remote(
+    context: RemoteContext,
+    *,
+    git_sha: str,
+    config: str,
+    checkpoint_series: str,
+    init_policy: str | None,
+    resume: str | None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    manifest = _initial_manifest(
+        context=context,
+        git_sha=git_sha,
+        config=config,
+        checkpoint_series=checkpoint_series,
+        init_policy=init_policy,
+        resume=resume,
+    )
+    script = _build_remote_enqueue_script(manifest)
+    if dry_run:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        print(script)
+        return manifest
+    result = _run(_ssh_command(context, script), check=False)
+    if result.returncode:
+        raise TrainingLoopError(
+            f"GPU enqueue failed: {(result.stderr or result.stdout).strip()}"
+        )
+    _save_active_context(context)
+    return manifest
 
 
 def _remote_exists(context: RemoteContext, path: str, *, directory: bool) -> bool:
@@ -619,6 +639,159 @@ def _gpu_worker(args: argparse.Namespace) -> int:
         return 0 if manifest["status"] == "completed" else 1
 
 
+def _fail_manifest(path: Path, error: str) -> None:
+    manifest = _read_json(path)
+    manifest.update(status="failed", finished_at=_utc_now(), error=error)
+    _write_json_atomic(path, manifest)
+
+
+def _validate_queued_manifest(
+    manifest: dict[str, Any], manifest_path: Path, remote_repo: Path
+) -> None:
+    job_root = manifest_path.parent.resolve()
+    expected = {
+        "remote_repo": remote_repo.resolve(),
+        "job_root": job_root,
+        "worktree": job_root / "src",
+        "artifact_root": job_root / "artifacts",
+    }
+    for key, expected_path in expected.items():
+        if Path(str(manifest.get(key, ""))).resolve() != expected_path:
+            raise TrainingLoopError(f"Queued job has an invalid {key} path.")
+
+    series = _checkpoint_series(str(manifest.get("checkpoint_series", "")))
+    checkpoint_dir = Path(str(manifest.get("checkpoint_series_dir", ""))).resolve()
+    if checkpoint_dir != (job_root / "artifacts/checkpoints" / series).resolve():
+        raise TrainingLoopError("Queued job has an invalid checkpoint series path.")
+
+
+def _dispatch_queued_job(remote_repo: Path) -> bool:
+    jobs_root = remote_repo.parent / f"{remote_repo.name}-training-jobs"
+    jobs_root.mkdir(parents=True, exist_ok=True)
+    for manifest_path in sorted(jobs_root.glob(f"*/{MANIFEST_NAME}")):
+        manifest = _read_json(manifest_path)
+        if manifest.get("status") != "queued":
+            continue
+        job_root = manifest_path.parent
+        worktree = Path(str(manifest["worktree"]))
+        try:
+            _validate_queued_manifest(manifest, manifest_path, remote_repo)
+            manifest.update(status="dispatching", dispatched_at=_utc_now())
+            _write_json_atomic(manifest_path, manifest)
+            _run(["git", "fetch", "origin"], cwd=remote_repo)
+            git_sha = str(manifest["git_sha"])
+            if _run(
+                ["git", "cat-file", "-e", f"{git_sha}^{{commit}}"],
+                cwd=remote_repo,
+                check=False,
+            ).returncode:
+                raise TrainingLoopError(f"Commit is not available on GPU: {git_sha}")
+            _run(
+                [
+                    "git",
+                    "worktree",
+                    "add",
+                    "--detach",
+                    str(worktree),
+                    git_sha,
+                ],
+                cwd=remote_repo,
+            )
+            python_path = remote_repo / ".venv" / "bin" / "python"
+            if not python_path.is_file():
+                raise TrainingLoopError(
+                    f"GPU virtual environment missing: {python_path}"
+                )
+            command = [
+                str(python_path),
+                str(worktree / AGENT_REL_PATH),
+                "_gpu-worker",
+                "--job-root",
+                str(job_root),
+            ]
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(worktree)
+            result = subprocess.run(command, cwd=worktree, env=env, check=False)
+            if result.returncode and _read_json(manifest_path).get("status") in {
+                "queued",
+                "dispatching",
+                "running",
+            }:
+                _fail_manifest(
+                    manifest_path, f"GPU worker exited with {result.returncode}"
+                )
+        except Exception as exc:
+            _fail_manifest(manifest_path, f"{type(exc).__name__}: {exc}")
+        return True
+    return False
+
+
+def _recover_interrupted_jobs(remote_repo: Path) -> None:
+    jobs_root = remote_repo.parent / f"{remote_repo.name}-training-jobs"
+    if not jobs_root.is_dir():
+        return
+    for manifest_path in jobs_root.glob(f"*/{MANIFEST_NAME}"):
+        manifest = _read_json(manifest_path)
+        if manifest.get("status") in {"dispatching", "running"}:
+            _fail_manifest(
+                manifest_path,
+                "GPU dispatcher restarted while this job was active.",
+            )
+
+
+def _gpu_serve(args: argparse.Namespace) -> int:
+    remote_repo = Path(args.remote_repo).resolve()
+    if args.poll_seconds <= 0:
+        raise TrainingLoopError("--poll-seconds must be positive.")
+    _recover_interrupted_jobs(remote_repo)
+    while True:
+        dispatched = _dispatch_queued_job(remote_repo)
+        if args.once or (args.exit_when_idle and not dispatched):
+            return 0
+        if not dispatched:
+            time.sleep(args.poll_seconds)
+
+
+def _install_gpu_service(args: argparse.Namespace) -> int:
+    remote_repo = Path(args.remote_repo).resolve()
+    python_path = remote_repo / ".venv" / "bin" / "python"
+    script_path = remote_repo / AGENT_REL_PATH
+    if not python_path.is_file() or not os.access(python_path, os.X_OK):
+        raise TrainingLoopError(f"GPU Python is missing or not executable: {python_path}")
+    if not script_path.is_file():
+        raise TrainingLoopError(f"GPU worker script is missing: {script_path}")
+    unit_path = Path.home() / ".config/systemd/user/wildrobot-training-gpu.service"
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(
+        "\n".join(
+            [
+                "[Unit]",
+                "Description=WildRobot GPU training queue worker",
+                "After=network-online.target",
+                "Wants=network-online.target",
+                "",
+                "[Service]",
+                "Type=simple",
+                f"WorkingDirectory={remote_repo}",
+                f"Environment=PYTHONPATH={remote_repo}",
+                f"ExecStart={python_path} {script_path} gpu-serve "
+                f"--remote-repo {remote_repo}",
+                "Restart=on-failure",
+                "RestartSec=10",
+                "",
+                "[Install]",
+                "WantedBy=default.target",
+                "",
+            ]
+        )
+    )
+    print(f"Wrote {unit_path}")
+    print("Start manually with:")
+    print("  systemctl --user daemon-reload")
+    print("  systemctl --user enable --now wildrobot-training-gpu.service")
+    return 0
+
+
 def _submit(args: argparse.Namespace) -> int:
     if _git_output("status", "--porcelain", "--untracked-files=normal"):
         raise TrainingLoopError("Commit or remove local changes before submission.")
@@ -655,7 +828,7 @@ def _submit(args: argparse.Namespace) -> int:
         )
     _save_active_context(context)
     print(result.stdout.strip())
-    print(f"Submitted {context.job_id} at commit {git_sha[:12]}")
+    print(f"Queued {context.job_id} at commit {git_sha[:12]}")
     return 0
 
 
@@ -798,7 +971,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Supervised WildRobot Mac-to-GPU training loop"
     )
     commands = parser.add_subparsers(
-        dest="command", required=True, metavar="{submit,status,sync,analyze}"
+        dest="command",
+        required=True,
+        metavar="{submit,status,sync,analyze,gpu-serve,install-gpu-service}",
     )
     submit = commands.add_parser("submit", help="submit an exact Git commit")
     submit.add_argument("--config", required=True)
@@ -826,6 +1001,21 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     analyze = commands.add_parser("analyze", help="sync and run the analyzer")
     _add_remote_args(analyze)
     analyze.set_defaults(func=_analyze)
+
+    gpu_serve = commands.add_parser(
+        "gpu-serve", help="run the Ubuntu queued-job worker"
+    )
+    gpu_serve.add_argument("--remote-repo", default=DEFAULT_REMOTE_REPO)
+    gpu_serve.add_argument("--poll-seconds", type=float, default=10.0)
+    gpu_serve.add_argument("--once", action="store_true")
+    gpu_serve.add_argument("--exit-when-idle", action="store_true")
+    gpu_serve.set_defaults(func=_gpu_serve)
+
+    install_gpu = commands.add_parser(
+        "install-gpu-service", help="write the Ubuntu user-systemd unit"
+    )
+    install_gpu.add_argument("--remote-repo", default=DEFAULT_REMOTE_REPO)
+    install_gpu.set_defaults(func=_install_gpu_service)
 
     worker = commands.add_parser("_gpu-worker", add_help=False)
     worker.add_argument("--job-root", required=True)

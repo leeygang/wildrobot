@@ -48,7 +48,7 @@ def test_effective_config_changes_only_wandb_artifact_location(tmp_path: Path) -
     assert effective == source_payload
 
 
-def test_remote_submit_uses_exact_commit_in_dedicated_worktree() -> None:
+def test_remote_submit_enqueues_exact_commit_for_gpu_service() -> None:
     script = _build_remote_submit_script(
         remote_repo="/srv/wildrobot",
         jobs_root="/srv/wildrobot-training-jobs",
@@ -61,11 +61,12 @@ def test_remote_submit_uses_exact_commit_in_dedicated_worktree() -> None:
     )
 
     assert "git -C /srv/wildrobot fetch origin" in script
-    assert "git -C /srv/wildrobot worktree add --detach" in script
     assert "mkdir -p /srv/wildrobot-training-jobs/walking-deadbeef-20260902" in script
     assert ("deadbeef" * 5) in script
-    assert "/srv/wildrobot/.venv/bin/python" in script
-    assert "systemd-run --user" in script
+    assert "job_manifest.json" in script
+    assert ".job_manifest.json.tmp" in script
+    assert "mv " in script
+    assert "systemd-run" not in script
     assert "scp_to_remote" not in script
 
     manifest = _initial_manifest(
@@ -80,6 +81,104 @@ def test_remote_submit_uses_exact_commit_in_dedicated_worktree() -> None:
     )
     assert manifest["start_mode"] == "init_policy"
     assert manifest["start_checkpoint_request"].endswith("checkpoint.pkl")
+
+
+def test_gpu_dispatcher_runs_one_valid_queued_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    python_path = remote_repo / ".venv/bin/python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("python")
+    context = remote_training_loop.RemoteContext(
+        "walking-job", "gpu", "robot", None, str(remote_repo)
+    )
+    manifest = _initial_manifest(
+        context=context,
+        git_sha="a" * 40,
+        config="training/configs/walking.yaml",
+        checkpoint_series="walking-series",
+        init_policy=None,
+        resume=None,
+    )
+    manifest_path = Path(context.job_root) / MANIFEST_NAME
+    _write_json_atomic(manifest_path, manifest)
+    git_commands: list[list[str]] = []
+
+    def fake_git(command, **_kwargs):
+        git_commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    def fake_worker(command, **_kwargs):
+        completed = json.loads(manifest_path.read_text())
+        completed["status"] = "completed"
+        _write_json_atomic(manifest_path, completed)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(remote_training_loop, "_run", fake_git)
+    monkeypatch.setattr(remote_training_loop.subprocess, "run", fake_worker)
+
+    assert remote_training_loop._dispatch_queued_job(remote_repo) is True
+    assert json.loads(manifest_path.read_text())["status"] == "completed"
+    assert ["git", "fetch", "origin"] in git_commands
+    assert any(command[:3] == ["git", "worktree", "add"] for command in git_commands)
+
+
+def test_gpu_dispatcher_rejects_manifest_paths_outside_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    remote_repo.mkdir()
+    context = remote_training_loop.RemoteContext(
+        "walking-job", "gpu", "robot", None, str(remote_repo)
+    )
+    manifest = _initial_manifest(
+        context=context,
+        git_sha="a" * 40,
+        config="training/configs/walking.yaml",
+        checkpoint_series="walking-series",
+        init_policy=None,
+        resume=None,
+    )
+    manifest["worktree"] = str(tmp_path / "outside")
+    manifest_path = Path(context.job_root) / MANIFEST_NAME
+    _write_json_atomic(manifest_path, manifest)
+    monkeypatch.setattr(
+        remote_training_loop,
+        "_run",
+        lambda *_args, **_kwargs: pytest.fail("invalid job reached Git"),
+    )
+
+    assert remote_training_loop._dispatch_queued_job(remote_repo) is True
+    failed = json.loads(manifest_path.read_text())
+    assert failed["status"] == "failed"
+    assert "invalid worktree path" in failed["error"]
+
+
+def test_gpu_service_installer_writes_user_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    python_path = remote_repo / ".venv/bin/python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("#!/bin/sh\n")
+    python_path.chmod(0o755)
+    worker = remote_repo / "wildrobot/agents/remote_training_loop.py"
+    worker.parent.mkdir(parents=True)
+    worker.write_text("# worker\n")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+    remote_training_loop._install_gpu_service(
+        argparse.Namespace(remote_repo=str(remote_repo))
+    )
+
+    unit = (
+        tmp_path
+        / "home/.config/systemd/user/wildrobot-training-gpu.service"
+    ).read_text()
+    assert f"ExecStart={python_path}" in unit
+    assert "gpu-serve" in unit
+    assert "Restart=on-failure" in unit
 
 
 def test_checkpoint_series_strips_canonical_prefix() -> None:

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["continue", "stop"]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "config": {
+      "type": "string"
+    },
+    "start_mode": {
+      "type": "string",
+      "enum": ["init_policy", "resume", "none"]
+    },
+    "checkpoint": {
+      "type": "string"
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "decision",
+    "summary",
+    "config",
+    "start_mode",
+    "checkpoint",
+    "verification"
+  ],
+  "additionalProperties": false
+}

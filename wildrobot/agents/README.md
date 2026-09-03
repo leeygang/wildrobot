@@ -1,11 +1,98 @@
 # Training Loop Agent
 
-## Mac ↔ GPU supervised loop
+## Full autonomous Mac ↔ GPU loop
+
+The full loop uses two manually installed services:
+
+- Ubuntu: `wildrobot-training-gpu.service` polls an SSH-visible queue and runs
+  one exact-commit GPU job at a time.
+- macOS: `com.wildrobot.autonomous-training` polls the active job, synchronizes
+  results, runs the deterministic analyzer, invokes `codex exec` to implement
+  and commit the next experiment, pushes it, and queues the next GPU run.
+
+The loop is bounded by `--max-cycles` and `--max-training-failures`. It stops on
+a deterministically promoted checkpoint, an explicit Codex stop decision, an
+unexpected orchestration error, or either limit. It exports and validates a
+bundle after promotion. It never starts robot hardware.
+
+### Deploy and start the Ubuntu service
+
+Push this automation commit from the Mac, then update the normal GPU checkout:
+
+```bash
+# Mac
+git push origin main
+
+# Ubuntu
+cd ~/projects/wildrobot
+git pull --ff-only origin main
+uv run python wildrobot/agents/remote_training_loop.py install-gpu-service
+sudo loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now wildrobot-training-gpu.service
+systemctl --user status wildrobot-training-gpu.service
+```
+
+The GPU checkout needs an existing `.venv`, Git access to `origin`, and all
+source checkpoints referenced by queued jobs.
+
+### Deploy and start the Mac service
+
+Authenticate Codex CLI once, verify non-interactive execution, then install the
+LaunchAgent:
+
+```bash
+cd ~/projects/wildrobot
+codex exec --ephemeral "Reply with OK"
+uv run python wildrobot/agents/autonomous_training_loop.py install-mac-service
+launchctl bootstrap gui/$(id -u) \
+  ~/Library/LaunchAgents/com.wildrobot.autonomous-training.plist
+```
+
+SSH and Git authentication must work without an interactive password prompt
+from the LaunchAgent environment.
+
+### Start the first autonomous walking job
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py start \
+  --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl \
+  --max-cycles 8
+```
+
+For a combined deployment bundle, also pass both
+`--standing-checkpoint <checkpoint.pkl>` and
+`--standing-config <training_config.yaml>`. Without them, the terminal artifact
+is a validated walking-only bundle.
+
+Inspect or stop the controller:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py status
+uv run python wildrobot/agents/autonomous_training_loop.py stop
+tail -f training/remote_jobs/mac-service.log
+ssh leeygang@linux-pc.local \
+  'journalctl --user -u wildrobot-training-gpu.service -f'
+```
+
+The Mac controller invokes Codex with `--sandbox workspace-write` and
+`--approve-for-me`. Codex may analyze, edit, test, and create one local commit;
+the controller—not Codex—validates that commit, pushes it, and enqueues the next
+job. Automation files and `training/CHANGELOG.md` are protected from autonomous
+changes.
+
+References: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive),
+[systemd services](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html),
+[Git worktrees](https://git-scm.com/docs/git-worktree), and
+[ToddlerBot](https://arxiv.org/abs/2502.00893).
+
+## Manual single-run controller
 
 `remote_training_loop.py` is the cross-machine controller. It uses Git for
 code/config provenance and rsync only for generated artifacts. Every GPU run is
-checked out at an exact commit in a dedicated worktree, launched through a
-transient user `systemd` service, and described by an atomic JSON manifest.
+checked out at an exact commit in a dedicated worktree and described by an
+atomic JSON manifest.
 
 The controller deliberately does not push a generated change, launch the next
 changed experiment, update `training/CHANGELOG.md`, or deploy hardware without
@@ -24,13 +111,13 @@ uv run python wildrobot/agents/remote_training_loop.py submit \
 The default GPU target matches the existing transfer scripts:
 `leeygang@linux-pc.local:/home/leeygang/projects/wildrobot`. Override it with
 `--host`, `--user`, `--port`, or `--remote-repo`. Use `--dry-run` to print the
-exact remote checkout and launch commands without connecting.
+exact queued manifest and remote publication commands without connecting.
 
 The GPU must have Git access to `origin`, an existing repository `.venv`,
-`systemd-run --user`, and the initial checkpoint path. Enable user lingering if
-the service must survive all SSH sessions. Only one training worker runs at a
-time; a second job fails its global GPU lock instead of competing for the
-device.
+the installed `wildrobot-training-gpu.service`, and the initial checkpoint
+path. Enable user lingering if the service must survive all SSH sessions. The
+persistent service dispatches one queued job at a time, and the worker also
+holds a global GPU lock to prevent accidental competition for the device.
 
 ### Monitor, sync, and analyze
 
@@ -53,7 +140,7 @@ Local control state and analysis reports live in ignored
 normal `training/wandb/` and `training/checkpoints/` locations so the existing
 `wildrobot-training-analyze` workflow remains the source of truth.
 
-### Codex scheduled watcher
+### Optional Codex Desktop watcher
 
 Use the durable prompt in `CODEX_SCHEDULED_TASK.md` for a project-scoped Codex
 scheduled task. Run the task in the local project so it can access the ignored
@@ -61,7 +148,7 @@ job state and synchronized artifacts. The Mac must remain powered on with the
 ChatGPT desktop app running.
 
 References: [OpenAI scheduled tasks](https://developers.openai.com/codex/automations),
-[systemd-run](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html),
+[systemd services](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html),
 [Git worktrees](https://git-scm.com/docs/git-worktree), and
 [ToddlerBot](https://arxiv.org/abs/2502.00893). ToddlerBot similarly snapshots
 arguments, training/environment configuration, code state, and checkpoints per

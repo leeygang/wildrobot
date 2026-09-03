@@ -1,5 +1,8 @@
 # WildRobot GPU training watcher
 
+This is an optional supervised fallback. The fully autonomous service uses
+`autonomous_training_loop.py` and `codex exec` instead.
+
 Run this task in the local WildRobot project every 10-15 minutes.
 
 ```text
@@ -7,8 +10,8 @@ Inspect the active WildRobot GPU training job with:
 
 uv run python wildrobot/agents/remote_training_loop.py status --json
 
-If the job is queued or running, report only a status transition, failure, or
-other actionable change. Do not edit the repository.
+If the job is queued, dispatching, or running, report only a status transition,
+failure, or other actionable change. Do not edit the repository.
 
 If the job failed, sync its summary artifacts and log, identify the concrete
 execution failure, and report it. Do not start a replacement job automatically.
