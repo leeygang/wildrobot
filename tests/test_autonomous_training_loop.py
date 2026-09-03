@@ -157,7 +157,7 @@ def test_codex_exec_uses_structured_workspace_write_mode(
 
     commands: list[list[str]] = []
 
-    def fake_run(command, **_kwargs):
+    def fake_run(command, *, log_path, **_kwargs):
         commands.append(list(command))
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -173,9 +173,10 @@ def test_codex_exec_uses_structured_workspace_write_mode(
                 }
             )
         )
-        return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
+        log_path.write_text("done\n")
+        return 0
 
-    monkeypatch.setattr(auto.subprocess, "run", fake_run)
+    monkeypatch.setattr(auto.remote, "_run_streamed", fake_run)
 
     decision = auto._invoke_codex(state, manifest)
 
@@ -201,13 +202,12 @@ def test_analyzer_failure_stops_iteration(
             "local_wandb_run_dir": "training/wandb/run-id",
         },
     )
-    monkeypatch.setattr(
-        auto.subprocess,
-        "run",
-        lambda command, **_kwargs: subprocess.CompletedProcess(
-            command, 1, stdout="bad metrics", stderr="trace"
-        ),
-    )
+
+    def fail_analyzer(_command, *, log_path: Path, **_kwargs) -> int:
+        log_path.write_text("bad metrics\ntrace\n")
+        return 1
+
+    monkeypatch.setattr(auto.remote, "_run_streamed", fail_analyzer)
 
     with pytest.raises(remote.TrainingLoopError, match="analyzer exited"):
         auto._run_analyzer(auto._context(_state(tmp_path)))

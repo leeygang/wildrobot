@@ -118,6 +118,10 @@ ssh leeygang@linux-pc.local \
   'journalctl --user -u wildrobot-training-gpu.service -f'
 ```
 
+Manual `step` runs stream synchronization, analyzer, and Codex progress to the
+terminal while also writing the per-job logs. GPU training output is likewise
+teed to both `train.log` and the systemd journal shown above.
+
 The Mac controller invokes Codex with `--approve-for-me`, which selects the
 workspace-write sandbox in the installed CLI. Codex may analyze, edit, test,
 and create one local commit;

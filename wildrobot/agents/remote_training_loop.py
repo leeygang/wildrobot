@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -112,6 +113,51 @@ def _run(
         capture_output=capture_output,
         check=check,
     )
+
+
+def _run_streamed(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    log_path: Path,
+    env: dict[str, str] | None = None,
+    timeout_s: int | None = None,
+    append: bool = False,
+) -> int:
+    """Run a child process while teeing merged output to console and a file."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a" if append else "w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            list(command),
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+
+        def copy_output() -> None:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+                log.write(line)
+                log.flush()
+
+        reader = threading.Thread(target=copy_output, daemon=True)
+        reader.start()
+        try:
+            if timeout_s is None:
+                returncode = process.wait()
+            else:
+                returncode = process.wait(timeout=timeout_s)
+        except BaseException:
+            process.kill()
+            process.wait()
+            reader.join(timeout=5)
+            raise
+        reader.join()
+        return int(returncode)
 
 
 def _git_output(*args: str, cwd: Path = REPO_ROOT) -> str:
@@ -882,23 +928,28 @@ def _gpu_worker(args: argparse.Namespace) -> int:
             _write_json_atomic(manifest_path, manifest)
             env = os.environ.copy()
             env.update(PYTHONUNBUFFERED="1", PYTHONPATH=manifest["worktree"])
-            with (job_root / "train.log").open("a", encoding="utf-8") as log:
+            train_log_path = job_root / "train.log"
+            with train_log_path.open("a", encoding="utf-8") as log:
                 log.write(f"[{_utc_now()}] {_shell_join(command)}\n")
                 log.flush()
-                result = subprocess.run(
-                    command,
-                    cwd=manifest["worktree"],
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    env=env,
-                    check=False,
-                )
-            manifest["exit_code"] = int(result.returncode)
+            print(f"Starting GPU training job {manifest['job_id']}...", flush=True)
+            returncode = _run_streamed(
+                command,
+                cwd=Path(manifest["worktree"]),
+                log_path=train_log_path,
+                env=env,
+                append=True,
+            )
+            manifest["exit_code"] = returncode
             _collect_training_results(manifest)
-            manifest["status"] = "completed" if result.returncode == 0 else "failed"
-            if result.returncode:
-                manifest["error"] = f"training/train.py exited with {result.returncode}"
+            manifest["status"] = "completed" if returncode == 0 else "failed"
+            if returncode:
+                manifest["error"] = f"training/train.py exited with {returncode}"
+            print(
+                f"GPU training job {manifest['job_id']} finished with status "
+                f"{manifest['status']}.",
+                flush=True,
+            )
         except Exception as exc:
             manifest.update(
                 status="failed",

@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -286,7 +287,7 @@ def test_gpu_worker_records_completed_run_without_promotion(
         remote_training_loop, "_prepare_worker", lambda _manifest: ["fake-training"]
     )
 
-    def fake_run(*_args, **_kwargs):
+    def fake_run(*_args, log_path: Path, **_kwargs):
         checkpoint_run = checkpoint_series / "walking_v0210_20260902-runid123"
         checkpoint_run.mkdir(parents=True)
         (checkpoint_run / "post_training_eval_summary.json").write_text(
@@ -295,11 +296,11 @@ def test_gpu_worker_records_completed_run_without_promotion(
         (artifact_root / "wandb" / "offline-run-20260902_120000-runid123").mkdir(
             parents=True
         )
-        return remote_training_loop.subprocess.CompletedProcess(
-            args=["fake-training"], returncode=0
-        )
+        with log_path.open("a") as log:
+            log.write("training output\n")
+        return 0
 
-    monkeypatch.setattr(remote_training_loop.subprocess, "run", fake_run)
+    monkeypatch.setattr(remote_training_loop, "_run_streamed", fake_run)
 
     result = remote_training_loop._gpu_worker(
         argparse.Namespace(job_root=str(job_root))
@@ -316,6 +317,24 @@ def test_gpu_worker_records_completed_run_without_promotion(
         / CHECKPOINT_MANIFEST_NAME
     )
     assert checkpoint_manifest.is_file()
+    assert "training output" in (job_root / "train.log").read_text()
+
+
+def test_streamed_command_prints_and_logs_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_path = tmp_path / "worker.log"
+
+    returncode = remote_training_loop._run_streamed(
+        [sys.executable, "-c", "print('live output')"],
+        cwd=tmp_path,
+        log_path=log_path,
+        timeout_s=5,
+    )
+
+    assert returncode == 0
+    assert "live output" in capsys.readouterr().out
+    assert log_path.read_text() == "live output\n"
 
 
 def test_prepare_worker_freezes_config_and_checkpoint_hash(tmp_path: Path) -> None:

@@ -162,15 +162,18 @@ def _enqueue(
 
 
 def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
+    print(f"Syncing completed GPU job {context.job_id}...", flush=True)
     manifest = remote._sync_job(context, selected_checkpoint=False)
     run_dir = manifest.get("local_wandb_run_dir")
     report_path = remote.LOCAL_JOB_ROOT / context.job_id / "analysis.txt"
     if not run_dir:
-        report_path.write_text(
+        message = (
             "Analyzer not run because the job produced no synchronized W&B run.\n"
             f"Job status: {manifest.get('status')}\n"
             f"Training error: {manifest.get('error')}\n"
         )
+        report_path.write_text(message)
+        print(message, end="", flush=True)
         return manifest
     command = [
         shutil.which("uv") or "uv",
@@ -184,18 +187,15 @@ def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
         "--checkpoints-root",
         str(REPO_ROOT / "training/checkpoints"),
     ]
-    result = subprocess.run(
+    print(f"Running deterministic analyzer for {run_dir}...", flush=True)
+    returncode = remote._run_streamed(
         command,
         cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
+        log_path=report_path,
     )
-    report = result.stdout + ("\n" + result.stderr if result.stderr else "")
-    report_path.write_text(report)
-    if result.returncode:
+    if returncode:
         raise remote.TrainingLoopError(
-            f"Training analyzer exited with {result.returncode}; see {report_path}"
+            f"Training analyzer exited with {returncode}; see {report_path}"
         )
     manifest["local_analysis"] = str(report_path.relative_to(REPO_ROOT))
     remote._write_json_atomic(
@@ -259,6 +259,8 @@ def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, 
     decision_path = job_dir / "codex_decision.json"
     final_message_path = job_dir / "codex_final.txt"
     log_path = job_dir / "codex_exec.log"
+    decision_path.unlink(missing_ok=True)
+    final_message_path.unlink(missing_ok=True)
     command = [
         codex_path,
         "exec",
@@ -274,20 +276,19 @@ def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, 
     if state.get("codex_model"):
         command.extend(["--model", str(state["codex_model"])])
     command.append(_codex_prompt(state, manifest))
-    result = subprocess.run(
+    print(f"Invoking Codex for job {manifest['job_id']}...", flush=True)
+    returncode = remote._run_streamed(
         command,
         cwd=REPO_ROOT,
-        text=True,
-        capture_output=True,
-        timeout=int(state["codex_timeout_minutes"]) * 60,
-        check=False,
+        log_path=log_path,
+        timeout_s=int(state["codex_timeout_minutes"]) * 60,
     )
-    log_path.write_text(result.stdout + "\n" + result.stderr)
-    final_message_path.write_text(result.stdout)
-    if result.returncode:
+    if returncode:
         raise remote.TrainingLoopError(
-            f"codex exec failed with exit code {result.returncode}; see {log_path}"
+            f"codex exec failed with exit code {returncode}; see {log_path}"
         )
+    if decision_path.is_file():
+        final_message_path.write_text(decision_path.read_text())
     decision = remote._read_json(decision_path)
     _validate_codex_result(state, decision, before_sha, manifest)
     return decision
@@ -468,6 +469,7 @@ def _process_terminal_job(state: dict[str, Any], manifest: dict[str, Any]) -> No
     if decision["decision"] == "stop":
         state.update(status="stopped", stop_reason=decision["summary"])
         _save_state(state)
+        print(f"Autonomous loop stopped: {decision['summary']}", flush=True)
         return
 
     _push(str(state["branch"]))
