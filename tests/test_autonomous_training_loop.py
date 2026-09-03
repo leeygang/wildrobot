@@ -893,6 +893,7 @@ def test_run_polls_until_the_loop_finishes(
     state_path.write_text("{}")
     monkeypatch.setattr(auto, "STATE_PATH", state_path)
     monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "_load_state", lambda: states[0])
     monkeypatch.setattr(
         auto,
         "_step_once",
@@ -908,8 +909,10 @@ def test_run_polls_until_the_loop_finishes(
     assert "maximum cycle count reached" in output
 
 
-def test_retry_reactivates_failed_job(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_run_reactivates_stopped_error_before_polling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     state = _state(tmp_path)
     state.update(
@@ -921,24 +924,33 @@ def test_retry_reactivates_failed_job(
         fix_attempts=1,
     )
     saved: list[dict] = []
-    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
     monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+    monkeypatch.setattr(
+        auto,
+        "_step_once",
+        lambda **_kwargs: {**state, "status": "ready"},
+    )
 
-    auto._retry(argparse.Namespace())
+    assert auto._run(argparse.Namespace(poll_seconds=2.5)) == 0
 
-    assert saved[-1]["status"] == "active"
-    assert saved[-1]["stage"] == "fix"
-    assert saved[-1]["processed_job_id"] == "job-1"
-    assert saved[-1]["fix_base_sha"] == "a" * 40
-    assert saved[-1]["fix_attempts"] == 1
-    assert "stop_reason" not in saved[-1]
+    assert saved[0]["status"] == "active"
+    assert saved[0]["stage"] == "fix"
+    assert saved[0]["processed_job_id"] == "job-1"
+    assert saved[0]["last_error"] == "codex failed"
+    assert saved[0]["automatic_retry_count"] == 1
+    assert "Automatically reactivated stage fix" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
     "stage",
     ["adopt", "training", "analysis", "fix", "push", "enqueue", "export"],
 )
-def test_retry_preserves_every_durable_pipeline_stage(
+def test_error_reactivation_preserves_every_durable_pipeline_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
 ) -> None:
     state = _state(tmp_path)
@@ -950,10 +962,9 @@ def test_retry_preserves_every_durable_pipeline_stage(
         stop_reason="interrupted",
     )
     saved: list[dict] = []
-    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
     monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
 
-    auto._retry(argparse.Namespace())
+    auto._reactivate_error(state)
 
     assert saved[-1]["status"] == "active"
     assert saved[-1]["stage"] == stage
@@ -961,23 +972,42 @@ def test_retry_preserves_every_durable_pipeline_stage(
     assert saved[-1]["last_decision"] == {"decision": "continue"}
 
 
-def test_retry_reactivates_a_previous_codex_stop(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_run_retries_a_new_stage_error_without_exiting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     state = _state(tmp_path)
-    state.pop("stage")
-    state.update(
-        status="stopped",
-        processed_job_id="job-1",
-        stop_reason="legacy Codex stop decision",
-        last_decision={"decision": "stop"},
-    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
     saved: list[dict] = []
-    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
+    sleeps: list[float] = []
+    attempts = 0
+
+    def step_once(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            state.update(status="stopped_error", stop_reason="analysis failed")
+            raise remote.TrainingLoopError("analysis failed")
+        return {**state, "status": "ready"}
+
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
     monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+    monkeypatch.setattr(auto, "_step_once", step_once)
+    monkeypatch.setattr(auto.time, "sleep", lambda seconds: sleeps.append(seconds))
 
-    auto._retry(argparse.Namespace())
+    assert auto._run(argparse.Namespace(poll_seconds=2.5)) == 0
 
+    assert attempts == 2
+    assert sleeps == [2.5]
     assert saved[-1]["status"] == "active"
-    assert saved[-1]["processed_job_id"] is None
-    assert saved[-1]["last_decision"] is None
+    assert saved[-1]["last_error"] == "analysis failed"
+    assert "Retrying stage training in 2.5s" in capsys.readouterr().out
+
+
+def test_retry_command_is_removed() -> None:
+    with pytest.raises(SystemExit):
+        auto._parse_args(["retry"])

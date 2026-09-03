@@ -874,11 +874,27 @@ def _run(args: argparse.Namespace) -> int:
             flush=True,
         )
         try:
+            state = _load_state()
+            if state.get("status") == "stopped_error":
+                _reactivate_error(state)
             while True:
-                state = _step_once(
-                    print_progress=True,
-                    tolerate_poll_errors=True,
-                )
+                try:
+                    state = _step_once(
+                        print_progress=True,
+                        tolerate_poll_errors=True,
+                    )
+                except Exception as exc:
+                    state = _load_state()
+                    if state.get("status") != "stopped_error":
+                        raise
+                    _reactivate_error(state)
+                    print(
+                        f"Retrying stage {state['stage']} in "
+                        f"{args.poll_seconds:g}s after error: {exc}",
+                        flush=True,
+                    )
+                    time.sleep(args.poll_seconds)
+                    continue
                 if state is None:
                     raise remote.TrainingLoopError("Autonomous state disappeared.")
                 if state.get("status") != "active":
@@ -897,6 +913,28 @@ def _run(args: argparse.Namespace) -> int:
                 flush=True,
             )
             return 130
+
+
+def _reactivate_error(state: dict[str, Any]) -> None:
+    if state.get("status") != "stopped_error":
+        return
+    if "stage" not in state:
+        state["stage"] = "training"
+        state["processed_job_id"] = None
+        state["last_decision"] = None
+    error = state.pop("stop_reason", None)
+    state.update(
+        status="active",
+        last_error=error,
+        last_retry_at=_utc_now(),
+        automatic_retry_count=int(state.get("automatic_retry_count", 0)) + 1,
+    )
+    _save_state(state)
+    print(
+        f"Automatically reactivated stage {state['stage']}"
+        + (f" after: {error}" if error else "."),
+        flush=True,
+    )
 
 
 def _start(args: argparse.Namespace) -> int:
@@ -1242,28 +1280,6 @@ def _stop(args: argparse.Namespace) -> int:
     return 0
 
 
-def _retry(_args: argparse.Namespace) -> int:
-    state = _load_state()
-    if state.get("status") not in {"stopped", "stopped_error"}:
-        raise remote.TrainingLoopError(
-            "retry is only valid after a stopped loop."
-        )
-    legacy_state = "stage" not in state
-    if state.get("status") == "stopped" and not legacy_state:
-        raise remote.TrainingLoopError(
-            "retry cannot override a configured stop limit; start a new run instead."
-        )
-    state["status"] = "active"
-    if legacy_state:
-        state["stage"] = "training"
-        state["processed_job_id"] = None
-        state["last_decision"] = None
-    state.pop("stop_reason", None)
-    _save_state(state)
-    print(f"Autonomous loop reactivated for job {state['active_job_id']}.")
-    return 0
-
-
 def _install_mac_service(args: argparse.Namespace) -> int:
     python_path = REPO_ROOT / ".venv/bin/python"
     script_path = Path(__file__).resolve()
@@ -1364,10 +1380,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_status)
-    retry = commands.add_parser(
-        "retry", help="retry the active job after an orchestration error"
-    )
-    retry.set_defaults(func=_retry)
     stop = commands.add_parser("stop", help="stop after the current GPU job")
     stop.add_argument("--reason", default="stopped manually")
     stop.set_defaults(func=_stop)

@@ -113,7 +113,6 @@ Inspect or stop the controller:
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py status
 uv run python wildrobot/agents/autonomous_training_loop.py status --last 10
-uv run python wildrobot/agents/autonomous_training_loop.py retry
 uv run python wildrobot/agents/autonomous_training_loop.py run
 uv run python wildrobot/agents/autonomous_training_loop.py stop
 tail -f training/remote_jobs/mac-service.log
@@ -126,9 +125,11 @@ current cycle, job, and remote status, and streams synchronization, analyzer,
 and Codex output while also writing the per-job logs. Pressing Ctrl-C only
 detaches the foreground monitor; it does not stop the active loop. Temporary
 SSH polling failures are printed and retried. `step` is a single non-blocking
-poll used by the LaunchAgent and for debugging. `retry` only changes a stopped
-loop back to active; use `run` afterward to watch it. GPU training output is
-likewise teed to both `train.log` and the systemd journal shown above.
+poll used by the LaunchAgent and for debugging. `run` also automatically
+reactivates `stopped_error` at its persisted stage and retries after the poll
+interval. Configured terminal states (`ready`, cycle/failure limits, and manual
+stop) are not overridden. GPU training output is likewise teed to both
+`train.log` and the systemd journal shown above.
 
 `status` prints the persisted stage, whether that stage belongs to the GPU or
 Mac, whether a Mac supervisor currently holds the loop lock, the live or cached
@@ -151,12 +152,10 @@ and restarts from the originally declared `--init-policy` or `--resume`
 checkpoint. Partial checkpoints are deliberately not trusted as a new resume
 source.
 
-After a process or machine restart, run the same foreground command again. If
-the prior process recorded an actual stage error, reactivate that exact stage
-first:
+After a process, stage, or machine restart, run the same foreground command
+again. It resumes or reactivates the persisted stage automatically:
 
 ```bash
-uv run python wildrobot/agents/autonomous_training_loop.py retry
 uv run python wildrobot/agents/autonomous_training_loop.py run
 ```
 
