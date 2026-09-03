@@ -1149,3 +1149,9 @@ def test_run_retries_a_new_stage_error_without_exiting(
 def test_retry_command_is_removed() -> None:
     with pytest.raises(SystemExit):
         auto._parse_args(["retry"])
+
+
+def test_start_defaults_to_twenty_cycles() -> None:
+    args = auto._parse_args(["start", "--config", "training/configs/walking.yaml"])
+
+    assert args.max_cycles == 20

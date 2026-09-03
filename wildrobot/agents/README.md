@@ -10,8 +10,9 @@ The full loop uses two manually installed services:
   results, runs the deterministic analyzer, invokes `codex exec` to implement
   and commit the next experiment, pushes it, and queues the next GPU run.
 
-The loop is bounded by `--max-cycles` and `--max-training-failures`. A completed
-run that misses deployment gates must produce one bounded follow-up experiment;
+The loop is bounded by `--max-cycles` (default: 20) and
+`--max-training-failures`. A completed run that misses deployment gates must
+produce one bounded follow-up experiment;
 the loop stops only on a deterministically promoted checkpoint, an unexpected
 orchestration error, or either configured limit. It can also be manually paused
 without cancelling an active GPU job. It
@@ -75,7 +76,7 @@ uv run python wildrobot/agents/autonomous_training_loop.py start \
   --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
   --adopt-completed \
   --training-git-sha <40-character-training-commit> \
-  --max-cycles 8
+  --max-cycles 20
 
 # Stay attached, poll continuously, and stream progress in this terminal.
 uv run python wildrobot/agents/autonomous_training_loop.py run
@@ -101,7 +102,7 @@ To launch a new GPU run through the queue instead, use:
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --config training/configs/ppo_walking_v0210_17d11_native_stance_stage1.yaml \
   --init-policy training/checkpoints/ppo_walking_v0210_17d10_roll_ik_contract/ppo_walking_v0210_17d10_roll_ik_contract_v0210-17d10_20260901_222121-mil2cg1q/checkpoint_14_286720.pkl \
-  --max-cycles 8
+  --max-cycles 20
 ```
 
 For a combined deployment bundle, also pass both

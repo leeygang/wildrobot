@@ -1439,7 +1439,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     start.add_argument("--user", default=remote.DEFAULT_GPU_USER)
     start.add_argument("--port", type=int)
     start.add_argument("--remote-repo", default=remote.DEFAULT_REMOTE_REPO)
-    start.add_argument("--max-cycles", type=int, default=8)
+    start.add_argument("--max-cycles", type=int, default=20)
     start.add_argument("--max-training-failures", type=int, default=2)
     start.add_argument("--codex-path")
     start.add_argument("--codex-model")
