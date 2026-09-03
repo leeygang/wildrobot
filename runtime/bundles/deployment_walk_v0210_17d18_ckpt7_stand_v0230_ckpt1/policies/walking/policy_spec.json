@@ -1,0 +1,239 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 2,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 937,
+    "action_dim": 17
+  },
+  "robot": {
+    "robot_name": "WildRobot",
+    "actuator_names": [
+      "waist_yaw",
+      "left_shoulder_pitch",
+      "left_shoulder_roll",
+      "left_elbow_pitch",
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "left_ankle_roll",
+      "right_shoulder_pitch",
+      "right_shoulder_roll",
+      "right_elbow_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "right_ankle_roll"
+    ],
+    "joints": {
+      "waist_yaw": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 3.141592653589793,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_roll": {
+        "range_min_rad": -2.9670597283903604,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.17453292519943295,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_pitch": {
+        "range_min_rad": -3.141592653589793,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_roll": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 2.9670597283903604,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.17453292519943295,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      }
+    },
+    "home_ctrl_rad": [
+      0.00334485,
+      -0.002596,
+      0.0118466,
+      0.0,
+      0.219524,
+      -0.000794595,
+      0.517305,
+      -0.250013,
+      0.000752257,
+      0.00179528,
+      0.0104106,
+      0.0,
+      -0.220402,
+      -0.000620676,
+      0.519548,
+      -0.24973,
+      -0.00164611
+    ]
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v8_cmd3d",
+    "layout": [
+      {
+        "name": "gravity_local",
+        "size": 3,
+        "frame": "local",
+        "units": "unit_vector"
+      },
+      {
+        "name": "angvel_heading_local",
+        "size": 3,
+        "frame": "heading_local",
+        "units": "rad_s"
+      },
+      {
+        "name": "joint_pos_normalized",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "joint_vel_normalized",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "foot_switches",
+        "size": 4,
+        "frame": null,
+        "units": "bool_as_float"
+      },
+      {
+        "name": "prev_action",
+        "size": 17,
+        "frame": null,
+        "units": "normalized_-1_1"
+      },
+      {
+        "name": "velocity_cmd",
+        "size": 1,
+        "frame": null,
+        "units": "m_s"
+      },
+      {
+        "name": "loc_ref_phase_sin_cos",
+        "size": 2,
+        "frame": null,
+        "units": "sin_cos_phase"
+      },
+      {
+        "name": "proprio_history",
+        "size": 870,
+        "frame": null,
+        "units": "stacked_proprio_oldest_to_newest"
+      },
+      {
+        "name": "velocity_cmd_lateral_yaw",
+        "size": 2,
+        "frame": "heading_local",
+        "units": "m_s_and_rad_s"
+      },
+      {
+        "name": "padding",
+        "size": 1,
+        "frame": null,
+        "units": "unused"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "none",
+    "postprocess_params": {},
+    "mapping_id": "pos_target_rad_v1"
+  },
+  "provenance": {
+    "created_at": "2026-09-03T20:37:09.648843+00:00",
+    "training_config": "/Users/ygli/projects/wildrobot/training/checkpoints/ppo_walking_v0210_17d18_early_torque_margin/effective_training_config_v0210-17d18_20260903_043843-7m0ekgap/training_config.yaml",
+    "source_checkpoint": {
+      "format": "pkl",
+      "path": "/Users/ygli/projects/wildrobot/training/checkpoints/ppo_walking_v0210_17d18_early_torque_margin/effective_training_config_v0210-17d18_20260903_043843-7m0ekgap/checkpoint_7_143360.pkl"
+    },
+    "robot_config": "/Users/ygli/projects/wildrobot/assets/v2/mujoco_robot_config.json",
+    "git_commit": "a7abe4f2af23c6ec90dd633189accb53b283ee4f",
+    "git_dirty": false,
+    "training_job_id": "auto-08-ppo_walking_v0210_17d18_early_torque_margin-a7abe4f2-20260903-113822",
+    "training_run_id": "7m0ekgap",
+    "source_config_sha256": "14c2030256230490c53e427fc811bfde77eba40f72d1205a156d0812f9f5ec91",
+    "effective_config_sha256": "208ceda81134a249c1630cbc851426c82893e6e45ee615e0e21662900d56196d",
+    "initial_checkpoint_sha256": "b4580c9709ef9443490a4eb48c94ba6f653f70eb2455e0f090eddd35a76a3cf3"
+  }
+}

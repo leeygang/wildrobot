@@ -1,0 +1,15 @@
+{
+  "bundle_manifest.json": "2d9d670cedfe4f9bce76dab904ecd555875fbb95a835015e5c4e25594767062a",
+  "mujoco_robot_config.json": "92a65290ca0a19dc55663dceb56ba327de1822aabedd5469993135664263cdd0",
+  "policies/standing/checkpoint.pkl": "56c6b592403d5beab608e568581eb8a8b4082b7080395185f134bcf7dee4a17f",
+  "policies/standing/policy.onnx": "e8b6839fe145ba89b5fca5c1147ff612a2c2b74cd3c4e5bcd3ac9a3fc49204a4",
+  "policies/standing/policy_spec.json": "71c3282f4482bdb1f216aa987dfb1d2c2c2cadc4100e94ae55e111ab686e8a2d",
+  "policies/standing/runtime_policy_config.json": "02e2ad4da3b867f1dddcf482ad64f6f069f543e122860f4e896102088cf17afd",
+  "policies/standing/training_config.yaml": "021612322434b4f1f27ff6c75ad51a757c986c6f69dde2fb48594bb3a8dc58d7",
+  "policies/walking/checkpoint.pkl": "a1322717e0e5e6cf73debbcb7bcdd8f7a1ac6bed113c19139c8d7812fa133511",
+  "policies/walking/policy.onnx": "c59f43849707b3e3cea38828ca9721ab56b9f6194c6db80476ebf3cd4c6d4900",
+  "policies/walking/policy_spec.json": "a102e309fdf0ccb041ed8a0fb23e3a0c456b59f8dd7499a673ff4e4c0db6fe2c",
+  "policies/walking/runtime_policy_config.json": "d5d985088987674fb105f407c9840570f7f759ab2a4265ec69aca97e0ec67d76",
+  "policies/walking/training_config.yaml": "170d09b7e16d2f280f711b9df476db4ada0f98044e6fe84e49a57cf237688687",
+  "wildrobot.xml": "ae732823945579dfe07bae01c7e25f7337bb78ca934eba183ac21f977fe53475"
+}
