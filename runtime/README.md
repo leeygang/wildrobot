@@ -127,8 +127,9 @@ Notes:
 - Policy runtime uses the raw Hiwonder/HTD TTL bus through the USB debug board. The old Hiwonder LSC controller-board path is legacy diagnostics only.
 - `foot_switches` uses Adafruit Blinka `board` pin names (e.g. `D5`).
   Set `foot_switches.enabled` to `false` when the switches are not installed.
-  Contact-free standing policies remain usable; runtime reports the signal as
-  unavailable instead of treating placeholder zeros as measured open contacts.
+  Contact-free standing policies and `wr_obs_v11_cmd3d_proprio` walking
+  policies remain usable; runtime reports the signal as unavailable instead of
+  treating placeholder zeros as measured open contacts.
   A walking policy whose observation contract includes foot contacts requires
   enabled, working switches. The runtime rejects that policy while the hardware
   configuration disables the switches; placeholder zeros are out-of-distribution

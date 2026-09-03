@@ -216,6 +216,32 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
             ),
             ObsFieldSpec(name="padding", size=1, units="unused"),
         ]
+    if layout_id == "wr_obs_v11_cmd3d_proprio":
+        # ToddlerBot-aligned walking proprioception: retain phase, command,
+        # orientation, angular velocity, joint state, prior action, and temporal
+        # history while removing hardware-specific contact-switch channels.
+        proprio_bundle = 3 + 3 * action_dim
+        return [
+            ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
+            ObsFieldSpec(name="angvel_heading_local", size=3, frame="heading_local", units="rad_s"),
+            ObsFieldSpec(name="joint_pos_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="joint_vel_normalized", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="prev_action", size=action_dim, units="normalized_-1_1"),
+            ObsFieldSpec(name="velocity_cmd", size=1, units="m_s"),
+            ObsFieldSpec(name="loc_ref_phase_sin_cos", size=2, units="sin_cos_phase"),
+            ObsFieldSpec(
+                name="proprio_history",
+                size=PROPRIO_HISTORY_FRAMES * proprio_bundle,
+                units="stacked_proprio_oldest_to_newest",
+            ),
+            ObsFieldSpec(
+                name="velocity_cmd_lateral_yaw",
+                size=2,
+                frame="heading_local",
+                units="m_s_and_rad_s",
+            ),
+            ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
     if layout_id == "wr_obs_v7_phase_proprio":
         # smoke11 (post-home-migration de-hybridization).  Mirrors
         # ToddlerBot's default ``use_phase_signal=True`` actor obs

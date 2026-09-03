@@ -45,6 +45,11 @@ SUPPORTED_LAYOUT_IDS = {
     # command (sliced to ``[..., :1]`` at the obs builder).  See
     # training/docs/v0210_lateral_yaw_prior_plan-final-r2.md P7.
     "wr_obs_v8_cmd3d",
+    # Contact-free walking actor aligned with ToddlerBot's deployed
+    # proprioceptive inputs.  This is v8 with the current and historical
+    # foot-switch channels removed; contact remains available to the critic,
+    # rewards, evaluator, and runtime telemetry.
+    "wr_obs_v11_cmd3d_proprio",
 }
 # Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
 # channels that benefit from history (joint_pos + joint_vel + gyro +
@@ -530,6 +535,28 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
             raise ValueError(
                 "observation.layout mismatch for layout_id="
                 "'wr_obs_v8_cmd3d':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
+    elif obs.layout_id == "wr_obs_v11_cmd3d_proprio":
+        proprio_bundle = 3 + 3 * int(model.action_dim)
+        expected = [
+            ("gravity_local", 3),
+            ("angvel_heading_local", 3),
+            ("joint_pos_normalized", int(model.action_dim)),
+            ("joint_vel_normalized", int(model.action_dim)),
+            ("prev_action", int(model.action_dim)),
+            ("velocity_cmd", 1),
+            ("loc_ref_phase_sin_cos", 2),
+            ("proprio_history", PROPRIO_HISTORY_FRAMES * proprio_bundle),
+            ("velocity_cmd_lateral_yaw", 2),
+            ("padding", 1),
+        ]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v11_cmd3d_proprio':\n"
                 f"  expected={expected}\n"
                 f"  got={got}"
             )

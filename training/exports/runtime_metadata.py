@@ -2,7 +2,7 @@
 
 The hardware runtime (``runtime/wr_runtime/control``) is a standalone package
 that must NOT import the training-side ``control`` / JAX stack.  But the latest
-``wr_obs_v8_cmd3d`` home-base-residual contract needs a handful of training
+command-conditioned home-base-residual contract needs a handful of training
 quantities that are NOT encoded in ``policy_spec.json``:
 
   - the action path: ``loc_ref_residual_base`` (home), optional walking-only

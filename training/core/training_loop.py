@@ -511,10 +511,13 @@ def make_train_iteration_fn(
             training_cfg=config,
             robot_cfg=robot_cfg,
         )
-        if policy_spec.observation.layout_id != "wr_obs_v8_cmd3d":
+        if policy_spec.observation.layout_id not in {
+            "wr_obs_v8_cmd3d",
+            "wr_obs_v11_cmd3d_proprio",
+        }:
             raise ValueError(
                 "ppo.mirror_loss_coef > 0 currently requires "
-                "env.actor_obs_layout_id='wr_obs_v8_cmd3d'"
+                "a supported command-conditioned walking layout"
             )
         mirror_observation_fn = functools.partial(
             mirror_observations, spec=policy_spec

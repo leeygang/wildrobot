@@ -9,8 +9,8 @@ normal rollout:
 3. Do paired +vy/-vy closed-loop rollouts produce mirrored actions and torque
    occupancy?
 
-The observation transform is intentionally limited to ``wr_obs_v8_cmd3d``.
-That is the active 17-DoF walking contract and lets every transformed channel
+The observation transform is intentionally limited to the v8 and contact-free
+v11 command-conditioned walking contracts. This lets every transformed channel
 be explicit rather than silently treating an unknown field as symmetric.
 """
 

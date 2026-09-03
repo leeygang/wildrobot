@@ -47,6 +47,31 @@ def test_obs_shape_is_937(v8_spec, runtime_policy_config):
     assert obs.shape == (937,)  # native 17-actuator v8 contract
 
 
+def test_contact_free_runtime_obs_is_independent_of_footswitches(v11_spec):
+    from conftest import make_runtime_policy_config
+
+    config = make_runtime_policy_config(v11_spec)
+    runner = _runner(v11_spec, config)
+    cmd = np.array([0.13, 0.0, 0.0], dtype=np.float32)
+    signals = _signals(v11_spec)
+    obs_pressed = runner.build_obs(signals, cmd)
+    runner.reset()
+    obs_open = runner.build_obs(
+        Signals(
+            quat_wxyz=signals.quat_wxyz,
+            gyro_rad_s=signals.gyro_rad_s,
+            joint_pos_rad=signals.joint_pos_rad,
+            joint_vel_rad_s=signals.joint_vel_rad_s,
+            foot_switches=np.zeros(4, dtype=np.float32),
+            timestamp_s=signals.timestamp_s,
+        ),
+        cmd,
+    )
+
+    assert obs_pressed.shape == (873,)
+    np.testing.assert_array_equal(obs_pressed, obs_open)
+
+
 def _slot_offsets(action_dim: int) -> dict:
     o = {}
     i = 0

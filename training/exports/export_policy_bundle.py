@@ -183,8 +183,14 @@ def export_deployment_bundle(
             raise ValueError(
                 "Standing policy must use a supported standing observation layout"
             )
-        if walking_spec["observation"]["layout_id"] != "wr_obs_v8_cmd3d":
-            raise ValueError("Walking policy must use wr_obs_v8_cmd3d")
+        if walking_spec["observation"]["layout_id"] not in {
+            "wr_obs_v8_cmd3d",
+            "wr_obs_v11_cmd3d_proprio",
+        }:
+            raise ValueError(
+                "Walking policy must use wr_obs_v8_cmd3d or "
+                "wr_obs_v11_cmd3d_proprio"
+            )
         if int(standing_spec["model"]["action_dim"]) != 17:
             raise ValueError("Standing policy must have 17 actions")
         standing_home = dict(

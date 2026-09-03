@@ -334,12 +334,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # appends a 2-dim ``velocity_cmd_lateral_yaw`` slot.
             # See policy_contract/spec.py SUPPORTED_LAYOUT_IDS.
             "wr_obs_v8_cmd3d",
+            "wr_obs_v11_cmd3d_proprio",
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
                 "{'wr_obs_v1', 'wr_obs_v9_standing', 'wr_obs_v10_standing_recovery', "
                 "'wr_obs_v6_offline_ref_history', "
-                "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d'}.  v5 was deprecated along with the "
+                "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d', "
+                "'wr_obs_v11_cmd3d_proprio'}.  v5 was deprecated along with the "
                 "high-confidence prep (proprio history is now always wired); "
                 "v7 (smoke11) drops every reference-trajectory channel from "
                 "the actor obs except the 2-dim gait phase clock; v8 (v0.21.0 "
@@ -2273,15 +2275,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         joint_vel_norm = _JaxCalibOps.normalize_joint_vel(
             spec=self._policy_spec, joint_vel_rad_s=signals.joint_vel_rad_s
         ).astype(jp.float32)
-        return jp.concatenate(
-            [
-                signals.gyro_rad_s.astype(jp.float32),
-                signals.foot_switches.astype(jp.float32),
-                joint_pos_norm,
-                joint_vel_norm,
-                prev_action.astype(jp.float32),
-            ]
+        parts = [signals.gyro_rad_s.astype(jp.float32)]
+        if self._policy_spec.observation.layout_id != "wr_obs_v11_cmd3d_proprio":
+            parts.append(signals.foot_switches.astype(jp.float32))
+        parts.extend(
+            [joint_pos_norm, joint_vel_norm, prev_action.astype(jp.float32)]
         )
+        return jp.concatenate(parts)
 
     @staticmethod
     def _roll_proprio_history(
@@ -2373,7 +2373,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # The slice ``velocity_cmd[1:]`` always exists because the env
         # sampler emits (3,) post-P3.
         lateral_yaw = None
-        if self._policy_spec.observation.layout_id == "wr_obs_v8_cmd3d":
+        if self._policy_spec.observation.layout_id in {
+            "wr_obs_v8_cmd3d",
+            "wr_obs_v11_cmd3d_proprio",
+        }:
             cmd_3vec = jp.asarray(velocity_cmd, dtype=jp.float32).reshape(3)
             lateral_yaw = cmd_3vec[1:]
         return build_observation(
@@ -4383,7 +4386,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # The buffer fills in over the first PROPRIO_HISTORY_FRAMES
         # steps as new_bundle gets rolled in (oldest dropped, newest
         # appended).
-        proprio_bundle_size = 3 + 4 + 3 * self.action_size
+        contact_size = (
+            0
+            if self._policy_spec.observation.layout_id
+            == "wr_obs_v11_cmd3d_proprio"
+            else 4
+        )
+        proprio_bundle_size = 3 + contact_size + 3 * self.action_size
         proprio_history_init = jp.zeros(
             (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
         )

@@ -1959,7 +1959,9 @@ def test_build_hardware_robot_io_skips_gpio_when_footswitches_disabled(
     assert io.foot_switches.read().switches == [False, False, False, False]
 
 
-def test_disabled_footswitches_are_allowed_only_for_contact_free_policy() -> None:
+def test_disabled_footswitches_are_allowed_only_for_contact_free_policy(
+    v11_spec,
+) -> None:
     from wr_runtime.control import run_policy
 
     contact_free = SimpleNamespace(
@@ -1978,6 +1980,10 @@ def test_disabled_footswitches_are_allowed_only_for_contact_free_policy() -> Non
     run_policy._validate_footswitch_configuration(
         enabled=False,
         policy_specs=[("standing", contact_free)],
+    )
+    run_policy._validate_footswitch_configuration(
+        enabled=False,
+        policy_specs=[("walking", v11_spec)],
     )
     with pytest.raises(SystemExit, match="walking"):
         run_policy._validate_footswitch_configuration(

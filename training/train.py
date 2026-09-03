@@ -103,6 +103,11 @@ from training.core.experiment_tracking import (
     WandbTracker,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
+from training.policy_migration.contact_free import (
+    SOURCE_LAYOUT_ID as CONTACT_SOURCE_LAYOUT_ID,
+    TARGET_LAYOUT_ID as CONTACT_FREE_LAYOUT_ID,
+    project_v8_policy_params,
+)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -299,7 +304,8 @@ def parse_args():
             "Actor checkpoint .pkl or checkpoint-run directory used to fine-tune "
             "under the current model/contract. A directory resolves the promoted "
             "checkpoint, or its rank-1 diagnostic candidate when none passed. "
-            "The critic and optimizer states are newly initialized."
+            "The critic and optimizer states are newly initialized. A v8 walking "
+            "actor is projected automatically for the contact-free v11 contract."
         ),
     )
 
@@ -900,6 +906,38 @@ def start_training(
                 "--init-policy checkpoint is missing required policy_params"
             )
         initial_policy_params = initial_policy_checkpoint["policy_params"]
+        source_spec_value = initial_policy_checkpoint.get("policy_spec_json")
+        source_spec = None
+        if isinstance(source_spec_value, str):
+            source_spec = json.loads(source_spec_value)
+        elif isinstance(source_spec_value, dict):
+            source_spec = source_spec_value
+        source_layout = (
+            source_spec.get("observation", {}).get("layout_id")
+            if isinstance(source_spec, dict)
+            else None
+        )
+        target_layout = policy_spec.observation.layout_id
+        if (
+            source_layout == CONTACT_SOURCE_LAYOUT_ID
+            and target_layout == CONTACT_FREE_LAYOUT_ID
+        ):
+            source_names = source_spec.get("robot", {}).get("actuator_names", [])
+            target_names = list(policy_spec.robot.actuator_names)
+            if list(source_names) != target_names:
+                raise ValueError(
+                    "Contact-free actor projection requires identical source and "
+                    "target actuator order"
+                )
+            initial_policy_params = project_v8_policy_params(
+                initial_policy_params,
+                action_dim=int(policy_spec.model.action_dim),
+            )
+            print(
+                "  ✓ Projected actor initialization from wr_obs_v8_cmd3d "
+                f"to {CONTACT_FREE_LAYOUT_ID} by removing current and historical "
+                "foot-contact inputs"
+            )
 
     print("\n" + "=" * 60)
     print("Starting PPO training...")

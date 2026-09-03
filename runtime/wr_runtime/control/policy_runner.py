@@ -1,7 +1,7 @@
 """Online control state machine for the latest WildRobot walking contract.
 
 This is the hardware-side mirror of ``training/eval/v6_eval_adapter.py`` for the
-``wr_obs_v8_cmd3d`` home-base-residual policy, without any MuJoCo / JAX /
+command-conditioned home-base-residual walking policies, without any MuJoCo / JAX /
 ``control`` dependency.  It maintains the four pieces of online state the v8
 policy needs:
 
@@ -45,7 +45,8 @@ from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
 from .reference_phase import ReferencePhaseService
 from .runtime_policy_config import RuntimePolicyConfig
 
-_SUPPORTED_LAYOUT = "wr_obs_v8_cmd3d"
+_SUPPORTED_LAYOUTS = {"wr_obs_v8_cmd3d", "wr_obs_v11_cmd3d_proprio"}
+_CONTACT_FREE_LAYOUT = "wr_obs_v11_cmd3d_proprio"
 _SUPPORTED_RESIDUAL_BASE = "home"
 
 
@@ -70,9 +71,10 @@ class RuntimePolicyRunner:
         zero_cmd_hold_home_deadzone: float | None = None,
     ) -> None:
         layout = spec.observation.layout_id
-        if layout != _SUPPORTED_LAYOUT:
+        if layout not in _SUPPORTED_LAYOUTS:
             raise ValueError(
-                f"RuntimePolicyRunner supports only layout_id={_SUPPORTED_LAYOUT!r}; "
+                "RuntimePolicyRunner supports only layout_id in "
+                f"{sorted(_SUPPORTED_LAYOUTS)!r}; "
                 f"got {layout!r}.  Older layouts need their own runtime path."
             )
         base = runtime_config.loc_ref_residual_base
@@ -89,7 +91,8 @@ class RuntimePolicyRunner:
         self._robot_io = robot_io
         self._zero_cmd_hold_home_deadzone = zero_cmd_hold_home_deadzone
         self._action_dim = int(spec.model.action_dim)
-        self._bundle_size = 3 + 4 + 3 * self._action_dim
+        contact_size = 0 if layout == _CONTACT_FREE_LAYOUT else 4
+        self._bundle_size = 3 + contact_size + 3 * self._action_dim
 
         delay_steps = int(runtime_config.action_delay_steps)
         if delay_steps not in (0, 1):
@@ -223,7 +226,7 @@ class RuntimePolicyRunner:
         )
 
     def build_obs(self, signals: Signals, velocity_cmd: np.ndarray) -> np.ndarray:
-        """Build the v8 obs at the current ``step_idx``.
+        """Build the walking observation at the current ``step_idx``.
 
         Uses the PRE-roll proprio_history and ``last_applied`` for the
         prev_action slot, then promotes ``pending_history`` into
@@ -314,8 +317,8 @@ class RuntimePolicyRunner:
         """Build the per-step proprio bundle from POST-physics signals and the
         action APPLIED this step, then roll it into ``pending_history``.
 
-        Mirrors V6EvalAdapter.post_physics: bundle =
-        ``[gyro, foot_switches, joint_pos_norm, joint_vel_norm, last_applied]``.
+        Mirrors V6EvalAdapter.post_physics. The contact-free contract omits
+        ``foot_switches`` from both the current observation and this history.
         """
         joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
             spec=self._spec, joint_pos_rad=signals.joint_pos_rad
@@ -323,15 +326,19 @@ class RuntimePolicyRunner:
         joint_vel_norm = NumpyCalibOps.normalize_joint_vel(
             spec=self._spec, joint_vel_rad_s=signals.joint_vel_rad_s
         ).astype(np.float32)
-        bundle = np.concatenate(
+        parts = [np.asarray(signals.gyro_rad_s, dtype=np.float32).reshape(3)]
+        if self._spec.observation.layout_id != _CONTACT_FREE_LAYOUT:
+            parts.append(
+                np.asarray(signals.foot_switches, dtype=np.float32).reshape(4)
+            )
+        parts.extend(
             [
-                np.asarray(signals.gyro_rad_s, dtype=np.float32).reshape(3),
-                np.asarray(signals.foot_switches, dtype=np.float32).reshape(4),
                 joint_pos_norm,
                 joint_vel_norm,
                 np.asarray(self._state.last_applied_action, dtype=np.float32),
             ]
         )
+        bundle = np.concatenate(parts)
         self._state.pending_history = np.concatenate(
             [self._state.proprio_history[1:], bundle[None, :]], axis=0
         ).astype(np.float32)

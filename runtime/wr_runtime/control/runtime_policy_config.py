@@ -2,7 +2,7 @@
 
 This is the runtime-side mirror of ``training/exports/runtime_metadata.py``.
 It carries the home-base residual action contract, optional walking-only base
-offsets, and the gait phase clock the ``wr_obs_v8_cmd3d`` policy needs —
+offsets, and the gait phase clock the command-conditioned walking policies need —
 quantities that are NOT in
 ``policy_spec.json``.  Loading it (rather than re-parsing the full
 ``training_config.yaml``) keeps the runtime decoupled from the training config

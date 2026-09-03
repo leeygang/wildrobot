@@ -80,6 +80,22 @@ def make_v8_spec(*, action_filter_alpha: float = 0.0):
     )
 
 
+def make_v11_spec(*, action_filter_alpha: float = 0.0):
+    """Build the contact-free walking PolicySpec from the real robot config."""
+    from policy_contract.spec_builder import build_policy_spec
+
+    specs = actuated_joint_specs_rad()
+    home = [0.5 * (j["range"][0] + j["range"][1]) for j in specs]
+    return build_policy_spec(
+        robot_name="wildrobot",
+        actuated_joint_specs=specs,
+        action_filter_alpha=action_filter_alpha,
+        home_ctrl_rad=home,
+        layout_id="wr_obs_v11_cmd3d_proprio",
+        mapping_id="pos_target_rad_v1",
+    )
+
+
 def make_reference_dict(*, n_steps: int = 96, n_cycle: int = 48):
     """Small synthetic (bin-independent) phase table for runtime tests."""
     import numpy as np
@@ -122,7 +138,7 @@ def make_runtime_policy_config(
     ref = reference if reference is not None else make_reference_dict()
     return RuntimePolicyConfig(
         schema_version=1,
-        actor_obs_layout_id="wr_obs_v8_cmd3d",
+        actor_obs_layout_id=spec.observation.layout_id,
         action_mapping_id="pos_target_rad_v1",
         ctrl_dt=0.02,
         control_hz=50.0,
@@ -148,6 +164,11 @@ def make_runtime_policy_config(
 @pytest.fixture
 def v8_spec():
     return make_v8_spec()
+
+
+@pytest.fixture
+def v11_spec():
+    return make_v11_spec()
 
 
 @pytest.fixture

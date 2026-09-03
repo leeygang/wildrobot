@@ -924,7 +924,8 @@ def main():
             gait_clock=gait_clock,
         )
         if (
-            policy_spec.observation.layout_id == "wr_obs_v8_cmd3d"
+            policy_spec.observation.layout_id
+            in {"wr_obs_v8_cmd3d", "wr_obs_v11_cmd3d_proprio"}
             and cmd_arr.size >= 3
         ):
             obs_kwargs["velocity_cmd_lateral_yaw"] = cmd_arr[1:3]

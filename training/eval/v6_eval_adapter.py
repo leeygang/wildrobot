@@ -82,7 +82,10 @@ V7_LAYOUT_ID = "wr_obs_v7_phase_proprio"
 # site (compute_obs below).  Without v8 in the allow-list a v8-trained
 # checkpoint cannot be evaluated or visualized off-policy.
 V8_LAYOUT_ID = "wr_obs_v8_cmd3d"
-ADAPTER_LAYOUT_IDS = frozenset({V6_LAYOUT_ID, V7_LAYOUT_ID, V8_LAYOUT_ID})
+V11_LAYOUT_ID = "wr_obs_v11_cmd3d_proprio"
+ADAPTER_LAYOUT_IDS = frozenset(
+    {V6_LAYOUT_ID, V7_LAYOUT_ID, V8_LAYOUT_ID, V11_LAYOUT_ID}
+)
 
 
 @dataclass
@@ -141,7 +144,8 @@ class V6EvalAdapter:
         self._signals_adapter = signals_adapter
         self._action_dim = int(action_dim)
 
-        self._bundle_size = 3 + 4 + 3 * self._action_dim  # gyro + sw + 3*N
+        contact_size = 0 if policy_spec.observation.layout_id == V11_LAYOUT_ID else 4
+        self._bundle_size = 3 + contact_size + 3 * self._action_dim
 
         # Action delay flag: env supports {0, 1}; v0.20.1 smoke uses 1.
         delay_steps = int(getattr(self._cfg.env, "action_delay_steps", 0))
@@ -1015,7 +1019,10 @@ class V6EvalAdapter:
         # v0.21.0 P11: route (vy, wz) only when the policy spec is v8 —
         # v6/v7 layouts ignore the kwarg, but passing it unconditionally
         # would break the build_observation_from_components contract.
-        if self._policy_spec.observation.layout_id == "wr_obs_v8_cmd3d":
+        if self._policy_spec.observation.layout_id in {
+            V8_LAYOUT_ID,
+            V11_LAYOUT_ID,
+        }:
             obs_kwargs["velocity_cmd_lateral_yaw"] = cmd_arr[1:]
         obs = build_observation(**obs_kwargs)
 
@@ -1131,15 +1138,17 @@ class V6EvalAdapter:
         joint_vel_norm = NumpyCalibOps.normalize_joint_vel(
             spec=self._policy_spec, joint_vel_rad_s=signals_post.joint_vel_rad_s
         ).astype(np.float32)
-        bundle = np.concatenate(
+        parts = [np.asarray(signals_post.gyro_rad_s, dtype=np.float32)]
+        if self._policy_spec.observation.layout_id != V11_LAYOUT_ID:
+            parts.append(np.asarray(signals_post.foot_switches, dtype=np.float32))
+        parts.extend(
             [
-                np.asarray(signals_post.gyro_rad_s, dtype=np.float32),
-                np.asarray(signals_post.foot_switches, dtype=np.float32),
                 joint_pos_norm,
                 joint_vel_norm,
                 np.asarray(self._state.last_applied_action, dtype=np.float32),
             ]
         )
+        bundle = np.concatenate(parts)
         history = self._state.proprio_history
         self._state.pending_history = np.concatenate(
             [history[1:], bundle[None, :]], axis=0

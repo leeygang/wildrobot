@@ -62,6 +62,7 @@ def build_observation_from_components(
         # full motivation.  v8 is a strict superset of v7 that
         # appends a 2-dim ``velocity_cmd_lateral_yaw`` slot.
         "wr_obs_v8_cmd3d",
+        "wr_obs_v11_cmd3d_proprio",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
 
@@ -168,7 +169,9 @@ def build_observation_from_components(
         joint_vel_normalized.reshape(-1),
     ]
     if spec.observation.layout_id not in {
-        "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
+        "wr_obs_v9_standing",
+        "wr_obs_v10_standing_recovery",
+        "wr_obs_v11_cmd3d_proprio",
     }:
         parts.append(foot_switches.reshape(4))
     parts.extend([
@@ -241,6 +244,21 @@ def build_observation_from_components(
             raise ValueError(
                 "wr_obs_v8_cmd3d requires velocity_cmd_lateral_yaw=(vy, wz); "
                 "got None.  Env must pass velocity_cmd[1:] for v8."
+            )
+        parts.append(
+            jnp.asarray(velocity_cmd_lateral_yaw, dtype=jnp.float32).reshape(2)
+        )
+    if spec.observation.layout_id == "wr_obs_v11_cmd3d_proprio":
+        parts.append(phase)
+        if proprio_history is None:
+            raise ValueError(
+                "wr_obs_v11_cmd3d_proprio requires proprio_history; got None."
+            )
+        parts.append(jnp.asarray(proprio_history, dtype=jnp.float32).reshape(-1))
+        if velocity_cmd_lateral_yaw is None:
+            raise ValueError(
+                "wr_obs_v11_cmd3d_proprio requires "
+                "velocity_cmd_lateral_yaw=(vy, wz); got None."
             )
         parts.append(
             jnp.asarray(velocity_cmd_lateral_yaw, dtype=jnp.float32).reshape(2)

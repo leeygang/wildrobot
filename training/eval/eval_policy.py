@@ -581,6 +581,8 @@ def main() -> int:
         "wr_obs_v4",
         "wr_obs_v6_offline_ref_history",
         "wr_obs_v7_phase_proprio",
+        "wr_obs_v8_cmd3d",
+        "wr_obs_v11_cmd3d_proprio",
     }
     cfg_version = getattr(training_cfg, "version_name", "") or ""
     cfg_looks_walking = (

@@ -86,10 +86,15 @@ def _mirror_foot_switches(values: jax.Array) -> jax.Array:
 
 
 def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
-    """Mirror ``wr_obs_v8_cmd3d`` observations across the sagittal plane."""
-    if spec.observation.layout_id != "wr_obs_v8_cmd3d":
+    """Mirror supported walking observations across the sagittal plane."""
+    contact_free = spec.observation.layout_id == "wr_obs_v11_cmd3d_proprio"
+    if spec.observation.layout_id not in {
+        "wr_obs_v8_cmd3d",
+        "wr_obs_v11_cmd3d_proprio",
+    }:
         raise ValueError(
-            "Walking symmetry supports wr_obs_v8_cmd3d only; got "
+            "Walking symmetry supports wr_obs_v8_cmd3d and "
+            "wr_obs_v11_cmd3d_proprio only; got "
             f"{spec.observation.layout_id!r}"
         )
 
@@ -99,7 +104,6 @@ def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
         "angvel_heading_local",
         "joint_pos_normalized",
         "joint_vel_normalized",
-        "foot_switches",
         "prev_action",
         "velocity_cmd",
         "loc_ref_phase_sin_cos",
@@ -107,6 +111,8 @@ def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
         "velocity_cmd_lateral_yaw",
         "padding",
     }
+    if not contact_free:
+        expected.add("foot_switches")
     if set(fields) != expected:
         raise ValueError(
             "Unexpected wr_obs_v8_cmd3d fields: "
@@ -138,9 +144,10 @@ def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
         mirrored = mirrored.at[..., fields[field_name]].set(
             mirror_actions(values[..., fields[field_name]], spec)
         )
-    mirrored = mirrored.at[..., fields["foot_switches"]].set(
-        _mirror_foot_switches(values[..., fields["foot_switches"]])
-    )
+    if not contact_free:
+        mirrored = mirrored.at[..., fields["foot_switches"]].set(
+            _mirror_foot_switches(values[..., fields["foot_switches"]])
+        )
     # Swapping support legs advances an alternating gait by pi.
     mirrored = mirrored.at[..., fields["loc_ref_phase_sin_cos"]].set(
         -values[..., fields["loc_ref_phase_sin_cos"]]
@@ -151,7 +158,8 @@ def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
     )
 
     action_dim = int(spec.model.action_dim)
-    bundle_size = 3 + 4 + 3 * action_dim
+    contact_size = 0 if contact_free else 4
+    bundle_size = 3 + contact_size + 3 * action_dim
     history = values[..., fields["proprio_history"]].reshape(
         values.shape[:-1] + (PROPRIO_HISTORY_FRAMES, bundle_size)
     )
@@ -160,10 +168,12 @@ def mirror_observations(obs: jax.Array, spec: PolicySpec) -> jax.Array:
         history[..., 0:3]
         * jnp.asarray([-1.0, 1.0, -1.0], dtype=jnp.float32)
     )
-    mirrored_history = mirrored_history.at[..., 3:7].set(
-        _mirror_foot_switches(history[..., 3:7])
-    )
-    offset = 7
+    offset = 3
+    if not contact_free:
+        mirrored_history = mirrored_history.at[..., 3:7].set(
+            _mirror_foot_switches(history[..., 3:7])
+        )
+        offset = 7
     for _ in range(3):
         mirrored_history = mirrored_history.at[
             ..., offset : offset + action_dim

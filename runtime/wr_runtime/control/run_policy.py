@@ -87,7 +87,7 @@ _RUN_POLICY_LOG_DIR = Path(__file__).resolve().parents[3] / "_run_policy_logs"
 _STANDING_LAYOUT_IDS = {
     "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
 }
-_WALKING_LAYOUT_ID = "wr_obs_v8_cmd3d"
+_WALKING_LAYOUT_IDS = {"wr_obs_v8_cmd3d", "wr_obs_v11_cmd3d_proprio"}
 
 
 class _LogStream:
@@ -2383,8 +2383,11 @@ def _run_deployment_bundle_from_args(
             "Deployment standing policy must use one of "
             f"{sorted(_STANDING_LAYOUT_IDS)}"
         )
-    if walking_bundle.spec.observation.layout_id != _WALKING_LAYOUT_ID:
-        raise SystemExit("Deployment walking policy must use wr_obs_v8_cmd3d")
+    if walking_bundle.spec.observation.layout_id not in _WALKING_LAYOUT_IDS:
+        raise SystemExit(
+            "Deployment walking policy must use one of "
+            f"{sorted(_WALKING_LAYOUT_IDS)}"
+        )
 
     standing_cfg = StandingRuntimePolicyConfig.from_json(
         deployment.policy_dir("standing") / "runtime_policy_config.json"
@@ -2703,7 +2706,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                 f"got {bundle.spec.model.action_dim}."
             )
     runtime_config: RuntimePolicyConfig | None = None
-    if layout_id == _WALKING_LAYOUT_ID:
+    if layout_id in _WALKING_LAYOUT_IDS:
         runtime_cfg_path = bundle_path / "runtime_policy_config.json"
         runtime_config = RuntimePolicyConfig.from_json(runtime_cfg_path)
         ctrl_dt = float(runtime_config.ctrl_dt)
@@ -2726,7 +2729,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
     else:
         raise SystemExit(
             f"Unsupported runtime layout={layout_id!r}; supported layouts are "
-            f"{_WALKING_LAYOUT_ID!r} and {sorted(_STANDING_LAYOUT_IDS)!r}."
+            f"{sorted(_WALKING_LAYOUT_IDS)!r} and {sorted(_STANDING_LAYOUT_IDS)!r}."
         )
 
     if not args.dry_run:
