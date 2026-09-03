@@ -262,8 +262,6 @@ def _invoke_codex(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, 
     command = [
         codex_path,
         "exec",
-        "--sandbox",
-        "workspace-write",
         "--approve-for-me",
         "--ephemeral",
         "--output-schema",
@@ -657,6 +655,20 @@ def _stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _retry(_args: argparse.Namespace) -> int:
+    state = _load_state()
+    if state.get("status") != "stopped_error":
+        raise remote.TrainingLoopError(
+            "retry is only valid after an orchestration error."
+        )
+    state["status"] = "active"
+    state["processed_job_id"] = None
+    state.pop("stop_reason", None)
+    _save_state(state)
+    print(f"Autonomous loop reactivated for job {state['active_job_id']}.")
+    return 0
+
+
 def _install_mac_service(args: argparse.Namespace) -> int:
     python_path = REPO_ROOT / ".venv/bin/python"
     script_path = Path(__file__).resolve()
@@ -745,6 +757,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     step.set_defaults(func=_step)
     status = commands.add_parser("status", help="show autonomous loop state")
     status.set_defaults(func=_status)
+    retry = commands.add_parser(
+        "retry", help="retry the active job after an orchestration error"
+    )
+    retry.set_defaults(func=_retry)
     stop = commands.add_parser("stop", help="stop after the current GPU job")
     stop.add_argument("--reason", default="stopped manually")
     stop.set_defaults(func=_stop)

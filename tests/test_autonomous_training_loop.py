@@ -155,7 +155,10 @@ def test_codex_exec_uses_structured_workspace_write_mode(
     monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
     monkeypatch.setattr(auto, "_validate_codex_result", lambda *_args: None)
 
+    commands: list[list[str]] = []
+
     def fake_run(command, **_kwargs):
+        commands.append(list(command))
         output_path = Path(command[command.index("--output-last-message") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
@@ -177,6 +180,8 @@ def test_codex_exec_uses_structured_workspace_write_mode(
     decision = auto._invoke_codex(state, manifest)
 
     assert decision["decision"] == "stop"
+    assert "--approve-for-me" in commands[0]
+    assert "--sandbox" not in commands[0]
     log = (local_root / "job-1" / "codex_exec.log").read_text()
     assert "done" in log
 
@@ -367,3 +372,23 @@ def test_start_parser_uses_latest_completed_run_when_name_is_omitted() -> None:
     )
 
     assert args.adopt_completed == "latest"
+
+
+def test_retry_reactivates_failed_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(
+        status="stopped_error",
+        processed_job_id="job-1",
+        stop_reason="codex failed",
+    )
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "_load_state", lambda: dict(state))
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    auto._retry(argparse.Namespace())
+
+    assert saved[-1]["status"] == "active"
+    assert saved[-1]["processed_job_id"] is None
+    assert "stop_reason" not in saved[-1]

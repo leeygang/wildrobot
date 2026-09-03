@@ -111,14 +111,16 @@ Inspect or stop the controller:
 
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py status
+uv run python wildrobot/agents/autonomous_training_loop.py retry
 uv run python wildrobot/agents/autonomous_training_loop.py stop
 tail -f training/remote_jobs/mac-service.log
 ssh leeygang@linux-pc.local \
   'journalctl --user -u wildrobot-training-gpu.service -f'
 ```
 
-The Mac controller invokes Codex with `--sandbox workspace-write` and
-`--approve-for-me`. Codex may analyze, edit, test, and create one local commit;
+The Mac controller invokes Codex with `--approve-for-me`, which selects the
+workspace-write sandbox in the installed CLI. Codex may analyze, edit, test,
+and create one local commit;
 the controller—not Codex—validates that commit, pushes it, and enqueues the next
 job. Automation files and `training/CHANGELOG.md` are protected from autonomous
 changes.
