@@ -13,7 +13,8 @@ The full loop uses two manually installed services:
 The loop is bounded by `--max-cycles` and `--max-training-failures`. A completed
 run that misses deployment gates must produce one bounded follow-up experiment;
 the loop stops only on a deterministically promoted checkpoint, an unexpected
-orchestration error, an explicit manual stop, or either configured limit. It
+orchestration error, or either configured limit. It can also be manually paused
+without cancelling an active GPU job. It
 exports and validates a bundle after promotion. It never starts robot hardware.
 
 ### Deploy and start the Ubuntu service
@@ -127,9 +128,15 @@ detaches the foreground monitor; it does not stop the active loop. Temporary
 SSH polling failures are printed and retried. `step` is a single non-blocking
 poll used by the LaunchAgent and for debugging. `run` also automatically
 reactivates `stopped_error` at its persisted stage and retries after the poll
-interval. Configured terminal states (`ready`, cycle/failure limits, and manual
-stop) are not overridden. GPU training output is likewise teed to both
+interval. Configured terminal states (`ready` and cycle/failure limits) are not
+overridden. GPU training output is likewise teed to both
 `train.log` and the systemd journal shown above.
+
+`stop` pauses only the Mac controller and preserves its durable pipeline stage;
+it does not cancel an active GPU training job. If analysis or Codex is already
+running, the request is honored at the next durable stage boundary. Wait until
+`status` reports `Loop status: paused` before making manual repository changes.
+Run the same `run` command later to reactivate and resume that exact stage.
 
 `status` prints the persisted stage, whether that stage belongs to the GPU or
 Mac, whether a Mac supervisor currently holds the loop lock, the live or cached

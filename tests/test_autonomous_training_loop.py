@@ -946,6 +946,144 @@ def test_run_reactivates_stopped_error_before_polling(
     assert "Automatically reactivated stage fix" in capsys.readouterr().out
 
 
+def test_run_reactivates_paused_stage_before_polling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _state(tmp_path)
+    state.update(
+        status="paused",
+        stage="analysis",
+        processed_job_id="job-1",
+        pause_reason="manual investigation",
+    )
+    saved: list[dict] = []
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "PAUSE_PATH", tmp_path / "pause.json")
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+    monkeypatch.setattr(
+        auto,
+        "_step_once",
+        lambda **_kwargs: {**state, "status": "ready"},
+    )
+
+    assert auto._run(argparse.Namespace(poll_seconds=2.5)) == 0
+
+    assert saved[0]["status"] == "active"
+    assert saved[0]["stage"] == "analysis"
+    assert saved[0]["processed_job_id"] == "job-1"
+    assert saved[0]["last_pause_reason"] == "manual investigation"
+    assert "Resuming paused stage analysis" in capsys.readouterr().out
+
+
+def test_stop_pauses_immediately_when_supervisor_is_idle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _state(tmp_path)
+    state.update(status="active", stage="fix", fix_attempts=1)
+    state_path = tmp_path / "state.json"
+    auto.remote._write_json_atomic(state_path, state)
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "PAUSE_PATH", tmp_path / "pause.json")
+
+    assert auto._stop(argparse.Namespace(reason="manual investigation")) == 0
+
+    paused = auto.remote._read_json(state_path)
+    assert paused["status"] == "paused"
+    assert paused["stage"] == "fix"
+    assert paused["fix_attempts"] == 1
+    assert paused["pause_reason"] == "manual investigation"
+    assert not auto.PAUSE_PATH.exists()
+    assert "paused at stage fix" in capsys.readouterr().out
+
+
+def test_stop_requests_pause_when_supervisor_is_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _state(tmp_path)
+    state.update(status="active", stage="analysis")
+    state_path = tmp_path / "state.json"
+    pause_path = tmp_path / "pause.json"
+    auto.remote._write_json_atomic(state_path, state)
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(auto, "PAUSE_PATH", pause_path)
+
+    def busy_lock(*_args) -> None:
+        raise BlockingIOError
+
+    monkeypatch.setattr(auto.fcntl, "flock", busy_lock)
+
+    assert auto._stop(argparse.Namespace(reason="take over")) == 0
+
+    assert auto.remote._read_json(state_path)["status"] == "active"
+    assert auto.remote._read_json(pause_path)["reason"] == "take over"
+    assert "Pause requested" in capsys.readouterr().out
+
+
+def test_step_honors_pending_pause_before_pipeline_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(tmp_path)
+    state.update(status="active", stage="analysis")
+    state_path = tmp_path / "state.json"
+    pause_path = tmp_path / "pause.json"
+    auto.remote._write_json_atomic(state_path, state)
+    auto.remote._write_json_atomic(
+        pause_path,
+        {"requested_at": "2026-09-03T00:00:00+00:00", "reason": "take over"},
+    )
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "PAUSE_PATH", pause_path)
+
+    result = auto._step_once()
+
+    assert result is not None
+    assert result["status"] == "paused"
+    assert result["stage"] == "analysis"
+    assert result["pause_reason"] == "take over"
+    assert not pause_path.exists()
+
+
+def test_status_reports_pending_pause_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = _state(tmp_path)
+    state_path = tmp_path / "state.json"
+    pause_path = tmp_path / "pause.json"
+    state_path.write_text("{}")
+    pause_path.write_text("{}")
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "PAUSE_PATH", pause_path)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_mac_supervisor_running", lambda: True)
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: {"job_id": "job-1", "status": "completed"},
+    )
+    monkeypatch.setattr(auto, "_recent_cycle_summaries", lambda *_args: [])
+
+    assert auto._status(argparse.Namespace(last=5, json=False)) == 0
+
+    assert "Pause requested: yes (waiting for a safe stage boundary)" in (
+        capsys.readouterr().out
+    )
+
+
 @pytest.mark.parametrize(
     "stage",
     ["adopt", "training", "analysis", "fix", "push", "enqueue", "export"],

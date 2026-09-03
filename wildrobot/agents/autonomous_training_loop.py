@@ -26,6 +26,7 @@ from wildrobot.agents import remote_training_loop as remote
 REPO_ROOT = _REPO_ROOT
 STATE_PATH = remote.LOCAL_JOB_ROOT / "autonomous_state.json"
 LOCK_PATH = remote.LOCAL_JOB_ROOT / ".autonomous.lock"
+PAUSE_PATH = remote.LOCAL_JOB_ROOT / ".autonomous_pause.json"
 DECISION_SCHEMA = Path(__file__).with_name("autonomous_decision.schema.json")
 CODEX_INSTRUCTIONS = Path(__file__).with_name("AUTONOMOUS_CODEX_PROMPT.md")
 AUTOMATION_PREFIX = "wildrobot/agents/"
@@ -96,6 +97,25 @@ def _load_state() -> dict[str, Any]:
 def _save_state(state: dict[str, Any]) -> None:
     state["updated_at"] = _utc_now()
     remote._write_json_atomic(STATE_PATH, state)
+
+
+def _honor_pause_request(state: dict[str, Any]) -> bool:
+    if state.get("status") != "active" or not PAUSE_PATH.is_file():
+        return False
+    request = remote._read_json(PAUSE_PATH)
+    state.update(
+        status="paused",
+        paused_at=_utc_now(),
+        pause_reason=str(request.get("reason") or "paused manually"),
+    )
+    _save_state(state)
+    PAUSE_PATH.unlink(missing_ok=True)
+    print(
+        f"Autonomous Mac loop paused at stage {_stage(state)}. "
+        "The active GPU job, if any, was not stopped.",
+        flush=True,
+    )
+    return True
 
 
 def _context(state: dict[str, Any], job_id: str | None = None) -> remote.RemoteContext:
@@ -653,6 +673,8 @@ def _local_terminal_manifest(state: dict[str, Any]) -> dict[str, Any]:
 def _process_terminal_job(
     state: dict[str, Any], manifest: dict[str, Any] | None = None
 ) -> None:
+    if _honor_pause_request(state):
+        return
     if _stage(state) == "training":
         if manifest is None:
             raise remote.TrainingLoopError(
@@ -666,6 +688,8 @@ def _process_terminal_job(
         _save_state(state)
 
     while state.get("status") == "active":
+        if _honor_pause_request(state):
+            return
         stage = _stage(state)
         if stage == "analysis":
             current = manifest or _local_terminal_manifest(state)
@@ -673,6 +697,8 @@ def _process_terminal_job(
             current = _run_analyzer(
                 _context(state, str(state["terminal_job_id"]))
             )
+            if _honor_pause_request(state):
+                return
             fix_base_sha = _require_training_commit(state, current)
             state["processed_job_id"] = str(state["terminal_job_id"])
             if current.get("status") == "completed" and current.get(
@@ -727,6 +753,8 @@ def _process_terminal_job(
         current = manifest or _local_terminal_manifest(state)
         if stage == "fix":
             decision = _resume_codex_decision(state, current)
+            if _honor_pause_request(state):
+                return
             state.update(
                 stage="push",
                 last_decision=decision,
@@ -754,6 +782,8 @@ def _process_terminal_job(
                 current,
             )
             _push(str(state["branch"]))
+            if _honor_pause_request(state):
+                return
             next_job = _enqueue(
                 state,
                 cycle=int(state["cycle"]) + 1,
@@ -777,6 +807,8 @@ def _step_once(
     if not STATE_PATH.is_file():
         return None
     state = _load_state()
+    if _honor_pause_request(state):
+        return state
     if state.get("status") != "active":
         return state
     try:
@@ -877,6 +909,8 @@ def _run(args: argparse.Namespace) -> int:
             state = _load_state()
             if state.get("status") == "stopped_error":
                 _reactivate_error(state)
+            elif state.get("status") == "paused":
+                _reactivate_paused(state)
             while True:
                 try:
                     state = _step_once(
@@ -933,6 +967,24 @@ def _reactivate_error(state: dict[str, Any]) -> None:
     print(
         f"Automatically reactivated stage {state['stage']}"
         + (f" after: {error}" if error else "."),
+        flush=True,
+    )
+
+
+def _reactivate_paused(state: dict[str, Any]) -> None:
+    if state.get("status") != "paused":
+        return
+    reason = state.pop("pause_reason", None)
+    state.update(
+        status="active",
+        last_pause_reason=reason,
+        resumed_at=_utc_now(),
+    )
+    _save_state(state)
+    PAUSE_PATH.unlink(missing_ok=True)
+    print(
+        f"Resuming paused stage {state['stage']}"
+        + (f" after: {reason}" if reason else "."),
         flush=True,
     )
 
@@ -1012,6 +1064,7 @@ def _start(args: argparse.Namespace) -> int:
         "standing_config": standing_config,
         "initial_git_sha": git_sha,
     }
+    PAUSE_PATH.unlink(missing_ok=True)
     if args.adopt_completed:
         training_git_sha = args.training_git_sha or git_sha
         if _git(
@@ -1233,6 +1286,7 @@ def _status(args: argparse.Namespace) -> int:
             if current_manifest is not None
             else state.get("last_remote_status", "unknown")
         ),
+        "pause_requested": PAUSE_PATH.is_file(),
         "remote_error": remote_error,
         "recent_cycles": history,
     }
@@ -1250,6 +1304,14 @@ def _status(args: argparse.Namespace) -> int:
     print(f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']}")
     print(f"Active job: {dashboard['active_job_id']}")
     print(f"GPU job status: {dashboard['gpu_job_status']}")
+    print(
+        "Pause requested: "
+        + (
+            "yes (waiting for a safe stage boundary)"
+            if dashboard["pause_requested"]
+            else "no"
+        )
+    )
     print(f"Config: {dashboard['active_config']}")
     if remote_error:
         print(f"Remote status error: {remote_error}")
@@ -1274,9 +1336,32 @@ def _status(args: argparse.Namespace) -> int:
 
 def _stop(args: argparse.Namespace) -> int:
     state = _load_state()
-    state.update(status="stopped", stop_reason=args.reason)
-    _save_state(state)
-    print("Autonomous loop stopped. The active GPU job, if any, was not killed.")
+    if state.get("status") == "paused":
+        print(f"Autonomous Mac loop is already paused at stage {_stage(state)}.")
+        return 0
+    if state.get("status") != "active":
+        raise remote.TrainingLoopError(
+            f"Cannot pause a loop with status {state.get('status')!r}."
+        )
+    remote._write_json_atomic(
+        PAUSE_PATH,
+        {"requested_at": _utc_now(), "reason": args.reason},
+    )
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                "Pause requested. The Mac supervisor will pause at the next "
+                "durable stage boundary; use status to confirm before taking over."
+            )
+            return 0
+        state = _load_state()
+        if state.get("status") == "active":
+            _honor_pause_request(state)
+        else:
+            PAUSE_PATH.unlink(missing_ok=True)
     return 0
 
 
@@ -1367,7 +1452,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     step = commands.add_parser("step", help="process one supervisor iteration")
     step.set_defaults(func=_step)
     run = commands.add_parser(
-        "run", help="continuously supervise the active loop in the foreground"
+        "run", help="resume and continuously supervise the loop in the foreground"
     )
     run.add_argument("--poll-seconds", type=float, default=10.0)
     run.set_defaults(func=_run)
@@ -1380,8 +1465,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=_status)
-    stop = commands.add_parser("stop", help="stop after the current GPU job")
-    stop.add_argument("--reason", default="stopped manually")
+    stop = commands.add_parser(
+        "stop", help="pause the Mac supervisor without stopping the GPU job"
+    )
+    stop.add_argument("--reason", default="paused manually")
     stop.set_defaults(func=_stop)
     install = commands.add_parser(
         "install-mac-service", help="write the macOS LaunchAgent"
