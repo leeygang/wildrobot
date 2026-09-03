@@ -357,6 +357,13 @@ class RuntimePolicyRunner:
             robot_io.write_ctrl(target_q)
         """
         step_t0 = time.monotonic()
+        previous_commanded_q_rad = getattr(
+            self._robot_io, "last_commanded_q_rad", None
+        )
+        if previous_commanded_q_rad is not None:
+            previous_commanded_q_rad = np.asarray(
+                previous_commanded_q_rad, dtype=np.float32
+            ).copy()
         read_t0 = time.monotonic()
         signals = self._robot_io.read()
         read_s = time.monotonic() - read_t0
@@ -393,6 +400,10 @@ class RuntimePolicyRunner:
         write_t0 = time.monotonic()
         self._robot_io.write_ctrl(target_q)
         write_s = time.monotonic() - write_t0
+        commanded_q_rad = np.asarray(
+            getattr(self._robot_io, "last_commanded_q_rad", target_q),
+            dtype=np.float32,
+        ).copy()
 
         timing_s = {
             "read": read_s,
@@ -412,6 +423,11 @@ class RuntimePolicyRunner:
         servo_metrics = getattr(self._robot_io, "last_servo_metrics", None)
         if not isinstance(servo_metrics, dict):
             servo_metrics = {}
+        servo_diagnostics = getattr(
+            self._robot_io, "last_servo_diagnostics", None
+        )
+        if not isinstance(servo_diagnostics, dict):
+            servo_diagnostics = {}
 
         return {
             "step_idx": int(self._state.step_idx),
@@ -419,6 +435,8 @@ class RuntimePolicyRunner:
             "raw_action": raw,
             "applied_action": applied,
             "target_q_rad": target_q,
+            "commanded_q_rad": commanded_q_rad,
+            "previous_commanded_q_rad": previous_commanded_q_rad,
             "signals": signals,
             "footswitch_available": bool(
                 getattr(self._robot_io, "footswitch_available", True)
@@ -426,6 +444,10 @@ class RuntimePolicyRunner:
             "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
+            "servo_diagnostics": {
+                str(key): np.asarray(value).copy()
+                for key, value in servo_diagnostics.items()
+            },
             "obs_debug": dict(getattr(self, "_last_obs_debug", {})),
             "action_scale": _sanitize_action_scale(action_scale),
         }

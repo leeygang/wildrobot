@@ -88,6 +88,7 @@ class HiwonderCachedActuators(Actuators):
         self.port = port or getattr(transport, "port", "unknown")
         self.baudrate = int(baudrate or getattr(transport, "baudrate", 0) or 0)
         self._last_error: Optional[Exception] = None
+        self.last_position_diagnostics: dict[str, np.ndarray] = {}
 
         self.servo_ids_list: List[int] = []
         offsets: List[int] = []
@@ -194,6 +195,23 @@ class HiwonderCachedActuators(Actuators):
             unit_values.append(value)
 
         units = np.asarray(unit_values, dtype=np.float32)
+        ordered_indices = np.asarray(
+            [index_by_servo_id[int(sid)] for sid in self.servo_ids_list],
+            dtype=np.int32,
+        )
+        self.last_position_diagnostics = {
+            "servo_ids": np.asarray(self.servo_ids_list, dtype=np.int32),
+            "position_units": units.copy(),
+            "velocity_units_s": np.asarray(
+                state.velocity_units_s[ordered_indices], dtype=np.float32
+            ).copy(),
+            "position_age_s": np.asarray(
+                state.position_age_s[ordered_indices], dtype=np.float32
+            ).copy(),
+            "read_fail_count": np.asarray(
+                state.read_fail_count[ordered_indices], dtype=np.int32
+            ).copy(),
+        }
         self._last_error = None
         return servo_pos_elect_units_to_joint_target_rad(
             units,

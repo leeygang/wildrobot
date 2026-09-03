@@ -74,6 +74,11 @@ def test_cached_actuators_convert_cached_units_to_radians():
 
     np.testing.assert_allclose(positions, np.array([1.0, 1.0], dtype=np.float32))
     np.testing.assert_allclose(velocities, np.array([0.1, 0.2], dtype=np.float32))
+    diagnostics = actuators.last_position_diagnostics
+    np.testing.assert_array_equal(diagnostics["servo_ids"], [1, 2])
+    np.testing.assert_allclose(diagnostics["position_units"], [600.0, 400.0])
+    np.testing.assert_allclose(diagnostics["velocity_units_s"], [10.0, -20.0])
+    np.testing.assert_allclose(diagnostics["position_age_s"], [0.01, 0.02])
 
 
 def test_cached_actuators_close_delegates_to_worker():

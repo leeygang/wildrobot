@@ -40,6 +40,14 @@ class MockRobotIO:
         )
         self._last_ctrl = self._home.copy()
         self._prev_ctrl = self._home.copy()
+        self.last_commanded_q_rad = self._home.copy()
+        self.last_servo_diagnostics = {
+            "servo_ids": np.arange(n, dtype=np.int32),
+            "position_units": np.full(n, np.nan, dtype=np.float32),
+            "velocity_units_s": np.zeros(n, dtype=np.float32),
+            "position_age_s": np.zeros(n, dtype=np.float32),
+            "read_fail_count": np.zeros(n, dtype=np.int32),
+        }
         self.written: List[np.ndarray] = []
         self.closed = False
 
@@ -63,6 +71,7 @@ class MockRobotIO:
         target = np.asarray(ctrl_targets_rad, dtype=np.float32).reshape(-1)
         self._prev_ctrl = self._last_ctrl
         self._last_ctrl = target.copy()
+        self.last_commanded_q_rad = target.copy()
         self.written.append(target.copy())
 
     def close(self) -> None:

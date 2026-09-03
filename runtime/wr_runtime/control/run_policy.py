@@ -56,6 +56,7 @@ from wr_runtime.control.runtime_policy_config import RuntimePolicyConfig
 from wr_runtime.control.runtime_policy_config import StandingRuntimePolicyConfig
 from wr_runtime.control.standing_policy_runner import StandingPolicyRunner
 from wr_runtime.deployment_bundle import DeploymentBundle, is_deployment_bundle
+from wr_runtime.logging.policy_telemetry import PolicyTelemetryRecorder
 
 
 _LEG_LOG_JOINTS = (
@@ -163,6 +164,7 @@ class _TargetBlendRobotIO:
             )
         self._blend_steps = max(0, int(blend_steps))
         self._write_step = 0
+        self.last_commanded_q_rad = self._initial_target.copy()
 
     def read(self):
         return self._robot_io.read()
@@ -175,7 +177,8 @@ class _TargetBlendRobotIO:
                 target - self._initial_target
             )
         self._write_step += 1
-        self._robot_io.write_ctrl(target.astype(np.float32))
+        self.last_commanded_q_rad = target.astype(np.float32)
+        self._robot_io.write_ctrl(self.last_commanded_q_rad)
 
     def __getattr__(self, name: str):
         return getattr(self._robot_io, name)
@@ -225,6 +228,38 @@ def _default_run_policy_log_path(
     )
     root = _RUN_POLICY_LOG_DIR if log_dir is None else Path(log_dir)
     return root / f"{version}_{checkpoint}_{mode}_{timestamp}.log"
+
+
+def _resolve_telemetry_path(value: Optional[str], log_path: Path) -> Path | None:
+    if value is None:
+        return None
+    path = log_path.with_suffix(".npz") if value == "" else Path(value).expanduser()
+    if path.suffix != ".npz":
+        raise SystemExit("--telemetry output path must end in .npz")
+    return path
+
+
+def _create_telemetry_recorder(
+    args: argparse.Namespace,
+    *,
+    actuator_names: Sequence[str],
+    ctrl_dt: float,
+    bundle_path: Path,
+    hardware_config_path: Path,
+) -> PolicyTelemetryRecorder | None:
+    telemetry_path = getattr(args, "telemetry_path", None)
+    if telemetry_path is None:
+        return None
+    recorder = PolicyTelemetryRecorder(
+        telemetry_path,
+        actuator_names=actuator_names,
+        ctrl_dt=ctrl_dt,
+        bundle_path=bundle_path,
+        hardware_config_path=hardware_config_path,
+    )
+    args.telemetry_recorder = recorder
+    print(f"Policy telemetry enabled: {telemetry_path}", flush=True)
+    return recorder
 
 
 def _install_stack_dump_signal() -> None:
@@ -833,7 +868,10 @@ def _format_policy_diagnostics(
 def _leg_error_max_deg(info: dict, leg_indices: List[int]) -> float | None:
     if not leg_indices:
         return None
-    target = np.asarray(info.get("target_q_rad", []), dtype=np.float32).reshape(-1)
+    target_value = info.get("previous_commanded_q_rad")
+    if target_value is None:
+        target_value = info.get("target_q_rad", [])
+    target = np.asarray(target_value, dtype=np.float32).reshape(-1)
     signals = info.get("signals")
     if target.size == 0 or signals is None:
         return None
@@ -1520,6 +1558,8 @@ def _run_startup_home_hold(
     confirm_imu_timeout_s: float = 3.0,
     input_fn: Callable[[str], str] | None = None,
     fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
+    telemetry: PolicyTelemetryRecorder | None = None,
+    telemetry_phase: str = "startup_home",
 ) -> None:
     """Command home before policy walking, then reset policy episode state."""
     hold_steps = max(0, int(steps))
@@ -1547,6 +1587,13 @@ def _run_startup_home_hold(
         info["timing_s"] = timing_s
         last_info = info
         hold_infos.append(info)
+        if telemetry is not None:
+            telemetry.record(
+                info,
+                phase=telemetry_phase,
+                loop_step=step,
+                requested_velocity_cmd=velocity_cmd,
+            )
         _abort_if_fallen(
             info=info,
             step=step,
@@ -1641,6 +1688,13 @@ def _run_startup_home_hold(
             info["timing_s"] = timing_s
             last_info = info
             hold_infos.append(info)
+            if telemetry is not None:
+                telemetry.record(
+                    info,
+                    phase=f"{telemetry_phase}_confirm",
+                    loop_step=len(hold_infos) - 1,
+                    requested_velocity_cmd=velocity_cmd,
+                )
             _abort_if_fallen(
                 info=info,
                 step=len(hold_infos) - 1,
@@ -1701,6 +1755,7 @@ def _run_standing_stabilization(
     confirm_before_walk: bool,
     confirm_imu_timeout_s: float,
     fall_tilt_deg: float,
+    telemetry: PolicyTelemetryRecorder | None = None,
 ) -> dict:
     """Run the standing policy, optionally confirm, then verify a fresh window."""
     velocity_cmd = np.zeros(3, dtype=np.float32)
@@ -1713,7 +1768,17 @@ def _run_standing_stabilization(
         for step in range(max(1, int(count))):
             loop_start_s = time.monotonic()
             info = runner.step(velocity_cmd)
+            timing_s = dict(info.get("timing_s", {}))
+            timing_s["work"] = time.monotonic() - loop_start_s
+            info["timing_s"] = timing_s
             infos.append(info)
+            if telemetry is not None:
+                telemetry.record(
+                    info,
+                    phase=label,
+                    loop_step=step,
+                    requested_velocity_cmd=velocity_cmd,
+                )
             _abort_if_fallen(
                 info=info,
                 step=step,
@@ -1849,6 +1914,8 @@ def run_policy_loop(
     startup_confirm_input_fn: Callable[[str], str] | None = None,
     startup_confirm_imu_timeout_s: float = 3.0,
     fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
+    telemetry: PolicyTelemetryRecorder | None = None,
+    telemetry_phase: str = "policy",
 ) -> List[dict]:
     """Run for ``max_steps`` iterations, or until interrupted when it is ``None``."""
     logs: List[dict] = []
@@ -1869,6 +1936,7 @@ def run_policy_loop(
         confirm_imu_timeout_s=float(startup_confirm_imu_timeout_s),
         input_fn=startup_confirm_input_fn,
         fall_tilt_deg=float(fall_tilt_deg),
+        telemetry=telemetry,
     )
     history_size = max(1, int(round(60.0 / max(float(ctrl_dt), 1e-9))))
     timing_samples = deque(maxlen=history_size) if max_steps is None else []
@@ -1911,6 +1979,13 @@ def run_policy_loop(
             servo_metrics = info.get("servo_metrics")
             if isinstance(servo_metrics, dict) and servo_metrics:
                 servo_metric_samples.append(servo_metrics)
+            if telemetry is not None:
+                telemetry.record(
+                    info,
+                    phase=telemetry_phase,
+                    loop_step=int(step),
+                    requested_velocity_cmd=velocity_cmd,
+                )
             _abort_if_fallen(
                 info=info,
                 step=int(step),
@@ -2052,6 +2127,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=str,
         default=None,
         help="Write stdout/stderr to this file without printing to the console.",
+    )
+    parser.add_argument(
+        "--telemetry",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Save every control sample to a compressed .npz file. With no PATH, "
+            "write beside the text log using the same filename stem."
+        ),
     )
     parser.add_argument(
         "--velocity-cmd", type=str, default=None,
@@ -2217,25 +2303,47 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.bundle or "bundle",
             stable_only=bool(args.stable_only),
         )
+    args.telemetry_path = _resolve_telemetry_path(args.telemetry, log_path)
     mirror_console = args.log_only is None
     with _output_log_context(str(log_path), mirror_console=mirror_console):
         print(f"Policy log: {log_path}", flush=True)
+        outcome = "error"
+        error_text: str | None = None
         try:
-            return _run_policy_from_args(args)
+            result = _run_policy_from_args(args)
+            outcome = "completed" if result == 0 else "failed"
+            return result
         except SystemExit as exc:
             code = exc.code
             if code is None:
+                outcome = "completed"
                 return 0
             if isinstance(code, int):
+                outcome = "completed" if code == 0 else "aborted"
+                error_text = None if code == 0 else f"SystemExit({code})"
                 return int(code)
+            outcome = "aborted"
+            error_text = str(code)
             print(code, file=sys.stderr)
             return 1
         except KeyboardInterrupt:
+            outcome = "interrupted"
+            error_text = "KeyboardInterrupt"
             print("Interrupted.", file=sys.stderr)
             return 130
-        except BaseException:
+        except BaseException as exc:
+            outcome = "error"
+            error_text = f"{type(exc).__name__}: {exc}"
             traceback.print_exc()
             return 1
+        finally:
+            recorder = getattr(args, "telemetry_recorder", None)
+            if recorder is not None:
+                try:
+                    recorder.save(outcome=outcome, error=error_text)
+                except Exception:
+                    print("Failed to save policy telemetry:", file=sys.stderr)
+                    traceback.print_exc()
 
 
 def _load_runtime_onnx_policy(bundle: PolicyBundle) -> OnnxPolicy:
@@ -2321,6 +2429,13 @@ def _run_deployment_bundle_from_args(
         _walking_runtime_plan(walking_bundle.spec)
     )
     _standing_runtime_plan(standing_bundle.spec)
+    telemetry = _create_telemetry_recorder(
+        args,
+        actuator_names=walking_names,
+        ctrl_dt=ctrl_dt,
+        bundle_path=bundle_path,
+        hardware_config_path=hardware_config_path,
+    )
 
     standing_policy = _load_runtime_onnx_policy(standing_bundle)
     walking_policy = _load_runtime_onnx_policy(walking_bundle)
@@ -2453,6 +2568,8 @@ def _run_deployment_bundle_from_args(
                 confirm_before_walk=False,
                 confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
                 fall_tilt_deg=float(args.fall_tilt_deg),
+                telemetry=telemetry,
+                telemetry_phase="startup_pose",
             )
         if args.stable_only:
             if not args.dry_run:
@@ -2475,6 +2592,7 @@ def _run_deployment_bundle_from_args(
                     confirm_before_walk=False,
                     confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
                     fall_tilt_deg=float(args.fall_tilt_deg),
+                    telemetry=telemetry,
                 )
             run_policy_loop(
                 runner=standing_runner,
@@ -2490,6 +2608,8 @@ def _run_deployment_bundle_from_args(
                 actuator_names=standing_names,
                 diagnostic_log_policy=bool(args.diagnostic_log_policy),
                 fall_tilt_deg=float(args.fall_tilt_deg),
+                telemetry=telemetry,
+                telemetry_phase="standing",
             )
         else:
             last_standing = _run_standing_stabilization(
@@ -2510,6 +2630,7 @@ def _run_deployment_bundle_from_args(
                 ),
                 confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
                 fall_tilt_deg=float(args.fall_tilt_deg),
+                telemetry=telemetry,
             )
             blended_robot_io = _TargetBlendRobotIO(
                 base_robot_io,
@@ -2545,6 +2666,8 @@ def _run_deployment_bundle_from_args(
                 startup_action_ramp_steps=blend_steps,
                 startup_stability_check=False,
                 fall_tilt_deg=float(args.fall_tilt_deg),
+                telemetry=telemetry,
+                telemetry_phase="walking",
             )
     finally:
         base_robot_io.close()
@@ -2613,6 +2736,14 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             ),
             policy_specs=[("standing" if stable_only else "walking", bundle.spec)],
         )
+
+    telemetry = _create_telemetry_recorder(
+        args,
+        actuator_names=hardware_actuator_names,
+        ctrl_dt=ctrl_dt,
+        bundle_path=bundle_path,
+        hardware_config_path=hardware_config_path,
+    )
 
     if stable_only:
         if args.velocity_cmd is not None:
@@ -2837,6 +2968,8 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_confirm_before_walk=bool(args.confirm_before_walk),
             startup_confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
             fall_tilt_deg=float(args.fall_tilt_deg),
+            telemetry=telemetry,
+            telemetry_phase="standing" if stable_only else "walking",
         )
     finally:
         try:

@@ -121,7 +121,9 @@ def test_walking_transition_blends_from_final_standing_target() -> None:
     )
 
     blended.write_ctrl(np.array([1.0, -1.0], dtype=np.float32))
+    np.testing.assert_allclose(blended.last_commanded_q_rad, [0.6, -0.6], atol=1e-6)
     blended.write_ctrl(np.array([1.0, -1.0], dtype=np.float32))
 
     np.testing.assert_allclose(base.written[0], [0.6, -0.6], atol=1e-6)
     np.testing.assert_allclose(base.written[1], [1.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(blended.last_commanded_q_rad, [1.0, -1.0], atol=1e-6)

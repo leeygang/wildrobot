@@ -295,6 +295,13 @@ class StandingPolicyRunner:
         action_scale: float = 1.0,
     ) -> dict:
         step_t0 = time.monotonic()
+        previous_commanded_q_rad = getattr(
+            self._robot_io, "last_commanded_q_rad", None
+        )
+        if previous_commanded_q_rad is not None:
+            previous_commanded_q_rad = np.asarray(
+                previous_commanded_q_rad, dtype=np.float32
+            ).copy()
         read_t0 = time.monotonic()
         full_signals = self._robot_io.read()
         read_s = time.monotonic() - read_t0
@@ -328,6 +335,10 @@ class StandingPolicyRunner:
         write_t0 = time.monotonic()
         self._robot_io.write_ctrl(hardware_target_q)
         write_s = time.monotonic() - write_t0
+        commanded_q_rad = np.asarray(
+            getattr(self._robot_io, "last_commanded_q_rad", hardware_target_q),
+            dtype=np.float32,
+        ).copy()
 
         timing_s = {
             "read": read_s,
@@ -347,6 +358,11 @@ class StandingPolicyRunner:
         servo_metrics = getattr(self._robot_io, "last_servo_metrics", None)
         if not isinstance(servo_metrics, dict):
             servo_metrics = {}
+        servo_diagnostics = getattr(
+            self._robot_io, "last_servo_diagnostics", None
+        )
+        if not isinstance(servo_diagnostics, dict):
+            servo_diagnostics = {}
 
         return {
             "step_idx": int(self._state.step_idx),
@@ -355,6 +371,8 @@ class StandingPolicyRunner:
             "applied_action": applied,
             "target_q_rad": target_q,
             "hardware_target_q_rad": hardware_target_q,
+            "commanded_q_rad": commanded_q_rad,
+            "previous_commanded_q_rad": previous_commanded_q_rad,
             "signals": signals,
             "hardware_signals": full_signals,
             "footswitch_available": bool(
@@ -363,6 +381,10 @@ class StandingPolicyRunner:
             "control_mode": control_mode,
             "timing_s": timing_s,
             "servo_metrics": dict(servo_metrics),
+            "servo_diagnostics": {
+                str(key): np.asarray(value).copy()
+                for key, value in servo_diagnostics.items()
+            },
             "obs_debug": {
                 "velocity_cmd": _as_three_vec(velocity_cmd),
                 "standing_recovery_command": encode_recovery_command(

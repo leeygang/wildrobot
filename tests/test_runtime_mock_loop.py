@@ -21,6 +21,7 @@ from runtime.wr_runtime.control.run_policy import (
     _format_leg_targets_deg,
     _output_log_context,
     _print_timing_summary,
+    _resolve_telemetry_path,
     _startup_home_hold_steps,
     run_policy_loop,
 )
@@ -782,4 +783,36 @@ def test_default_policy_log_path_uses_bundle_checkpoint_mode_and_timestamp(tmp_p
     assert _bundle_log_tokens(deployment, stable_only=True) == (
         "v0222",
         "ckpt90",
+    )
+
+
+def test_bare_telemetry_flag_uses_text_log_stem(tmp_path):
+    log_path = tmp_path / "trial.log"
+
+    assert _resolve_telemetry_path("", log_path) == tmp_path / "trial.npz"
+
+
+def test_runner_reports_previous_and_actual_command(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = MockRobotIO(
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=_SmallPolicy(v8_spec.model.action_dim),
+        robot_io=robot_io,
+    )
+
+    first = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
+    second = runner.step(np.array([0.13, 0.0, 0.0], dtype=np.float32))
+
+    np.testing.assert_allclose(first["previous_commanded_q_rad"], home, atol=1e-6)
+    np.testing.assert_allclose(first["commanded_q_rad"], home, atol=1e-6)
+    np.testing.assert_allclose(
+        second["previous_commanded_q_rad"], first["commanded_q_rad"], atol=1e-6
     )

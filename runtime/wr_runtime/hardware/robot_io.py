@@ -30,6 +30,10 @@ class HardwareRobotIO(RobotIO[Signals]):
     _last_imu_warn_time_s: float = 0.0
     last_timing_s: dict[str, float] = field(default_factory=dict, init=False)
     last_servo_metrics: dict = field(default_factory=dict, init=False)
+    last_servo_diagnostics: dict[str, np.ndarray] = field(
+        default_factory=dict, init=False
+    )
+    last_commanded_q_rad: Optional[np.ndarray] = field(default=None, init=False)
 
     @property
     def footswitch_available(self) -> bool:
@@ -160,6 +164,15 @@ class HardwareRobotIO(RobotIO[Signals]):
             raise RuntimeError(
                 f"Failed to read joint positions for {self.actuator_names} on port {port} baud {baudrate}{err_msg}"
             )
+        diagnostics = getattr(self.actuators, "last_position_diagnostics", None)
+        self.last_servo_diagnostics = (
+            {
+                str(key): np.asarray(value).copy()
+                for key, value in diagnostics.items()
+            }
+            if isinstance(diagnostics, dict)
+            else {}
+        )
         vel_t0 = time.monotonic()
         joint_vel = self.actuators.estimate_velocities_rad_s(self.control_dt)
         velocity_s = time.monotonic() - vel_t0
@@ -204,7 +217,9 @@ class HardwareRobotIO(RobotIO[Signals]):
 
     def write_ctrl(self, ctrl_targets_rad) -> None:
         write_t0 = time.monotonic()
-        self.actuators.set_targets_rad(np.asarray(ctrl_targets_rad, dtype=np.float32), move_time_ms=None)
+        target = np.asarray(ctrl_targets_rad, dtype=np.float32).reshape(-1)
+        self.actuators.set_targets_rad(target, move_time_ms=None)
+        self.last_commanded_q_rad = target.copy()
         self.last_timing_s = {
             **self.last_timing_s,
             "write_ctrl": time.monotonic() - write_t0,

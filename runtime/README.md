@@ -129,6 +129,10 @@ Notes:
   Set `foot_switches.enabled` to `false` when the switches are not installed.
   Contact-free standing policies remain usable; runtime reports the signal as
   unavailable instead of treating placeholder zeros as measured open contacts.
+  A walking policy whose observation contract includes foot contacts requires
+  enabled, working switches. The runtime rejects that policy while the hardware
+  configuration disables the switches; placeholder zeros are out-of-distribution
+  policy inputs and must not be used as a deployment workaround.
 
 ## Run
 
@@ -148,6 +152,9 @@ Flags:
 - Every run tees stdout/stderr to `_run_policy_logs/` at the repository root.
   `--log PATH` overrides the automatic path; `--log-only PATH` also suppresses
   console output.
+- `--telemetry [PATH]`: save aligned per-control-step sensor, policy, command,
+  servo-feedback, and timing data to a compressed `.npz`. With no path, the
+  telemetry file is written beside the text log using the same filename stem.
 - `--velocity-cmd vx` or `--velocity-cmd vx,vy,wz` (default: bundle
   `default_velocity_cmd`, e.g. `0.13,0,0` for smoke9 straight walk).
 - `--no-realtime`: don't sleep to maintain `control_hz` (hardware only).
@@ -169,6 +176,61 @@ uv run wildrobot-run-policy \
   --bundle bundles/deployment_walk_v0210_ckpt1650_stand_v0222_ckpt90 \
   --velocity-cmd 0.13,0,0 --confirm-before-walk
 ```
+
+### Tethered stance-to-walk diagnostic
+
+Use a slack overhead tether as a fall arrest, not as body support. Put the robot
+on the floor, keep the emergency stop or servo power cutoff within reach, and do
+not hold or reposition it after the standing policy starts. This command keeps
+measured-pose preparation, standing stabilization, operator confirmation, and
+walking in one process:
+
+```bash
+cd runtime
+uv run wildrobot-validate-bundle --bundle bundles/<deployment-bundle>
+
+uv run wildrobot-run-policy \
+  --bundle bundles/<deployment-bundle> \
+  --hardware-config configs/hardware_config.ports_candidate.json \
+  --velocity-cmd 0.065,0,0 \
+  --max-steps 50 \
+  --startup-pose-blend-s 2 \
+  --startup-pose-hold-s 5 \
+  --startup-command-ramp-s 1 \
+  --startup-action-ramp-s 1 \
+  --startup-stability-max-tilt-deg 10 \
+  --fall-tilt-deg 10 \
+  --confirm-before-walk \
+  --diagnostic-log-policy \
+  --log-steps 1 \
+  --telemetry
+```
+
+`--max-steps 50` limits the first walking exposure to one second at the current
+50 Hz control rate. If the standing phase, transition, contacts, and tracking
+errors are healthy, repeat with 100 steps, then 250 steps; do not increase speed
+and duration in the same trial. The runtime unloads the servos on completion,
+fall cutoff, Ctrl+C, or an exception.
+
+The `.npz` records phase labels, IMU quaternion/gyro, joint position/velocity,
+four foot contacts, complete policy observation, raw/applied action, policy
+target, actual blended command, previous command aligned to current feedback,
+per-joint tracking error, reference phase, command/action ramps, loop timing,
+and servo-cache age/read failures. Inspect it with:
+
+```bash
+uv run wildrobot-inspect-log \
+  --input ../_run_policy_logs/<matching-policy-log>.npz
+```
+
+This follows [ToddlerBot](https://arxiv.org/abs/2502.00893)'s single-process
+initial-pose-to-policy handoff and its sim-to-real practice of logging
+observations and actions for comparison. The
+servos do not expose measured joint torque through the current runtime, so
+policy-action occupancy and position tracking error are diagnostics, not direct
+physical torque measurements. Keep the synchronized side video for displacement,
+foot slip, tether interaction, and fall direction that onboard sensors cannot
+observe.
 
 ## Run a bundle from `training/checkpoints/` (on the WildRobot device)
 
