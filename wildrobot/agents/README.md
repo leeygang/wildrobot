@@ -76,8 +76,8 @@ uv run python wildrobot/agents/autonomous_training_loop.py start \
   --training-git-sha <40-character-training-commit> \
   --max-cycles 8
 
-# Process immediately instead of waiting for the next LaunchAgent interval.
-uv run python wildrobot/agents/autonomous_training_loop.py step
+# Stay attached, poll continuously, and stream progress in this terminal.
+uv run python wildrobot/agents/autonomous_training_loop.py run
 ```
 
 `--adopt-completed` discovers the newest W&B run that has `metrics.jsonl` and a
@@ -113,15 +113,21 @@ Inspect or stop the controller:
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py status
 uv run python wildrobot/agents/autonomous_training_loop.py retry
+uv run python wildrobot/agents/autonomous_training_loop.py run
 uv run python wildrobot/agents/autonomous_training_loop.py stop
 tail -f training/remote_jobs/mac-service.log
 ssh leeygang@linux-pc.local \
   'journalctl --user -u wildrobot-training-gpu.service -f'
 ```
 
-Manual `step` runs stream synchronization, analyzer, and Codex progress to the
-terminal while also writing the per-job logs. GPU training output is likewise
-teed to both `train.log` and the systemd journal shown above.
+`run` is the foreground continuous loop: it polls every 10 seconds, prints the
+current cycle, job, and remote status, and streams synchronization, analyzer,
+and Codex output while also writing the per-job logs. Pressing Ctrl-C only
+detaches the foreground monitor; it does not stop the active loop. Temporary
+SSH polling failures are printed and retried. `step` is a single non-blocking
+poll used by the LaunchAgent and for debugging. `retry` only changes a stopped
+loop back to active; use `run` afterward to watch it. GPU training output is
+likewise teed to both `train.log` and the systemd journal shown above.
 
 The Mac controller invokes Codex with `--approve-for-me`, which selects the
 workspace-write sandbox in the installed CLI. Codex may analyze, edit, test,

@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
@@ -156,6 +157,8 @@ def _enqueue(
         active_git_sha=git_sha,
         active_config=config,
         last_decision=None,
+        last_remote_status="queued",
+        last_poll_at=None,
     )
     _save_state(state)
     return job_id
@@ -470,6 +473,62 @@ def _process_terminal_job(state: dict[str, Any], manifest: dict[str, Any]) -> No
     print(f"Enqueued next autonomous job: {next_job}")
 
 
+def _step_once(
+    *,
+    print_progress: bool = False,
+    tolerate_poll_errors: bool = False,
+) -> dict[str, Any] | None:
+    if not STATE_PATH.is_file():
+        return None
+    state = _load_state()
+    if state.get("status") != "active":
+        return state
+    try:
+        try:
+            manifest = remote._fetch_manifest(_context(state))
+        except remote.TrainingLoopError as exc:
+            if not tolerate_poll_errors:
+                raise
+            state.update(
+                last_remote_status="unreachable",
+                last_poll_at=_utc_now(),
+                last_poll_error=str(exc),
+            )
+            _save_state(state)
+            if print_progress:
+                print(
+                    f"[{state['last_poll_at']}] cycle={state['cycle']}/"
+                    f"{state['max_cycles']} job={state['active_job_id']} "
+                    f"remote_status=unreachable error={exc}",
+                    flush=True,
+                )
+            return state
+        state["last_remote_status"] = manifest.get("status")
+        state["last_poll_at"] = _utc_now()
+        state.pop("last_poll_error", None)
+        _save_state(state)
+        if print_progress:
+            print(
+                f"[{state['last_poll_at']}] cycle={state['cycle']}/"
+                f"{state['max_cycles']} job={state['active_job_id']} "
+                f"remote_status={manifest.get('status', 'unknown')}",
+                flush=True,
+            )
+        if manifest.get("status") in {"queued", "dispatching", "running"}:
+            return state
+        if state.get("processed_job_id") == manifest.get("job_id"):
+            return state
+        _process_terminal_job(state, manifest)
+    except Exception as exc:
+        state.update(
+            status="stopped_error",
+            stop_reason=f"{type(exc).__name__}: {exc}",
+        )
+        _save_state(state)
+        raise
+    return state
+
+
 def _step(_args: argparse.Namespace) -> int:
     if not STATE_PATH.is_file():
         return 0
@@ -479,27 +538,53 @@ def _step(_args: argparse.Namespace) -> int:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
-        state = _load_state()
-        if state.get("status") != "active":
-            return 0
-        try:
-            manifest = remote._fetch_manifest(_context(state))
-            state["last_remote_status"] = manifest.get("status")
-            state["last_poll_at"] = _utc_now()
-            _save_state(state)
-            if manifest.get("status") in {"queued", "dispatching", "running"}:
-                return 0
-            if state.get("processed_job_id") == manifest.get("job_id"):
-                return 0
-            _process_terminal_job(state, manifest)
-        except Exception as exc:
-            state.update(
-                status="stopped_error",
-                stop_reason=f"{type(exc).__name__}: {exc}",
-            )
-            _save_state(state)
-            raise
+        _step_once()
     return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    if args.poll_seconds <= 0:
+        raise remote.TrainingLoopError("--poll-seconds must be greater than zero.")
+    if not STATE_PATH.is_file():
+        raise remote.TrainingLoopError(
+            "No autonomous state exists; run start before run."
+        )
+    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOCK_PATH.open("w") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise remote.TrainingLoopError(
+                "Another autonomous supervisor is already running."
+            ) from exc
+        print(
+            "Autonomous loop running in the foreground; press Ctrl-C to detach.",
+            flush=True,
+        )
+        try:
+            while True:
+                state = _step_once(
+                    print_progress=True,
+                    tolerate_poll_errors=True,
+                )
+                if state is None:
+                    raise remote.TrainingLoopError("Autonomous state disappeared.")
+                if state.get("status") != "active":
+                    reason = state.get("stop_reason")
+                    suffix = f": {reason}" if reason else ""
+                    print(
+                        f"Autonomous loop finished with status "
+                        f"{state.get('status')}{suffix}",
+                        flush=True,
+                    )
+                    return 0
+                time.sleep(args.poll_seconds)
+        except KeyboardInterrupt:
+            print(
+                "\nForeground monitor detached; autonomous state remains active.",
+                flush=True,
+            )
+            return 130
 
 
 def _start(args: argparse.Namespace) -> int:
@@ -743,6 +828,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     step = commands.add_parser("step", help="process one supervisor iteration")
     step.set_defaults(func=_step)
+    run = commands.add_parser(
+        "run", help="continuously supervise the active loop in the foreground"
+    )
+    run.add_argument("--poll-seconds", type=float, default=10.0)
+    run.set_defaults(func=_run)
     status = commands.add_parser("status", help="show autonomous loop state")
     status.set_defaults(func=_status)
     retry = commands.add_parser(

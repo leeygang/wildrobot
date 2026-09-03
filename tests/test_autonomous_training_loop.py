@@ -307,6 +307,29 @@ def test_terminal_failed_gate_can_commit_push_and_enqueue_next(
     assert events == ["push", "enqueue"]
 
 
+def test_enqueue_resets_status_for_the_new_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(last_remote_status="completed", last_poll_at="old")
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(auto.remote, "_config_checkpoint_series", lambda _path: "x")
+    monkeypatch.setattr(auto.remote, "_enqueue_remote", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+
+    auto._enqueue(
+        state,
+        cycle=2,
+        config="training/configs/next.yaml",
+        start_mode="init_policy",
+        checkpoint="training/checkpoints/source/checkpoint.pkl",
+    )
+
+    assert state["last_remote_status"] == "queued"
+    assert state["last_poll_at"] is None
+
+
 def test_mac_service_installer_writes_launch_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -395,6 +418,98 @@ def test_start_parser_uses_latest_completed_run_when_name_is_omitted() -> None:
     )
 
     assert args.adopt_completed == "latest"
+
+
+def test_run_parser_defaults_to_ten_second_polling() -> None:
+    args = auto._parse_args(["run"])
+
+    assert args.func is auto._run
+    assert args.poll_seconds == 10.0
+
+
+def test_step_once_prints_remote_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = {**_state(tmp_path), "status": "active"}
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: {"job_id": "job-1", "status": "running"},
+    )
+
+    result = auto._step_once(print_progress=True)
+
+    assert result is state
+    assert "cycle=1/4 job=job-1 remote_status=running" in capsys.readouterr().out
+
+
+def test_foreground_poll_retries_remote_connectivity_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = {**_state(tmp_path), "status": "active"}
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    def fail_fetch(_context):
+        raise remote.TrainingLoopError("SSH unavailable")
+
+    monkeypatch.setattr(auto.remote, "_fetch_manifest", fail_fetch)
+
+    result = auto._step_once(
+        print_progress=True,
+        tolerate_poll_errors=True,
+    )
+
+    assert result is state
+    assert saved[-1]["status"] == "active"
+    assert saved[-1]["last_remote_status"] == "unreachable"
+    assert "remote_status=unreachable error=SSH unavailable" in capsys.readouterr().out
+
+
+def test_run_polls_until_the_loop_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    states = [
+        {**_state(tmp_path), "status": "active"},
+        {
+            **_state(tmp_path),
+            "status": "stopped",
+            "stop_reason": "maximum cycle count reached",
+        },
+    ]
+    sleeps: list[float] = []
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    monkeypatch.setattr(auto, "STATE_PATH", state_path)
+    monkeypatch.setattr(auto, "LOCK_PATH", tmp_path / "loop.lock")
+    monkeypatch.setattr(
+        auto,
+        "_step_once",
+        lambda **_kwargs: states.pop(0),
+    )
+    monkeypatch.setattr(auto.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert auto._run(argparse.Namespace(poll_seconds=2.5)) == 0
+
+    assert sleeps == [2.5]
+    output = capsys.readouterr().out
+    assert "running in the foreground" in output
+    assert "maximum cycle count reached" in output
 
 
 def test_retry_reactivates_failed_job(
