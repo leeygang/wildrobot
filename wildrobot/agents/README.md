@@ -112,6 +112,7 @@ Inspect or stop the controller:
 
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py status
+uv run python wildrobot/agents/autonomous_training_loop.py status --last 10
 uv run python wildrobot/agents/autonomous_training_loop.py retry
 uv run python wildrobot/agents/autonomous_training_loop.py run
 uv run python wildrobot/agents/autonomous_training_loop.py stop
@@ -128,6 +129,12 @@ SSH polling failures are printed and retried. `step` is a single non-blocking
 poll used by the LaunchAgent and for debugging. `retry` only changes a stopped
 loop back to active; use `run` afterward to watch it. GPU training output is
 likewise teed to both `train.log` and the systemd journal shown above.
+
+`status` prints the persisted stage, whether that stage belongs to the GPU or
+Mac, whether a Mac supervisor currently holds the loop lock, the live or cached
+GPU job status, and summaries of the five most recent autonomous cycles. Use
+`--last 10` (or another positive count) to change the history length, and
+`--json` for machine-readable output.
 
 The Mac state records durable stages: `adopt`, `training`, `analysis`, `fix`,
 `push`, `enqueue`, and `export`. Restarting `run` resumes the recorded stage.

@@ -687,6 +687,142 @@ def test_run_parser_defaults_to_ten_second_polling() -> None:
     assert args.poll_seconds == 10.0
 
 
+def test_status_parser_defaults_to_five_and_accepts_ten() -> None:
+    assert auto._parse_args(["status"]).last == 5
+    assert auto._parse_args(["status", "--last", "10"]).last == 10
+
+
+def test_status_shows_machine_stage_and_recent_cycle_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = {
+        **_state(tmp_path),
+        "cycle": 2,
+        "active_job_id": "auto-02-next",
+        "active_git_sha": "b" * 40,
+        "active_config": "training/configs/next.yaml",
+    }
+    local_root = tmp_path / "remote_jobs"
+    job_dir = local_root / "auto-01-first"
+    job_dir.mkdir(parents=True)
+    checkpoint_dir = tmp_path / "training/checkpoints/run-1"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "post_training_eval_summary.json").write_text(
+        json.dumps(
+            {
+                "selected_checkpoint_path": None,
+                "top_k_candidates": [
+                    {
+                        "checkpoint_path": "training/checkpoints/run-1/checkpoint.pkl",
+                        "eval_metrics": {
+                            "walking_fall_env_count": 2,
+                            "walking_survivor_env_count": 62,
+                            "walking_stable_body_tilt_deg_mean": 3.2,
+                            "walking_stable_body_tilt_deg_max": 8.4,
+                            "walking_stable_max_actuator_torque_sat_frac": 0.12,
+                            "forward_velocity": 0.11,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    (job_dir / remote.MANIFEST_NAME).write_text(
+        json.dumps(
+            {
+                "job_id": "auto-01-first",
+                "status": "completed",
+                "git_sha": "a" * 40,
+                "source_config": "training/configs/first.yaml",
+                "wandb_run_name": "offline-run-first",
+                "local_checkpoint_run_dir": "training/checkpoints/run-1",
+            }
+        )
+    )
+    (job_dir / "codex_decision.json").write_text(
+        json.dumps(
+            {
+                "summary": "reduce the measured fall mode",
+                "config": "training/configs/next.yaml",
+            }
+        )
+    )
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_mac_supervisor_running", lambda: False)
+    monkeypatch.setattr(
+        auto,
+        "_git_commit_summary",
+        lambda sha: f"{str(sha)[:7]} test patch",
+    )
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: {
+            "job_id": "auto-02-next",
+            "status": "running",
+            "git_sha": "b" * 40,
+            "source_config": "training/configs/next.yaml",
+            "training_attempt": 1,
+        },
+    )
+
+    auto._status(argparse.Namespace(last=5, json=False))
+
+    output = capsys.readouterr().out
+    assert "Current stage: training" in output
+    assert "Stage machine: GPU" in output
+    assert "Mac supervisor: not running" in output
+    assert "GPU job status: running" in output
+    assert "Cycle 2: running" in output
+    assert "Cycle 1: completed" in output
+    assert "falls=2/64" in output
+    assert "sat=12.000%" in output
+    assert "Next patch: reduce the measured fall mode" in output
+
+
+def test_status_last_limits_recent_cycles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = {**_state(tmp_path), "stage": "analysis"}
+    local_root = tmp_path / "remote_jobs"
+    for cycle in range(1, 4):
+        job_dir = local_root / f"auto-{cycle:02d}-job"
+        job_dir.mkdir(parents=True)
+        (job_dir / remote.MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "job_id": job_dir.name,
+                    "status": "completed",
+                    "git_sha": str(cycle) * 40,
+                }
+            )
+        )
+    monkeypatch.setattr(auto.remote, "LOCAL_JOB_ROOT", local_root)
+    monkeypatch.setattr(auto, "_load_state", lambda: state)
+    monkeypatch.setattr(auto, "_mac_supervisor_running", lambda: True)
+    monkeypatch.setattr(auto, "_git_commit_summary", lambda sha: str(sha)[:7])
+    monkeypatch.setattr(
+        auto.remote,
+        "_fetch_manifest",
+        lambda _context: (_ for _ in ()).throw(
+            remote.TrainingLoopError("offline")
+        ),
+    )
+
+    auto._status(argparse.Namespace(last=2, json=False))
+
+    output = capsys.readouterr().out
+    assert "Stage machine: Mac" in output
+    assert "Mac supervisor: running" in output
+    assert "Cycle 3: completed" in output
+    assert "Cycle 2: completed" in output
+    assert "Cycle 1: completed" not in output
+
+
 def test_step_once_prints_remote_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

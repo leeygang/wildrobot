@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1022,9 +1023,214 @@ def _start(args: argparse.Namespace) -> int:
     return 0
 
 
-def _status(_args: argparse.Namespace) -> int:
+def _mac_supervisor_running() -> bool:
+    if not LOCK_PATH.is_file():
+        return False
+    with LOCK_PATH.open("r") as lock_file:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+def _stage_machine(state: dict[str, Any]) -> str:
+    if state.get("status") != "active":
+        return "none"
+    return "GPU" if _stage(state) == "training" else "Mac"
+
+
+def _git_commit_summary(git_sha: str | None) -> str | None:
+    if not git_sha:
+        return None
+    result = _git("show", "-s", "--format=%h %s", git_sha, check=False)
+    return result.stdout.strip() if result.returncode == 0 else str(git_sha)[:12]
+
+
+def _job_cycle(job_id: str) -> int:
+    match = re.match(r"auto-(\d+)-", job_id)
+    return int(match.group(1)) if match else 0
+
+
+def _training_result_summary(manifest: dict[str, Any]) -> str:
+    status = str(manifest.get("status", "unknown"))
+    if status not in {"completed", "failed"}:
+        attempt = manifest.get("training_attempt")
+        suffix = f", attempt {attempt}" if attempt is not None else ""
+        return f"{status}{suffix}"
+    if status == "failed":
+        return f"failed: {manifest.get('error') or 'unknown error'}"
+
+    checkpoint_dir = manifest.get("local_checkpoint_run_dir")
+    summary_path = (
+        REPO_ROOT / str(checkpoint_dir) / "post_training_eval_summary.json"
+        if checkpoint_dir
+        else None
+    )
+    if summary_path is None or not summary_path.is_file():
+        readiness = "ready" if manifest.get("simulation_candidate_ready") else "not ready"
+        return f"completed, {readiness}; deterministic summary not synchronized"
+
+    summary = remote._read_json(summary_path)
+    selected = summary.get("selected_checkpoint_path")
+    candidates = [
+        item for item in summary.get("top_k_candidates", []) if isinstance(item, dict)
+    ]
+    candidate = next(
+        (
+            item
+            for item in candidates
+            if selected and item.get("checkpoint_path") == selected
+        ),
+        candidates[0] if candidates else None,
+    )
+    readiness = "READY" if selected else "not ready"
+    if candidate is None:
+        return f"completed, {readiness}; no evaluated checkpoint metrics"
+    metrics = candidate.get("eval_metrics", {})
+    falls = metrics.get("walking_fall_env_count")
+    survivors = metrics.get("walking_survivor_env_count")
+    total = (
+        int(float(falls) + float(survivors))
+        if falls is not None and survivors is not None
+        else None
+    )
+    parts = [
+        f"completed, {readiness}",
+        f"checkpoint={Path(str(candidate.get('checkpoint_path', 'unknown'))).name}",
+    ]
+    if falls is not None:
+        falls_text = f"{int(float(falls))}/{total}" if total is not None else str(falls)
+        parts.append(f"falls={falls_text}")
+    for key, label, scale, suffix in (
+        ("walking_stable_body_tilt_deg_mean", "tilt_mean", 1.0, "deg"),
+        ("walking_stable_body_tilt_deg_max", "tilt_max", 1.0, "deg"),
+        ("walking_stable_max_actuator_torque_sat_frac", "sat", 100.0, "%"),
+        ("forward_velocity", "forward", 1.0, "m/s"),
+    ):
+        value = metrics.get(key)
+        if value is not None:
+            parts.append(f"{label}={float(value) * scale:.3f}{suffix}")
+    return "; ".join(parts)
+
+
+def _recent_cycle_summaries(
+    state: dict[str, Any],
+    current_manifest: dict[str, Any] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    manifests: dict[str, dict[str, Any]] = {}
+    if remote.LOCAL_JOB_ROOT.is_dir():
+        for path in remote.LOCAL_JOB_ROOT.glob(f"*/{remote.MANIFEST_NAME}"):
+            try:
+                manifest = remote._read_json(path)
+            except remote.TrainingLoopError:
+                continue
+            job_id = str(manifest.get("job_id", ""))
+            if job_id.startswith("auto-"):
+                manifests[job_id] = manifest
+    if current_manifest is not None:
+        manifests[str(current_manifest["job_id"])] = current_manifest
+    elif state.get("active_job_id"):
+        manifests.setdefault(
+            str(state["active_job_id"]),
+            {
+                "job_id": state["active_job_id"],
+                "status": state.get("last_remote_status", "unknown"),
+                "git_sha": state.get("active_git_sha"),
+                "source_config": state.get("active_config"),
+            },
+        )
+
+    records = []
+    for job_id, manifest in manifests.items():
+        job_dir = remote.LOCAL_JOB_ROOT / job_id
+        decision_path = job_dir / "codex_decision.json"
+        decision = None
+        if decision_path.is_file():
+            try:
+                decision = remote._read_json(decision_path)
+            except remote.TrainingLoopError:
+                pass
+        records.append(
+            {
+                "cycle": _job_cycle(job_id),
+                "job_id": job_id,
+                "status": manifest.get("status", "unknown"),
+                "config": manifest.get("source_config"),
+                "wandb_run": manifest.get("wandb_run_name"),
+                "input_patch": _git_commit_summary(manifest.get("git_sha")),
+                "training_result": _training_result_summary(manifest),
+                "next_patch": decision.get("summary") if decision else None,
+                "next_config": decision.get("config") if decision else None,
+            }
+        )
+    records.sort(key=lambda item: (int(item["cycle"]), str(item["job_id"])), reverse=True)
+    return records[:limit]
+
+
+def _status(args: argparse.Namespace) -> int:
+    if args.last < 1:
+        raise remote.TrainingLoopError("--last must be at least 1.")
     state = _load_state()
-    print(json.dumps(state, indent=2, sort_keys=True))
+    current_manifest = None
+    remote_error = None
+    if state.get("active_job_id"):
+        try:
+            current_manifest = remote._fetch_manifest(_context(state))
+        except remote.TrainingLoopError as exc:
+            remote_error = str(exc)
+    history = _recent_cycle_summaries(state, current_manifest, args.last)
+    dashboard = {
+        "status": state.get("status"),
+        "stage": _stage(state),
+        "stage_machine": _stage_machine(state),
+        "mac_supervisor_running": _mac_supervisor_running(),
+        "cycle": state.get("cycle"),
+        "max_cycles": state.get("max_cycles"),
+        "active_job_id": state.get("active_job_id"),
+        "active_config": state.get("active_config"),
+        "gpu_job_status": (
+            current_manifest.get("status")
+            if current_manifest is not None
+            else state.get("last_remote_status", "unknown")
+        ),
+        "remote_error": remote_error,
+        "recent_cycles": history,
+    }
+    if args.json:
+        print(json.dumps(dashboard, indent=2, sort_keys=True))
+        return 0
+
+    print(f"Loop status: {dashboard['status']}")
+    print(f"Current stage: {dashboard['stage']}")
+    print(f"Stage machine: {dashboard['stage_machine']}")
+    print(
+        "Mac supervisor: "
+        + ("running" if dashboard["mac_supervisor_running"] else "not running")
+    )
+    print(f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']}")
+    print(f"Active job: {dashboard['active_job_id']}")
+    print(f"GPU job status: {dashboard['gpu_job_status']}")
+    print(f"Config: {dashboard['active_config']}")
+    if remote_error:
+        print(f"Remote status error: {remote_error}")
+    print(f"\nRecent loop cycles (last {args.last}):")
+    if not history:
+        print("  none")
+    for record in history:
+        print(
+            f"  Cycle {record['cycle']}: {record['status']} | {record['job_id']}"
+        )
+        print(f"    Input patch: {record['input_patch'] or 'unknown'}")
+        print(f"    Config: {record['config'] or 'unknown'}")
+        if record["wandb_run"]:
+            print(f"    W&B: {record['wandb_run']}")
+        print(f"    Result: {record['training_result']}")
+        if record["next_patch"]:
+            print(f"    Next patch: {record['next_patch']}")
+        if record["next_config"]:
+            print(f"    Next config: {record['next_config']}")
     return 0
 
 
@@ -1150,6 +1356,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run.add_argument("--poll-seconds", type=float, default=10.0)
     run.set_defaults(func=_run)
     status = commands.add_parser("status", help="show autonomous loop state")
+    status.add_argument(
+        "--last",
+        type=int,
+        default=5,
+        help="number of recent patch/training cycles to show (default: 5)",
+    )
+    status.add_argument("--json", action="store_true")
     status.set_defaults(func=_status)
     retry = commands.add_parser(
         "retry", help="retry the active job after an orchestration error"
