@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import argparse
+from http import HTTPStatus
+from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
+import threading
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
 from wildrobot.agents import autonomous_training_loop as auto
 from wildrobot.agents import remote_training_loop as remote
+from wildrobot.agents import training_loop_web as web
 
 
 def _state(tmp_path: Path) -> dict:
@@ -690,6 +696,174 @@ def test_run_parser_defaults_to_ten_second_polling() -> None:
 def test_status_parser_defaults_to_five_and_accepts_ten() -> None:
     assert auto._parse_args(["status"]).last == 5
     assert auto._parse_args(["status", "--last", "10"]).last == 10
+
+
+def test_web_parser_defaults_to_local_port_8080() -> None:
+    args = auto._parse_args(["web"])
+
+    assert args.func is auto._web
+    assert args.host == "127.0.0.1"
+    assert args.port == 8080
+
+
+def test_web_start_builds_existing_cli_command() -> None:
+    args = web._build_start_args(
+        {
+            "config": "training/configs/contact_free.yaml",
+            "start_mode": "adopt_completed",
+            "source": "offline-run-id",
+            "training_git_sha": "a" * 40,
+            "max_cycles": 20,
+            "max_training_failures": 2,
+            "gpu_host": "gpu.local",
+            "gpu_user": "robot",
+            "remote_repo": "/srv/wildrobot",
+            "standing_checkpoint": "runtime/bundles/standing/checkpoint.pkl",
+            "standing_config": "runtime/bundles/standing/training_config.yaml",
+            "new_run": True,
+        }
+    )
+
+    assert args[:3] == [
+        "start",
+        "--config",
+        "training/configs/contact_free.yaml",
+    ]
+    assert args[args.index("--adopt-completed") + 1] == "offline-run-id"
+    assert args[args.index("--training-git-sha") + 1] == "a" * 40
+    assert args[args.index("--max-cycles") + 1] == "20"
+    assert args[-1] == "--new-run"
+
+
+def test_web_status_combines_loop_and_machine_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "active_config": "training/configs/contact_free.yaml",
+                "branch": "main",
+                "host": "gpu.local",
+                "user": "robot",
+                "remote_repo": "/srv/wildrobot",
+                "max_cycles": 20,
+                "max_training_failures": 2,
+            }
+        )
+    )
+    loop = {
+        "status": "active",
+        "stage": "training",
+        "stage_machine": "GPU",
+        "mac_supervisor_running": True,
+        "gpu_job_status": "running",
+        "recent_cycles": [],
+    }
+    monkeypatch.setattr(web, "STATE_PATH", state_path)
+    monkeypatch.setattr(
+        web,
+        "_run_cli",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, json.dumps(loop), ""
+        ),
+    )
+    monkeypatch.setattr(
+        web,
+        "_gpu_service_status",
+        lambda _state: {
+            "host": "gpu.local",
+            "target": "robot@gpu.local",
+            "reachable": True,
+            "service": "active",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(web.socket, "gethostname", lambda: "mac.local")
+    monkeypatch.setattr(web, "SUPERVISOR_LOG_PATH", tmp_path / "missing.log")
+
+    status = web.TrainingLoopWebController().status(last=5)
+
+    assert status["loop"]["stage_machine"] == "GPU"
+    assert status["mac"] == {
+        "host": "mac.local",
+        "online": True,
+        "supervisor_running": True,
+    }
+    assert status["gpu"]["service"] == "active"
+    assert status["gpu"]["job_status"] == "running"
+
+
+def test_web_run_launches_detached_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}")
+    log_path = tmp_path / "supervisor.log"
+    commands: list[tuple[list[str], dict]] = []
+
+    class Process:
+        pid = 1234
+
+    def fake_popen(command, **kwargs):
+        commands.append((list(command), kwargs))
+        return Process()
+
+    controller = web.TrainingLoopWebController()
+    monkeypatch.setattr(web, "STATE_PATH", state_path)
+    monkeypatch.setattr(web, "SUPERVISOR_LOG_PATH", log_path)
+    monkeypatch.setattr(web, "_mac_supervisor_running", lambda: False)
+    monkeypatch.setattr(web.subprocess, "Popen", fake_popen)
+
+    result = controller.run()
+
+    assert result["ok"] is True
+    assert "PID 1234" in result["message"]
+    assert commands[0][0][-1] == "run"
+    assert commands[0][1]["start_new_session"] is True
+
+
+def test_web_requires_request_token_for_actions() -> None:
+    class Controller:
+        def status(self, *, last):
+            return {"last": last}
+
+        def run(self):
+            return {"ok": True, "message": "started"}
+
+        def stop(self):
+            return {"ok": True, "message": "stopped"}
+
+        def start(self, _payload):
+            return {"ok": True, "message": "created"}
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), web._make_handler(Controller(), "secret")
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urlopen(f"{url}/api/status?last=7") as response:
+            assert json.load(response) == {"last": 7}
+
+        unauthorized = Request(f"{url}/api/run", data=b"{}", method="POST")
+        with pytest.raises(HTTPError) as exc_info:
+            urlopen(unauthorized)
+        assert exc_info.value.code == HTTPStatus.FORBIDDEN
+
+        authorized = Request(
+            f"{url}/api/run",
+            data=b"{}",
+            method="POST",
+            headers={"X-WildRobot-Token": "secret"},
+        )
+        with urlopen(authorized) as response:
+            assert json.load(response)["message"] == "started"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_status_shows_machine_stage_and_recent_cycle_results(

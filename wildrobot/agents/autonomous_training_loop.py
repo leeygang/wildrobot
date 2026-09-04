@@ -1412,6 +1412,15 @@ def _install_mac_service(args: argparse.Namespace) -> int:
     return 0
 
 
+def _web(args: argparse.Namespace) -> int:
+    from wildrobot.agents.training_loop_web import WebActionError, serve
+
+    try:
+        return serve(host=str(args.host), port=int(args.port))
+    except (OSError, WebActionError) as exc:
+        raise remote.TrainingLoopError(str(exc)) from exc
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Autonomous WildRobot training loop")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1475,6 +1484,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     install.add_argument("--interval", type=int, default=300)
     install.set_defaults(func=_install_mac_service)
+    web = commands.add_parser("web", help="serve the local training-loop dashboard")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8080)
+    web.set_defaults(func=_web)
     return parser.parse_args(argv)
 
 

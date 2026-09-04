@@ -122,6 +122,27 @@ ssh leeygang@linux-pc.local \
   'journalctl --user -u wildrobot-training-gpu.service -f'
 ```
 
+### Local web dashboard
+
+The same durable loop can be controlled from a dependency-free local dashboard:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py web --port 8080
+```
+
+Open <http://127.0.0.1:8080>. The dashboard can start a new loop, launch or
+resume continuous supervision, request a safe pause, show the current Mac/GPU
+stage, query the Ubuntu systemd worker, display recent training/fix cycles, and
+tail the supervisor log. The buttons call the existing CLI rather than writing
+or duplicating orchestration state.
+
+The server binds only to loopback by default and protects state-changing POSTs
+with a per-process request token. For access from another machine, prefer an
+SSH tunnel. Binding `--host 0.0.0.0` is intended only for a trusted network
+because the dashboard has no user authentication.
+
+Reference: [Python `ThreadingHTTPServer`](https://docs.python.org/3/library/http.server.html).
+
 `run` is the foreground continuous loop: it polls every 10 seconds, prints the
 current cycle, job, and remote status, and streams synchronization, analyzer,
 and Codex output while also writing the per-job logs. Pressing Ctrl-C only
