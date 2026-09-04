@@ -105,6 +105,39 @@ uv run python wildrobot/agents/autonomous_training_loop.py start \
   --max-cycles 20
 ```
 
+### Bootstrap a contact-free walking campaign from the stable teacher
+
+When removing foot-switch inputs from an already trained v8 actor, first
+distill the stable contact-observed teacher into the v11 proprioceptive actor.
+Run this once in the normal GPU checkout after pulling the preparation commit:
+
+```bash
+cd ~/projects/wildrobot
+uv run python training/scripts/distill_contact_observed_to_proprio.py
+```
+
+The script uses held-out teacher trajectories and deterministic closed-loop
+rollouts. It writes
+`training/checkpoints/contact_free_distillation/17d18_ckpt7_v8_to_v11_distilled.pkl`
+only if the gates pass; its adjacent `.metrics.json` report is written on both
+success and failure. Then start a new Mac campaign from that checkpoint:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py start \
+  --new-run \
+  --config training/configs/ppo_walking_v0210_17d31_contact_free_teacher_distill.yaml \
+  --init-policy training/checkpoints/contact_free_distillation/17d18_ckpt7_v8_to_v11_distilled.pkl \
+  --max-cycles 20
+
+uv run python wildrobot/agents/autonomous_training_loop.py run
+```
+
+At `start`, the Mac supervisor records the config's
+`env.actor_obs_layout_id` as a campaign invariant. Every subsequent Codex
+proposal is checked against it before enqueue, and `status` prints the frozen
+layout. For this campaign that value is `wr_obs_v11_cmd3d_proprio`; a return to
+v8 foot-switch observations requires a separately reviewed new campaign.
+
 For a combined deployment bundle, also pass both
 `--standing-checkpoint <checkpoint.pkl>` and
 `--standing-config <training_config.yaml>`. Without them, the terminal artifact

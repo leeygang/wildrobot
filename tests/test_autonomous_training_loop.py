@@ -44,6 +44,7 @@ def _state(tmp_path: Path) -> dict:
 
 def test_codex_prompt_contains_exact_run_context(tmp_path: Path) -> None:
     state = _state(tmp_path)
+    state["required_actor_obs_layout_id"] = "wr_obs_v11_cmd3d_proprio"
     manifest = {
         "job_id": "job-1",
         "status": "completed",
@@ -59,6 +60,38 @@ def test_codex_prompt_contains_exact_run_context(tmp_path: Path) -> None:
     assert "a" * 40 in prompt
     assert "offline-run-id" in prompt
     assert "Do not modify files under `wildrobot/agents/`" in prompt
+    assert '"required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio"' in prompt
+
+
+def test_codex_cannot_change_frozen_actor_observation_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/contact_observed.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("env:\n  actor_obs_layout_id: wr_obs_v8_cmd3d\n")
+    checkpoint = "training/checkpoints/source/checkpoint.pkl"
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+    }
+    decision = {
+        "decision": "continue",
+        "summary": "restore actor contacts",
+        "config": "training/configs/contact_observed.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": checkpoint,
+        "verification": ["focused tests passed"],
+    }
+    manifest = {
+        "job_id": "job-1",
+        "selected_checkpoint_path": checkpoint,
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+
+    with pytest.raises(remote.TrainingLoopError, match="frozen actor observation"):
+        auto._validate_codex_result(state, decision, "a" * 40, manifest)
 
 
 def test_next_checkpoint_must_stay_in_approved_gpu_roots(tmp_path: Path) -> None:
@@ -144,7 +177,6 @@ def test_next_checkpoint_must_come_from_deterministic_summary(
     monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
     monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
-
     auto._validate_codex_result(state, decision, "a" * 40, manifest)
     decision["checkpoint"] = (
         "/srv/wildrobot-training-jobs/job-1/artifacts/checkpoints/run/" "invented.pkl"
@@ -584,6 +616,9 @@ def test_start_can_adopt_an_already_completed_gpu_run(
         lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
     )
     monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(
+        auto, "_actor_obs_layout_id", lambda _path: "wr_obs_v11_cmd3d_proprio"
+    )
     monkeypatch.setattr(auto.shutil, "which", lambda _name: "/usr/local/bin/codex")
     monkeypatch.setattr(
         auto.remote,
@@ -632,6 +667,11 @@ def test_start_can_adopt_an_already_completed_gpu_run(
     assert saved[-1]["active_job_id"].startswith("auto-01-walking-")
     assert saved[-1]["active_git_sha"] == git_sha
     assert saved[-1]["initial_run_adopted"] is True
+    assert saved[-1]["initial_config"] == "training/configs/walking.yaml"
+    assert (
+        saved[-1]["required_actor_obs_layout_id"]
+        == "wr_obs_v11_cmd3d_proprio"
+    )
 
 
 def test_adoption_recovers_an_already_published_job(

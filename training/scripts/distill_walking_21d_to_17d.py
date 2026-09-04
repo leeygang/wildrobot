@@ -230,6 +230,8 @@ def _collect_teacher_rollouts(
     rollout_steps: int,
     zero_action_indices: np.ndarray,
     seed: int,
+    repeats: int = 1,
+    perturb_pose: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     zero_indices = jnp.asarray(zero_action_indices, dtype=jnp.int32)
 
@@ -262,14 +264,26 @@ def _collect_teacher_rollouts(
 
     observations: list[np.ndarray] = []
     actions: list[np.ndarray] = []
-    for command_index, command in enumerate(commands):
-        reset_rng = jax.random.PRNGKey(seed + 1009 * command_index)
-        state = env.reset_for_eval(reset_rng, cmd_override=jnp.asarray(command))
-        obs, action = rollout(
-            state, jax.random.PRNGKey(seed + 2003 * command_index + 1)
-        )
-        observations.append(np.asarray(obs, dtype=np.float32))
-        actions.append(np.asarray(action, dtype=np.float32))
+    for repeat in range(repeats):
+        repeat_seed = seed + 100_003 * repeat
+        for command_index, command in enumerate(commands):
+            reset_rng = jax.random.PRNGKey(repeat_seed + 1009 * command_index)
+            if perturb_pose:
+                state = env.reset(
+                    reset_rng,
+                    perturb_pose=True,
+                    velocity_cmd_override=jnp.asarray(command),
+                )
+            else:
+                state = env.reset_for_eval(
+                    reset_rng, cmd_override=jnp.asarray(command)
+                )
+            obs, action = rollout(
+                state,
+                jax.random.PRNGKey(repeat_seed + 2003 * command_index + 1),
+            )
+            observations.append(np.asarray(obs, dtype=np.float32))
+            actions.append(np.asarray(action, dtype=np.float32))
     return np.concatenate(observations), np.concatenate(actions)
 
 

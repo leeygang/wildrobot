@@ -41,6 +41,9 @@ Constraints:
 
 - Do not modify files under `wildrobot/agents/`; the automation control plane is
   frozen while the loop is active.
+- Preserve the `required_actor_obs_layout_id` from the iteration context. The
+  supervisor rejects any config that changes the campaign's actor observation
+  or deployment sensor contract.
 - Do not update `training/CHANGELOG.md`; results require user confirmation.
 - Do not push Git commits, submit GPU jobs, export bundles, or run hardware.
 - Do not invent a checkpoint. It must be a `.pkl` path present in the remote

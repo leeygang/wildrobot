@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
+import yaml
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -408,8 +410,27 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         "remote_checkpoint_run_dir": manifest.get("checkpoint_run_dir"),
         "training_error": manifest.get("error"),
         "allowed_next_checkpoints": _allowed_next_checkpoints(manifest),
+        "required_actor_obs_layout_id": state.get(
+            "required_actor_obs_layout_id"
+        ),
     }
     return f"{instructions}\n\nIteration context:\n{json.dumps(context, indent=2)}"
+
+
+def _actor_obs_layout_id(config: str) -> str:
+    config_path = REPO_ROOT / remote._repo_config(config)
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise remote.TrainingLoopError(
+            f"Training config is not a mapping: {config_path}"
+        )
+    env = payload.get("env")
+    layout = env.get("actor_obs_layout_id") if isinstance(env, dict) else None
+    if not isinstance(layout, str) or not layout.strip():
+        raise remote.TrainingLoopError(
+            f"Training config has no env.actor_obs_layout_id: {config_path}"
+        )
+    return layout.strip()
 
 
 def _invoke_codex(
@@ -561,7 +582,16 @@ def _validate_codex_result(
             "Codex must provide the next bounded experiment; got decision "
             f"{decision.get('decision')!r}."
         )
-    remote._repo_config(str(decision.get("config", "")))
+    next_config = remote._repo_config(str(decision.get("config", "")))
+    required_layout = state.get("required_actor_obs_layout_id")
+    if required_layout:
+        next_layout = _actor_obs_layout_id(next_config)
+        if next_layout != required_layout:
+            raise remote.TrainingLoopError(
+                "Codex changed the frozen actor observation contract: "
+                f"{required_layout} -> {next_layout}. Start a separately reviewed "
+                "campaign to change the deployment sensor contract."
+            )
     start_mode = str(decision.get("start_mode"))
     checkpoint = str(decision.get("checkpoint", ""))
     if start_mode not in {"init_policy", "resume"}:
@@ -1013,6 +1043,7 @@ def _start(args: argparse.Namespace) -> int:
             "--training-git-sha is only valid with --adopt-completed."
         )
     config = remote._repo_config(args.config)
+    required_actor_obs_layout_id = _actor_obs_layout_id(config)
     codex_path = (
         shutil.which(args.codex_path) if args.codex_path else shutil.which("codex")
     )
@@ -1063,6 +1094,8 @@ def _start(args: argparse.Namespace) -> int:
         "standing_checkpoint": standing_checkpoint,
         "standing_config": standing_config,
         "initial_git_sha": git_sha,
+        "initial_config": config,
+        "required_actor_obs_layout_id": required_actor_obs_layout_id,
     }
     PAUSE_PATH.unlink(missing_ok=True)
     if args.adopt_completed:
@@ -1281,6 +1314,9 @@ def _status(args: argparse.Namespace) -> int:
         "max_cycles": state.get("max_cycles"),
         "active_job_id": state.get("active_job_id"),
         "active_config": state.get("active_config"),
+        "required_actor_obs_layout_id": state.get(
+            "required_actor_obs_layout_id"
+        ),
         "gpu_job_status": (
             current_manifest.get("status")
             if current_manifest is not None
@@ -1313,6 +1349,10 @@ def _status(args: argparse.Namespace) -> int:
         )
     )
     print(f"Config: {dashboard['active_config']}")
+    print(
+        "Frozen actor layout: "
+        f"{dashboard['required_actor_obs_layout_id'] or 'not recorded'}"
+    )
     if remote_error:
         print(f"Remote status error: {remote_error}")
     print(f"\nRecent loop cycles (last {args.last}):")
