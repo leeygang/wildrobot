@@ -353,6 +353,28 @@ def _action_error_metrics(network, params, obs, target, action_dim: int) -> dict
     }
 
 
+def _summarize_rollout(
+    done: np.ndarray,
+    truncated: np.ndarray,
+    root_xyz: np.ndarray,
+    *,
+    steps: int,
+) -> dict:
+    done_np = np.asarray(done) > 0.5
+    truncated_np = np.asarray(truncated) > 0.5
+    failure_np = done_np & ~truncated_np
+    first_failure = np.flatnonzero(failure_np)
+    return {
+        "steps": int(steps),
+        "termination_count": int(np.count_nonzero(failure_np)),
+        "first_termination_step": (
+            None if first_failure.size == 0 else int(first_failure[0] + 1)
+        ),
+        "truncation_count": int(np.count_nonzero(truncated_np)),
+        "final_root_xyz_m": np.asarray(root_xyz[-1]).astype(float).tolist(),
+    }
+
+
 def _rollout_metrics(
     *,
     env,
@@ -391,6 +413,7 @@ def _rollout_metrics(
             )
             return (next_state, action_rng), (
                 next_state.done,
+                next_state.truncated,
                 next_state.data.qpos[:3],
             )
 
@@ -399,17 +422,8 @@ def _rollout_metrics(
     state = env.reset_for_eval(
         jax.random.PRNGKey(seed), cmd_override=jnp.asarray(command)
     )
-    done, root_xyz = rollout(state, jax.random.PRNGKey(seed + 1))
-    done_np = np.asarray(done) > 0.5
-    first_done = np.flatnonzero(done_np)
-    return {
-        "steps": int(steps),
-        "termination_count": int(np.count_nonzero(done_np)),
-        "first_termination_step": (
-            None if first_done.size == 0 else int(first_done[0] + 1)
-        ),
-        "final_root_xyz_m": np.asarray(root_xyz[-1]).astype(float).tolist(),
-    }
+    done, truncated, root_xyz = rollout(state, jax.random.PRNGKey(seed + 1))
+    return _summarize_rollout(done, truncated, root_xyz, steps=steps)
 
 
 def main() -> int:

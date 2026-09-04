@@ -22,6 +22,7 @@ def _normalized_contract(path: Path) -> dict:
     raw = deepcopy(yaml.safe_load(path.read_text(encoding="utf-8")))
     raw.pop("version")
     raw.pop("version_name")
+    raw.pop("bootstrap", None)
     raw["checkpoints"].pop("dir")
     raw["wandb"].pop("tags")
     return raw
@@ -46,3 +47,6 @@ def test_17d31_changes_only_metadata_from_contact_free_frontier() -> None:
     assert cfg.ppo.rollback.patience == 3
     assert spec.model.obs_dim == 873
     assert spec.model.action_dim == 17
+
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    assert raw["bootstrap"]["mode"] == "contact_observed_to_proprio"

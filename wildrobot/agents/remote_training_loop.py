@@ -33,6 +33,7 @@ DEFAULT_REMOTE_REPO = "/home/leeygang/projects/wildrobot"
 LOCAL_JOB_ROOT = REPO_ROOT / "training" / "remote_jobs"
 MANIFEST_NAME = "job_manifest.json"
 CHECKPOINT_MANIFEST_NAME = "training_job_manifest.json"
+CONTACT_DISTILLATION_MODE = "contact_observed_to_proprio"
 ADOPTION_CONTROL_PLANE_PATHS = (
     ".gitignore",
     "tests/test_autonomous_training_loop.py",
@@ -223,6 +224,19 @@ def _config_checkpoint_series(config_path: Path) -> str:
     if not isinstance(checkpoints, dict) or not checkpoints.get("dir"):
         raise TrainingLoopError(f"Training config has no checkpoints.dir: {config_path}")
     return _checkpoint_series(str(checkpoints["dir"]))
+
+
+def _config_bootstrap_mode(config_path: Path) -> str | None:
+    config = yaml.safe_load(config_path.read_text())
+    bootstrap = config.get("bootstrap") if isinstance(config, dict) else None
+    if bootstrap is None:
+        return None
+    if not isinstance(bootstrap, dict):
+        raise TrainingLoopError(f"bootstrap must be a mapping: {config_path}")
+    mode = bootstrap.get("mode")
+    if mode != CONTACT_DISTILLATION_MODE:
+        raise TrainingLoopError(f"Unsupported bootstrap mode {mode!r}: {config_path}")
+    return str(mode)
 
 
 def _ssh_command(context: RemoteContext, remote_command: str) -> list[str]:
@@ -793,6 +807,35 @@ def _collect_training_results(manifest: dict[str, Any]) -> None:
             else None,
         }
     )
+    bootstrap_report = Path(str(manifest.get("bootstrap_report", "")))
+    bootstrap_checkpoint = Path(str(manifest.get("bootstrap_checkpoint", "")))
+    if manifest.get("bootstrap_mode"):
+        bootstrap_gates_passed = False
+        if bootstrap_report.is_file():
+            try:
+                bootstrap_payload = json.loads(bootstrap_report.read_text())
+            except json.JSONDecodeError:
+                bootstrap_payload = {}
+            gates = (
+                bootstrap_payload.get("gates")
+                if isinstance(bootstrap_payload, dict)
+                else None
+            )
+            bootstrap_gates_passed = bool(
+                isinstance(gates, dict) and gates.get("passed") is True
+            )
+        manifest.update(
+            bootstrap_report_exists=bootstrap_report.is_file(),
+            bootstrap_checkpoint_exists=bootstrap_checkpoint.is_file(),
+            bootstrap_gates_passed=bootstrap_gates_passed,
+            bootstrap_status=(
+                "passed"
+                if bootstrap_gates_passed and bootstrap_checkpoint.is_file()
+                else "failed"
+                if bootstrap_report.is_file()
+                else manifest.get("bootstrap_status", "pending")
+            ),
+        )
 
     summary_path = (
         checkpoint_run / "post_training_eval_summary.json"
@@ -867,23 +910,50 @@ def _prepare_worker(manifest: dict[str, Any]) -> list[str]:
     python_path = Path(manifest["remote_repo"]) / ".venv" / "bin" / "python"
     if not python_path.is_file():
         raise TrainingLoopError(f"GPU virtual environment missing: {python_path}")
-    command = [
-        str(python_path),
-        "training/train.py",
-        "--config",
-        str(effective_config),
-        "--checkpoint-dir",
-        str(checkpoint_dir),
-    ]
-    if checkpoint is not None:
-        command.extend(
-            [
-                "--init-policy"
-                if manifest.get("start_mode") == "init_policy"
-                else "--resume",
-                str(checkpoint),
-            ]
+    bootstrap_mode = _config_bootstrap_mode(effective_config)
+    if bootstrap_mode is not None and checkpoint is None:
+        bootstrap_dir = artifact_root / "bootstrap"
+        command = [
+            str(python_path),
+            "training/scripts/train_with_contact_distillation.py",
+            "--config",
+            str(effective_config),
+            "--checkpoint-dir",
+            str(checkpoint_dir),
+            "--bootstrap-dir",
+            str(bootstrap_dir),
+        ]
+        manifest.update(
+            bootstrap_mode=bootstrap_mode,
+            bootstrap_report=str(
+                bootstrap_dir / "contact_free_distilled.metrics.json"
+            ),
+            bootstrap_checkpoint=str(bootstrap_dir / "contact_free_distilled.pkl"),
+            bootstrap_status="pending",
         )
+    else:
+        command = [
+            str(python_path),
+            "training/train.py",
+            "--config",
+            str(effective_config),
+            "--checkpoint-dir",
+            str(checkpoint_dir),
+        ]
+        if checkpoint is not None:
+            command.extend(
+                [
+                    "--init-policy"
+                    if manifest.get("start_mode") == "init_policy"
+                    else "--resume",
+                    str(checkpoint),
+                ]
+            )
+        if bootstrap_mode is not None:
+            manifest.update(
+                bootstrap_mode=bootstrap_mode,
+                bootstrap_status="skipped_start_checkpoint_provided",
+            )
     manifest.update(
         {
             "source_config_sha256": _sha256(source_snapshot),
@@ -930,7 +1000,13 @@ def _gpu_worker(args: argparse.Namespace) -> int:
             manifest.pop("recovery_action", None)
             _write_json_atomic(manifest_path, manifest)
             env = os.environ.copy()
-            env.update(PYTHONUNBUFFERED="1", PYTHONPATH=manifest["worktree"])
+            env.update(
+                PYTHONUNBUFFERED="1",
+                PYTHONPATH=manifest["worktree"],
+                WILDROBOT_MAIN_REPO=str(
+                    manifest.get("remote_repo") or manifest["worktree"]
+                ),
+            )
             train_log_path = job_root / "train.log"
             with train_log_path.open("a", encoding="utf-8") as log:
                 log.write(
@@ -1318,6 +1394,14 @@ def _sync_job(
         remote = f"{context.job_root}/{name}"
         if _remote_exists(context, remote, directory=False):
             _rsync_file(context, remote, local_job / name)
+
+    bootstrap_report = manifest.get("bootstrap_report")
+    if bootstrap_report and _remote_exists(
+        context, str(bootstrap_report), directory=False
+    ):
+        destination = local_job / "bootstrap_metrics.json"
+        _rsync_file(context, str(bootstrap_report), destination)
+        manifest["local_bootstrap_report"] = str(destination.relative_to(REPO_ROOT))
 
     if manifest.get("wandb_run_dir") and manifest.get("wandb_run_name"):
         run_name = _safe_job_id(str(manifest["wandb_run_name"]))

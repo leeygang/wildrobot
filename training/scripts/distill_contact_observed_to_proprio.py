@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pickle
 import sys
 from pathlib import Path
@@ -82,11 +83,12 @@ def _resolve_teacher_checkpoint(
     requested = requested.expanduser().resolve()
     candidates = [requested]
     if search_roots is None:
-        jobs_root = PROJECT_ROOT.parent / f"{PROJECT_ROOT.name}-training-jobs"
+        main_repo = Path(os.environ.get("WILDROBOT_MAIN_REPO", PROJECT_ROOT)).resolve()
+        jobs_root = main_repo.parent / f"{main_repo.name}-training-jobs"
         search_roots = [
-            (PROJECT_ROOT / "training/checkpoints", requested.name),
+            (main_repo / "training/checkpoints", requested.name),
             (jobs_root, requested.name),
-            (PROJECT_ROOT / "runtime/bundles", "checkpoint.pkl"),
+            (main_repo / "runtime/bundles", "checkpoint.pkl"),
         ]
     for root, pattern in search_roots:
         if root.is_dir():

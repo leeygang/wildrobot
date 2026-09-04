@@ -331,10 +331,13 @@ def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
     run_dir = manifest.get("local_wandb_run_dir")
     report_path = remote.LOCAL_JOB_ROOT / context.job_id / "analysis.txt"
     if not run_dir:
+        bootstrap_report = manifest.get("local_bootstrap_report")
         message = (
             "Analyzer not run because the job produced no synchronized W&B run.\n"
             f"Job status: {manifest.get('status')}\n"
             f"Training error: {manifest.get('error')}\n"
+            f"Bootstrap status: {manifest.get('bootstrap_status')}\n"
+            f"Bootstrap report: {bootstrap_report}\n"
         )
         report_path.write_text(message)
         print(message, end="", flush=True)
@@ -409,6 +412,8 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         "local_checkpoint_run_dir": manifest.get("local_checkpoint_run_dir"),
         "remote_checkpoint_run_dir": manifest.get("checkpoint_run_dir"),
         "training_error": manifest.get("error"),
+        "bootstrap_status": manifest.get("bootstrap_status"),
+        "local_bootstrap_report": manifest.get("local_bootstrap_report"),
         "allowed_next_checkpoints": _allowed_next_checkpoints(manifest),
         "required_actor_obs_layout_id": state.get(
             "required_actor_obs_layout_id"
@@ -594,14 +599,24 @@ def _validate_codex_result(
             )
     start_mode = str(decision.get("start_mode"))
     checkpoint = str(decision.get("checkpoint", ""))
-    if start_mode not in {"init_policy", "resume"}:
+    if start_mode not in {"init_policy", "resume", "none"}:
         raise remote.TrainingLoopError(f"Invalid next start mode: {start_mode}")
-    _validate_checkpoint_path(state, checkpoint)
-    if checkpoint not in _allowed_next_checkpoints(manifest):
-        raise remote.TrainingLoopError(
-            "Next checkpoint is not recorded in the job manifest or "
-            "deterministic evaluation summary."
-        )
+    if start_mode == "none":
+        if checkpoint:
+            raise remote.TrainingLoopError(
+                "start_mode=none requires an empty checkpoint."
+            )
+        if remote._config_bootstrap_mode(REPO_ROOT / next_config) is None:
+            raise remote.TrainingLoopError(
+                "start_mode=none requires a config-managed GPU bootstrap."
+            )
+    else:
+        _validate_checkpoint_path(state, checkpoint)
+        if checkpoint not in _allowed_next_checkpoints(manifest):
+            raise remote.TrainingLoopError(
+                "Next checkpoint is not recorded in the job manifest or "
+                "deterministic evaluation summary."
+            )
 
 
 def _export_ready_bundle(
@@ -878,6 +893,8 @@ def _step_once(
                 )
             return state
         state["last_remote_status"] = manifest.get("status")
+        if manifest.get("bootstrap_status"):
+            state["last_bootstrap_status"] = manifest.get("bootstrap_status")
         state["last_poll_at"] = _utc_now()
         state.pop("last_poll_error", None)
         _save_state(state)
@@ -1322,6 +1339,11 @@ def _status(args: argparse.Namespace) -> int:
             if current_manifest is not None
             else state.get("last_remote_status", "unknown")
         ),
+        "bootstrap_status": (
+            current_manifest.get("bootstrap_status")
+            if current_manifest is not None
+            else state.get("last_bootstrap_status")
+        ),
         "pause_requested": PAUSE_PATH.is_file(),
         "remote_error": remote_error,
         "recent_cycles": history,
@@ -1340,6 +1362,8 @@ def _status(args: argparse.Namespace) -> int:
     print(f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']}")
     print(f"Active job: {dashboard['active_job_id']}")
     print(f"GPU job status: {dashboard['gpu_job_status']}")
+    if dashboard["bootstrap_status"]:
+        print(f"Bootstrap status: {dashboard['bootstrap_status']}")
     print(
         "Pause requested: "
         + (

@@ -94,6 +94,41 @@ def test_codex_cannot_change_frozen_actor_observation_contract(
         auto._validate_codex_result(state, decision, "a" * 40, manifest)
 
 
+def test_codex_can_retry_config_managed_bootstrap_without_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/bootstrap.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "bootstrap:\n"
+        "  mode: contact_observed_to_proprio\n"
+        "env:\n"
+        "  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio\n"
+    )
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+    }
+    decision = {
+        "decision": "continue",
+        "summary": "retry corrected distillation gates",
+        "config": "training/configs/bootstrap.yaml",
+        "start_mode": "none",
+        "checkpoint": "",
+        "verification": ["focused tests passed"],
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+
+    auto._validate_codex_result(
+        state,
+        decision,
+        "a" * 40,
+        {"job_id": "job-1", "status": "failed"},
+    )
+
+
 def test_next_checkpoint_must_stay_in_approved_gpu_roots(tmp_path: Path) -> None:
     state = _state(tmp_path)
     auto._validate_checkpoint_path(

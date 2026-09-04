@@ -34,6 +34,20 @@ version: "0.21.0-17d31"
 version_name: "v0.21.0 native 17D contact-free teacher-distillation fine-tune"
 seed: 42
 
+bootstrap:
+  mode: contact_observed_to_proprio
+  commands: "0,0,0;0.065,0,0;0.13,0,0"
+  rollout_steps: 1000
+  rollout_repeats: 16
+  validation_steps: 1000
+  validation_repeats: 4
+  epochs: 50
+  batch_size: 512
+  learning_rate: 0.0003
+  max_validation_rmse: 0.08
+  require_no_terminations: true
+  seed: 0
+
 env:
   assets_root: assets/v2
   scene_xml_path: assets/v2/scene_flat_terrain.xml

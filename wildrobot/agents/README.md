@@ -109,28 +109,25 @@ uv run python wildrobot/agents/autonomous_training_loop.py start \
 
 When removing foot-switch inputs from an already trained v8 actor, first
 distill the stable contact-observed teacher into the v11 proprioceptive actor.
-Run this once in the normal GPU checkout after pulling the preparation commit:
-
-```bash
-cd ~/projects/wildrobot
-uv run python training/scripts/distill_contact_observed_to_proprio.py
-```
-
-The script uses held-out teacher trajectories and deterministic closed-loop
-rollouts. It writes
-`training/checkpoints/contact_free_distillation/17d18_ckpt7_v8_to_v11_distilled.pkl`
-only if the gates pass; its adjacent `.metrics.json` report is written on both
-success and failure. Then start a new Mac campaign from that checkpoint:
+The v17d31 config declares this as its GPU bootstrap, so the queue runs and
+checks distillation before starting PPO in the same durable job:
 
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --new-run \
   --config training/configs/ppo_walking_v0210_17d31_contact_free_teacher_distill.yaml \
-  --init-policy training/checkpoints/contact_free_distillation/17d18_ckpt7_v8_to_v11_distilled.pkl \
   --max-cycles 20
 
 uv run python wildrobot/agents/autonomous_training_loop.py run
 ```
+
+The bootstrap uses held-out teacher trajectories and deterministic closed-loop
+rollouts. Its checkpoint is passed to PPO only if the gates pass. The report,
+checkpoint, and console output live under the GPU job's `artifacts/bootstrap`
+directory and the report is synchronized to the corresponding Mac job folder.
+Interrupted jobs reuse a previously completed bootstrap. If bootstrap fails,
+the loop can inspect the report, apply one bounded fix, and retry the config
+with `start_mode=none` instead of requiring a manually supplied checkpoint.
 
 At `start`, the Mac supervisor records the config's
 `env.actor_obs_layout_id` as a campaign invariant. Every subsequent Codex

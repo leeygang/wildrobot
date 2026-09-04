@@ -14,7 +14,7 @@
     },
     "start_mode": {
       "type": "string",
-      "enum": ["init_policy", "resume"]
+      "enum": ["init_policy", "resume", "none"]
     },
     "checkpoint": {
       "type": "string"

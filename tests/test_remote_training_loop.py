@@ -261,6 +261,29 @@ def test_result_collection_uses_authoritative_selected_checkpoint(tmp_path: Path
     assert copied["job_id"] == "walking-test"
 
 
+def test_result_collection_records_bootstrap_gate_status(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    report = artifact_root / "bootstrap/contact_free_distilled.metrics.json"
+    checkpoint = artifact_root / "bootstrap/contact_free_distilled.pkl"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps({"gates": {"passed": True}}))
+    checkpoint.write_bytes(b"policy")
+    manifest = {
+        "artifact_root": str(artifact_root),
+        "checkpoint_series_dir": str(artifact_root / "checkpoints/walking"),
+        "worktree": str(tmp_path / "src"),
+        "bootstrap_mode": "contact_observed_to_proprio",
+        "bootstrap_report": str(report),
+        "bootstrap_checkpoint": str(checkpoint),
+    }
+
+    _collect_training_results(manifest)
+
+    assert manifest["bootstrap_status"] == "passed"
+    assert manifest["bootstrap_gates_passed"] is True
+    assert manifest["bootstrap_checkpoint_exists"] is True
+
+
 def test_bundle_provenance_reads_training_job_manifest(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint_10_204800.pkl"
     checkpoint.write_bytes(b"policy")
@@ -527,6 +550,69 @@ def test_prepare_worker_freezes_config_and_checkpoint_hash(tmp_path: Path) -> No
     )
     effective = yaml.safe_load(Path(manifest["effective_config"]).read_text())
     assert effective["wandb"]["log_dir"] == str(artifact_root / "wandb")
+
+
+def test_prepare_worker_runs_configured_distillation_before_training(
+    tmp_path: Path,
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    worktree = tmp_path / "job" / "src"
+    worktree.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=worktree,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=worktree, check=True
+    )
+    config = worktree / "training/configs/walking.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "bootstrap": {"mode": "contact_observed_to_proprio"},
+                "checkpoints": {"dir": "training/checkpoints/walking"},
+                "wandb": {"enabled": True, "mode": "offline"},
+            },
+            sort_keys=False,
+        )
+    )
+    subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "test"], cwd=worktree, check=True)
+    git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    python_path = remote_repo / ".venv/bin/python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("python")
+    job_root = worktree.parent
+    artifact_root = job_root / "artifacts"
+    manifest = {
+        "git_sha": git_sha,
+        "remote_repo": str(remote_repo),
+        "worktree": str(worktree),
+        "job_root": str(job_root),
+        "artifact_root": str(artifact_root),
+        "source_config": "training/configs/walking.yaml",
+        "checkpoint_series_dir": str(artifact_root / "checkpoints/walking"),
+        "start_mode": None,
+        "start_checkpoint_request": None,
+    }
+
+    command = remote_training_loop._prepare_worker(manifest)
+
+    assert command[1] == "training/scripts/train_with_contact_distillation.py"
+    assert manifest["bootstrap_mode"] == "contact_observed_to_proprio"
+    assert manifest["bootstrap_status"] == "pending"
+    assert manifest["bootstrap_report"].endswith(
+        "bootstrap/contact_free_distilled.metrics.json"
+    )
 
 
 def _completed_manual_run(

@@ -9,6 +9,7 @@ from training.scripts.distill_contact_observed_to_proprio import (
     _gate_failures,
     _resolve_teacher_checkpoint,
 )
+from training.scripts.distill_walking_21d_to_17d import _summarize_rollout
 
 
 def _metrics(
@@ -106,3 +107,16 @@ def test_teacher_checkpoint_resolution_rejects_wrong_checkpoint(
             expected_sha256="0" * 64,
             search_roots=[],
         )
+
+
+def test_rollout_summary_does_not_count_horizon_truncation_as_fall() -> None:
+    summary = _summarize_rollout(
+        done=[0.0, 0.0, 1.0],
+        truncated=[0.0, 0.0, 1.0],
+        root_xyz=[[0.0, 0.0, 0.45]] * 3,
+        steps=3,
+    )
+
+    assert summary["termination_count"] == 0
+    assert summary["first_termination_step"] is None
+    assert summary["truncation_count"] == 1

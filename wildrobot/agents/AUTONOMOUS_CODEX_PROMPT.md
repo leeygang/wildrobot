@@ -26,6 +26,8 @@ Use `start_mode=resume` only when the complete training contract is unchanged.
 Use `start_mode=init_policy` when changing rewards, environment behavior,
 reference generation, or another training-contract input. The checkpoint must
 come from the synchronized manifest or deterministic top-k summary.
+Use `start_mode=none` with an empty checkpoint only when rerunning a config
+whose `bootstrap.mode` creates its own initial policy inside the GPU job.
 
 Do not stop merely because no checkpoint was promoted, a previous reward change
 failed, or the evidence is incomplete. In those cases, choose the smallest
