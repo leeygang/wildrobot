@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
+import jax.numpy as jnp
 import pytest
 
+from training.core.metrics_registry import METRIC_INDEX, METRICS_VEC_KEY, NUM_METRICS
 from training.scripts.distill_contact_observed_to_proprio import (
     _gate_failures,
     _resolve_teacher_checkpoint,
 )
-from training.scripts.distill_walking_21d_to_17d import _summarize_rollout
+from training.scripts.distill_walking_21d_to_17d import (
+    _rollout_step_metrics,
+    _summarize_rollout,
+)
 
 
 def _metrics(
@@ -120,3 +126,20 @@ def test_rollout_summary_does_not_count_horizon_truncation_as_fall() -> None:
     assert summary["termination_count"] == 0
     assert summary["first_termination_step"] is None
     assert summary["truncation_count"] == 1
+
+
+def test_rollout_step_reads_truncation_from_terminal_metrics() -> None:
+    metrics_vec = jnp.zeros(NUM_METRICS).at[
+        METRIC_INDEX["term/truncated"]
+    ].set(1.0)
+    state = SimpleNamespace(
+        done=jnp.float32(1.0),
+        metrics={METRICS_VEC_KEY: metrics_vec},
+        data=SimpleNamespace(qpos=jnp.asarray([1.0, 2.0, 3.0, 4.0])),
+    )
+
+    done, truncated, root_xyz = _rollout_step_metrics(state)
+
+    assert float(done) == 1.0
+    assert float(truncated) == 1.0
+    assert root_xyz.tolist() == [1.0, 2.0, 3.0]

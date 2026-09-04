@@ -33,6 +33,10 @@ from training.algos.ppo.ppo_core import (
     sample_actions,
 )
 from training.configs.training_config import load_training_config
+from training.core.metrics_registry import (
+    METRICS_VEC_KEY,
+    truncation_from_metrics_vec,
+)
 from training.envs.wildrobot_env import WildRobotEnv
 from training.exports.export_onnx import get_checkpoint_dims
 from training.policy_migration.wrist_17d import (
@@ -375,6 +379,14 @@ def _summarize_rollout(
     }
 
 
+def _rollout_step_metrics(state) -> tuple[jax.Array, jax.Array, jax.Array]:
+    return (
+        state.done,
+        truncation_from_metrics_vec(state.metrics[METRICS_VEC_KEY]),
+        state.data.qpos[:3],
+    )
+
+
 def _rollout_metrics(
     *,
     env,
@@ -411,11 +423,7 @@ def _rollout_metrics(
                 disable_pushes=True,
                 disable_cmd_resample=True,
             )
-            return (next_state, action_rng), (
-                next_state.done,
-                next_state.truncated,
-                next_state.data.qpos[:3],
-            )
+            return (next_state, action_rng), _rollout_step_metrics(next_state)
 
         return jax.lax.scan(body, (initial_state, rng), xs=None, length=steps)[1]
 
