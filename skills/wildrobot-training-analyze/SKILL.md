@@ -273,8 +273,8 @@ this table summarizes.
 | `action_rate` ↔ `penalty_action_rate` | -1.0 × pos-MSE | 2.0 × neg-MSE (`walk.gin:119`) | ⚠️ sign convention diff; verify magnitude equivalence |
 | `ref_contact_match` | 1.0 boolean | 0 in active (was `feet_contact = 1.0` in commented) | ⚠️ WR-specific (boolean form retained from TB-historical) |
 | `torque` / `joint_velocity` | -0.001 / -0.0005 | 0 in active | ⚠️ WR-specific light regularizers |
-| Asymmetric critic (privileged obs) | not used (Phase 3 plan) | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ❌ missing |
-| Backlash DR | not present (Phase 3 plan) | activation 0.1, range [0.02, 0.1] rad (`mjx_config.py:209-210`) | ❌ missing — sim2real critical |
+| Asymmetric critic (privileged obs) | enabled (`critic_privileged_enabled: true`, `critic_includes_actor_obs: true`); 44-dim privileged history plus actor obs | yes — `num_single_privileged_obs = 151` (`mjx_config.py:86`, `walk.gin:25-28`) | ✅ Phase 3 landed; WR critic state is a documented TB-aligned subset |
+| Backlash DR | activation 0.1, range [0.02, 0.10] rad (`domain_rand_backlash_*`) | activation 0.1, range [0.02, 0.1] rad (`mjx_config.py:209-210`) | ✅ Phase 3 landed; TB-form smooth backlash is applied at observation time |
 | kd / damping / armature / tau_max DR family | not present | TB has all (`mjx_config.py:222-235`) | ⚠️ defer |
 | Multi-command sampling | `cmd_resample_steps: 150` (= 3.0 s) | `resample_time=3.0s` (`mjx_config.py:194`) | ✅ |
 | Command space | 1-D linear vx ∈ [0, 0.30] | 8-D (`walk.gin:42-51`) | ⚠️ smoke restricts to 1D; v0.20.4 plan to extend |
