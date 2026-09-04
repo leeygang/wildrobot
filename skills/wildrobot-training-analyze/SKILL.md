@@ -158,7 +158,7 @@ A run can pass walking-quality AND fail anti-exploit — that's a false positive
 | ToddlerBot shaping | `reward/feet_distance` | 1.0 | lateral foot spacing band [0.07, 0.13] m in torso frame |
 | ToddlerBot shaping | `reward/torso_pitch_soft` | 0.5 | soft pitch band [-0.2, 0.2] rad |
 | ToddlerBot shaping | `reward/torso_roll_soft` | 0.5 | soft roll band [-0.1, 0.1] rad |
-| survival | `reward/alive` | 10.0 | strict ToddlerBot `-done` (0 while alive, `-10·dt` on terminal step) |
+| survival | `reward/alive` | 1.0 | active ToddlerBot `_reward_alive = 1` (dense `+dt` while alive) |
 | regularizer | `reward/action_rate` | -1.0 | smoothness |
 | regularizer | `reward/torque` | -0.001 | energy |
 | regularizer | `reward/joint_vel` | -0.0005 | joint velocity penalty |
@@ -167,7 +167,7 @@ A run can pass walking-quality AND fail anti-exploit — that's a false positive
 
 **Reward integration rule** (load-bearing): reward = `sum(reward_dict.values()) * dt`. Without the `* dt` rescale the published ToddlerBot weights are NOT directly portable.
 
-**Survival semantics**: `_reward_survival = -done` at weight 10 → 0 while alive, `-10·dt = -0.2` on the terminating step. This is NOT a dense per-step bonus — that mistake biases PPO toward any long-lived behavior.
+**Survival semantics**: the active v0.21/ToddlerBot recipe uses `_reward_alive = 1` at weight 1, so it contributes a dense `+1·dt = +0.02` per live control step. Do not confuse this with the separate legacy `_reward_survival = -done` implementation or raise the alive weight back to 10; current code and metrics (`reward/alive ≈ 0.02`) are authoritative.
 
 ### v0.20.1 raw error diagnostics (paired with reward terms)
 
@@ -253,7 +253,7 @@ this table summarizes.
 | Action contract | `q = q_ref + clip(action) · 0.25` (legs) | `q = default_q + action · 0.25` (`mjx_config.py:103`) | ⚠️ paradigm diff (residual vs direct); both bounded ±0.25 |
 | Reward integration | `sum(...) * dt` | `sum(...) * dt` (`mjx_env.py:1048`) | ✅ |
 | Network hidden_sizes | (512, 256, 128) | (512, 256, 128) (`ppo_config.py:19-20`) | ✅ (after v0.20.1 alignment sweep) |
-| `survival`/`alive` weight | 1.0 (after sweep), `-done` semantics | 1.0 (`walk.gin:127`), `-done` (`walk_env.py`) | ✅ (after sweep) |
+| `survival`/`alive` weight | 1.0 (after sweep), dense constant-1 semantics | 1.0 (`walk.gin:127`), `_reward_alive = 1` (`mjx_env.py`) | ✅ (after sweep) |
 | `cmd_forward_velocity_track` ↔ `lin_vel_xy` weight | 2.0 (after sweep) | 2.0 (`walk.gin:111`) | ✅ (after sweep) |
 | `cmd_forward_velocity_alpha` ↔ `lin_vel_tracking_sigma` | α=562.5 (smoke2/3 active; "after sweep" doc value was 200) | σ=1000 (`walk.gin:112`; reward `exp(-σ·err²)` at `mjx_env.py:2346`) | ⚠️ **CORRECTED 2026-05-29: same form `exp(-param·err²)`, so TB σ=1000 is _tighter_ than WR, not looser (earlier "WR tighter" note was backwards). Live-gradient window = `cmd ± 1/√param`: TB ±0.032 vs WR ±0.042 m/s. ⟹ the smoke2 dead gradient is NOT an α problem — TB runs an even tighter tracker and walks. Do NOT lower α (reopens smoke1 standing-leak). It is a command-RANGE problem; see the "dead velocity gradient" failure signature.** |
 | `ref_body_quat_track` ↔ `torso_quat` | 2.5 (after sweep) | 2.5 (`walk.gin:117`) | ✅ (after sweep) |
@@ -338,7 +338,7 @@ Order of operations:
 5. **PPO hyperparameters last.** Learning rate / entropy / KL backoff are the last knobs to touch.
 
 Forbidden moves (will reintroduce known failure modes OR repeat past analyst errors):
-- adding a flat positive `alive` bonus (was the v0.19.5b lean-back exploit enabler)
+- raising the active dense `alive` bonus above the ToddlerBot-aligned weight 1.0 (weight 10 was the v0.19.5b lean-back exploit enabler)
 - raising the leg residual bound past ±0.50 rad
 - removing the `* dt` reward integration
 - ranking checkpoints by `env/success_rate` or `env/episode_length` alone
