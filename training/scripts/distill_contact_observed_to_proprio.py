@@ -60,6 +60,9 @@ DEFAULT_OUTPUT = PROJECT_ROOT / (
     "training/checkpoints/contact_free_distillation/"
     "17d18_ckpt7_v8_to_v11_distilled.pkl"
 )
+EXPECTED_TEACHER_SHA256 = (
+    "a1322717e0e5e6cf73debbcb7bcdd8f7a1ac6bed113c19139c8d7812fa133511"
+)
 
 
 def _checkpoint_sha256(path: Path) -> str:
@@ -68,6 +71,48 @@ def _checkpoint_sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _resolve_teacher_checkpoint(
+    requested: Path,
+    *,
+    expected_sha256: str = EXPECTED_TEACHER_SHA256,
+    search_roots: list[tuple[Path, str]] | None = None,
+) -> Path:
+    requested = requested.expanduser().resolve()
+    candidates = [requested]
+    if search_roots is None:
+        jobs_root = PROJECT_ROOT.parent / f"{PROJECT_ROOT.name}-training-jobs"
+        search_roots = [
+            (PROJECT_ROOT / "training/checkpoints", requested.name),
+            (jobs_root, requested.name),
+            (PROJECT_ROOT / "runtime/bundles", "checkpoint.pkl"),
+        ]
+    for root, pattern in search_roots:
+        if root.is_dir():
+            candidates.extend(sorted(root.rglob(pattern)))
+
+    checked: list[Path] = []
+    for candidate in dict.fromkeys(candidates):
+        if not candidate.is_file():
+            continue
+        checked.append(candidate)
+        if _checkpoint_sha256(candidate) == expected_sha256:
+            if candidate != requested:
+                print(
+                    "Resolved missing teacher checkpoint from "
+                    f"{candidate}",
+                    flush=True,
+                )
+            return candidate
+
+    locations = "\n  ".join(str(path) for path in checked) or "none"
+    raise FileNotFoundError(
+        "Could not find the exact 17d18 checkpoint-7 teacher. "
+        f"Expected SHA-256 {expected_sha256}. Checked files:\n  {locations}\n"
+        "Copy checkpoint_7_143360.pkl to the GPU or pass its path with "
+        "--teacher-checkpoint."
+    )
 
 
 def _validate_contracts(teacher_cfg, teacher_spec, student_cfg, student_spec) -> None:
@@ -237,6 +282,7 @@ def main() -> int:
     if args.learning_rate <= 0.0 or args.max_validation_rmse <= 0.0:
         parser.error("learning rate and validation RMSE threshold must be positive")
 
+    args.teacher_checkpoint = _resolve_teacher_checkpoint(args.teacher_checkpoint)
     report_path = args.report or args.output.with_suffix(".metrics.json")
     resolved_paths = {
         "teacher": args.teacher_checkpoint.resolve(),
