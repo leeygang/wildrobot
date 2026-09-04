@@ -1,4 +1,4 @@
-"""Project a v8 walking actor onto the contact-free v11 observation contract."""
+"""Migrate walking actors between contact-observed v8 and contact-free v11."""
 
 from __future__ import annotations
 
@@ -101,3 +101,35 @@ def project_v8_policy_params(
         retained_v8_observation_indices(action_dim), :
     ].copy()
     return projected
+
+
+def expand_contact_free_policy_params(
+    policy_params: dict[str, Any], *, action_dim: int
+) -> dict[str, Any]:
+    """Restore v8 contact inputs with zero-initialized first-layer weights."""
+    layers = policy_params.get("params")
+    if not isinstance(layers, dict):
+        raise ValueError("policy_params must contain a params dictionary")
+    hidden_names = sorted(
+        (name for name in layers if str(name).startswith("hidden_")),
+        key=lambda name: int(str(name).split("_")[-1]),
+    )
+    if not hidden_names:
+        raise ValueError("actor contains no hidden_N layers")
+
+    first_name = hidden_names[0]
+    kernel = np.asarray(layers[first_name]["kernel"])
+    expected = contact_free_observation_dim(action_dim)
+    if kernel.ndim != 2 or kernel.shape[0] != expected:
+        raise ValueError(
+            f"source actor first-layer shape {kernel.shape} does not match "
+            f"{expected}D {TARGET_LAYOUT_ID}"
+        )
+
+    expanded_kernel = np.zeros(
+        (v8_observation_dim(action_dim), kernel.shape[1]), dtype=kernel.dtype
+    )
+    expanded_kernel[retained_v8_observation_indices(action_dim), :] = kernel
+    expanded = copy.deepcopy(policy_params)
+    expanded["params"][first_name]["kernel"] = expanded_kernel
+    return expanded

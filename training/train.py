@@ -106,6 +106,7 @@ from training.policy_spec_utils import build_policy_spec_from_training_config
 from training.policy_migration.contact_free import (
     SOURCE_LAYOUT_ID as CONTACT_SOURCE_LAYOUT_ID,
     TARGET_LAYOUT_ID as CONTACT_FREE_LAYOUT_ID,
+    expand_contact_free_policy_params,
     project_v8_policy_params,
 )
 
@@ -304,8 +305,9 @@ def parse_args():
             "Actor checkpoint .pkl or checkpoint-run directory used to fine-tune "
             "under the current model/contract. A directory resolves the promoted "
             "checkpoint, or its rank-1 diagnostic candidate when none passed. "
-            "The critic and optimizer states are newly initialized. A v8 walking "
-            "actor is projected automatically for the contact-free v11 contract."
+            "The critic and optimizer states are newly initialized. The walking "
+            "actor is projected automatically between the contact-observed v8 "
+            "and contact-free v11 contracts."
         ),
     )
 
@@ -937,6 +939,26 @@ def start_training(
                 "  ✓ Projected actor initialization from wr_obs_v8_cmd3d "
                 f"to {CONTACT_FREE_LAYOUT_ID} by removing current and historical "
                 "foot-contact inputs"
+            )
+        elif (
+            source_layout == CONTACT_FREE_LAYOUT_ID
+            and target_layout == CONTACT_SOURCE_LAYOUT_ID
+        ):
+            source_names = source_spec.get("robot", {}).get("actuator_names", [])
+            target_names = list(policy_spec.robot.actuator_names)
+            if list(source_names) != target_names:
+                raise ValueError(
+                    "Contact-observed actor expansion requires identical source and "
+                    "target actuator order"
+                )
+            initial_policy_params = expand_contact_free_policy_params(
+                initial_policy_params,
+                action_dim=int(policy_spec.model.action_dim),
+            )
+            print(
+                "  ✓ Expanded actor initialization from "
+                f"{CONTACT_FREE_LAYOUT_ID} to {CONTACT_SOURCE_LAYOUT_ID} with "
+                "zero-initialized current and historical foot-contact weights"
             )
 
     print("\n" + "=" * 60)

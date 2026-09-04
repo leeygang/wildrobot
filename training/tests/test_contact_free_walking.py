@@ -11,6 +11,7 @@ from policy_contract.numpy.obs import (
 from policy_contract.spec_builder import build_policy_spec
 from training.policy_migration.contact_free import (
     contact_free_observation_dim,
+    expand_contact_free_policy_params,
     project_v8_observation,
     project_v8_policy_params,
     retained_v8_observation_indices,
@@ -164,4 +165,42 @@ def test_contact_free_symmetry_is_an_involution() -> None:
 
     np.testing.assert_array_equal(
         mirror_observations(mirror_observations(obs, spec), spec), obs
+    )
+
+
+def test_expanded_actor_preserves_contact_free_actor_and_zeros_contact_weights(
+) -> None:
+    rng = np.random.default_rng(11)
+    source_kernel = rng.normal(size=(873, 8)).astype(np.float32)
+    source_bias = rng.normal(size=(8,)).astype(np.float32)
+    policy_params = {
+        "params": {
+            "hidden_0": {"kernel": source_kernel, "bias": source_bias},
+            "hidden_1": {
+                "kernel": rng.normal(size=(8, 4)).astype(np.float32),
+                "bias": rng.normal(size=(4,)).astype(np.float32),
+            },
+        }
+    }
+    source_obs = rng.normal(size=(873,)).astype(np.float32)
+    target_obs = rng.normal(size=(937,)).astype(np.float32)
+    keep = retained_v8_observation_indices(ACTION_DIM)
+    target_obs[keep] = source_obs
+
+    expanded = expand_contact_free_policy_params(
+        policy_params, action_dim=ACTION_DIM
+    )
+    expanded_kernel = expanded["params"]["hidden_0"]["kernel"]
+    removed = np.ones(target_obs.size, dtype=bool)
+    removed[keep] = False
+
+    source_hidden = source_obs @ source_kernel + source_bias
+    target_hidden = target_obs @ expanded_kernel + source_bias
+    np.testing.assert_allclose(target_hidden, source_hidden, atol=1e-5)
+    np.testing.assert_array_equal(expanded_kernel[removed], 0.0)
+    np.testing.assert_array_equal(
+        project_v8_policy_params(expanded, action_dim=ACTION_DIM)["params"][
+            "hidden_0"
+        ]["kernel"],
+        source_kernel,
     )
