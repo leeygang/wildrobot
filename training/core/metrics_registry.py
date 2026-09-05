@@ -161,7 +161,9 @@ METRIC_SPECS: List[MetricSpec] = [
     MetricSpec(
         name="reward/orientation",
         reducer=Reducer.MEAN,
-        description="Orientation penalty (pitch² + roll²)",
+        description=(
+            "Weighted yaw-invariant projected-gravity orientation penalty"
+        ),
     ),
     MetricSpec(
         name="reward/angvel",

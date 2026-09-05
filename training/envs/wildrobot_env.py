@@ -105,6 +105,7 @@ __all__ = [
     "WildRobotEnv",
     "WildRobotEnvState",
     "get_assets",
+    "projected_gravity_orientation_penalty",
     "torque_saturation_penalty",
 ]
 
@@ -115,6 +116,31 @@ __all__ = [
 
 
 TORQUE_SOFT_LIMIT_RATIO = 0.95
+
+
+def projected_gravity_orientation_penalty(root_quat_wxyz: jax.Array) -> jax.Array:
+    """Return the yaw-invariant torso tilt magnitude used by ToddlerBot.
+
+    ToddlerBot's ``_reward_penalty_orientation`` rotates world gravity into
+    the torso frame and penalizes the squared x/y components. WildRobot keeps
+    penalty magnitudes positive and applies its negative YAML weight in
+    ``_aggregate_reward``.
+    """
+    root_quat_wxyz = jax_frames.normalize_quat_wxyz(root_quat_wxyz)
+    root_quat_inv_wxyz = jp.asarray(
+        [
+            root_quat_wxyz[0],
+            -root_quat_wxyz[1],
+            -root_quat_wxyz[2],
+            -root_quat_wxyz[3],
+        ],
+        dtype=jp.float32,
+    )
+    gravity_body = jax_frames.rotate_vec_by_quat(
+        root_quat_inv_wxyz,
+        jp.asarray([0.0, 0.0, -1.0], dtype=jp.float32),
+    )
+    return jp.sum(gravity_body[:2] * gravity_body[:2]).astype(jp.float32)
 
 
 def torque_saturation_penalty(
@@ -2621,6 +2647,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
              -root_quat_wxyz[3]],
             dtype=jp.float32,
         )
+        penalty_orientation = projected_gravity_orientation_penalty(quat_wxyz)
 
         # ---- ref/feet_pos_track_raw (diagnostic-only) ------------------------
         # Keep the legacy root-relative WORLD-frame feet tracking probe as a
@@ -3178,6 +3205,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # alpha=0.25 via cmd_yaw_rate_alpha; weight defaults 0.0).
             r_yaw_rate_track=r_yaw_rate_track.astype(jp.float32),
             penalty_action_rate=penalty_action_rate,
+            penalty_orientation=penalty_orientation,
             penalty_torque=penalty_torque,
             penalty_saturation=penalty_saturation,
             penalty_joint_vel=penalty_joint_vel,
@@ -3342,6 +3370,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             cmd_yaw_rate_track=jp.float32(w.cmd_yaw_rate_track)
             * terms["r_yaw_rate_track"],
             action_rate=jp.float32(w.action_rate) * terms["penalty_action_rate"],
+            orientation=jp.float32(w.orientation) * terms["penalty_orientation"],
             torque=jp.float32(w.torque) * terms["penalty_torque"],
             saturation=jp.float32(w.saturation) * terms["penalty_saturation"],
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
@@ -5649,6 +5678,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "cmd_yaw_rate_track"
         ]
         terminal_metrics_dict["reward/action_rate"] = reward_contrib["action_rate"]
+        terminal_metrics_dict["reward/orientation"] = reward_contrib["orientation"]
         terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
         terminal_metrics_dict["reward/saturation"] = reward_contrib["saturation"]
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]

@@ -1058,7 +1058,9 @@ class RewardWeightsConfig(Freezable):
     tracking_lin_vel: float = 2.0
     lateral_velocity: float = -0.5
     base_height: float = 0.5
-    orientation: float = -0.5
+    # Opt-in for the v3 walking reward path. The previous v3 implementation
+    # left this legacy field unwired, so zero preserves historical behavior.
+    orientation: float = 0.0
     angular_velocity: float = -0.05
     pitch_rate: float = 0.0
     # v0.19.5b: asymmetric backward-lean penalty (negative pitch only)

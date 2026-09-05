@@ -171,7 +171,9 @@ ENV_METRICS_KEYS = {
     "reward/forward": "Forward velocity tracking reward",
     "reward/lateral": "Lateral velocity penalty",
     "reward/healthy": "Healthy/alive reward",
-    "reward/orientation": "Upright orientation reward",
+    "reward/orientation": (
+        "Weighted yaw-invariant projected-gravity orientation penalty"
+    ),
     "reward/angvel": "Angular velocity penalty",
     "reward/pitch_rate": "Pitch-rate penalty",
     "reward/backward_lean": "Backward-lean penalty when pitch tilts behind neutral",

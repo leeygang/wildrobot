@@ -996,7 +996,10 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         tracking_lin_vel=rewards.get("tracking_lin_vel", 2.0),
         lateral_velocity=rewards.get("lateral_velocity", -0.5),
         base_height=rewards.get("base_height", 0.5),
-        orientation=rewards.get("orientation", -0.5),
+        # The v3 walking path treats orientation shaping as opt-in. Older
+        # configs omitted this field while it was unwired, so zero preserves
+        # their effective reward contract.
+        orientation=rewards.get("orientation", 0.0),
         angular_velocity=rewards.get("angular_velocity", -0.05),
         pitch_rate=rewards.get("pitch_rate", 0.0),
         backward_lean=rewards.get("backward_lean", 0.0),
