@@ -10,9 +10,9 @@ The full loop uses two manually installed services:
   results, runs the deterministic analyzer, invokes `codex exec` to implement
   and commit the next experiment, pushes it, and queues the next GPU run.
 
-The loop is bounded by `--max-cycles` (default: 20) and
-`--max-training-failures`. A completed run that misses deployment gates must
-produce one bounded follow-up experiment;
+The loop is bounded by `--max-cycles` (default: 20). Failed GPU jobs and
+completed runs that miss deployment gates must produce one bounded follow-up
+experiment;
 the loop stops only on a deterministically promoted checkpoint, an unexpected
 orchestration error, or either configured limit. It can also be manually paused
 without cancelling an active GPU job. It
@@ -115,7 +115,7 @@ checks distillation before starting PPO in the same durable job:
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --new-run \
-  --config training/configs/ppo_walking_v0210_17d31_contact_free_teacher_distill.yaml \
+  --config training/configs/ppo_walking_v0210_17d32_contact_free_teacher_distill_walking_only.yaml \
   --max-cycles 20
 
 uv run python wildrobot/agents/autonomous_training_loop.py run

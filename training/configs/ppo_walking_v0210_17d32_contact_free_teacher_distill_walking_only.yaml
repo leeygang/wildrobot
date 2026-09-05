@@ -1,0 +1,285 @@
+# WildRobot v0.21.0-17d32: walking-only contact-free distillation retry.
+#
+# The direct v8 -> v11 first-layer projection removed 64 current/historical
+# contact inputs that carry 6.56% of the proven 17d18 actor's first-layer
+# weight energy. The resulting policy regressed from 0/64 falls to 56/64.
+# Ten bounded PPO attempts recovered only to 41/64 falls (17d26 checkpoint 6),
+# so PPO from the falling projected actor is not a reliable way to relearn the
+# latent gait-contact mode.
+#
+# Bootstrap change:
+#   * initialize from training/scripts/distill_contact_observed_to_proprio.py,
+#     which labels v11 proprioceptive observations with actions from the stable
+#     17d18 checkpoint-7 v8 teacher and gates the result on held-out action
+#     error plus deterministic closed-loop survival.
+#   * distill only the forward walking commands 0.065 and 0.13 m/s. The stable
+#     teacher survived all eight walking validation rollouts but failed all
+#     four sustained zero-command probes; WR's integrated runtime assigns that
+#     mode to the standing policy and ramps through it during handoff.
+#
+# The deployed actor contract remains wr_obs_v11_cmd3d_proprio. Simulated foot
+# contacts remain active in MuJoCo and the privileged critic; they also provide
+# teacher-only supervision during the bootstrap and are never actor inputs.
+# After distillation, use this unchanged 10-iteration, 5e-7 PPO contract with
+# rollback and strict 64-environment evaluation. The GPU queue creates and
+# injects the distilled checkpoint before PPO; no manual --init-policy is used.
+#
+# ToddlerBot comparison: its deployed walking actor uses phase, command, motor
+# state, prior action, IMU, and observation history without foot-contact sensor
+# inputs, while its simulator still computes contact-dependent rewards. This
+# config preserves that separation. Teacher supervision is a bounded WR
+# recovery mechanism for removing information from an already-trained v8
+# policy, not a deployment-contract divergence. References: Shi et al.,
+# ToddlerBot (arXiv:2502.00893); Rusu et al., Policy Distillation
+# (arXiv:1511.06295); local ToddlerBot toddlerbot/policies/mjx_policy.py and
+# toddlerbot/locomotion/{mjx_env.py,walk_env.py}.
+
+version: "0.21.0-17d32"
+version_name: "v0.21.0 native 17D walking-only contact-free distillation retry"
+seed: 42
+
+bootstrap:
+  mode: contact_observed_to_proprio
+  commands: "0.065,0,0;0.13,0,0"
+  rollout_steps: 1000
+  rollout_repeats: 16
+  validation_steps: 1000
+  validation_repeats: 4
+  epochs: 50
+  batch_size: 512
+  learning_rate: 0.0003
+  max_validation_rmse: 0.08
+  require_no_terminations: true
+  seed: 0
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 1000
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  torso_pitch_soft_min_rad: -0.2
+  torso_pitch_soft_max_rad: 0.2
+  torso_roll_soft_min_rad: -0.1
+  torso_roll_soft_max_rad: 0.1
+  min_feet_y_dist: 0.171
+  max_feet_y_dist: 0.317
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    right_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    right_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    right_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_ankle_roll: 5.0
+  torque_saturation_soft_limit_ratio: 0.7
+  torque_saturation_weight_default: 0.0
+  torque_saturation_weights_per_joint:
+    left_hip_roll: 1.0
+  min_velocity: 0.065
+  max_velocity: 0.13
+  min_velocity_y: 0.0
+  max_velocity_y: 0.0
+  max_yaw_rate: 0.0
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.05
+  cmd_turn_chance: 0.0
+  cmd_deadzone: [0.02, 0.02, 0.05]
+  eval_velocity_cmd: [0.13, 0.0, 0.0]
+  eval_velocity_cmd_probes: []
+  cmd_sampler_3d_branched: false
+  cmd_sampler_walk_vx_positive_only: true
+  cmd_sampler_walk_vy_exact_signed_bins: false
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+  action_filter_alpha: 0.0
+  loc_ref_version: v3_offline_library
+  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio
+  loc_ref_offline_command_vx: 0.13
+  loc_ref_default_stance_width_m: 0.0535
+  loc_ref_residual_base: home
+  loc_ref_walking_base_from_ref_init_roll: true
+  loc_ref_reset_base: home
+  loc_ref_rsi_enabled: true
+  loc_ref_rsi_probability: 0.50
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: true
+  close_feet_threshold: 0.146
+  critic_imitation_refs: true
+  critic_obs_history_frames: 15
+  loc_ref_command_conditioned: true
+  loc_ref_command_grid_interval: 0.065
+  loc_ref_command_axes_3d: true
+  loc_ref_offline_command_vy_grid: [-0.065, 0.0, 0.065]
+  loc_ref_offline_command_yaw_rate_grid: [0.0]
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.2
+  loc_ref_residual_scale_per_joint:
+    left_hip_pitch: 0.64
+    left_hip_roll: 0.375
+    left_knee_pitch: 0.978
+    left_ankle_pitch: 0.33
+    left_ankle_roll: 0.375
+    right_hip_pitch: 0.64
+    right_hip_roll: 0.375
+    right_knee_pitch: 0.978
+    right_ankle_pitch: 0.33
+    right_ankle_roll: 0.375
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+  action_delay_steps: 1
+  joint_feedback_sample_hold_enabled: true
+  joint_feedback_leg_period_steps_range: [4, 7]
+  joint_feedback_upper_period_steps_range: [12, 24]
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 20
+  iterations: 10
+  learning_rate: 5.0e-7
+  gamma: 0.97
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.0
+  value_loss_coef: 0.5
+  epochs: 2
+  num_minibatches: 16
+  max_grad_norm: 1.0
+  log_interval: 1
+  critic_privileged_enabled: true
+  critic_includes_actor_obs: true
+  critic_warmup_iterations: 2
+  source_policy_kl_coef: 0.0
+  source_policy_kl_limit: 0.0
+  target_kl: 0.003
+  kl_early_stop_multiplier: 1.0
+  kl_lr_backoff_multiplier: 1.5
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 0.5
+  eval:
+    enabled: true
+    interval: 1
+    num_envs: 64
+    num_steps: 1000
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 10
+    post_training_num_envs: 64
+    post_training_num_steps: 1000
+    post_training_checkpoint_label: eval_promoted
+    post_training_strict_lateral_drift: false
+    post_training_strict_walking_safety: true
+  rollback:
+    enabled: true
+    patience: 3
+    success_rate_drop_threshold: 0.01
+    stable_saturation_increase_threshold: 0.02
+    lr_factor: 0.5
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 562.5
+  cmd_forward_velocity_alpha_y: 120.0
+  cmd_velocity_track_dim: 1
+  cmd_lateral_velocity_track: 1.0
+  cmd_yaw_rate_track: 1.5
+  cmd_yaw_rate_alpha: 0.25
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -1.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  ref_feet_z_track_alpha: 1428.6
+  torso_pos_xy: 0.0
+  torso_pos_xy_alpha: 90.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: -0.001
+  saturation: -0.025
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints/ppo_walking_v0210_17d32_contact_free_teacher_distill_walking_only
+  interval: 1
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.21.0, native_17d, 17d32, forward_only, contact_free_actor, teacher_distilled_init, walking_only_distillation, toddlerbot_proprio, lr_5e-7, rsi_50pct, rollback_patience3, source_kl_release, wrist_free_policy, latency_finetune, sample_hold_feedback, domain_randomization, mixed_home_rsi_reset, home_base_residual, strict_walking_safety, eval_each_iteration, eval_64, obs_v11_cmd3d_proprio, ep_1000]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
+      post_training_enabled: true
+      post_training_top_k: 1
+      post_training_num_envs: 4
+      post_training_num_steps: 16

@@ -24,8 +24,6 @@ def _state(tmp_path: Path) -> dict:
         "stage": "training",
         "cycle": 1,
         "max_cycles": 4,
-        "max_training_failures": 2,
-        "training_failures": 0,
         "host": "gpu",
         "user": "robot",
         "port": None,
@@ -417,6 +415,52 @@ def test_terminal_failed_gate_can_commit_push_and_enqueue_next(
     assert events == ["push", "enqueue"]
 
 
+def test_failed_gpu_job_still_runs_analysis_fix_and_enqueue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    events: list[str] = []
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_run_analyzer",
+        lambda _context: {
+            "job_id": "job-1",
+            "status": "failed",
+            "simulation_candidate_ready": False,
+        },
+    )
+    monkeypatch.setattr(
+        auto,
+        "_invoke_codex",
+        lambda *_args, **_kwargs: {
+            "decision": "continue",
+            "summary": "fix failed bootstrap",
+            "config": "training/configs/next.yaml",
+            "start_mode": "none",
+            "checkpoint": "",
+            "verification": ["focused tests passed"],
+        },
+    )
+    monkeypatch.setattr(auto, "_validate_codex_result", lambda *_args: None)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
+    monkeypatch.setattr(
+        auto,
+        "_enqueue",
+        lambda *_args, **_kwargs: events.append("enqueue") or "job-2",
+    )
+
+    auto._process_terminal_job(
+        state,
+        {"job_id": "job-1", "git_sha": "a" * 40, "status": "failed"},
+    )
+
+    assert events == ["push", "enqueue"]
+    assert state["status"] == "active"
+
+
 def test_enqueue_resets_status_for_the_new_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -686,7 +730,6 @@ def test_start_can_adopt_an_already_completed_gpu_run(
         port=None,
         remote_repo="/srv/wildrobot",
         max_cycles=4,
-        max_training_failures=2,
         codex_path=None,
         codex_model=None,
         codex_timeout_minutes=5,
@@ -789,7 +832,6 @@ def test_web_start_builds_existing_cli_command() -> None:
             "source": "offline-run-id",
             "training_git_sha": "a" * 40,
             "max_cycles": 20,
-            "max_training_failures": 2,
             "gpu_host": "gpu.local",
             "gpu_user": "robot",
             "remote_repo": "/srv/wildrobot",
@@ -807,6 +849,7 @@ def test_web_start_builds_existing_cli_command() -> None:
     assert args[args.index("--adopt-completed") + 1] == "offline-run-id"
     assert args[args.index("--training-git-sha") + 1] == "a" * 40
     assert args[args.index("--max-cycles") + 1] == "20"
+    assert "--max-training-failures" not in args
     assert args[-1] == "--new-run"
 
 
@@ -823,7 +866,6 @@ def test_web_status_combines_loop_and_machine_status(
                 "user": "robot",
                 "remote_repo": "/srv/wildrobot",
                 "max_cycles": 20,
-                "max_training_failures": 2,
             }
         )
     )
@@ -1398,6 +1440,19 @@ def test_run_retries_a_new_stage_error_without_exiting(
 def test_retry_command_is_removed() -> None:
     with pytest.raises(SystemExit):
         auto._parse_args(["retry"])
+
+
+def test_training_failure_limit_option_is_removed() -> None:
+    with pytest.raises(SystemExit):
+        auto._parse_args(
+            [
+                "start",
+                "--config",
+                "training/configs/walking.yaml",
+                "--max-training-failures",
+                "2",
+            ]
+        )
 
 
 def test_start_defaults_to_twenty_cycles() -> None:

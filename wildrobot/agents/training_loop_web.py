@@ -197,8 +197,6 @@ def _build_start_args(payload: dict[str, Any]) -> list[str]:
         [
             "--max-cycles",
             str(_integer(payload, "max_cycles", 20, minimum=1)),
-            "--max-training-failures",
-            str(_integer(payload, "max_training_failures", 2, minimum=0)),
         ]
     )
 
@@ -261,9 +259,6 @@ class TrainingLoopWebController:
                 (state or {}).get("remote_repo") or remote.DEFAULT_REMOTE_REPO
             ),
             "max_cycles": int((state or {}).get("max_cycles") or 20),
-            "max_training_failures": int(
-                (state or {}).get("max_training_failures") or 2
-            ),
             "standing_checkpoint": str(
                 (state or {}).get("standing_checkpoint") or ""
             ),
@@ -408,7 +403,6 @@ _HTML = r"""<!doctype html>
         <label>Run name or checkpoint<input name="source" placeholder="offline-run-… or checkpoint.pkl"></label>
         <label class="wide">Training Git SHA<input name="training_git_sha" placeholder="Required for an older adopted run"></label>
         <label>Maximum cycles<input name="max_cycles" type="number" min="1" value="20"></label>
-        <label>Maximum training failures<input name="max_training_failures" type="number" min="0" value="2"></label>
         <label>GPU host<input name="gpu_host"></label><label>GPU user<input name="gpu_user"></label>
         <label>GPU SSH port<input name="gpu_port" type="number" min="1" max="65535"></label>
         <label>Git branch<input name="branch" value="main"></label>

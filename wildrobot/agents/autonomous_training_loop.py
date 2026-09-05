@@ -754,19 +754,6 @@ def _process_terminal_job(
                 manifest = current
                 continue
 
-            if current.get("status") == "failed":
-                state["training_failures"] = int(
-                    state.get("training_failures", 0)
-                ) + 1
-                if state["training_failures"] >= int(
-                    state["max_training_failures"]
-                ):
-                    state.update(
-                        status="stopped",
-                        stop_reason="training failure limit",
-                    )
-                    _save_state(state)
-                    return
             if int(state["cycle"]) >= int(state["max_cycles"]):
                 state.update(
                     status="stopped",
@@ -1049,8 +1036,6 @@ def _start(args: argparse.Namespace) -> int:
         )
     if args.max_cycles < 1:
         raise remote.TrainingLoopError("--max-cycles must be at least 1.")
-    if args.max_training_failures < 0:
-        raise remote.TrainingLoopError("--max-training-failures cannot be negative.")
     if args.codex_timeout_minutes < 1:
         raise remote.TrainingLoopError("--codex-timeout-minutes must be at least 1.")
     if not PurePosixPath(args.remote_repo).is_absolute():
@@ -1103,8 +1088,6 @@ def _start(args: argparse.Namespace) -> int:
         ).jobs_root,
         "cycle": 0,
         "max_cycles": args.max_cycles,
-        "training_failures": 0,
-        "max_training_failures": args.max_training_failures,
         "codex_path": codex_path,
         "codex_model": args.codex_model,
         "codex_timeout_minutes": args.codex_timeout_minutes,
@@ -1513,7 +1496,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     start.add_argument("--port", type=int)
     start.add_argument("--remote-repo", default=remote.DEFAULT_REMOTE_REPO)
     start.add_argument("--max-cycles", type=int, default=20)
-    start.add_argument("--max-training-failures", type=int, default=2)
     start.add_argument("--codex-path")
     start.add_argument("--codex-model")
     start.add_argument("--codex-timeout-minutes", type=int, default=60)

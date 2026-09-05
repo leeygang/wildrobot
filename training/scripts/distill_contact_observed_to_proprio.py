@@ -253,7 +253,7 @@ def main() -> int:
     parser.add_argument(
         "--commands",
         type=_parse_commands,
-        default=_parse_commands("0,0,0;0.065,0,0;0.13,0,0"),
+        default=_parse_commands("0.065,0,0;0.13,0,0"),
     )
     parser.add_argument("--rollout-steps", type=int, default=1000)
     parser.add_argument("--rollout-repeats", type=int, default=16)
@@ -441,10 +441,12 @@ def main() -> int:
     report_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
     print(json.dumps(metrics, indent=2, sort_keys=True))
     if failures:
-        raise RuntimeError(
-            "distillation gates failed; checkpoint was not written: "
-            + "; ".join(failures)
+        print(
+            "Distillation gates failed; checkpoint was not written: "
+            + "; ".join(failures),
+            file=sys.stderr,
         )
+        return 2
 
     output_checkpoint = {
         "iteration": 0,
