@@ -183,6 +183,7 @@ def test_completed_job_allows_post_start_evaluator_and_control_plane_commit(
             [
                 "wildrobot/agents/autonomous_training_loop.py",
                 "training/eval/eval_policy.py",
+                "training/tests/test_eval_policy_failure_trace.py",
                 "tests/test_autonomous_training_loop.py",
             ]
         ),

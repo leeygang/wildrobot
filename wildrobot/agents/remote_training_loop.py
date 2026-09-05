@@ -44,6 +44,7 @@ ADOPTION_CONTROL_PLANE_PATHS = (
     "tests/test_walking_candidate_evaluation.py",
     "training/eval/eval_policy.py",
     "training/exports/export_policy_bundle.py",
+    "training/tests/",
     "wildrobot/agents/",
 )
 
