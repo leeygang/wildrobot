@@ -18,6 +18,44 @@ orchestration error, or either configured limit. It can also be manually paused
 without cancelling an active GPU job. It
 exports and validates a bundle after promotion. It never starts robot hardware.
 
+### Stability-first campaign control
+
+The autonomous controller treats training as a sequence of falsifiable
+experiments rather than a chain of local fine-tunes:
+
+- It maintains a frozen campaign champion using a lexicographic objective:
+  falls first, then actuator saturation, stable torso tilt, and forward
+  tracking. A worse child is never silently used as the next parent.
+- Every Codex decision records the measured failure mode, causal hypothesis,
+  intervention family, expected result, and falsification condition. After two
+  consecutive non-improving experiments from one family, that family is
+  rejected until another mechanism is tested.
+- Falls with negligible pre-fall saturation route to failure-state replay or a
+  recovery curriculum. Saturation-associated falls route to torque headroom or
+  stance geometry. This prevents repeated reward-weight or learning-rate
+  tuning when the evidence points elsewhere.
+- A failed walking screen launches a 64-environment diagnostic evaluation that
+  saves the final two seconds of observations, actions, and metric vectors for
+  each first-episode fall. These traces provide student-visited states for a
+  DAgger-style teacher-labeling follow-up while keeping the deployed actor
+  contact-free.
+- A checkpoint that passes the normal 0/64 screen is not exported immediately.
+  The GPU runs four independent 64-environment evaluations and requires 0/256
+  falls plus every existing strict walking gate before bundle export.
+
+The extra confirmation is intentionally conditional, so the top-K training
+screen remains 64 environments and the 256-environment cost is paid only for a
+candidate that would otherwise be promoted. With zero observed failures, the
+one-sided 95% failure-probability upper bound improves from approximately 4.6%
+at 64 trials to 1.2% at 256 trials.
+
+This follows ToddlerBot's proprioceptive actor, projected-gravity orientation
+penalty, and domain-randomization approach while adding a WildRobot-specific
+tail-risk loop for the measured rare contact-free falls. References:
+[ToddlerBot](https://arxiv.org/abs/2502.00893),
+[DAgger](https://proceedings.mlr.press/v15/ross11a.html), and
+[Policy Distillation](https://arxiv.org/abs/1511.06295).
+
 ### Deploy and start the Ubuntu service
 
 Push this automation commit from the Mac, then update the normal GPU checkout:

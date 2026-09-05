@@ -42,6 +42,22 @@ PIPELINE_STAGES = {
     "enqueue",
     "export",
 }
+CONFIRMATION_SEEDS = (31_000, 41_000, 51_000, 61_000)
+CONFIRMATION_NUM_ENVS = 64
+CONFIRMATION_NUM_STEPS = 1000
+FAILURE_DIAGNOSTIC_SEEDS = (31_000,)
+MAX_UNSUCCESSFUL_FAMILY_ATTEMPTS = 2
+CAMPAIGN_OBJECTIVE = {
+    "priority": [
+        "walking_fall_env_count",
+        "walking_stable_max_actuator_torque_sat_frac",
+        "walking_stable_body_tilt_deg_max",
+        "forward_tracking",
+    ],
+    "screen": "0/64 falls",
+    "confirmation": "0/256 falls across four independent 64-env seeds",
+    "lateral_and_yaw_drift": "report_only",
+}
 
 
 def _utc_now() -> str:
@@ -161,12 +177,21 @@ def _require_training_commit(state: dict[str, Any], manifest: dict[str, Any]) ->
             "same Git commit before analysis or export."
         )
     if head != expected:
-        if not state.get("initial_run_adopted"):
+        if _git(
+            "merge-base", "--is-ancestor", expected, head, check=False
+        ).returncode:
             raise remote.TrainingLoopError(
-                "Mac HEAD, autonomous state, and the completed GPU job must use the "
-                "same Git commit before analysis or export."
+                "The completed GPU job commit is not an ancestor of Mac HEAD."
             )
-        _require_adoption_compatible(expected, head)
+        changed = _git_output("diff", "--name-only", f"{expected}..{head}").splitlines()
+        disallowed = [
+            path for path in changed if not remote._is_adoption_control_plane_path(path)
+        ]
+        if disallowed:
+            raise remote.TrainingLoopError(
+                "Mac HEAD changed training-relevant files after the GPU job started: "
+                + ", ".join(disallowed)
+            )
     return head
 
 
@@ -181,6 +206,7 @@ def _prepare_pending_job(
     git_sha = _require_clean_branch(str(state["branch"]))
     config = remote._repo_config(config)
     return {
+        "job_kind": remote.TRAINING_JOB_KIND,
         "cycle": cycle,
         "job_id": _job_id(cycle, config, git_sha),
         "git_sha": git_sha,
@@ -195,6 +221,7 @@ def _validate_existing_submission(
     existing: dict[str, Any], pending: dict[str, Any]
 ) -> None:
     expected = {
+        "job_kind": pending.get("job_kind", remote.TRAINING_JOB_KIND),
         "job_id": pending["job_id"],
         "git_sha": pending["git_sha"],
         "source_config": pending["config"],
@@ -202,7 +229,20 @@ def _validate_existing_submission(
         "start_mode": pending["start_mode"] if pending["checkpoint"] else None,
         "start_checkpoint_request": pending["checkpoint"] or None,
     }
-    mismatched = [key for key, value in expected.items() if existing.get(key) != value]
+    if pending.get("job_kind") == remote.EVALUATION_JOB_KIND:
+        expected.update(
+            evaluation_purpose=pending["evaluation_purpose"],
+            evaluation_source_job_id=pending["evaluation_source_job_id"],
+            evaluation_seeds=pending["evaluation_seeds"],
+            evaluation_num_envs=pending["evaluation_num_envs"],
+            evaluation_num_steps=pending["evaluation_num_steps"],
+        )
+    mismatched = [
+        key
+        for key, value in expected.items()
+        if existing.get(key, remote.TRAINING_JOB_KIND if key == "job_kind" else None)
+        != value
+    ]
     if mismatched:
         raise remote.TrainingLoopError(
             "Existing GPU job does not match the persisted enqueue intent: "
@@ -216,22 +256,39 @@ def _resume_enqueue(state: dict[str, Any]) -> str:
         raise remote.TrainingLoopError("enqueue stage is missing pending_job state.")
     context = _context(state, str(pending["job_id"]))
     try:
-        manifest = remote._enqueue_remote(
-            context,
-            git_sha=str(pending["git_sha"]),
-            config=str(pending["config"]),
-            checkpoint_series=str(pending["checkpoint_series"]),
-            init_policy=(
-                str(pending["checkpoint"])
-                if pending["start_mode"] == "init_policy"
-                else None
-            ),
-            resume=(
-                str(pending["checkpoint"])
-                if pending["start_mode"] == "resume"
-                else None
-            ),
-        )
+        if pending.get("job_kind") == remote.EVALUATION_JOB_KIND:
+            manifest = remote._enqueue_walking_evaluation_remote(
+                context,
+                git_sha=str(pending["git_sha"]),
+                config=str(pending["config"]),
+                checkpoint_series=str(pending["checkpoint_series"]),
+                checkpoint=str(pending["checkpoint"]),
+                checkpoint_relpath=str(pending["checkpoint_relpath"]),
+                checkpoint_run_dir=str(pending["checkpoint_run_dir"]),
+                checkpoint_run_relpath=str(pending["checkpoint_run_relpath"]),
+                source_job_id=str(pending["evaluation_source_job_id"]),
+                purpose=str(pending["evaluation_purpose"]),
+                seeds=[int(seed) for seed in pending["evaluation_seeds"]],
+                num_envs=int(pending["evaluation_num_envs"]),
+                num_steps=int(pending["evaluation_num_steps"]),
+            )
+        else:
+            manifest = remote._enqueue_remote(
+                context,
+                git_sha=str(pending["git_sha"]),
+                config=str(pending["config"]),
+                checkpoint_series=str(pending["checkpoint_series"]),
+                init_policy=(
+                    str(pending["checkpoint"])
+                    if pending["start_mode"] == "init_policy"
+                    else None
+                ),
+                resume=(
+                    str(pending["checkpoint"])
+                    if pending["start_mode"] == "resume"
+                    else None
+                ),
+            )
     except remote.TrainingLoopError as submit_error:
         try:
             manifest = remote._fetch_manifest(context)
@@ -243,12 +300,18 @@ def _resume_enqueue(state: dict[str, Any]) -> str:
     state.update(
         cycle=int(pending["cycle"]),
         active_job_id=str(pending["job_id"]),
+        active_job_kind=str(
+            pending.get("job_kind", remote.TRAINING_JOB_KIND)
+        ),
         active_git_sha=str(pending["git_sha"]),
         active_config=str(pending["config"]),
         stage="training",
         last_remote_status=str(manifest.get("status", "queued")),
         last_poll_at=None,
     )
+    if pending.get("job_kind") != remote.EVALUATION_JOB_KIND:
+        state.pop("evaluation_source_job_id", None)
+        state.pop("evaluation_purpose", None)
     for key in (
         "pending_job",
         "terminal_job_id",
@@ -268,16 +331,100 @@ def _enqueue(
     config: str,
     start_mode: str,
     checkpoint: str,
+    decision: dict[str, Any] | None = None,
 ) -> str:
+    pending = _prepare_pending_job(
+        state,
+        cycle=cycle,
+        config=config,
+        start_mode=start_mode,
+        checkpoint=checkpoint,
+    )
+    if decision is not None:
+        history = state.setdefault("experiment_history", [])
+        if not any(entry.get("job_id") == pending["job_id"] for entry in history):
+            history.append(
+                {
+                    "cycle": cycle,
+                    "job_id": pending["job_id"],
+                    "source_job_id": state.get("terminal_job_id"),
+                    "intervention_family": decision["intervention_family"],
+                    "failure_mode": decision["failure_mode"],
+                    "hypothesis": decision["hypothesis"],
+                    "expected_outcome": decision["expected_outcome"],
+                    "falsification_condition": decision[
+                        "falsification_condition"
+                    ],
+                    "champion_checkpoint": (
+                        state.get("champion") or {}
+                    ).get("checkpoint_path"),
+                }
+            )
+    state.update(stage="enqueue", pending_job=pending)
+    _save_state(state)
+    return _resume_enqueue(state)
+
+
+def _checkpoint_relpath(manifest: dict[str, Any], checkpoint: str) -> str:
+    artifact_root = PurePosixPath(str(manifest["artifact_root"]))
+    path = PurePosixPath(checkpoint)
+    try:
+        return path.relative_to(artifact_root).as_posix()
+    except ValueError as exc:
+        raise remote.TrainingLoopError(
+            "Evaluation checkpoint is outside its source job artifact root."
+        ) from exc
+
+
+def _enqueue_candidate_evaluation(
+    state: dict[str, Any],
+    manifest: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    purpose: str,
+) -> str:
+    git_sha = _require_clean_branch(str(state["branch"]))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    job_id = remote._safe_job_id(
+        f"auto-{int(state['cycle']):02d}-eval-{purpose}-{git_sha[:8]}-{timestamp}"
+    )
+    seeds = (
+        tuple(
+            int(seed)
+            for seed in state.get("confirmation_seeds", CONFIRMATION_SEEDS)
+        )
+        if purpose == "confirmation"
+        else FAILURE_DIAGNOSTIC_SEEDS
+    )
+    pending = {
+        "job_kind": remote.EVALUATION_JOB_KIND,
+        "cycle": int(state["cycle"]),
+        "job_id": job_id,
+        "git_sha": git_sha,
+        "config": str(manifest["source_config"]),
+        "checkpoint_series": str(manifest["checkpoint_series"]),
+        "start_mode": "init_policy",
+        "checkpoint": str(candidate["checkpoint_path"]),
+        "checkpoint_relpath": _checkpoint_relpath(
+            manifest, str(candidate["checkpoint_path"])
+        ),
+        "checkpoint_run_dir": str(manifest["checkpoint_run_dir"]),
+        "checkpoint_run_relpath": str(manifest["checkpoint_run_relpath"]),
+        "evaluation_source_job_id": str(manifest["job_id"]),
+        "evaluation_purpose": purpose,
+        "evaluation_seeds": list(seeds),
+        "evaluation_num_envs": int(
+            state.get("confirmation_num_envs", CONFIRMATION_NUM_ENVS)
+        ),
+        "evaluation_num_steps": int(
+            state.get("confirmation_num_steps", CONFIRMATION_NUM_STEPS)
+        ),
+    }
     state.update(
         stage="enqueue",
-        pending_job=_prepare_pending_job(
-            state,
-            cycle=cycle,
-            config=config,
-            start_mode=start_mode,
-            checkpoint=checkpoint,
-        ),
+        pending_job=pending,
+        evaluation_source_job_id=str(manifest["job_id"]),
+        evaluation_purpose=purpose,
     )
     _save_state(state)
     return _resume_enqueue(state)
@@ -328,6 +475,39 @@ def _resume_adoption(state: dict[str, Any]) -> dict[str, Any]:
 def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
     print(f"Syncing completed GPU job {context.job_id}...", flush=True)
     manifest = remote._sync_job(context, selected_checkpoint=False)
+    if manifest.get("job_kind") == remote.EVALUATION_JOB_KIND:
+        report = _evaluation_report(manifest)
+        report_path = remote.LOCAL_JOB_ROOT / context.job_id / "analysis.txt"
+        if report is None:
+            message = (
+                "Walking candidate evaluation produced no synchronized report.\n"
+                f"Job status: {manifest.get('status')}\n"
+                f"Error: {manifest.get('error')}\n"
+            )
+        else:
+            aggregate = report.get("aggregate", {})
+            message = (
+                f"Walking candidate {report.get('purpose')} result\n"
+                f"Checkpoint: {report.get('checkpoint')}\n"
+                f"Passed: {bool(aggregate.get('passed'))}\n"
+                f"Falls: {aggregate.get('total_falls')}/"
+                f"{aggregate.get('total_envs')}\n"
+                f"Worst stable tilt: "
+                f"{aggregate.get('worst_stable_tilt_deg')} deg\n"
+                f"Worst stable actuator saturation: "
+                f"{aggregate.get('worst_stable_actuator_torque_sat_frac')}\n"
+                f"Failed gates: {aggregate.get('fail_reasons', [])}\n"
+                "Per-seed failure cases and NPZ trace paths are recorded in "
+                f"{manifest.get('local_evaluation_report')}.\n"
+            )
+        report_path.write_text(message)
+        print(message, end="", flush=True)
+        manifest["local_analysis"] = str(report_path.relative_to(REPO_ROOT))
+        remote._write_json_atomic(
+            remote.LOCAL_JOB_ROOT / context.job_id / remote.MANIFEST_NAME,
+            manifest,
+        )
+        return manifest
     run_dir = manifest.get("local_wandb_run_dir")
     report_path = remote.LOCAL_JOB_ROOT / context.job_id / "analysis.txt"
     if not run_dir:
@@ -371,7 +551,292 @@ def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
     return manifest
 
 
-def _allowed_next_checkpoints(manifest: dict[str, Any]) -> list[str]:
+def _summary_path(manifest: dict[str, Any]) -> Path | None:
+    checkpoint_dir = manifest.get("local_checkpoint_run_dir")
+    if not checkpoint_dir:
+        return None
+    path = REPO_ROOT / str(checkpoint_dir) / "post_training_eval_summary.json"
+    return path if path.is_file() else None
+
+
+def _best_screen_candidate(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    path = _summary_path(manifest)
+    if path is None:
+        return None
+    summary = remote._read_json(path)
+    candidates = [
+        candidate
+        for candidate in summary.get("top_k_candidates", [])
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get("eval_metrics"), dict)
+        and candidate.get("checkpoint_path")
+    ]
+    if not candidates:
+        return None
+
+    safety_gates = {
+        "walking_fall_env_frac",
+        "walking_stable_max_actuator_torque_sat_frac",
+    }
+
+    def eligible(candidate: dict[str, Any]) -> bool:
+        gates = candidate.get("gates", {})
+        return all(
+            bool(passed)
+            for name, passed in gates.items()
+            if name not in safety_gates
+        )
+
+    eligible_candidates = [candidate for candidate in candidates if eligible(candidate)]
+    pool = eligible_candidates or candidates
+
+    def objective(candidate: dict[str, Any]) -> tuple[float, ...]:
+        metrics = candidate["eval_metrics"]
+
+        def value(name: str, default: float) -> float:
+            raw = metrics.get(name)
+            return float(raw) if raw is not None else default
+
+        return (
+            value("walking_fall_env_count", 1.0e12),
+            value("walking_stable_max_actuator_torque_sat_frac", 1.0e12),
+            value("walking_stable_body_tilt_deg_max", 1.0e12),
+            value("walking_stable_body_tilt_deg_mean", 1.0e12),
+            value("cmd_vs_achieved_forward", 1.0e12),
+            -value("forward_velocity", -1.0e12),
+        )
+
+    selected = min(pool, key=objective)
+    return {
+        "checkpoint_path": str(selected["checkpoint_path"]),
+        "rank": selected.get("rank"),
+        "eligible": eligible(selected),
+        "passed_screen": bool(selected.get("passed")),
+        "gates": dict(selected.get("gates", {})),
+        "fail_reasons": list(selected.get("fail_reasons", [])),
+        "metrics": dict(selected["eval_metrics"]),
+        "objective": list(objective(selected)),
+    }
+
+
+def _campaign_manifests(state: dict[str, Any]) -> list[dict[str, Any]]:
+    created_at = str(state.get("created_at", ""))
+    manifests: list[dict[str, Any]] = []
+    if not remote.LOCAL_JOB_ROOT.is_dir():
+        return manifests
+    for path in remote.LOCAL_JOB_ROOT.glob(f"*/{remote.MANIFEST_NAME}"):
+        try:
+            manifest = remote._read_json(path)
+        except remote.TrainingLoopError:
+            continue
+        if manifest.get("job_kind", remote.TRAINING_JOB_KIND) != remote.TRAINING_JOB_KIND:
+            continue
+        if created_at and str(manifest.get("created_at", "")) < created_at:
+            continue
+        manifests.append(manifest)
+    return sorted(manifests, key=lambda item: str(item.get("created_at", "")))
+
+
+def _candidate_improves_champion(
+    candidate: dict[str, Any], champion: dict[str, Any] | None
+) -> bool:
+    """Compare independent screens without promoting measurement noise."""
+    if champion is None:
+        return True
+    current = candidate["metrics"]
+    best = champion["metrics"]
+    comparisons = (
+        ("walking_fall_env_count", 0.0),
+        ("walking_stable_max_actuator_torque_sat_frac", 0.002),
+        ("walking_stable_body_tilt_deg_max", 0.25),
+        ("walking_stable_body_tilt_deg_mean", 0.10),
+        ("cmd_vs_achieved_forward", 0.005),
+    )
+    for name, tolerance in comparisons:
+        new_value = float(current.get(name, 1.0e12))
+        old_value = float(best.get(name, 1.0e12))
+        if new_value < old_value - tolerance:
+            return True
+        if new_value > old_value + tolerance:
+            return False
+    return float(current.get("forward_velocity", -1.0e12)) > float(
+        best.get("forward_velocity", -1.0e12)
+    ) + 0.005
+
+
+def _ensure_campaign_state(state: dict[str, Any]) -> None:
+    state.setdefault("campaign_objective", dict(CAMPAIGN_OBJECTIVE))
+    state.setdefault("experiment_history", [])
+    state.setdefault("confirmation_seeds", list(CONFIRMATION_SEEDS))
+    state.setdefault("confirmation_num_envs", CONFIRMATION_NUM_ENVS)
+    state.setdefault("confirmation_num_steps", CONFIRMATION_NUM_STEPS)
+    if "champion" in state:
+        return
+    best: dict[str, Any] | None = None
+    for manifest in _campaign_manifests(state):
+        candidate = _best_screen_candidate(manifest)
+        if candidate is None or not candidate["eligible"]:
+            continue
+        record = {
+            **candidate,
+            "job_id": manifest.get("job_id"),
+            "config": manifest.get("source_config"),
+            "git_sha": manifest.get("git_sha"),
+        }
+        if _candidate_improves_champion(record, best):
+            best = record
+    state["champion"] = best
+
+
+def _record_campaign_result(
+    state: dict[str, Any], manifest: dict[str, Any]
+) -> bool:
+    _ensure_campaign_state(state)
+    candidate = _best_screen_candidate(manifest)
+    champion = state.get("champion")
+    improved = bool(
+        candidate
+        and candidate["eligible"]
+        and (
+            champion is None or _candidate_improves_champion(candidate, champion)
+        )
+    )
+    if improved:
+        state["champion"] = {
+            **candidate,
+            "job_id": manifest.get("job_id"),
+            "config": manifest.get("source_config"),
+            "git_sha": manifest.get("git_sha"),
+        }
+    for entry in state.get("experiment_history", []):
+        if entry.get("job_id") == manifest.get("job_id") and "result" not in entry:
+            entry["result"] = (
+                "champion_improved" if improved else "no_champion_improvement"
+            )
+            entry["completed_at"] = _utc_now()
+            entry["candidate_objective"] = (
+                candidate.get("objective") if candidate else None
+            )
+    return improved
+
+
+def _evaluation_report(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    path_text = manifest.get("local_evaluation_report")
+    if not path_text:
+        return None
+    path = REPO_ROOT / str(path_text)
+    return remote._read_json(path) if path.is_file() else None
+
+
+def _local_job_manifest(job_id: str) -> dict[str, Any] | None:
+    path = remote.LOCAL_JOB_ROOT / job_id / remote.MANIFEST_NAME
+    return remote._read_json(path) if path.is_file() else None
+
+
+def _failure_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
+    report = _evaluation_report(manifest)
+    if report is not None:
+        aggregate = report.get("aggregate", {})
+        local_report = REPO_ROOT / str(manifest["local_evaluation_report"])
+        source_candidate = None
+        source_job_id = manifest.get("evaluation_source_job_id")
+        if source_job_id:
+            source_manifest_path = (
+                remote.LOCAL_JOB_ROOT / str(source_job_id) / remote.MANIFEST_NAME
+            )
+            if source_manifest_path.is_file():
+                source_candidate = _best_screen_candidate(
+                    remote._read_json(source_manifest_path)
+                )
+        source_metrics = source_candidate.get("metrics", {}) if source_candidate else {}
+        return {
+            "source": "multi_seed_evaluation",
+            "purpose": report.get("purpose"),
+            "total_envs": aggregate.get("total_envs"),
+            "falls": aggregate.get("total_falls"),
+            "screening_falls": source_metrics.get("walking_fall_env_count"),
+            "screening_eligible": (
+                source_candidate.get("eligible") if source_candidate else None
+            ),
+            "fail_reasons": aggregate.get("fail_reasons", []),
+            "worst_stable_tilt_deg": aggregate.get("worst_stable_tilt_deg"),
+            "worst_stable_actuator_torque_sat_frac": aggregate.get(
+                "worst_stable_actuator_torque_sat_frac"
+            ),
+            "pre_fall_tilt_deg_max": aggregate.get("worst_pre_fall_tilt_deg"),
+            "pre_fall_max_actuator_torque_sat_frac": aggregate.get(
+                "worst_pre_fall_actuator_torque_sat_frac"
+            )
+            if aggregate.get("worst_pre_fall_actuator_torque_sat_frac") is not None
+            else source_metrics.get("walking_pre_fall_max_actuator_torque_sat_frac"),
+            "seed_results": [
+                {
+                    "seed": row.get("seed"),
+                    "passed": row.get("passed"),
+                    "fail_reasons": row.get("fail_reasons", []),
+                    "failure_cases": row.get("eval_metrics", {}).get(
+                        "failure_cases", []
+                    ),
+                    "failure_trace_path": str(
+                        local_report.parent
+                        / Path(str(row.get("failure_trace_path", ""))).name
+                    ),
+                }
+                for row in report.get("seed_results", [])
+            ],
+        }
+    candidate = _best_screen_candidate(manifest)
+    metrics = candidate.get("metrics", {}) if candidate else {}
+    return {
+        "source": "screening_eval",
+        "total_envs": (
+            int(
+                float(metrics.get("walking_fall_env_count", 0.0))
+                + float(metrics.get("walking_survivor_env_count", 0.0))
+            )
+            if metrics
+            else None
+        ),
+        "falls": metrics.get("walking_fall_env_count"),
+        "screening_eligible": candidate.get("eligible") if candidate else None,
+        "fail_reasons": candidate.get("fail_reasons", []) if candidate else [],
+        "pre_fall_tilt_deg_max": metrics.get("walking_pre_fall_body_tilt_deg_max"),
+        "pre_fall_max_actuator_torque_sat_frac": metrics.get(
+            "walking_pre_fall_max_actuator_torque_sat_frac"
+        ),
+        "stable_tilt_deg_max": metrics.get("walking_stable_body_tilt_deg_max"),
+        "stable_max_actuator_torque_sat_frac": metrics.get(
+            "walking_stable_max_actuator_torque_sat_frac"
+        ),
+    }
+
+
+def _required_intervention_families(manifest: dict[str, Any]) -> list[str]:
+    if manifest.get("status") == "failed":
+        return ["infrastructure"]
+    evidence = _failure_evidence(manifest)
+    if evidence.get("screening_eligible") is False:
+        return ["reference_tracking", "optimizer_diagnostic"]
+    falls = max(
+        float(evidence.get("falls") or 0.0),
+        float(evidence.get("screening_falls") or 0.0),
+    )
+    fail_reasons = set(evidence.get("fail_reasons", []))
+    pre_fall_sat = evidence.get("pre_fall_max_actuator_torque_sat_frac")
+    if falls > 0.0:
+        if pre_fall_sat is not None and float(pre_fall_sat) > 0.05:
+            return ["torque_headroom", "stance_geometry"]
+        return ["failure_state_replay", "recovery_curriculum"]
+    if "walking_stable_max_actuator_torque_sat_frac" in fail_reasons:
+        return ["torque_headroom", "stance_geometry"]
+    if any("body_tilt" in reason for reason in fail_reasons):
+        return ["recovery_curriculum"]
+    return ["reference_tracking", "optimizer_diagnostic"]
+
+
+def _allowed_next_checkpoints(
+    manifest: dict[str, Any], state: dict[str, Any] | None = None
+) -> list[str]:
     candidates = {
         str(value)
         for key in (
@@ -393,10 +858,14 @@ def _allowed_next_checkpoints(manifest: dict[str, Any]) -> list[str]:
             for candidate in summary.get("top_k_candidates", []):
                 if isinstance(candidate, dict) and candidate.get("checkpoint_path"):
                     candidates.add(str(candidate["checkpoint_path"]))
+    champion = state.get("champion") if state else None
+    if isinstance(champion, dict) and champion.get("checkpoint_path"):
+        candidates.add(str(champion["checkpoint_path"]))
     return sorted(candidates)
 
 
 def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
+    _ensure_campaign_state(state)
     job_dir = remote.LOCAL_JOB_ROOT / str(manifest["job_id"])
     instructions = CODEX_INSTRUCTIONS.read_text()
     context = {
@@ -414,9 +883,19 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         "training_error": manifest.get("error"),
         "bootstrap_status": manifest.get("bootstrap_status"),
         "local_bootstrap_report": manifest.get("local_bootstrap_report"),
-        "allowed_next_checkpoints": _allowed_next_checkpoints(manifest),
+        "allowed_next_checkpoints": _allowed_next_checkpoints(manifest, state),
         "required_actor_obs_layout_id": state.get(
             "required_actor_obs_layout_id"
+        ),
+        "campaign_objective": state["campaign_objective"],
+        "champion": state.get("champion"),
+        "recent_experiments": state.get("experiment_history", [])[-10:],
+        "failure_evidence": _failure_evidence(manifest),
+        "required_intervention_families": _required_intervention_families(
+            manifest
+        ),
+        "max_unsuccessful_attempts_per_family": (
+            MAX_UNSUCCESSFUL_FAMILY_ATTEMPTS
         ),
     }
     return f"{instructions}\n\nIteration context:\n{json.dumps(context, indent=2)}"
@@ -587,6 +1066,17 @@ def _validate_codex_result(
             "Codex must provide the next bounded experiment; got decision "
             f"{decision.get('decision')!r}."
         )
+    for field in (
+        "failure_mode",
+        "hypothesis",
+        "intervention_family",
+        "expected_outcome",
+        "falsification_condition",
+    ):
+        if not str(decision.get(field, "")).strip():
+            raise remote.TrainingLoopError(
+                f"Codex returned an empty experiment field: {field}."
+            )
     next_config = remote._repo_config(str(decision.get("config", "")))
     required_layout = state.get("required_actor_obs_layout_id")
     if required_layout:
@@ -612,11 +1102,41 @@ def _validate_codex_result(
             )
     else:
         _validate_checkpoint_path(state, checkpoint)
-        if checkpoint not in _allowed_next_checkpoints(manifest):
+        if checkpoint not in _allowed_next_checkpoints(manifest, state):
             raise remote.TrainingLoopError(
                 "Next checkpoint is not recorded in the job manifest or "
                 "deterministic evaluation summary."
             )
+        champion = state.get("champion")
+        if (
+            isinstance(champion, dict)
+            and champion.get("checkpoint_path")
+            and checkpoint != champion["checkpoint_path"]
+        ):
+            raise remote.TrainingLoopError(
+                "The next experiment must branch from the frozen campaign "
+                "champion, not from a worse local child."
+            )
+
+    family = str(decision["intervention_family"])
+    required_families = _required_intervention_families(manifest)
+    if family not in required_families:
+        raise remote.TrainingLoopError(
+            f"Intervention family {family!r} does not match the measured failure; "
+            f"choose one of {required_families}."
+        )
+    unsuccessful = 0
+    for entry in reversed(state.get("experiment_history", [])):
+        if entry.get("intervention_family") != family:
+            break
+        if entry.get("result") != "no_champion_improvement":
+            break
+        unsuccessful += 1
+    if unsuccessful >= MAX_UNSUCCESSFUL_FAMILY_ATTEMPTS:
+        raise remote.TrainingLoopError(
+            f"Intervention family {family!r} already failed to improve the "
+            f"champion {unsuccessful} consecutive times; choose a different family."
+        )
 
 
 def _export_ready_bundle(
@@ -746,8 +1266,53 @@ def _process_terminal_job(
                 return
             fix_base_sha = _require_training_commit(state, current)
             state["processed_job_id"] = str(state["terminal_job_id"])
-            if current.get("status") == "completed" and current.get(
-                "simulation_candidate_ready"
+            job_kind = current.get("job_kind", remote.TRAINING_JOB_KIND)
+            if job_kind == remote.TRAINING_JOB_KIND:
+                champion_improved = _record_campaign_result(state, current)
+                state["last_champion_improved"] = champion_improved
+                candidate = _best_screen_candidate(current)
+                if current.get("status") == "completed" and candidate is not None:
+                    falls = float(
+                        candidate["metrics"].get("walking_fall_env_count") or 0.0
+                    )
+                    purpose = (
+                        "confirmation"
+                        if current.get("simulation_candidate_ready")
+                        else "failure_diagnostic"
+                        if falls > 0.0
+                        else None
+                    )
+                    if purpose is not None:
+                        evaluation_manifest = current
+                        evaluation_candidate = candidate
+                        champion = state.get("champion")
+                        if (
+                            purpose == "failure_diagnostic"
+                            and isinstance(champion, dict)
+                            and champion.get("job_id") != current.get("job_id")
+                        ):
+                            champion_manifest = _local_job_manifest(
+                                str(champion["job_id"])
+                            )
+                            if champion_manifest is not None:
+                                evaluation_manifest = champion_manifest
+                                evaluation_candidate = champion
+                        _save_state(state)
+                        _push(str(state["branch"]))
+                        next_job = _enqueue_candidate_evaluation(
+                            state,
+                            evaluation_manifest,
+                            evaluation_candidate,
+                            purpose=purpose,
+                        )
+                        print(
+                            f"Enqueued {purpose.replace('_', ' ')} job: {next_job}",
+                            flush=True,
+                        )
+                        return
+            elif (
+                current.get("evaluation_purpose") == "confirmation"
+                and current.get("confirmation_passed")
             ):
                 state["stage"] = "export"
                 _save_state(state)
@@ -822,6 +1387,7 @@ def _process_terminal_job(
                 config=str(decision["config"]),
                 start_mode=str(decision["start_mode"]),
                 checkpoint=str(decision["checkpoint"]),
+                decision=decision,
             )
             print(f"Enqueued next autonomous job: {next_job}")
             return
@@ -1074,7 +1640,7 @@ def _start(args: argparse.Namespace) -> int:
         standing_config = str(standing_config_path)
     git_sha = _require_clean_branch(args.branch)
     state: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "active",
         "stage": "training",
         "created_at": _utc_now(),
@@ -1096,6 +1662,12 @@ def _start(args: argparse.Namespace) -> int:
         "initial_git_sha": git_sha,
         "initial_config": config,
         "required_actor_obs_layout_id": required_actor_obs_layout_id,
+        "campaign_objective": dict(CAMPAIGN_OBJECTIVE),
+        "champion": None,
+        "experiment_history": [],
+        "confirmation_seeds": list(CONFIRMATION_SEEDS),
+        "confirmation_num_envs": CONFIRMATION_NUM_ENVS,
+        "confirmation_num_steps": CONFIRMATION_NUM_STEPS,
     }
     PAUSE_PATH.unlink(missing_ok=True)
     if args.adopt_completed:
@@ -1184,6 +1756,17 @@ def _training_result_summary(manifest: dict[str, Any]) -> str:
         return f"{status}{suffix}"
     if status == "failed":
         return f"failed: {manifest.get('error') or 'unknown error'}"
+    if manifest.get("job_kind") == remote.EVALUATION_JOB_KIND:
+        report = _evaluation_report(manifest)
+        if report is None:
+            return "completed; walking evaluation summary not synchronized"
+        aggregate = report.get("aggregate", {})
+        return (
+            f"completed, {report.get('purpose')}; "
+            f"passed={bool(aggregate.get('passed'))}; "
+            f"falls={aggregate.get('total_falls')}/{aggregate.get('total_envs')}; "
+            f"sat={float(aggregate.get('worst_stable_actuator_torque_sat_frac') or 0.0) * 100:.3f}%"
+        )
 
     checkpoint_dir = manifest.get("local_checkpoint_run_dir")
     summary_path = (
@@ -1267,7 +1850,13 @@ def _recent_cycle_summaries(
         )
 
     records = []
+    campaign_created_at = str(state.get("created_at", ""))
     for job_id, manifest in manifests.items():
+        if (
+            campaign_created_at
+            and str(manifest.get("created_at", "")) < campaign_created_at
+        ):
+            continue
         job_dir = remote.LOCAL_JOB_ROOT / job_id
         decision_path = job_dir / "codex_decision.json"
         decision = None
@@ -1287,6 +1876,9 @@ def _recent_cycle_summaries(
                 "training_result": _training_result_summary(manifest),
                 "next_patch": decision.get("summary") if decision else None,
                 "next_config": decision.get("config") if decision else None,
+                "experiment_family": (
+                    decision.get("intervention_family") if decision else None
+                ),
             }
         )
     records.sort(key=lambda item: (int(item["cycle"]), str(item["job_id"])), reverse=True)
@@ -1297,6 +1889,7 @@ def _status(args: argparse.Namespace) -> int:
     if args.last < 1:
         raise remote.TrainingLoopError("--last must be at least 1.")
     state = _load_state()
+    _ensure_campaign_state(state)
     current_manifest = None
     remote_error = None
     if state.get("active_job_id"):
@@ -1327,9 +1920,22 @@ def _status(args: argparse.Namespace) -> int:
             if current_manifest is not None
             else state.get("last_bootstrap_status")
         ),
+        "job_kind": (
+            current_manifest.get("job_kind", remote.TRAINING_JOB_KIND)
+            if current_manifest is not None
+            else state.get("active_job_kind", remote.TRAINING_JOB_KIND)
+        ),
+        "evaluation_purpose": (
+            current_manifest.get("evaluation_purpose")
+            if current_manifest is not None
+            else state.get("evaluation_purpose")
+        ),
         "pause_requested": PAUSE_PATH.is_file(),
         "remote_error": remote_error,
         "recent_cycles": history,
+        "campaign_objective": state.get("campaign_objective"),
+        "champion": state.get("champion"),
+        "experiment_history": state.get("experiment_history", [])[-args.last :],
     }
     if args.json:
         print(json.dumps(dashboard, indent=2, sort_keys=True))
@@ -1345,6 +1951,8 @@ def _status(args: argparse.Namespace) -> int:
     print(f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']}")
     print(f"Active job: {dashboard['active_job_id']}")
     print(f"GPU job status: {dashboard['gpu_job_status']}")
+    if dashboard["job_kind"] == remote.EVALUATION_JOB_KIND:
+        print(f"GPU evaluation: {dashboard['evaluation_purpose']}")
     if dashboard["bootstrap_status"]:
         print(f"Bootstrap status: {dashboard['bootstrap_status']}")
     print(
@@ -1360,6 +1968,18 @@ def _status(args: argparse.Namespace) -> int:
         "Frozen actor layout: "
         f"{dashboard['required_actor_obs_layout_id'] or 'not recorded'}"
     )
+    champion = dashboard.get("champion")
+    if isinstance(champion, dict):
+        metrics = champion.get("metrics", {})
+        print(
+            "Campaign champion: "
+            f"{Path(str(champion.get('checkpoint_path'))).name}; "
+            f"falls={int(float(metrics.get('walking_fall_env_count', 0.0)))}; "
+            "stable_tilt_max="
+            f"{float(metrics.get('walking_stable_body_tilt_deg_max', 0.0)):.3f}deg; "
+            "sat="
+            f"{float(metrics.get('walking_stable_max_actuator_torque_sat_frac', 0.0)) * 100:.3f}%"
+        )
     if remote_error:
         print(f"Remote status error: {remote_error}")
     print(f"\nRecent loop cycles (last {args.last}):")
@@ -1378,6 +1998,8 @@ def _status(args: argparse.Namespace) -> int:
             print(f"    Next patch: {record['next_patch']}")
         if record["next_config"]:
             print(f"    Next config: {record['next_config']}")
+        if record["experiment_family"]:
+            print(f"    Experiment family: {record['experiment_family']}")
     return 0
 
 

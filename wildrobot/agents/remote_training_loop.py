@@ -34,10 +34,15 @@ LOCAL_JOB_ROOT = REPO_ROOT / "training" / "remote_jobs"
 MANIFEST_NAME = "job_manifest.json"
 CHECKPOINT_MANIFEST_NAME = "training_job_manifest.json"
 CONTACT_DISTILLATION_MODE = "contact_observed_to_proprio"
+TRAINING_JOB_KIND = "training"
+EVALUATION_JOB_KIND = "walking_candidate_evaluation"
 ADOPTION_CONTROL_PLANE_PATHS = (
     ".gitignore",
+    "tests/",
     "tests/test_autonomous_training_loop.py",
     "tests/test_remote_training_loop.py",
+    "tests/test_walking_candidate_evaluation.py",
+    "training/eval/eval_policy.py",
     "training/exports/export_policy_bundle.py",
     "wildrobot/agents/",
 )
@@ -266,11 +271,13 @@ def _initial_manifest(
     checkpoint_series: str,
     init_policy: str | None,
     resume: str | None,
+    job_kind: str = TRAINING_JOB_KIND,
 ) -> dict[str, Any]:
     job_root = context.job_root
     artifact_root = f"{job_root}/artifacts"
     return {
         "schema_version": 1,
+        "job_kind": job_kind,
         "job_id": context.job_id,
         "status": "queued",
         "created_at": _utc_now(),
@@ -424,6 +431,58 @@ def _enqueue_remote(
     if result.returncode:
         raise TrainingLoopError(
             f"GPU enqueue failed: {(result.stderr or result.stdout).strip()}"
+        )
+    _save_active_context(context)
+    return manifest
+
+
+def _enqueue_walking_evaluation_remote(
+    context: RemoteContext,
+    *,
+    git_sha: str,
+    config: str,
+    checkpoint_series: str,
+    checkpoint: str,
+    checkpoint_relpath: str,
+    checkpoint_run_dir: str,
+    checkpoint_run_relpath: str,
+    source_job_id: str,
+    purpose: str,
+    seeds: Sequence[int],
+    num_envs: int,
+    num_steps: int,
+) -> dict[str, Any]:
+    if purpose not in {"confirmation", "failure_diagnostic"}:
+        raise TrainingLoopError(f"Unsupported evaluation purpose: {purpose}")
+    if len(seeds) < 1 or len(set(int(seed) for seed in seeds)) != len(seeds):
+        raise TrainingLoopError("Walking evaluation seeds must be non-empty and unique.")
+    if num_envs < 1 or num_steps < 1:
+        raise TrainingLoopError("Walking evaluation dimensions must be positive.")
+    manifest = _initial_manifest(
+        context=context,
+        git_sha=git_sha,
+        config=config,
+        checkpoint_series=checkpoint_series,
+        init_policy=checkpoint,
+        resume=None,
+        job_kind=EVALUATION_JOB_KIND,
+    )
+    manifest.update(
+        evaluation_purpose=purpose,
+        evaluation_source_job_id=source_job_id,
+        evaluation_seeds=[int(seed) for seed in seeds],
+        evaluation_num_envs=int(num_envs),
+        evaluation_num_steps=int(num_steps),
+        selected_checkpoint_path=checkpoint,
+        selected_checkpoint_relpath=checkpoint_relpath,
+        checkpoint_run_dir=checkpoint_run_dir,
+        checkpoint_run_relpath=checkpoint_run_relpath,
+    )
+    script = _build_remote_enqueue_script(manifest)
+    result = _run(_ssh_command(context, script), check=False)
+    if result.returncode:
+        raise TrainingLoopError(
+            f"GPU evaluation enqueue failed: {(result.stderr or result.stdout).strip()}"
         )
     _save_active_context(context)
     return manifest
@@ -870,7 +929,41 @@ def _collect_training_results(manifest: dict[str, Any]) -> None:
     )
 
 
+def _collect_walking_evaluation_results(manifest: dict[str, Any]) -> None:
+    report_path = Path(str(manifest.get("evaluation_report", "")))
+    report: dict[str, Any] = {}
+    if report_path.is_file():
+        try:
+            payload = json.loads(report_path.read_text())
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            report = payload
+    aggregate = report.get("aggregate")
+    gates_passed = bool(
+        isinstance(aggregate, dict) and aggregate.get("passed") is True
+    )
+    purpose = str(manifest.get("evaluation_purpose", ""))
+    manifest.update(
+        evaluation_report_exists=report_path.is_file(),
+        evaluation_gates_passed=gates_passed,
+        evaluation_status=("passed" if gates_passed else "failed"),
+        confirmation_passed=(purpose == "confirmation" and gates_passed),
+        simulation_candidate_ready=(purpose == "confirmation" and gates_passed),
+        result_complete=report_path.is_file(),
+    )
+
+
+def _collect_worker_results(manifest: dict[str, Any]) -> None:
+    if manifest.get("job_kind") == EVALUATION_JOB_KIND:
+        _collect_walking_evaluation_results(manifest)
+    else:
+        _collect_training_results(manifest)
+
+
 def _copy_manifest_to_checkpoint(path: Path, manifest: dict[str, Any]) -> None:
+    if manifest.get("job_kind") == EVALUATION_JOB_KIND:
+        return
     checkpoint_run = manifest.get("checkpoint_run_dir")
     if checkpoint_run:
         shutil.copy2(path, Path(checkpoint_run) / CHECKPOINT_MANIFEST_NAME)
@@ -910,6 +1003,39 @@ def _prepare_worker(manifest: dict[str, Any]) -> list[str]:
     python_path = Path(manifest["remote_repo"]) / ".venv" / "bin" / "python"
     if not python_path.is_file():
         raise TrainingLoopError(f"GPU virtual environment missing: {python_path}")
+    if manifest.get("job_kind") == EVALUATION_JOB_KIND:
+        if checkpoint is None:
+            raise TrainingLoopError("Walking evaluation job requires a checkpoint.")
+        report_path = artifact_root / "evaluation" / "evaluation_summary.json"
+        command = [
+            str(python_path),
+            "wildrobot/agents/evaluate_walking_candidate.py",
+            "--checkpoint",
+            str(checkpoint),
+            "--config",
+            str(effective_config),
+            "--output",
+            str(report_path),
+            "--purpose",
+            str(manifest["evaluation_purpose"]),
+            "--seeds",
+            ",".join(str(seed) for seed in manifest["evaluation_seeds"]),
+            "--num-envs",
+            str(manifest["evaluation_num_envs"]),
+            "--num-steps",
+            str(manifest["evaluation_num_steps"]),
+        ]
+        manifest.update(
+            evaluation_report=str(report_path),
+            evaluation_status="pending",
+            source_config_sha256=_sha256(source_snapshot),
+            effective_config=str(effective_config),
+            effective_config_sha256=_sha256(effective_config),
+            start_checkpoint=str(checkpoint),
+            start_checkpoint_sha256=_sha256(checkpoint),
+            training_command=command,
+        )
+        return command
     bootstrap_mode = _config_bootstrap_mode(effective_config)
     if bootstrap_mode is not None and checkpoint is None:
         bootstrap_dir = artifact_root / "bootstrap"
@@ -1014,7 +1140,7 @@ def _gpu_worker(args: argparse.Namespace) -> int:
                     f"{_shell_join(command)}\n"
                 )
                 log.flush()
-            print(f"Starting GPU training job {manifest['job_id']}...", flush=True)
+            print(f"Starting GPU job {manifest['job_id']}...", flush=True)
             returncode = _run_streamed(
                 command,
                 cwd=Path(manifest["worktree"]),
@@ -1023,12 +1149,12 @@ def _gpu_worker(args: argparse.Namespace) -> int:
                 append=True,
             )
             manifest["exit_code"] = returncode
-            _collect_training_results(manifest)
+            _collect_worker_results(manifest)
             manifest["status"] = "completed" if returncode == 0 else "failed"
             if returncode:
-                manifest["error"] = f"training/train.py exited with {returncode}"
+                manifest["error"] = f"worker command exited with {returncode}"
             print(
-                f"GPU training job {manifest['job_id']} finished with status "
+                f"GPU job {manifest['job_id']} finished with status "
                 f"{manifest['status']}.",
                 flush=True,
             )
@@ -1162,7 +1288,7 @@ def _recover_interrupted_jobs(remote_repo: Path) -> None:
 
         for manifest_path, manifest in interrupted:
             previous_status = str(manifest["status"])
-            _collect_training_results(manifest)
+            _collect_worker_results(manifest)
             if manifest.get("result_complete"):
                 recovery_action = "accepted_complete_result"
                 manifest.setdefault("recovery_events", []).append(
@@ -1185,21 +1311,37 @@ def _recover_interrupted_jobs(remote_repo: Path) -> None:
                 )
                 continue
 
-            for key in (
+            reset_keys = [
                 "worker_pid",
                 "started_at",
                 "finished_at",
                 "exit_code",
                 "error",
-                "checkpoint_run_dir",
-                "checkpoint_run_relpath",
                 "wandb_run_dir",
                 "wandb_run_name",
                 "wandb_run_id",
                 "post_training_eval_summary",
-                "selected_checkpoint_path",
-                "selected_checkpoint_relpath",
-            ):
+            ]
+            if manifest.get("job_kind") != EVALUATION_JOB_KIND:
+                reset_keys.extend(
+                    [
+                        "checkpoint_run_dir",
+                        "checkpoint_run_relpath",
+                        "selected_checkpoint_path",
+                        "selected_checkpoint_relpath",
+                    ]
+                )
+            else:
+                reset_keys.extend(
+                    [
+                        "evaluation_report",
+                        "evaluation_report_exists",
+                        "evaluation_gates_passed",
+                        "evaluation_status",
+                        "confirmation_passed",
+                    ]
+                )
+            for key in reset_keys:
                 manifest.pop(key, None)
             recovery_action = "requeued_same_training_job"
             manifest.setdefault("recovery_events", []).append(
@@ -1363,6 +1505,8 @@ def _status(args: argparse.Namespace) -> int:
         return 0
     for label, key in (
         ("Job", "job_id"),
+        ("Job kind", "job_kind"),
+        ("Evaluation purpose", "evaluation_purpose"),
         ("Status", "status"),
         ("Commit", "git_sha"),
         ("Config", "source_config"),
@@ -1372,6 +1516,7 @@ def _status(args: argparse.Namespace) -> int:
         ("Recovery action", "recovery_action"),
         ("W&B run", "wandb_run_name"),
         ("Selected checkpoint", "selected_checkpoint_path"),
+        ("Evaluation status", "evaluation_status"),
         ("Error", "error"),
     ):
         if manifest.get(key) is not None:
@@ -1402,6 +1547,22 @@ def _sync_job(
         destination = local_job / "bootstrap_metrics.json"
         _rsync_file(context, str(bootstrap_report), destination)
         manifest["local_bootstrap_report"] = str(destination.relative_to(REPO_ROOT))
+
+    evaluation_report = manifest.get("evaluation_report")
+    if evaluation_report and _remote_exists(
+        context, str(evaluation_report), directory=False
+    ):
+        destination = local_job / "evaluation"
+        _rsync_tree(
+            context,
+            str(Path(str(evaluation_report)).parent),
+            destination,
+            ("*.json", "*.npz"),
+        )
+        local_report = destination / Path(str(evaluation_report)).name
+        manifest["local_evaluation_report"] = str(
+            local_report.relative_to(REPO_ROOT)
+        )
 
     if manifest.get("wandb_run_dir") and manifest.get("wandb_run_name"):
         run_name = _safe_job_id(str(manifest["wandb_run_name"]))

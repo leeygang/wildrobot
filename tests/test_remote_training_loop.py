@@ -21,6 +21,7 @@ from wildrobot.agents.remote_training_loop import (
     _checkpoint_artifact_relative,
     _checkpoint_series,
     _collect_training_results,
+    _collect_walking_evaluation_results,
     _copy_manifest_to_checkpoint,
     _find_completed_run,
     _initial_manifest,
@@ -613,6 +614,90 @@ def test_prepare_worker_runs_configured_distillation_before_training(
     assert manifest["bootstrap_report"].endswith(
         "bootstrap/contact_free_distilled.metrics.json"
     )
+
+
+def test_prepare_worker_builds_walking_candidate_evaluation(tmp_path: Path) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    worktree = tmp_path / "job/src"
+    worktree.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=worktree,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=worktree, check=True
+    )
+    config = worktree / "training/configs/walking.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "checkpoints": {"dir": "training/checkpoints/walking"},
+                "wandb": {"enabled": True, "mode": "offline"},
+            },
+            sort_keys=False,
+        )
+    )
+    subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "test"], cwd=worktree, check=True)
+    git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    python_path = remote_repo / ".venv/bin/python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("python")
+    checkpoint = tmp_path / "source-job/artifacts/checkpoints/run/checkpoint.pkl"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"policy")
+    artifact_root = worktree.parent / "artifacts"
+    manifest = {
+        "job_kind": remote_training_loop.EVALUATION_JOB_KIND,
+        "git_sha": git_sha,
+        "remote_repo": str(remote_repo),
+        "worktree": str(worktree),
+        "job_root": str(worktree.parent),
+        "artifact_root": str(artifact_root),
+        "source_config": "training/configs/walking.yaml",
+        "checkpoint_series_dir": str(artifact_root / "checkpoints/walking"),
+        "start_mode": "init_policy",
+        "start_checkpoint_request": str(checkpoint),
+        "evaluation_purpose": "confirmation",
+        "evaluation_seeds": [31000, 41000, 51000, 61000],
+        "evaluation_num_envs": 64,
+        "evaluation_num_steps": 1000,
+    }
+
+    command = remote_training_loop._prepare_worker(manifest)
+
+    assert command[1] == "wildrobot/agents/evaluate_walking_candidate.py"
+    assert command[command.index("--purpose") + 1] == "confirmation"
+    assert command[command.index("--seeds") + 1] == "31000,41000,51000,61000"
+    assert manifest["evaluation_status"] == "pending"
+
+
+def test_collect_walking_evaluation_results_requires_confirmation_pass(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "evaluation_summary.json"
+    report.write_text(json.dumps({"aggregate": {"passed": False}}))
+    manifest = {
+        "evaluation_purpose": "confirmation",
+        "evaluation_report": str(report),
+        "selected_checkpoint_path": "/srv/source/checkpoint.pkl",
+    }
+
+    _collect_walking_evaluation_results(manifest)
+
+    assert manifest["result_complete"] is True
+    assert manifest["evaluation_gates_passed"] is False
+    assert manifest["confirmation_passed"] is False
+    assert manifest["simulation_candidate_ready"] is False
 
 
 def _completed_manual_run(

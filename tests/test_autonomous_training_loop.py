@@ -36,7 +36,20 @@ def _state(tmp_path: Path) -> dict:
         "codex_model": None,
         "standing_checkpoint": None,
         "standing_config": None,
+        "campaign_objective": dict(auto.CAMPAIGN_OBJECTIVE),
+        "champion": None,
+        "experiment_history": [],
         "test_root": str(tmp_path),
+    }
+
+
+def _experiment_fields(family: str = "reference_tracking") -> dict:
+    return {
+        "failure_mode": "measured deterministic gate failure",
+        "hypothesis": "one bounded intervention improves the campaign champion",
+        "intervention_family": family,
+        "expected_outcome": "reduce the targeted hard-gate metric",
+        "falsification_condition": "the champion objective does not improve",
     }
 
 
@@ -59,6 +72,8 @@ def test_codex_prompt_contains_exact_run_context(tmp_path: Path) -> None:
     assert "offline-run-id" in prompt
     assert "Do not modify files under `wildrobot/agents/`" in prompt
     assert '"required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio"' in prompt
+    assert '"campaign_objective"' in prompt
+    assert '"required_intervention_families"' in prompt
 
 
 def test_codex_cannot_change_frozen_actor_observation_contract(
@@ -73,6 +88,7 @@ def test_codex_cannot_change_frozen_actor_observation_contract(
         "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
     }
     decision = {
+        **_experiment_fields(),
         "decision": "continue",
         "summary": "restore actor contacts",
         "config": "training/configs/contact_observed.yaml",
@@ -108,6 +124,7 @@ def test_codex_can_retry_config_managed_bootstrap_without_checkpoint(
         "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
     }
     decision = {
+        **_experiment_fields("infrastructure"),
         "decision": "continue",
         "summary": "retry corrected distillation gates",
         "config": "training/configs/bootstrap.yaml",
@@ -145,8 +162,33 @@ def test_completed_job_must_match_mac_and_state_commit(
     state = _state(tmp_path)
     monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
 
-    with pytest.raises(remote.TrainingLoopError, match="same Git commit"):
+    with pytest.raises(remote.TrainingLoopError, match="not an ancestor"):
         auto._require_training_commit(state, {"git_sha": "a" * 40})
+
+
+def test_completed_job_allows_post_start_evaluator_and_control_plane_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_git",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setattr(
+        auto,
+        "_git_output",
+        lambda *args: "\n".join(
+            [
+                "wildrobot/agents/autonomous_training_loop.py",
+                "training/eval/eval_policy.py",
+                "tests/test_autonomous_training_loop.py",
+            ]
+        ),
+    )
+
+    assert auto._require_training_commit(state, {"git_sha": "a" * 40}) == "b" * 40
 
 
 def test_adopted_job_allows_only_control_plane_commits_after_training(
@@ -200,6 +242,7 @@ def test_next_checkpoint_must_come_from_deterministic_summary(
         "local_checkpoint_run_dir": "training/checkpoints/run-id",
     }
     decision = {
+        **_experiment_fields(),
         "decision": "continue",
         "summary": "train longer from the measured top candidate",
         "config": "training/configs/next.yaml",
@@ -216,6 +259,202 @@ def test_next_checkpoint_must_come_from_deterministic_summary(
     )
     with pytest.raises(remote.TrainingLoopError, match="not recorded"):
         auto._validate_codex_result(state, decision, "a" * 40, manifest)
+
+
+def test_campaign_champion_uses_stability_first_lexicographic_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_dir = tmp_path / "training/checkpoints/run-id"
+    checkpoint_dir.mkdir(parents=True)
+    safer = "/srv/jobs/job-1/artifacts/checkpoints/run/safer.pkl"
+    faster = "/srv/jobs/job-1/artifacts/checkpoints/run/faster.pkl"
+    (checkpoint_dir / "post_training_eval_summary.json").write_text(
+        json.dumps(
+            {
+                "top_k_candidates": [
+                    {
+                        "rank": 1,
+                        "checkpoint_path": faster,
+                        "passed": False,
+                        "gates": {
+                            "forward_velocity": True,
+                            "walking_fall_env_frac": False,
+                            "walking_stable_max_actuator_torque_sat_frac": True,
+                        },
+                        "fail_reasons": ["walking_fall_env_frac"],
+                        "eval_metrics": {
+                            "walking_fall_env_count": 2,
+                            "walking_stable_body_tilt_deg_max": 8.0,
+                            "walking_stable_body_tilt_deg_mean": 3.0,
+                            "walking_stable_max_actuator_torque_sat_frac": 0.03,
+                            "cmd_vs_achieved_forward": 0.02,
+                            "forward_velocity": 0.12,
+                        },
+                    },
+                    {
+                        "rank": 2,
+                        "checkpoint_path": safer,
+                        "passed": False,
+                        "gates": {
+                            "forward_velocity": True,
+                            "walking_fall_env_frac": False,
+                            "walking_stable_max_actuator_torque_sat_frac": False,
+                        },
+                        "fail_reasons": [
+                            "walking_fall_env_frac",
+                            "walking_stable_max_actuator_torque_sat_frac",
+                        ],
+                        "eval_metrics": {
+                            "walking_fall_env_count": 1,
+                            "walking_stable_body_tilt_deg_max": 9.0,
+                            "walking_stable_body_tilt_deg_mean": 4.0,
+                            "walking_stable_max_actuator_torque_sat_frac": 0.12,
+                            "cmd_vs_achieved_forward": 0.04,
+                            "forward_velocity": 0.09,
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+
+    candidate = auto._best_screen_candidate(
+        {"local_checkpoint_run_dir": "training/checkpoints/run-id"}
+    )
+
+    assert candidate is not None
+    assert candidate["checkpoint_path"] == safer
+    assert candidate["objective"][0] == 1.0
+
+
+def test_fall_without_prefall_saturation_routes_to_failure_state_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        auto,
+        "_failure_evidence",
+        lambda _manifest: {
+            "falls": 1,
+            "pre_fall_max_actuator_torque_sat_frac": 0.0,
+            "fail_reasons": ["walking_fall_env_frac"],
+        },
+    )
+
+    assert auto._required_intervention_families({"status": "completed"}) == [
+        "failure_state_replay",
+        "recovery_curriculum",
+    ]
+
+
+def test_stable_tilt_gate_failure_routes_to_recovery_curriculum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        auto,
+        "_failure_evidence",
+        lambda _manifest: {
+            "falls": 0,
+            "pre_fall_max_actuator_torque_sat_frac": 0.0,
+            "fail_reasons": ["walking_stable_body_tilt_deg_max"],
+        },
+    )
+
+    assert auto._required_intervention_families({"status": "completed"}) == [
+        "recovery_curriculum"
+    ]
+
+
+def test_codex_cannot_repeat_twice_failed_intervention_family(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/next.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("env:\n  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio\n")
+    checkpoint = "training/checkpoints/source/checkpoint.pkl"
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+        "experiment_history": [
+            {
+                "intervention_family": "failure_state_replay",
+                "result": "no_champion_improvement",
+            },
+            {
+                "intervention_family": "failure_state_replay",
+                "result": "no_champion_improvement",
+            },
+        ],
+    }
+    decision = {
+        **_experiment_fields("failure_state_replay"),
+        "decision": "continue",
+        "summary": "repeat failed replay",
+        "config": "training/configs/next.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": checkpoint,
+        "verification": ["tests passed"],
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(
+        auto,
+        "_required_intervention_families",
+        lambda _manifest: ["failure_state_replay", "recovery_curriculum"],
+    )
+
+    with pytest.raises(remote.TrainingLoopError, match="already failed"):
+        auto._validate_codex_result(
+            state,
+            decision,
+            "a" * 40,
+            {"job_id": "job-1", "selected_checkpoint_path": checkpoint},
+        )
+
+
+def test_next_experiment_must_branch_from_campaign_champion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/next.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("env:\n  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio\n")
+    champion = "training/checkpoints/champion/checkpoint.pkl"
+    child = "training/checkpoints/child/checkpoint.pkl"
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+        "champion": {"checkpoint_path": champion, "metrics": {}},
+    }
+    decision = {
+        **_experiment_fields("failure_state_replay"),
+        "decision": "continue",
+        "summary": "continue from the latest child",
+        "config": "training/configs/next.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": child,
+        "verification": ["tests passed"],
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(
+        auto,
+        "_required_intervention_families",
+        lambda _manifest: ["failure_state_replay", "recovery_curriculum"],
+    )
+
+    with pytest.raises(remote.TrainingLoopError, match="frozen campaign champion"):
+        auto._validate_codex_result(
+            state,
+            decision,
+            "a" * 40,
+            {
+                "job_id": "job-1",
+                "selected_checkpoint_path": child,
+                "start_checkpoint": champion,
+            },
+        )
 
 
 def test_codex_cannot_stop_on_an_ordinary_failed_evaluation(
@@ -310,7 +549,7 @@ def test_analyzer_failure_stops_iteration(
     assert "bad metrics" in (local_root / "job-1/analysis.txt").read_text()
 
 
-def test_terminal_ready_job_exports_and_stops(
+def test_confirmed_candidate_exports_and_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(tmp_path)
@@ -321,6 +560,9 @@ def test_terminal_ready_job_exports_and_stops(
         "_run_analyzer",
         lambda _context: {
             "job_id": "job-1",
+            "job_kind": remote.EVALUATION_JOB_KIND,
+            "evaluation_purpose": "confirmation",
+            "confirmation_passed": True,
             "status": "completed",
             "simulation_candidate_ready": True,
         },
@@ -339,6 +581,87 @@ def test_terminal_ready_job_exports_and_stops(
 
     assert saved[-1]["status"] == "ready"
     assert saved[-1]["readiness"] == "walking_bundle_ready"
+
+
+def test_screen_candidate_enqueues_confirmation_before_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    candidate = {
+        "checkpoint_path": "/srv/jobs/job-1/artifacts/checkpoints/run/checkpoint.pkl",
+        "eligible": True,
+        "passed_screen": True,
+        "metrics": {"walking_fall_env_count": 0},
+        "objective": [0, 8, 4, 0.04, 0.03, -0.1],
+    }
+    events: list[str] = []
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_run_analyzer",
+        lambda _context: {
+            "job_id": "job-1",
+            "job_kind": remote.TRAINING_JOB_KIND,
+            "status": "completed",
+            "simulation_candidate_ready": True,
+        },
+    )
+    monkeypatch.setattr(auto, "_record_campaign_result", lambda *_args: True)
+    monkeypatch.setattr(auto, "_best_screen_candidate", lambda _manifest: candidate)
+    monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
+    monkeypatch.setattr(
+        auto,
+        "_enqueue_candidate_evaluation",
+        lambda *_args, **kwargs: events.append(kwargs["purpose"]) or "eval-job",
+    )
+    monkeypatch.setattr(
+        auto,
+        "_export_ready_bundle",
+        lambda *_args: pytest.fail("screening pass must not export"),
+    )
+
+    auto._process_terminal_job(state, {"job_id": "job-1", "git_sha": "a" * 40})
+
+    assert events == ["push", "confirmation"]
+
+
+def test_falling_screen_candidate_enqueues_failure_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    candidate = {
+        "checkpoint_path": "/srv/jobs/job-1/artifacts/checkpoints/run/checkpoint.pkl",
+        "eligible": True,
+        "passed_screen": False,
+        "metrics": {"walking_fall_env_count": 1},
+        "objective": [1, 9, 4, 0.04, 0.03, -0.1],
+    }
+    events: list[str] = []
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        auto,
+        "_run_analyzer",
+        lambda _context: {
+            "job_id": "job-1",
+            "job_kind": remote.TRAINING_JOB_KIND,
+            "status": "completed",
+            "simulation_candidate_ready": False,
+        },
+    )
+    monkeypatch.setattr(auto, "_record_campaign_result", lambda *_args: True)
+    monkeypatch.setattr(auto, "_best_screen_candidate", lambda _manifest: candidate)
+    monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
+    monkeypatch.setattr(
+        auto,
+        "_enqueue_candidate_evaluation",
+        lambda *_args, **kwargs: events.append(kwargs["purpose"]) or "eval-job",
+    )
+
+    auto._process_terminal_job(state, {"job_id": "job-1", "git_sha": "a" * 40})
+
+    assert events == ["push", "failure_diagnostic"]
 
 
 def test_export_stage_reuses_an_already_valid_bundle(
@@ -484,6 +807,38 @@ def test_enqueue_resets_status_for_the_new_job(
     assert state["last_poll_at"] is None
 
 
+def test_enqueue_records_falsifiable_experiment(tmp_path: Path, monkeypatch) -> None:
+    state = _state(tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+    monkeypatch.setattr(auto.remote, "_config_checkpoint_series", lambda _path: "x")
+    monkeypatch.setattr(auto.remote, "_enqueue_remote", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    decision = {
+        **_experiment_fields("failure_state_replay"),
+        "decision": "continue",
+        "summary": "label student failure states",
+        "config": "training/configs/next.yaml",
+        "start_mode": "init_policy",
+        "checkpoint": "training/checkpoints/source/checkpoint.pkl",
+        "verification": ["tests passed"],
+    }
+
+    auto._enqueue(
+        state,
+        cycle=2,
+        config=decision["config"],
+        start_mode=decision["start_mode"],
+        checkpoint=decision["checkpoint"],
+        decision=decision,
+    )
+
+    assert state["experiment_history"][0]["intervention_family"] == (
+        "failure_state_replay"
+    )
+    assert state["experiment_history"][0]["falsification_condition"]
+
+
 def test_enqueue_recovers_an_already_published_matching_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -531,12 +886,55 @@ def test_enqueue_recovers_an_already_published_matching_job(
     assert "pending_job" not in saved[-1]
 
 
+def test_candidate_confirmation_enqueues_four_independent_seed_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(
+        cycle=3,
+        confirmation_seeds=[31_000, 41_000, 51_000, 61_000],
+        confirmation_num_envs=64,
+        confirmation_num_steps=1000,
+    )
+    checkpoint = "/srv/jobs/job-3/artifacts/checkpoints/walking/run/checkpoint.pkl"
+    manifest = {
+        "job_id": "job-3",
+        "artifact_root": "/srv/jobs/job-3/artifacts",
+        "source_config": "training/configs/walking.yaml",
+        "checkpoint_series": "walking",
+        "checkpoint_run_dir": "/srv/jobs/job-3/artifacts/checkpoints/walking/run",
+        "checkpoint_run_relpath": "checkpoints/walking/run",
+    }
+    submitted: list[dict] = []
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(
+        auto.remote,
+        "_enqueue_walking_evaluation_remote",
+        lambda _context, **kwargs: submitted.append(kwargs)
+        or {"status": "queued"},
+    )
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+
+    auto._enqueue_candidate_evaluation(
+        state,
+        manifest,
+        {"checkpoint_path": checkpoint},
+        purpose="confirmation",
+    )
+
+    assert submitted[0]["seeds"] == [31_000, 41_000, 51_000, 61_000]
+    assert submitted[0]["num_envs"] == 64
+    assert submitted[0]["num_steps"] == 1000
+    assert state["active_job_kind"] == remote.EVALUATION_JOB_KIND
+
+
 def test_fix_stage_recovers_completed_codex_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state = _state(tmp_path)
     state.update(stage="fix", fix_base_sha="a" * 40)
     decision = {
+        **_experiment_fields(),
         "decision": "continue",
         "summary": "reuse completed fix",
         "config": "training/configs/next.yaml",

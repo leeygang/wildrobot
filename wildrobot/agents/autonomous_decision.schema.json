@@ -9,6 +9,30 @@
     "summary": {
       "type": "string"
     },
+    "failure_mode": {
+      "type": "string"
+    },
+    "hypothesis": {
+      "type": "string"
+    },
+    "intervention_family": {
+      "type": "string",
+      "enum": [
+        "failure_state_replay",
+        "recovery_curriculum",
+        "torque_headroom",
+        "stance_geometry",
+        "reference_tracking",
+        "optimizer_diagnostic",
+        "infrastructure"
+      ]
+    },
+    "expected_outcome": {
+      "type": "string"
+    },
+    "falsification_condition": {
+      "type": "string"
+    },
     "config": {
       "type": "string"
     },
@@ -29,6 +53,11 @@
   "required": [
     "decision",
     "summary",
+    "failure_mode",
+    "hypothesis",
+    "intervention_family",
+    "expected_outcome",
+    "falsification_condition",
     "config",
     "start_mode",
     "checkpoint",

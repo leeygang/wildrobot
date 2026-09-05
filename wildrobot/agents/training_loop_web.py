@@ -380,6 +380,8 @@ _HTML = r"""<!doctype html>
       <div id="macDetail" class="muted"></div></section>
     <section class="panel"><div class="label">GPU Linux</div><div id="gpuStatus" class="value">Loading…</div>
       <div id="gpuDetail" class="muted"></div></section>
+    <section class="panel"><div class="label">Stability champion</div><div id="championStatus" class="value">Loading…</div>
+      <div id="championDetail" class="muted"></div></section>
   </div>
 
   <section class="panel">
@@ -416,7 +418,7 @@ _HTML = r"""<!doctype html>
   </section>
 
   <section class="panel" style="margin-top:14px"><h2>Recent cycles</h2>
-    <div style="overflow:auto"><table><thead><tr><th>Cycle</th><th>Status</th><th>Config</th><th>Result</th><th>Next change</th></tr></thead>
+    <div style="overflow:auto"><table><thead><tr><th>Cycle</th><th>Status</th><th>Config</th><th>Result</th><th>Family</th><th>Next change</th></tr></thead>
       <tbody id="history"></tbody></table></div></section>
   <section class="panel" style="margin-top:14px"><h2>Mac supervisor log</h2><pre id="log">No log yet.</pre></section>
 </main>
@@ -437,8 +439,10 @@ function render(data){const loop=data.loop||{},mac=data.mac||{},gpu=data.gpu||{}
   text($('loopDetail'),`${loop.stage||'—'} on ${loop.stage_machine||'—'} · cycle ${loop.cycle??'—'}/${loop.max_cycles??'—'}`);
   text($('macStatus'),mac.supervisor_running?'supervisor running':'supervisor stopped'); tone($('macStatus'),mac.supervisor_running);
   text($('macDetail'),mac.host||'—'); text($('gpuStatus'),`${gpu.service||'unknown'} · job ${gpu.job_status||'unknown'}`); tone($('gpuStatus'),gpu.reachable&&gpu.service==='active');
+  const champion=loop.champion||{},metrics=champion.metrics||{}; text($('championStatus'),champion.checkpoint_path?champion.checkpoint_path.split('/').pop():'not established');
+  text($('championDetail'),champion.checkpoint_path?`falls ${metrics.walking_fall_env_count??'—'} · saturation ${metrics.walking_stable_max_actuator_torque_sat_frac==null?'—':(100*metrics.walking_stable_max_actuator_torque_sat_frac).toFixed(2)+'%'}`:'waiting for a comparable screen');
   text($('gpuDetail'),gpu.error||gpu.target||'—'); const body=$('history'); body.replaceChildren();
-  for(const item of loop.recent_cycles||[]){const tr=document.createElement('tr'); for(const value of [item.cycle,item.status,item.config,item.training_result,item.next_patch||'—']){const td=document.createElement('td'); td.textContent=value??'—'; tr.appendChild(td)} body.appendChild(tr)}
+  for(const item of loop.recent_cycles||[]){const tr=document.createElement('tr'); for(const value of [item.cycle,item.status,item.config,item.training_result,item.experiment_family||'—',item.next_patch||'—']){const td=document.createElement('td'); td.textContent=value??'—'; tr.appendChild(td)} body.appendChild(tr)}
   text($('log'),data.supervisor_log||'No log yet.'); applyDefaults(data.start_defaults);
 }
 async function refresh(){try{render(await request('/api/status?last=10'))}catch(error){text($('notice'),error.message)}}

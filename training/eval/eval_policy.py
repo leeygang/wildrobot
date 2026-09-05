@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 # Add project root to path (eval/ -> training/ -> project_root/)
 project_root = Path(__file__).parent.parent.parent
@@ -369,6 +371,146 @@ def _compute_eval_metrics(
     return {k: float(v) for k, v in agg_metrics.items()}
 
 
+def _write_failure_trace(
+    traj: TrajectoryBatch,
+    output_path: Path,
+    *,
+    ctrl_dt: float,
+    initial_state: Any | None = None,
+    base_seed: int | None = None,
+    window_s: float = 2.0,
+) -> list[dict[str, Any]]:
+    """Persist the final policy-observation window for first-episode falls."""
+    dones = np.asarray(traj.dones) > 0.5
+    truncations = np.asarray(traj.truncations) > 0.5
+    first_episode = (np.cumsum(dones, axis=0) - dones.astype(np.int32)) == 0
+    failure_event = first_episode & dones & ~truncations
+    failed_env_indices = np.flatnonzero(np.any(failure_event, axis=0)).astype(np.int32)
+    window_steps = max(1, int(math.ceil(float(window_s) / float(ctrl_dt))))
+    observations = np.asarray(traj.obs[:, failed_env_indices])
+    actions = np.asarray(traj.actions[:, failed_env_indices])
+    metrics_vec = np.asarray(traj.metrics_vec[:, failed_env_indices])
+    obs_traces = np.zeros(
+        (len(failed_env_indices), window_steps, observations.shape[-1]),
+        dtype=observations.dtype,
+    )
+    action_traces = np.zeros(
+        (len(failed_env_indices), window_steps, actions.shape[-1]),
+        dtype=actions.dtype,
+    )
+    metric_traces = np.zeros(
+        (len(failed_env_indices), window_steps, metrics_vec.shape[-1]),
+        dtype=metrics_vec.dtype,
+    )
+    start_steps = np.zeros(len(failed_env_indices), dtype=np.int32)
+    failure_steps = np.zeros(len(failed_env_indices), dtype=np.int32)
+    valid_lengths = np.zeros(len(failed_env_indices), dtype=np.int32)
+    cases: list[dict[str, Any]] = []
+    initial_arrays: dict[str, np.ndarray] = {}
+    initial_info = None
+    if initial_state is not None:
+        initial_arrays["initial_qpos"] = np.asarray(initial_state.data.qpos)[
+            failed_env_indices
+        ]
+        initial_arrays["initial_qvel"] = np.asarray(initial_state.data.qvel)[
+            failed_env_indices
+        ]
+        initial_info = initial_state.info[WR_INFO_KEY]
+        for field in (
+            "reset_is_rsi",
+            "velocity_cmd",
+            "domain_rand_friction_scale",
+            "domain_rand_mass_scales",
+            "domain_rand_kp_scales",
+            "domain_rand_frictionloss_scales",
+            "domain_rand_joint_offsets",
+            "domain_rand_backlash",
+            "domain_rand_persistent_torso_pitch_error_rad",
+            "domain_rand_persistent_actuator_offsets",
+        ):
+            initial_arrays[f"initial_{field}"] = np.asarray(
+                getattr(initial_info, field)
+            )[failed_env_indices]
+
+    roll_idx = METRIC_INDEX["debug/roll"]
+    pitch_idx = METRIC_INDEX["debug/pitch"]
+    torque_indices = [
+        METRIC_INDEX[f"torque/{name}/sat_frac"] for name in TORQUE_ACTUATOR_NAMES
+    ]
+    for trace_index, env_index in enumerate(failed_env_indices):
+        failure_step = int(np.argmax(failure_event[:, env_index]))
+        start_step = max(0, failure_step - window_steps + 1)
+        valid_length = failure_step - start_step + 1
+        target_start = window_steps - valid_length
+        obs_traces[trace_index, target_start:] = observations[
+            start_step : failure_step + 1, trace_index
+        ]
+        action_traces[trace_index, target_start:] = actions[
+            start_step : failure_step + 1, trace_index
+        ]
+        metric_traces[trace_index, target_start:] = metrics_vec[
+            start_step : failure_step + 1, trace_index
+        ]
+        start_steps[trace_index] = start_step
+        failure_steps[trace_index] = failure_step
+        valid_lengths[trace_index] = valid_length
+
+        window_metrics = metrics_vec[start_step : failure_step + 1, trace_index]
+        roll = window_metrics[:, roll_idx]
+        pitch = window_metrics[:, pitch_idx]
+        tilt_deg = np.rad2deg(
+            np.arccos(np.clip(np.cos(roll) * np.cos(pitch), -1.0, 1.0))
+        )
+        torque = window_metrics[:, torque_indices]
+        cases.append(
+            {
+                "base_seed": base_seed,
+                "env_index": int(env_index),
+                "failure_step": failure_step,
+                "time_to_fall_s": float((failure_step + 1) * ctrl_dt),
+                "trace_start_step": start_step,
+                "trace_steps": valid_length,
+                "pre_fall_tilt_deg_max": float(np.max(tilt_deg)),
+                "pre_fall_max_actuator_torque_sat_frac": float(np.max(torque)),
+                "reset_is_rsi": (
+                    bool(np.asarray(initial_info.reset_is_rsi)[env_index])
+                    if initial_info is not None
+                    else None
+                ),
+                "domain_rand_friction_scale": (
+                    float(
+                        np.asarray(initial_info.domain_rand_friction_scale)[env_index]
+                    )
+                    if initial_info is not None
+                    else None
+                ),
+                "persistent_torso_pitch_error_rad": (
+                    float(
+                        np.asarray(
+                            initial_info.domain_rand_persistent_torso_pitch_error_rad
+                        )[env_index]
+                    )
+                    if initial_info is not None
+                    else None
+                ),
+            }
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_path,
+        failed_env_indices=failed_env_indices,
+        start_steps=start_steps,
+        failure_steps=failure_steps,
+        valid_lengths=valid_lengths,
+        observations=obs_traces,
+        actions=action_traces,
+        metrics_vec=metric_traces,
+        **initial_arrays,
+    )
+    return cases
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate a trained WildRobot policy",
@@ -422,6 +564,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--output", type=str, default=None, help="Write metrics JSON to file")
+    parser.add_argument(
+        "--failure-trace-output",
+        type=str,
+        default=None,
+        help=(
+            "Write the final two seconds of observations, actions, and metrics "
+            "for every first-episode fall to a compressed NPZ file."
+        ),
+    )
     parser.add_argument(
         "--compare-metrics",
         type=str,
@@ -538,6 +689,16 @@ def main() -> int:
             == "walking"
         ),
     )
+    if args.failure_trace_output:
+        failure_trace_path = Path(args.failure_trace_output)
+        metrics["failure_cases"] = _write_failure_trace(
+            traj,
+            failure_trace_path,
+            ctrl_dt=float(training_cfg.env.ctrl_dt),
+            initial_state=env_state,
+            base_seed=int(args.seed),
+        )
+        metrics["failure_trace_path"] = str(failure_trace_path)
     distribution = ppo_network.parametric_action_distribution
     policy_logits = ppo_network.policy_network.apply(
         processor_params, policy_params, traj.obs
