@@ -46,6 +46,18 @@ def _build_distillation_command(
         str(report),
     ]
     _append_option(command, "--teacher-checkpoint", bootstrap.get("teacher_checkpoint"))
+    _append_option(command, "--student-checkpoint", bootstrap.get("student_checkpoint"))
+    _append_option(
+        command,
+        "--student-checkpoint-sha256",
+        bootstrap.get("student_checkpoint_sha256"),
+    )
+    _append_option(command, "--failure-trace", bootstrap.get("failure_trace"))
+    _append_option(
+        command,
+        "--failure-trace-sha256",
+        bootstrap.get("failure_trace_sha256"),
+    )
     _append_option(command, "--commands", bootstrap.get("commands"))
     for key in (
         "rollout_steps",
@@ -56,6 +68,7 @@ def _build_distillation_command(
         "batch_size",
         "learning_rate",
         "max_validation_rmse",
+        "failure_replay_repeats",
         "seed",
     ):
         _append_option(command, f"--{key.replace('_', '-')}", bootstrap.get(key))

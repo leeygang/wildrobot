@@ -23,6 +23,11 @@ def test_distillation_command_comes_from_frozen_training_config(
             {
                 "bootstrap": {
                     "mode": "contact_observed_to_proprio",
+                    "student_checkpoint": "/remote/champion.pkl",
+                    "student_checkpoint_sha256": "champion123",
+                    "failure_trace": "/remote/failure_trace.npz",
+                    "failure_trace_sha256": "abc123",
+                    "failure_replay_repeats": 64,
                     "rollout_repeats": 8,
                     "require_no_terminations": True,
                 }
@@ -40,6 +45,15 @@ def test_distillation_command_comes_from_frozen_training_config(
 
     assert command[command.index("--student-config") + 1] == str(config)
     assert command[command.index("--rollout-repeats") + 1] == "8"
+    assert command[command.index("--student-checkpoint") + 1] == (
+        "/remote/champion.pkl"
+    )
+    assert command[command.index("--student-checkpoint-sha256") + 1] == "champion123"
+    assert command[command.index("--failure-trace") + 1] == (
+        "/remote/failure_trace.npz"
+    )
+    assert command[command.index("--failure-trace-sha256") + 1] == "abc123"
+    assert command[command.index("--failure-replay-repeats") + 1] == "64"
     assert "--no-require-no-terminations" not in command
 
 
