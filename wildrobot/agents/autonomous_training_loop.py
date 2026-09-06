@@ -1642,6 +1642,42 @@ def _step(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _reset_cycle_budget(state: dict[str, Any], new_cycles: int) -> None:
+    if new_cycles < 1:
+        raise remote.TrainingLoopError("--new-cycles must be at least 1.")
+    if state.get("status") == "ready":
+        raise remote.TrainingLoopError(
+            "The campaign is already ready; use start --new-run for a new campaign."
+        )
+    if state.get("status") == "stopped" and state.get("stop_reason") != (
+        "maximum cycle count reached"
+    ):
+        raise remote.TrainingLoopError(
+            "Only a cycle-limit stop can be restarted with --new-cycles."
+        )
+
+    current_cycle = int(state.get("cycle", 0))
+    previous_max_cycles = int(state.get("max_cycles", current_cycle))
+    new_max_cycles = current_cycle + new_cycles
+    state["max_cycles"] = new_max_cycles
+    state["last_cycle_budget_reset"] = {
+        "at": _utc_now(),
+        "cycle": current_cycle,
+        "previous_max_cycles": previous_max_cycles,
+        "new_cycles": new_cycles,
+        "new_max_cycles": new_max_cycles,
+    }
+    if state.get("status") == "stopped":
+        state["last_stop_reason"] = state.pop("stop_reason", None)
+        state["status"] = "active"
+    _save_state(state)
+    print(
+        f"Reset cycle budget to {new_cycles} new cycles: "
+        f"cycle {current_cycle}/{new_max_cycles}.",
+        flush=True,
+    )
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.poll_seconds <= 0:
         raise remote.TrainingLoopError("--poll-seconds must be greater than zero.")
@@ -1663,6 +1699,9 @@ def _run(args: argparse.Namespace) -> int:
         )
         try:
             state = _load_state()
+            new_cycles = getattr(args, "new_cycles", None)
+            if new_cycles is not None:
+                _reset_cycle_budget(state, int(new_cycles))
             if state.get("status") == "stopped_error":
                 _reactivate_error(state)
             elif state.get("status") == "paused":
@@ -2061,6 +2100,10 @@ def _status(args: argparse.Namespace) -> int:
         "mac_supervisor_running": _mac_supervisor_running(),
         "cycle": state.get("cycle"),
         "max_cycles": state.get("max_cycles"),
+        "remaining_cycles": max(
+            0,
+            int(state.get("max_cycles") or 0) - int(state.get("cycle") or 0),
+        ),
         "active_job_id": state.get("active_job_id"),
         "active_config": state.get("active_config"),
         "required_actor_obs_layout_id": state.get(
@@ -2104,7 +2147,10 @@ def _status(args: argparse.Namespace) -> int:
         "Mac supervisor: "
         + ("running" if dashboard["mac_supervisor_running"] else "not running")
     )
-    print(f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']}")
+    print(
+        f"Cycle: {dashboard['cycle']}/{dashboard['max_cycles']} "
+        f"({dashboard['remaining_cycles']} follow-up cycles available)"
+    )
     print(f"Active job: {dashboard['active_job_id']}")
     print(f"GPU job status: {dashboard['gpu_job_status']}")
     if dashboard["job_kind"] == remote.EVALUATION_JOB_KIND:
@@ -2288,6 +2334,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "run", help="resume and continuously supervise the loop in the foreground"
     )
     run.add_argument("--poll-seconds", type=float, default=10.0)
+    run.add_argument(
+        "--new-cycles",
+        type=int,
+        help=(
+            "reset the remaining budget to this many cycles from the current "
+            "cycle while preserving campaign history"
+        ),
+    )
     run.set_defaults(func=_run)
     status = commands.add_parser("status", help="show autonomous loop state")
     status.add_argument(

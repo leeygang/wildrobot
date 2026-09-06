@@ -228,6 +228,19 @@ interval. Configured terminal states (`ready` and cycle/failure limits) are not
 overridden. GPU training output is likewise teed to both
 `train.log` and the systemd journal shown above.
 
+To give the current campaign a fresh bounded budget while preserving its
+champion, experiment history, and active GPU job, restart it with:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py run --new-cycles 30
+```
+
+The new absolute limit is `current cycle + 30`; for example, cycle 19 becomes
+`19/49`, leaving exactly 30 follow-up cycles. Each explicit
+`--new-cycles N` restart recalculates the budget from the then-current cycle.
+Plain `run` resumes without changing the existing budget. The web dashboard's
+Run / Resume action exposes the same configurable reset.
+
 `stop` pauses only the Mac controller and preserves its durable pipeline stage;
 it does not cancel an active GPU training job. If analysis or Codex is already
 running, the request is honored at the next durable stage boundary. Wait until

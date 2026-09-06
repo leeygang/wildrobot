@@ -1322,6 +1322,13 @@ def test_run_parser_defaults_to_ten_second_polling() -> None:
 
     assert args.func is auto._run
     assert args.poll_seconds == 10.0
+    assert args.new_cycles is None
+
+
+def test_run_parser_accepts_new_cycle_budget() -> None:
+    args = auto._parse_args(["run", "--new-cycles", "30"])
+
+    assert args.new_cycles == 30
 
 
 def test_status_parser_defaults_to_five_and_accepts_ten() -> None:
@@ -1445,11 +1452,11 @@ def test_web_run_launches_detached_supervisor(
     monkeypatch.setattr(web, "_mac_supervisor_running", lambda: False)
     monkeypatch.setattr(web.subprocess, "Popen", fake_popen)
 
-    result = controller.run()
+    result = controller.run({"new_cycles": 30})
 
     assert result["ok"] is True
     assert "PID 1234" in result["message"]
-    assert commands[0][0][-1] == "run"
+    assert commands[0][0][-3:] == ["run", "--new-cycles", "30"]
     assert commands[0][1]["start_new_session"] is True
 
 
@@ -1458,7 +1465,8 @@ def test_web_requires_request_token_for_actions() -> None:
         def status(self, *, last):
             return {"last": last}
 
-        def run(self):
+        def run(self, payload):
+            assert payload == {}
             return {"ok": True, "message": "started"}
 
         def stop(self):
@@ -1711,6 +1719,42 @@ def test_run_polls_until_the_loop_finishes(
     output = capsys.readouterr().out
     assert "running in the foreground" in output
     assert "maximum cycle count reached" in output
+
+
+def test_reset_cycle_budget_preserves_campaign_and_reactivates_cycle_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(tmp_path)
+    history = [{"cycle": 18, "result": "no_champion_improvement"}]
+    champion = {"job_id": "auto-15-champion"}
+    state.update(
+        status="stopped",
+        stage="analysis",
+        cycle=19,
+        max_cycles=19,
+        stop_reason="maximum cycle count reached",
+        experiment_history=history,
+        champion=champion,
+    )
+    saved: list[dict] = []
+    monkeypatch.setattr(auto, "_save_state", lambda value: saved.append(dict(value)))
+
+    auto._reset_cycle_budget(state, 30)
+
+    assert state["status"] == "active"
+    assert state["cycle"] == 19
+    assert state["max_cycles"] == 49
+    assert state["experiment_history"] is history
+    assert state["champion"] is champion
+    assert state["last_stop_reason"] == "maximum cycle count reached"
+    assert state["last_cycle_budget_reset"]["new_cycles"] == 30
+    assert saved[-1]["max_cycles"] == 49
+
+
+def test_reset_cycle_budget_rejects_nonpositive_budget(tmp_path: Path) -> None:
+    with pytest.raises(remote.TrainingLoopError, match="at least 1"):
+        auto._reset_cycle_budget(_state(tmp_path), 0)
 
 
 def test_run_reactivates_stopped_error_before_polling(

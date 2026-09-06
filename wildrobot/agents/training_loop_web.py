@@ -293,7 +293,9 @@ class TrainingLoopWebController:
                 raise WebActionError(_command_output(result))
         return {"ok": True, "message": _command_output(result)}
 
-    def run(self) -> dict[str, Any]:
+    def run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        new_cycles = _integer(payload, "new_cycles", 30, minimum=1)
         with self._action_lock:
             if not STATE_PATH.is_file():
                 raise WebActionError("No loop state exists. Use Start first.")
@@ -302,7 +304,13 @@ class TrainingLoopWebController:
             SUPERVISOR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
             with SUPERVISOR_LOG_PATH.open("a", encoding="utf-8") as log:
                 process = subprocess.Popen(
-                    [sys.executable, str(AUTONOMOUS_SCRIPT), "run"],
+                    [
+                        sys.executable,
+                        str(AUTONOMOUS_SCRIPT),
+                        "run",
+                        "--new-cycles",
+                        str(new_cycles),
+                    ],
                     cwd=REPO_ROOT,
                     text=True,
                     stdout=log,
@@ -311,7 +319,10 @@ class TrainingLoopWebController:
                 )
         return {
             "ok": True,
-            "message": f"Mac supervisor started with PID {process.pid}.",
+            "message": (
+                f"Mac supervisor started with PID {process.pid}; "
+                f"cycle budget reset to {new_cycles}."
+            ),
         }
 
     def stop(self) -> dict[str, Any]:
@@ -387,6 +398,7 @@ _HTML = r"""<!doctype html>
   <section class="panel">
     <h2>Actions</h2>
     <div class="actions">
+      <label>New cycles on restart<input id="runCycles" type="number" min="1" value="30"></label>
       <button id="runButton" class="primary">Run / Resume</button>
       <button id="stopButton" class="stop">Stop / Pause</button>
       <button id="refreshButton">Refresh</button>
@@ -436,7 +448,7 @@ function applyDefaults(values){if(defaultsApplied)return; defaultsApplied=true; 
   for(const [key,value] of Object.entries(values||{})){const field=form.elements.namedItem(key); if(field&&value!==null&&value!=='')field.value=value;}}
 function render(data){const loop=data.loop||{},mac=data.mac||{},gpu=data.gpu||{};
   text($('loopStatus'),loop.status||'unknown'); tone($('loopStatus'),loop.status);
-  text($('loopDetail'),`${loop.stage||'—'} on ${loop.stage_machine||'—'} · cycle ${loop.cycle??'—'}/${loop.max_cycles??'—'}`);
+  text($('loopDetail'),`${loop.stage||'—'} on ${loop.stage_machine||'—'} · cycle ${loop.cycle??'—'}/${loop.max_cycles??'—'} · ${loop.remaining_cycles??'—'} follow-up cycles`);
   text($('macStatus'),mac.supervisor_running?'supervisor running':'supervisor stopped'); tone($('macStatus'),mac.supervisor_running);
   text($('macDetail'),mac.host||'—'); text($('gpuStatus'),`${gpu.service||'unknown'} · job ${gpu.job_status||'unknown'}`); tone($('gpuStatus'),gpu.reachable&&gpu.service==='active');
   const champion=loop.champion||{},metrics=champion.metrics||{}; text($('championStatus'),champion.checkpoint_path?champion.checkpoint_path.split('/').pop():'not established');
@@ -449,7 +461,7 @@ async function refresh(){try{render(await request('/api/status?last=10'))}catch(
 async function action(path,payload={}){for(const button of document.querySelectorAll('button'))button.disabled=true;
   try{const result=await request(path,{method:'POST',body:JSON.stringify(payload)}); text($('notice'),result.message); await refresh()}
   catch(error){text($('notice'),error.message)} finally{for(const button of document.querySelectorAll('button'))button.disabled=false}}
-$('runButton').onclick=()=>action('/api/run'); $('stopButton').onclick=()=>action('/api/stop'); $('refreshButton').onclick=refresh;
+$('runButton').onclick=()=>action('/api/run',{new_cycles:$('runCycles').value}); $('stopButton').onclick=()=>action('/api/stop'); $('refreshButton').onclick=refresh;
 $('startForm').onsubmit=event=>{event.preventDefault(); const form=new FormData(event.target); const payload=Object.fromEntries(form.entries()); payload.new_run=form.has('new_run'); action('/api/start',payload)};
 async function poll(){await refresh(); setTimeout(poll,10000)} poll();
 </script></body></html>"""
@@ -513,7 +525,7 @@ def _make_handler(controller: TrainingLoopWebController, token: str):
                     raise WebActionError("Request body must be a JSON object.")
                 action = {
                     "/api/start": lambda: controller.start(payload),
-                    "/api/run": controller.run,
+                    "/api/run": lambda: controller.run(payload),
                     "/api/stop": controller.stop,
                 }.get(urlparse(self.path).path)
                 if action is None:
