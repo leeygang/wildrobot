@@ -195,6 +195,7 @@ def _load_failure_replay_dataset(
     trace_path: Path,
     *,
     action_dim: int,
+    min_pitch_rad: float | None = None,
     max_pitch_rad: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rebuild contact-observed teacher inputs for saved student states.
@@ -203,9 +204,17 @@ def _load_failure_replay_dataset(
     post-step metrics after that action.  Consequently, observation ``t`` uses
     the contact signals from metric row ``t - 1`` and its 15-frame history
     uses rows ``t - 16:t - 1``.  The first 16 rows of each retained trace are
-    skipped because their preceding contact history is outside the trace.  When
-    ``max_pitch_rad`` is set, only states at or below that pitch are retained.
+    skipped because their preceding contact history is outside the trace.  The
+    optional pitch bounds select states inclusively before each action.
     """
+    if (
+        min_pitch_rad is not None
+        and max_pitch_rad is not None
+        and min_pitch_rad > max_pitch_rad
+    ):
+        raise ValueError(
+            "failure replay minimum pitch must not exceed maximum pitch"
+        )
     with np.load(trace_path) as trace:
         required = {"observations", "metrics_vec", "valid_lengths"}
         missing = sorted(required.difference(trace.files))
@@ -283,14 +292,18 @@ def _load_failure_replay_dataset(
             teacher_trace.append(teacher_obs)
         student_trace = student_trace[first_reconstructable_step:]
         teacher_trace_array = np.stack(teacher_trace)
-        if max_pitch_rad is not None:
+        if min_pitch_rad is not None or max_pitch_rad is not None:
             # Observation t is the state before action t, represented by the
             # post-step metrics at t - 1 (the same alignment used for contact).
             state_pitch = metrics_vec[trace_index, -valid_length:][
                 first_reconstructable_step - 1 : valid_length - 1,
                 pitch_metric_index,
             ]
-            selected = state_pitch <= max_pitch_rad
+            selected = np.ones(state_pitch.shape, dtype=bool)
+            if min_pitch_rad is not None:
+                selected &= state_pitch >= min_pitch_rad
+            if max_pitch_rad is not None:
+                selected &= state_pitch <= max_pitch_rad
             student_trace = student_trace[selected]
             teacher_trace_array = teacher_trace_array[selected]
         if student_trace.shape[0] > 0:
@@ -418,6 +431,7 @@ def main() -> int:
     parser.add_argument("--failure-trace-sha256", type=str)
     parser.add_argument("--failure-replay-repeats", type=int, default=1)
     parser.add_argument("--teacher-config", type=Path, default=DEFAULT_TEACHER_CONFIG)
+    parser.add_argument("--failure-replay-min-pitch-rad", type=float)
     parser.add_argument("--failure-replay-max-pitch-rad", type=float)
     parser.add_argument("--student-config", type=Path, default=DEFAULT_STUDENT_CONFIG)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -462,6 +476,15 @@ def main() -> int:
     if (args.student_checkpoint is None) != (args.failure_trace is None):
         parser.error(
             "--student-checkpoint and --failure-trace must be provided together"
+        )
+    if (
+        args.failure_replay_min_pitch_rad is not None
+        and args.failure_replay_max_pitch_rad is not None
+        and args.failure_replay_min_pitch_rad > args.failure_replay_max_pitch_rad
+    ):
+        parser.error(
+            "--failure-replay-min-pitch-rad must not exceed "
+            "--failure-replay-max-pitch-rad"
         )
 
     args.teacher_checkpoint = _resolve_teacher_checkpoint(args.teacher_checkpoint)
@@ -615,6 +638,7 @@ def main() -> int:
         replay_student_obs, replay_teacher_obs = _load_failure_replay_dataset(
             args.failure_trace,
             action_dim=action_dim,
+            min_pitch_rad=args.failure_replay_min_pitch_rad,
             max_pitch_rad=args.failure_replay_max_pitch_rad,
         )
         replay_teacher_actions = _deterministic_actions(
@@ -710,6 +734,7 @@ def main() -> int:
             "trace_sha256": replay_trace_sha256,
             "unique_samples": int(replay_student_obs.shape[0]),
             "training_repeats": int(args.failure_replay_repeats),
+            "min_pitch_rad": args.failure_replay_min_pitch_rad,
             "max_pitch_rad": args.failure_replay_max_pitch_rad,
             "training_samples": int(
                 replay_student_obs.shape[0] * args.failure_replay_repeats

@@ -162,7 +162,7 @@ def test_failure_replay_reconstructs_current_and_historical_contacts(
     )
 
 
-def test_failure_replay_filters_on_pitch_before_action(tmp_path: Path) -> None:
+def test_failure_replay_filters_on_pitch_band_before_action(tmp_path: Path) -> None:
     action_dim = 17
     trace_steps = 20
     observations = np.arange(trace_steps * 873, dtype=np.float32).reshape(
@@ -170,7 +170,7 @@ def test_failure_replay_filters_on_pitch_before_action(tmp_path: Path) -> None:
     )
     metrics = np.zeros((1, trace_steps, NUM_METRICS), dtype=np.float32)
     pitch_index = METRIC_INDEX["debug/pitch"]
-    metrics[0, 15:19, pitch_index] = [-0.05, -0.11, -0.20, 0.10]
+    metrics[0, 15:19, pitch_index] = [-0.05, -0.11, -0.20, -0.30]
     trace = tmp_path / "failure_trace.npz"
     np.savez_compressed(
         trace,
@@ -179,16 +179,37 @@ def test_failure_replay_filters_on_pitch_before_action(tmp_path: Path) -> None:
         valid_lengths=np.asarray([trace_steps], dtype=np.int32),
     )
 
-    student_obs, teacher_obs = _load_failure_replay_dataset(
+    max_only_student_obs, _ = _load_failure_replay_dataset(
         trace,
         action_dim=action_dim,
         max_pitch_rad=-0.1,
+    )
+    np.testing.assert_array_equal(
+        max_only_student_obs, observations[0, [17, 18, 19]]
+    )
+    student_obs, teacher_obs = _load_failure_replay_dataset(
+        trace,
+        action_dim=action_dim,
+        min_pitch_rad=-0.25,
+        max_pitch_rad=-0.08,
     )
 
     np.testing.assert_array_equal(student_obs, observations[0, [17, 18]])
     np.testing.assert_array_equal(
         project_v8_observation(teacher_obs, action_dim=action_dim), student_obs
     )
+
+
+def test_failure_replay_rejects_inverted_pitch_band(tmp_path: Path) -> None:
+    with pytest.raises(
+        ValueError, match="minimum pitch must not exceed maximum pitch"
+    ):
+        _load_failure_replay_dataset(
+            tmp_path / "unused.npz",
+            action_dim=17,
+            min_pitch_rad=-0.08,
+            max_pitch_rad=-0.25,
+        )
 
 
 def test_teacher_checkpoint_resolves_from_gpu_job_artifacts(tmp_path: Path) -> None:
