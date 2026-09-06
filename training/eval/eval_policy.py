@@ -17,13 +17,18 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
+# Apply GPU-memory defaults before JAX initializes its backend.  This
+# entrypoint also runs as a subprocess of the walking-candidate evaluator.
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from training.runtime_env import configure_training_runtime_env
+
+configure_training_runtime_env()
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-# Add project root to path (eval/ -> training/ -> project_root/)
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
