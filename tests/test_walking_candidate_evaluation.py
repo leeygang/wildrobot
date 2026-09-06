@@ -5,6 +5,8 @@ import pytest
 from wildrobot.agents.evaluate_walking_candidate import (
     _aggregate_results,
     _gate_metrics,
+    _source_failure_indices,
+    _teacher_recoverability_aggregate,
 )
 
 
@@ -70,3 +72,43 @@ def test_zero_failure_confidence_bound_uses_all_environments() -> None:
     assert aggregate["zero_failure_probability_upper_95"] == pytest.approx(
         0.011633, abs=1e-6
     )
+
+
+def test_teacher_recoverability_requires_zero_teacher_falls(tmp_path) -> None:
+    source_report = tmp_path / "source.json"
+    source_report.write_text(
+        '{"seed_results":[{"seed":31000,"eval_metrics":{"failure_cases":'
+        '[{"env_index":7},{"env_index":41}]}}]}'
+    )
+    source = _source_failure_indices(source_report)
+    aggregate = {
+        "passed": False,
+        "total_falls": 1,
+        "fail_reasons": ["walking_fall_env_frac"],
+    }
+    seed_results = [
+        {
+            "seed": 31000,
+            "eval_metrics": {"failure_cases": [{"env_index": 12}]},
+        }
+    ]
+
+    result = _teacher_recoverability_aggregate(
+        aggregate, seed_results, source, [31000]
+    )
+
+    assert result["teacher_recoverability_passed"] is False
+    assert result["source_failure_env_count"] == 2
+    assert result["unrecovered_source_failure_env_indices"] == {31000: []}
+
+
+def test_teacher_recoverability_passes_only_when_source_failures_exist() -> None:
+    result = _teacher_recoverability_aggregate(
+        {"passed": False, "total_falls": 0, "fail_reasons": []},
+        [{"seed": 31000, "eval_metrics": {"failure_cases": []}}],
+        {31000: {7, 41}},
+        [31000],
+    )
+
+    assert result["teacher_recoverability_passed"] is True
+    assert result["passed"] is True

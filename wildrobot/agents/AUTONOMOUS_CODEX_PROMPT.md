@@ -66,6 +66,19 @@ measured roll/pitch and angular-rate perturbations around the failing state
 distribution. Do not respond with another orientation-weight or source-anchor
 sweep.
 
+When `failure_evidence.purpose` is `teacher_recoverability`, treat that result
+as a causal branch, not another tuning opportunity:
+
+- If `teacher_recoverability_passed=true`, the teacher can solve the exact
+  distribution and the bottleneck is student transfer. Use genuine iterative
+  dataset aggregation with a strict pre-PPO retention/rollout gate; do not make
+  another replay-ratio or pitch-window adjustment.
+- If `teacher_recoverability_passed=false`, the frozen teacher is not an expert
+  on the failure distribution. Use `teacher_recovery` to improve and validate
+  the contact-observed teacher first, then distill it into the unchanged
+  contact-free actor contract. Do not optimize the student against labels that
+  have not demonstrated closed-loop recovery.
+
 References:
 
 - DAgger: Ross et al., 2011, https://proceedings.mlr.press/v15/ross11a.html

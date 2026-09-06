@@ -19,6 +19,7 @@
       "type": "string",
       "enum": [
         "failure_state_replay",
+        "teacher_recovery",
         "recovery_curriculum",
         "torque_headroom",
         "stance_geometry",

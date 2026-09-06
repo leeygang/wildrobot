@@ -700,6 +700,99 @@ def test_collect_walking_evaluation_results_requires_confirmation_pass(
     assert manifest["simulation_candidate_ready"] is False
 
 
+def test_prepare_worker_builds_teacher_recoverability_command(
+    tmp_path: Path,
+) -> None:
+    remote_repo = tmp_path / "wildrobot"
+    worktree = tmp_path / "jobs/job-eval/src"
+    worktree.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=worktree,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=worktree, check=True
+    )
+    config = worktree / "training/configs/walking.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "checkpoints": {"dir": "training/checkpoints/walking"},
+                "wandb": {"enabled": True, "mode": "offline"},
+            },
+            sort_keys=False,
+        )
+    )
+    subprocess.run(["git", "add", "."], cwd=worktree, check=True)
+    subprocess.run(["git", "commit", "-qm", "test"], cwd=worktree, check=True)
+    git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    python_path = remote_repo / ".venv/bin/python"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("python")
+    source_report = tmp_path / "jobs/source/artifacts/evaluation/summary.json"
+    source_report.parent.mkdir(parents=True)
+    source_report.write_text("{}")
+    artifact_root = worktree.parent / "artifacts"
+    manifest = {
+        "job_kind": remote_training_loop.EVALUATION_JOB_KIND,
+        "git_sha": git_sha,
+        "remote_repo": str(remote_repo),
+        "worktree": str(worktree),
+        "job_root": str(worktree.parent),
+        "artifact_root": str(artifact_root),
+        "source_config": "training/configs/walking.yaml",
+        "checkpoint_series_dir": str(artifact_root / "checkpoints/walking"),
+        "start_mode": None,
+        "start_checkpoint_request": None,
+        "evaluation_purpose": "teacher_recoverability",
+        "source_evaluation_report": str(source_report),
+        "evaluation_seeds": [31000],
+        "evaluation_num_envs": 64,
+        "evaluation_num_steps": 1000,
+    }
+
+    command = remote_training_loop._prepare_worker(manifest)
+
+    assert "--checkpoint" not in command
+    assert command[command.index("--purpose") + 1] == "teacher_recoverability"
+    assert command[command.index("--source-evaluation-report") + 1] == str(
+        source_report
+    )
+
+
+def test_collect_teacher_recoverability_result(tmp_path: Path) -> None:
+    report = tmp_path / "evaluation_summary.json"
+    report.write_text(
+        json.dumps(
+            {
+                "aggregate": {
+                    "passed": True,
+                    "teacher_recoverability_passed": True,
+                }
+            }
+        )
+    )
+    manifest = {
+        "evaluation_purpose": "teacher_recoverability",
+        "evaluation_report": str(report),
+    }
+
+    _collect_walking_evaluation_results(manifest)
+
+    assert manifest["result_complete"] is True
+    assert manifest["teacher_recoverability_passed"] is True
+    assert manifest["simulation_candidate_ready"] is False
+
+
 def _completed_manual_run(
     repo: Path,
     *,

@@ -443,8 +443,8 @@ def _enqueue_walking_evaluation_remote(
     git_sha: str,
     config: str,
     checkpoint_series: str,
-    checkpoint: str,
-    checkpoint_relpath: str,
+    checkpoint: str | None,
+    checkpoint_relpath: str | None,
     checkpoint_run_dir: str,
     checkpoint_run_relpath: str,
     source_job_id: str,
@@ -452,8 +452,13 @@ def _enqueue_walking_evaluation_remote(
     seeds: Sequence[int],
     num_envs: int,
     num_steps: int,
+    source_evaluation_report: str | None = None,
 ) -> dict[str, Any]:
-    if purpose not in {"confirmation", "failure_diagnostic"}:
+    if purpose not in {
+        "confirmation",
+        "failure_diagnostic",
+        "teacher_recoverability",
+    }:
         raise TrainingLoopError(f"Unsupported evaluation purpose: {purpose}")
     if len(seeds) < 1 or len(set(int(seed) for seed in seeds)) != len(seeds):
         raise TrainingLoopError("Walking evaluation seeds must be non-empty and unique.")
@@ -474,6 +479,7 @@ def _enqueue_walking_evaluation_remote(
         evaluation_seeds=[int(seed) for seed in seeds],
         evaluation_num_envs=int(num_envs),
         evaluation_num_steps=int(num_steps),
+        source_evaluation_report=source_evaluation_report,
         selected_checkpoint_path=checkpoint,
         selected_checkpoint_relpath=checkpoint_relpath,
         checkpoint_run_dir=checkpoint_run_dir,
@@ -945,11 +951,17 @@ def _collect_walking_evaluation_results(manifest: dict[str, Any]) -> None:
         isinstance(aggregate, dict) and aggregate.get("passed") is True
     )
     purpose = str(manifest.get("evaluation_purpose", ""))
+    teacher_recoverability_passed = bool(
+        purpose == "teacher_recoverability"
+        and isinstance(aggregate, dict)
+        and aggregate.get("teacher_recoverability_passed") is True
+    )
     manifest.update(
         evaluation_report_exists=report_path.is_file(),
         evaluation_gates_passed=gates_passed,
         evaluation_status=("passed" if gates_passed else "failed"),
         confirmation_passed=(purpose == "confirmation" and gates_passed),
+        teacher_recoverability_passed=teacher_recoverability_passed,
         simulation_candidate_ready=(purpose == "confirmation" and gates_passed),
         result_complete=report_path.is_file(),
     )
@@ -1000,19 +1012,18 @@ def _prepare_worker(manifest: dict[str, Any]) -> list[str]:
         source_config, effective_config, wandb_log_dir=artifact_root / "wandb"
     )
 
-    checkpoint = _resolve_start_checkpoint(manifest)
     python_path = Path(manifest["remote_repo"]) / ".venv" / "bin" / "python"
     if not python_path.is_file():
         raise TrainingLoopError(f"GPU virtual environment missing: {python_path}")
     if manifest.get("job_kind") == EVALUATION_JOB_KIND:
-        if checkpoint is None:
+        purpose = str(manifest.get("evaluation_purpose", ""))
+        checkpoint = _resolve_start_checkpoint(manifest)
+        if checkpoint is None and purpose != "teacher_recoverability":
             raise TrainingLoopError("Walking evaluation job requires a checkpoint.")
         report_path = artifact_root / "evaluation" / "evaluation_summary.json"
         command = [
             str(python_path),
             "wildrobot/agents/evaluate_walking_candidate.py",
-            "--checkpoint",
-            str(checkpoint),
             "--config",
             str(effective_config),
             "--output",
@@ -1026,17 +1037,43 @@ def _prepare_worker(manifest: dict[str, Any]) -> list[str]:
             "--num-steps",
             str(manifest["evaluation_num_steps"]),
         ]
+        if checkpoint is not None:
+            command.extend(["--checkpoint", str(checkpoint)])
+        source_report = manifest.get("source_evaluation_report")
+        if purpose == "teacher_recoverability" and not source_report:
+            raise TrainingLoopError(
+                "Teacher recoverability evaluation requires a source report."
+            )
+        if source_report:
+            source_report_path = Path(str(source_report)).resolve()
+            jobs_root = Path(manifest["job_root"]).resolve().parent
+            try:
+                source_report_path.relative_to(jobs_root)
+            except ValueError as exc:
+                raise TrainingLoopError(
+                    "Teacher recoverability source report is outside the GPU "
+                    "job root."
+                ) from exc
+            if not source_report_path.is_file():
+                raise TrainingLoopError(
+                    "Teacher recoverability source report does not exist: "
+                    f"{source_report_path}"
+                )
+            command.extend(
+                ["--source-evaluation-report", str(source_report_path)]
+            )
         manifest.update(
             evaluation_report=str(report_path),
             evaluation_status="pending",
             source_config_sha256=_sha256(source_snapshot),
             effective_config=str(effective_config),
             effective_config_sha256=_sha256(effective_config),
-            start_checkpoint=str(checkpoint),
-            start_checkpoint_sha256=_sha256(checkpoint),
+            start_checkpoint=str(checkpoint) if checkpoint else None,
+            start_checkpoint_sha256=_sha256(checkpoint) if checkpoint else None,
             training_command=command,
         )
         return command
+    checkpoint = _resolve_start_checkpoint(manifest)
     bootstrap_mode = _config_bootstrap_mode(effective_config)
     if bootstrap_mode is not None and checkpoint is None:
         bootstrap_dir = artifact_root / "bootstrap"
@@ -1340,6 +1377,7 @@ def _recover_interrupted_jobs(remote_repo: Path) -> None:
                         "evaluation_gates_passed",
                         "evaluation_status",
                         "confirmation_passed",
+                        "teacher_recoverability_passed",
                     ]
                 )
             for key in reset_keys:

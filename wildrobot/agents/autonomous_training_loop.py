@@ -47,6 +47,7 @@ CONFIRMATION_NUM_ENVS = 64
 CONFIRMATION_NUM_STEPS = 1000
 FAILURE_DIAGNOSTIC_SEEDS = (31_000,)
 MAX_UNSUCCESSFUL_FAMILY_ATTEMPTS = 2
+TEACHER_RECOVERABILITY_EXTRA_CYCLES = 3
 CAMPAIGN_OBJECTIVE = {
     "priority": [
         "walking_fall_env_count",
@@ -237,6 +238,10 @@ def _validate_existing_submission(
             evaluation_num_envs=pending["evaluation_num_envs"],
             evaluation_num_steps=pending["evaluation_num_steps"],
         )
+        if pending.get("source_evaluation_report"):
+            expected["source_evaluation_report"] = pending[
+                "source_evaluation_report"
+            ]
     mismatched = [
         key
         for key, value in expected.items()
@@ -262,8 +267,16 @@ def _resume_enqueue(state: dict[str, Any]) -> str:
                 git_sha=str(pending["git_sha"]),
                 config=str(pending["config"]),
                 checkpoint_series=str(pending["checkpoint_series"]),
-                checkpoint=str(pending["checkpoint"]),
-                checkpoint_relpath=str(pending["checkpoint_relpath"]),
+                checkpoint=(
+                    str(pending["checkpoint"])
+                    if pending.get("checkpoint")
+                    else None
+                ),
+                checkpoint_relpath=(
+                    str(pending["checkpoint_relpath"])
+                    if pending.get("checkpoint_relpath")
+                    else None
+                ),
                 checkpoint_run_dir=str(pending["checkpoint_run_dir"]),
                 checkpoint_run_relpath=str(pending["checkpoint_run_relpath"]),
                 source_job_id=str(pending["evaluation_source_job_id"]),
@@ -271,6 +284,9 @@ def _resume_enqueue(state: dict[str, Any]) -> str:
                 seeds=[int(seed) for seed in pending["evaluation_seeds"]],
                 num_envs=int(pending["evaluation_num_envs"]),
                 num_steps=int(pending["evaluation_num_steps"]),
+                source_evaluation_report=pending.get(
+                    "source_evaluation_report"
+                ),
             )
         else:
             manifest = remote._enqueue_remote(
@@ -430,6 +446,86 @@ def _enqueue_candidate_evaluation(
     return _resume_enqueue(state)
 
 
+def _should_run_teacher_recoverability(
+    state: dict[str, Any], manifest: dict[str, Any]
+) -> bool:
+    if manifest.get("evaluation_purpose") != "failure_diagnostic":
+        return False
+    if state.get("teacher_recoverability_completed"):
+        return False
+    evidence = _failure_evidence(manifest)
+    if float(evidence.get("falls") or 0.0) <= 0.0:
+        return False
+    unsuccessful = [
+        entry
+        for entry in state.get("experiment_history", [])
+        if entry.get("result") == "no_champion_improvement"
+    ]
+    replay_failures = sum(
+        entry.get("intervention_family") == "failure_state_replay"
+        for entry in unsuccessful
+    )
+    recovery_failures = sum(
+        entry.get("intervention_family") == "recovery_curriculum"
+        for entry in unsuccessful
+    )
+    return replay_failures >= 3 and recovery_failures >= 2
+
+
+def _enqueue_teacher_recoverability(
+    state: dict[str, Any], diagnostic_manifest: dict[str, Any]
+) -> str:
+    source_report = diagnostic_manifest.get("evaluation_report")
+    if not source_report:
+        raise remote.TrainingLoopError(
+            "Teacher recoverability requires the GPU failure-diagnostic report."
+        )
+    git_sha = _require_clean_branch(str(state["branch"]))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    job_id = remote._safe_job_id(
+        f"auto-{int(state['cycle']):02d}-eval-teacher-recoverability-"
+        f"{git_sha[:8]}-{timestamp}"
+    )
+    pending = {
+        "job_kind": remote.EVALUATION_JOB_KIND,
+        "cycle": int(state["cycle"]),
+        "job_id": job_id,
+        "git_sha": git_sha,
+        "config": str(diagnostic_manifest["source_config"]),
+        "checkpoint_series": str(diagnostic_manifest["checkpoint_series"]),
+        "start_mode": "none",
+        "checkpoint": None,
+        "checkpoint_relpath": None,
+        "checkpoint_run_dir": str(diagnostic_manifest["checkpoint_run_dir"]),
+        "checkpoint_run_relpath": str(
+            diagnostic_manifest["checkpoint_run_relpath"]
+        ),
+        "evaluation_source_job_id": str(diagnostic_manifest["job_id"]),
+        "evaluation_purpose": "teacher_recoverability",
+        "evaluation_seeds": [int(seed) for seed in FAILURE_DIAGNOSTIC_SEEDS],
+        "evaluation_num_envs": int(
+            state.get("confirmation_num_envs", CONFIRMATION_NUM_ENVS)
+        ),
+        "evaluation_num_steps": int(
+            state.get("confirmation_num_steps", CONFIRMATION_NUM_STEPS)
+        ),
+        "source_evaluation_report": str(source_report),
+    }
+    state.update(
+        stage="enqueue",
+        pending_job=pending,
+        evaluation_source_job_id=str(diagnostic_manifest["job_id"]),
+        evaluation_purpose="teacher_recoverability",
+        max_cycles=max(
+            int(state["max_cycles"]),
+            int(state["cycle"]) + TEACHER_RECOVERABILITY_EXTRA_CYCLES,
+        ),
+        teacher_recoverability_started=True,
+    )
+    _save_state(state)
+    return _resume_enqueue(state)
+
+
 def _resume_adoption(state: dict[str, Any]) -> dict[str, Any]:
     context = _context(state)
     try:
@@ -486,20 +582,32 @@ def _run_analyzer(context: remote.RemoteContext) -> dict[str, Any]:
             )
         else:
             aggregate = report.get("aggregate", {})
-            message = (
-                f"Walking candidate {report.get('purpose')} result\n"
-                f"Checkpoint: {report.get('checkpoint')}\n"
-                f"Passed: {bool(aggregate.get('passed'))}\n"
+            message_lines = [
+                f"Walking candidate {report.get('purpose')} result",
+                f"Checkpoint: {report.get('checkpoint')}",
+                f"Passed: {bool(aggregate.get('passed'))}",
                 f"Falls: {aggregate.get('total_falls')}/"
-                f"{aggregate.get('total_envs')}\n"
+                f"{aggregate.get('total_envs')}",
                 f"Worst stable tilt: "
-                f"{aggregate.get('worst_stable_tilt_deg')} deg\n"
+                f"{aggregate.get('worst_stable_tilt_deg')} deg",
                 f"Worst stable actuator saturation: "
-                f"{aggregate.get('worst_stable_actuator_torque_sat_frac')}\n"
-                f"Failed gates: {aggregate.get('fail_reasons', [])}\n"
+                f"{aggregate.get('worst_stable_actuator_torque_sat_frac')}",
+                f"Failed gates: {aggregate.get('fail_reasons', [])}",
+            ]
+            if report.get("purpose") == "teacher_recoverability":
+                message_lines.extend(
+                    [
+                        "Teacher recoverability passed: "
+                        f"{bool(aggregate.get('teacher_recoverability_passed'))}",
+                        "Unrecovered source failure environments: "
+                        f"{aggregate.get('unrecovered_source_failure_env_indices', {})}",
+                    ]
+                )
+            message_lines.append(
                 "Per-seed failure cases and NPZ trace paths are recorded in "
-                f"{manifest.get('local_evaluation_report')}.\n"
+                f"{manifest.get('local_evaluation_report')}."
             )
+            message = "\n".join(message_lines) + "\n"
         report_path.write_text(message)
         print(message, end="", flush=True)
         manifest["local_analysis"] = str(report_path.relative_to(REPO_ROOT))
@@ -749,7 +857,7 @@ def _failure_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
                     remote._read_json(source_manifest_path)
                 )
         source_metrics = source_candidate.get("metrics", {}) if source_candidate else {}
-        return {
+        evidence = {
             "source": "multi_seed_evaluation",
             "purpose": report.get("purpose"),
             "total_envs": aggregate.get("total_envs"),
@@ -785,6 +893,22 @@ def _failure_evidence(manifest: dict[str, Any]) -> dict[str, Any]:
                 for row in report.get("seed_results", [])
             ],
         }
+        if report.get("purpose") == "teacher_recoverability":
+            evidence.update(
+                teacher_recoverability_passed=aggregate.get(
+                    "teacher_recoverability_passed"
+                ),
+                source_failure_env_count=aggregate.get(
+                    "source_failure_env_count"
+                ),
+                teacher_failure_env_indices=aggregate.get(
+                    "teacher_failure_env_indices", {}
+                ),
+                unrecovered_source_failure_env_indices=aggregate.get(
+                    "unrecovered_source_failure_env_indices", {}
+                ),
+            )
+        return evidence
     candidate = _best_screen_candidate(manifest)
     metrics = candidate.get("metrics", {}) if candidate else {}
     return {
@@ -815,6 +939,12 @@ def _required_intervention_families(manifest: dict[str, Any]) -> list[str]:
     if manifest.get("status") == "failed":
         return ["infrastructure"]
     evidence = _failure_evidence(manifest)
+    if evidence.get("purpose") == "teacher_recoverability":
+        return (
+            ["failure_state_replay"]
+            if evidence.get("teacher_recoverability_passed")
+            else ["teacher_recovery"]
+        )
     if evidence.get("screening_eligible") is False:
         return ["reference_tracking", "optimizer_diagnostic"]
     falls = max(
@@ -1318,6 +1448,32 @@ def _process_terminal_job(
                 _save_state(state)
                 manifest = current
                 continue
+            elif _should_run_teacher_recoverability(state, current):
+                _save_state(state)
+                _push(str(state["branch"]))
+                next_job = _enqueue_teacher_recoverability(state, current)
+                print(
+                    f"Enqueued teacher recoverability job: {next_job}",
+                    flush=True,
+                )
+                return
+            elif current.get("evaluation_purpose") == "teacher_recoverability":
+                report = _evaluation_report(current) or {}
+                aggregate = report.get("aggregate", {})
+                state["teacher_recoverability_completed"] = {
+                    "job_id": current.get("job_id"),
+                    "passed": bool(
+                        aggregate.get("teacher_recoverability_passed")
+                    ),
+                    "teacher_falls": aggregate.get("total_falls"),
+                    "source_failure_env_count": aggregate.get(
+                        "source_failure_env_count"
+                    ),
+                    "unrecovered_source_failure_env_indices": aggregate.get(
+                        "unrecovered_source_failure_env_indices", {}
+                    ),
+                }
+                _save_state(state)
 
             if int(state["cycle"]) >= int(state["max_cycles"]):
                 state.update(

@@ -366,6 +366,30 @@ def test_stable_tilt_gate_failure_routes_to_recovery_curriculum(
     ]
 
 
+@pytest.mark.parametrize(
+    ("teacher_passed", "expected"),
+    [
+        (True, ["failure_state_replay"]),
+        (False, ["teacher_recovery"]),
+    ],
+)
+def test_teacher_audit_routes_by_recoverability(
+    monkeypatch: pytest.MonkeyPatch,
+    teacher_passed: bool,
+    expected: list[str],
+) -> None:
+    monkeypatch.setattr(
+        auto,
+        "_failure_evidence",
+        lambda _manifest: {
+            "purpose": "teacher_recoverability",
+            "teacher_recoverability_passed": teacher_passed,
+        },
+    )
+
+    assert auto._required_intervention_families({"status": "completed"}) == expected
+
+
 def test_codex_cannot_repeat_twice_failed_intervention_family(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -663,6 +687,96 @@ def test_falling_screen_candidate_enqueues_failure_diagnostic(
     auto._process_terminal_job(state, {"job_id": "job-1", "git_sha": "a" * 40})
 
     assert events == ["push", "failure_diagnostic"]
+
+
+def test_repeated_replay_and_recovery_failures_require_teacher_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(Path("/tmp"))
+    state["experiment_history"] = [
+        {
+            "intervention_family": family,
+            "result": "no_champion_improvement",
+        }
+        for family in (
+            "failure_state_replay",
+            "recovery_curriculum",
+            "failure_state_replay",
+            "recovery_curriculum",
+            "failure_state_replay",
+        )
+    ]
+    monkeypatch.setattr(auto, "_failure_evidence", lambda _manifest: {"falls": 3})
+
+    assert auto._should_run_teacher_recoverability(
+        state,
+        {"evaluation_purpose": "failure_diagnostic"},
+    )
+
+
+def test_teacher_audit_extends_current_campaign_and_uses_diagnostic_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(cycle=19, max_cycles=20)
+    submitted: list[dict] = []
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "b" * 40)
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(
+        auto.remote,
+        "_enqueue_walking_evaluation_remote",
+        lambda _context, **kwargs: submitted.append(kwargs)
+        or {"status": "queued"},
+    )
+    manifest = {
+        "job_id": "diagnostic-job",
+        "evaluation_report": "/srv/jobs/diagnostic/artifacts/evaluation/summary.json",
+        "source_config": "training/configs/walking.yaml",
+        "checkpoint_series": "walking",
+        "checkpoint_run_dir": "/srv/jobs/source/artifacts/checkpoints/walking/run",
+        "checkpoint_run_relpath": "checkpoints/walking/run",
+    }
+
+    auto._enqueue_teacher_recoverability(state, manifest)
+
+    assert submitted[0]["checkpoint"] is None
+    assert submitted[0]["purpose"] == "teacher_recoverability"
+    assert submitted[0]["source_evaluation_report"] == manifest[
+        "evaluation_report"
+    ]
+    assert state["max_cycles"] == 22
+    assert state["teacher_recoverability_started"] is True
+
+
+def test_failure_diagnostic_enqueues_teacher_audit_before_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = _state(tmp_path)
+    state.update(cycle=19, max_cycles=20)
+    current = {
+        "job_id": "diagnostic-job",
+        "job_kind": remote.EVALUATION_JOB_KIND,
+        "evaluation_purpose": "failure_diagnostic",
+        "status": "completed",
+    }
+    events: list[str] = []
+    monkeypatch.setattr(auto, "_require_training_commit", lambda *_args: "a" * 40)
+    monkeypatch.setattr(auto, "_run_analyzer", lambda _context: current)
+    monkeypatch.setattr(auto, "_should_run_teacher_recoverability", lambda *_args: True)
+    monkeypatch.setattr(auto, "_save_state", lambda _state: None)
+    monkeypatch.setattr(auto, "_push", lambda _branch: events.append("push"))
+    monkeypatch.setattr(
+        auto,
+        "_enqueue_teacher_recoverability",
+        lambda *_args: events.append("teacher") or "teacher-job",
+    )
+
+    auto._process_terminal_job(
+        state,
+        {"job_id": "diagnostic-job", "git_sha": "a" * 40},
+    )
+
+    assert events == ["push", "teacher"]
 
 
 def test_export_stage_reuses_an_already_valid_bundle(

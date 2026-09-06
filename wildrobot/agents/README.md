@@ -39,6 +39,12 @@ experiments rather than a chain of local fine-tunes:
   each first-episode fall. These traces provide student-visited states for a
   DAgger-style teacher-labeling follow-up while keeping the deployed actor
   contact-free.
+- After repeated failure-replay and recovery-curriculum misses, the controller
+  automatically evaluates the contact-observed teacher on the same seeded
+  failure distribution. If the teacher falls, the next experiment must improve
+  the teacher before distillation; if it recovers, the next experiment must
+  address student transfer with iterative aggregation and a pre-PPO retention
+  gate. The existing campaign is extended by three cycles for this contingency.
 - A checkpoint that passes the normal 0/64 screen is not exported immediately.
   The GPU runs four independent 64-environment evaluations and requires 0/256
   falls plus every existing strict walking gate before bundle export.
