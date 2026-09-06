@@ -195,6 +195,7 @@ def _load_failure_replay_dataset(
     trace_path: Path,
     *,
     action_dim: int,
+    max_pitch_rad: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rebuild contact-observed teacher inputs for saved student states.
 
@@ -202,7 +203,8 @@ def _load_failure_replay_dataset(
     post-step metrics after that action.  Consequently, observation ``t`` uses
     the contact signals from metric row ``t - 1`` and its 15-frame history
     uses rows ``t - 16:t - 1``.  The first 16 rows of each retained trace are
-    skipped because their preceding contact history is outside the trace.
+    skipped because their preceding contact history is outside the trace.  When
+    ``max_pitch_rad`` is set, only states at or below that pitch are retained.
     """
     with np.load(trace_path) as trace:
         required = {"observations", "metrics_vec", "valid_lengths"}
@@ -251,6 +253,7 @@ def _load_failure_replay_dataset(
         [METRIC_INDEX[name] for name in FAILURE_REPLAY_CONTACT_METRICS],
         dtype=np.int32,
     )
+    pitch_metric_index = METRIC_INDEX["debug/pitch"]
 
     student_batches: list[np.ndarray] = []
     teacher_batches: list[np.ndarray] = []
@@ -278,12 +281,26 @@ def _load_failure_replay_dataset(
             )
             teacher_obs[contact_slots] = contact_values
             teacher_trace.append(teacher_obs)
-        student_batches.append(student_trace[first_reconstructable_step:])
-        teacher_batches.append(np.stack(teacher_trace))
+        student_trace = student_trace[first_reconstructable_step:]
+        teacher_trace_array = np.stack(teacher_trace)
+        if max_pitch_rad is not None:
+            # Observation t is the state before action t, represented by the
+            # post-step metrics at t - 1 (the same alignment used for contact).
+            state_pitch = metrics_vec[trace_index, -valid_length:][
+                first_reconstructable_step - 1 : valid_length - 1,
+                pitch_metric_index,
+            ]
+            selected = state_pitch <= max_pitch_rad
+            student_trace = student_trace[selected]
+            teacher_trace_array = teacher_trace_array[selected]
+        if student_trace.shape[0] > 0:
+            student_batches.append(student_trace)
+            teacher_batches.append(teacher_trace_array)
 
     if not student_batches:
         raise ValueError(
-            "failure trace has no observations with a complete contact history"
+            "failure trace has no observations with a complete contact history "
+            "matching the configured filters"
         )
     student_obs = np.concatenate(student_batches).astype(np.float32)
     teacher_obs = np.concatenate(teacher_batches).astype(np.float32)
@@ -401,6 +418,7 @@ def main() -> int:
     parser.add_argument("--failure-trace-sha256", type=str)
     parser.add_argument("--failure-replay-repeats", type=int, default=1)
     parser.add_argument("--teacher-config", type=Path, default=DEFAULT_TEACHER_CONFIG)
+    parser.add_argument("--failure-replay-max-pitch-rad", type=float)
     parser.add_argument("--student-config", type=Path, default=DEFAULT_STUDENT_CONFIG)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--report", type=Path)
@@ -597,6 +615,7 @@ def main() -> int:
         replay_student_obs, replay_teacher_obs = _load_failure_replay_dataset(
             args.failure_trace,
             action_dim=action_dim,
+            max_pitch_rad=args.failure_replay_max_pitch_rad,
         )
         replay_teacher_actions = _deterministic_actions(
             network=teacher_network,
@@ -691,6 +710,7 @@ def main() -> int:
             "trace_sha256": replay_trace_sha256,
             "unique_samples": int(replay_student_obs.shape[0]),
             "training_repeats": int(args.failure_replay_repeats),
+            "max_pitch_rad": args.failure_replay_max_pitch_rad,
             "training_samples": int(
                 replay_student_obs.shape[0] * args.failure_replay_repeats
             ),

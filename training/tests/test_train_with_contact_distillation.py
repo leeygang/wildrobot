@@ -28,6 +28,7 @@ def test_distillation_command_comes_from_frozen_training_config(
                     "failure_trace": "/remote/failure_trace.npz",
                     "failure_trace_sha256": "abc123",
                     "failure_replay_repeats": 64,
+                    "failure_replay_max_pitch_rad": -0.1,
                     "rollout_repeats": 8,
                     "require_no_terminations": True,
                 }
@@ -54,6 +55,7 @@ def test_distillation_command_comes_from_frozen_training_config(
     )
     assert command[command.index("--failure-trace-sha256") + 1] == "abc123"
     assert command[command.index("--failure-replay-repeats") + 1] == "64"
+    assert command[command.index("--failure-replay-max-pitch-rad") + 1] == "-0.1"
     assert "--no-require-no-terminations" not in command
 
 

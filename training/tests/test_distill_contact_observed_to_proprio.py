@@ -162,6 +162,35 @@ def test_failure_replay_reconstructs_current_and_historical_contacts(
     )
 
 
+def test_failure_replay_filters_on_pitch_before_action(tmp_path: Path) -> None:
+    action_dim = 17
+    trace_steps = 20
+    observations = np.arange(trace_steps * 873, dtype=np.float32).reshape(
+        1, trace_steps, 873
+    )
+    metrics = np.zeros((1, trace_steps, NUM_METRICS), dtype=np.float32)
+    pitch_index = METRIC_INDEX["debug/pitch"]
+    metrics[0, 15:19, pitch_index] = [-0.05, -0.11, -0.20, 0.10]
+    trace = tmp_path / "failure_trace.npz"
+    np.savez_compressed(
+        trace,
+        observations=observations,
+        metrics_vec=metrics,
+        valid_lengths=np.asarray([trace_steps], dtype=np.int32),
+    )
+
+    student_obs, teacher_obs = _load_failure_replay_dataset(
+        trace,
+        action_dim=action_dim,
+        max_pitch_rad=-0.1,
+    )
+
+    np.testing.assert_array_equal(student_obs, observations[0, [17, 18]])
+    np.testing.assert_array_equal(
+        project_v8_observation(teacher_obs, action_dim=action_dim), student_obs
+    )
+
+
 def test_teacher_checkpoint_resolves_from_gpu_job_artifacts(tmp_path: Path) -> None:
     content = b"exact teacher checkpoint"
     expected_sha256 = hashlib.sha256(content).hexdigest()

@@ -69,6 +69,7 @@ def _build_distillation_command(
         "learning_rate",
         "max_validation_rmse",
         "failure_replay_repeats",
+        "failure_replay_max_pitch_rad",
         "seed",
     ):
         _append_option(command, f"--{key.replace('_', '-')}", bootstrap.get(key))
