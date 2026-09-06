@@ -918,6 +918,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             if len(values) != 2 or float(values[0]) > float(values[1]):
                 raise ValueError(f"{name} must be a two-element [low, high] range")
         self._recovery_enabled = bool(self._config.env.standing_recovery_enabled)
+        self._recovery_non_rsi_only = bool(
+            self._config.env.standing_recovery_reset_non_rsi_only
+        )
         if (
             str(self._config.env.actor_obs_layout_id)
             == "wr_obs_v10_standing_recovery"
@@ -3631,6 +3634,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             qpos = self._apply_reset_perturbation(key_pert, qpos)
 
         if perturb_pose and self._recovery_enabled:
+            apply_recovery_reset = ~reset_is_rsi | jp.bool_(
+                not self._recovery_non_rsi_only
+            )
             stagger_key = jax.random.fold_in(key_pert, 1)
             rate_key = jax.random.fold_in(key_pert, 2)
             stagger = jax.random.uniform(
@@ -3639,7 +3645,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 minval=self._reset_foot_stagger_range[0],
                 maxval=self._reset_foot_stagger_range[1],
             ).astype(jp.float32)
-            qpos = self._apply_reset_foot_stagger(qpos, stagger)
+            recovery_qpos = self._apply_reset_foot_stagger(qpos, stagger)
+            qpos = jp.where(apply_recovery_reset, recovery_qpos, qpos)
             if rsi_qvel is None:
                 rsi_qvel = jp.zeros(self._mj_model.nv, dtype=jp.float32)
             rate_roll_key, rate_pitch_key = jax.random.split(rate_key)
@@ -3655,8 +3662,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 minval=self._reset_torso_pitch_rate_range[0],
                 maxval=self._reset_torso_pitch_rate_range[1],
             ).astype(jp.float32)
-            rsi_qvel = rsi_qvel.at[3].set(reset_roll_rate)
-            rsi_qvel = rsi_qvel.at[4].set(reset_pitch_rate)
+            rsi_qvel = rsi_qvel.at[3].set(
+                jp.where(apply_recovery_reset, reset_roll_rate, rsi_qvel[3])
+            )
+            rsi_qvel = rsi_qvel.at[4].set(
+                jp.where(apply_recovery_reset, reset_pitch_rate, rsi_qvel[4])
+            )
 
         push_schedule = sample_push_schedule(
             key_push, self._config.env, self._push_body_ids

@@ -842,6 +842,10 @@ class EnvConfig(Freezable):
         default_factory=lambda: [0.0, 0.0]
     )
     standing_recovery_enabled: bool = False
+    # Leave moving-reference (RSI) initial velocities intact when the measured
+    # failures occur only from home starts.  Default False preserves the
+    # existing standing-recovery reset contract.
+    standing_recovery_reset_non_rsi_only: bool = False
     standing_recovery_trigger_angle_rad: float = 0.0872665
     standing_recovery_lookahead_s: float = 0.25
     standing_recovery_capture_gain: float = 1.0
