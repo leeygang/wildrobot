@@ -16,6 +16,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -37,7 +38,6 @@ from training.core.metrics_registry import (
     METRICS_VEC_KEY,
     truncation_from_metrics_vec,
 )
-from training.envs.wildrobot_env import WildRobotEnv
 from training.exports.export_onnx import get_checkpoint_dims
 from training.policy_migration.wrist_17d import (
     WRIST_ACTUATOR_NAMES,
@@ -46,6 +46,9 @@ from training.policy_migration.wrist_17d import (
     project_v8_observation,
 )
 from training.policy_spec_utils import build_policy_spec_from_training_config
+
+if TYPE_CHECKING:
+    from training.envs.wildrobot_env import WildRobotEnv
 
 
 DEFAULT_TEACHER_CHECKPOINT = (
@@ -107,6 +110,8 @@ def _load_env(
     robot_config_path: Path | None = None,
     scene_xml_path: Path | None = None,
 ):
+    from training.envs.wildrobot_env import WildRobotEnv
+
     config = load_training_config(config_path)
     if robot_config_path is not None:
         config.env.robot_config_path = str(robot_config_path)
