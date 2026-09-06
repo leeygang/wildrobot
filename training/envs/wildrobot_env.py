@@ -921,6 +921,34 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._recovery_non_rsi_only = bool(
             self._config.env.standing_recovery_reset_non_rsi_only
         )
+        recovery_roll_range = (
+            self._config.env.standing_recovery_reset_torso_roll_range
+        )
+        recovery_pitch_range = (
+            self._config.env.standing_recovery_reset_torso_pitch_range
+        )
+        if (recovery_roll_range is None) != (recovery_pitch_range is None):
+            raise ValueError(
+                "standing_recovery_reset_torso_roll_range and "
+                "standing_recovery_reset_torso_pitch_range must be set together"
+            )
+        self._recovery_pose_ranges = None
+        if recovery_roll_range is not None and recovery_pitch_range is not None:
+            for name, values in (
+                ("standing_recovery_reset_torso_roll_range", recovery_roll_range),
+                ("standing_recovery_reset_torso_pitch_range", recovery_pitch_range),
+            ):
+                if len(values) != 2 or float(values[0]) > float(values[1]):
+                    raise ValueError(f"{name} must be a two-element [low, high] range")
+            if not self._recovery_enabled:
+                raise ValueError(
+                    "standing_recovery reset torso ranges require "
+                    "standing_recovery_enabled=true"
+                )
+            self._recovery_pose_ranges = (
+                jp.asarray(recovery_roll_range, dtype=jp.float32),
+                jp.asarray(recovery_pitch_range, dtype=jp.float32),
+            )
         if (
             str(self._config.env.actor_obs_layout_id)
             == "wr_obs_v10_standing_recovery"
@@ -3627,16 +3655,29 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # active when the configured ranges are non-degenerate AND
         # ``perturb_pose`` is True (default).  Default ranges of
         # [0.0, 0.0] short-circuit to a no-op (preserves the historical
-        # quiet ref_init reset).  Applied to all reset modes for
-        # consistency; under ``home`` the perturbation is layered on top
-        # of the historical joint_noise above.
-        if perturb_pose and self._reset_perturbation_enabled():
-            qpos = self._apply_reset_perturbation(key_pert, qpos)
+        # quiet ref_init reset).  Applied to all reset modes unless a
+        # recovery-specific pose envelope substitutes measured perturbations
+        # for recovery starts.  Under ``home`` the perturbation is layered
+        # on top of the historical joint_noise above.
+        apply_recovery_reset = ~reset_is_rsi | jp.bool_(
+            not self._recovery_non_rsi_only
+        )
+        if perturb_pose and (
+            self._reset_perturbation_enabled()
+            or self._recovery_pose_ranges is not None
+        ):
+            unperturbed_qpos = qpos
+            qpos = self._apply_reset_perturbation(key_pert, unperturbed_qpos)
+            if self._recovery_pose_ranges is not None:
+                recovery_qpos = self._apply_reset_perturbation(
+                    jax.random.fold_in(key_pert, 3),
+                    unperturbed_qpos,
+                    roll_range=self._recovery_pose_ranges[0],
+                    pitch_range=self._recovery_pose_ranges[1],
+                )
+                qpos = jp.where(apply_recovery_reset, recovery_qpos, qpos)
 
         if perturb_pose and self._recovery_enabled:
-            apply_recovery_reset = ~reset_is_rsi | jp.bool_(
-                not self._recovery_non_rsi_only
-            )
             stagger_key = jax.random.fold_in(key_pert, 1)
             rate_key = jax.random.fold_in(key_pert, 2)
             stagger = jax.random.uniform(
@@ -3690,7 +3731,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
     # ----------------------------------------------------- reset perturbation
 
     def _apply_reset_perturbation(
-        self, rng: jax.Array, qpos: jax.Array
+        self,
+        rng: jax.Array,
+        qpos: jax.Array,
+        *,
+        roll_range: Optional[jax.Array] = None,
+        pitch_range: Optional[jax.Array] = None,
     ) -> jax.Array:
         """TB-style reset-time torso roll / pitch perturbation.
 
@@ -3703,6 +3749,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             sign pattern (``self._leg_pitch_joint_signs``)
           - rotate the root quat by composing ``R_xyz(roll, pitch, 0)``
             onto the existing root quat
+
+        ``roll_range`` and ``pitch_range`` optionally substitute a
+        recovery-specific envelope without changing ordinary reset sampling.
 
         WR-specific deviations from TB (documented):
           - WR has no waist actuator; ``torso_roll`` only affects the
@@ -3720,10 +3769,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         rng_roll, rng_pitch, rng_hip, rng_knee = jax.random.split(rng, 4)
 
-        roll_lo = self._reset_torso_roll_range[0]
-        roll_hi = self._reset_torso_roll_range[1]
-        pitch_lo = self._reset_torso_pitch_range[0]
-        pitch_hi = self._reset_torso_pitch_range[1]
+        roll_values = (
+            self._reset_torso_roll_range if roll_range is None else roll_range
+        )
+        pitch_values = (
+            self._reset_torso_pitch_range if pitch_range is None else pitch_range
+        )
+        roll_lo, roll_hi = roll_values
+        pitch_lo, pitch_hi = pitch_values
 
         torso_roll = jax.random.uniform(
             rng_roll, shape=(), minval=roll_lo, maxval=roll_hi

@@ -800,6 +800,12 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         standing_recovery_reset_non_rsi_only=bool(
             env.get("standing_recovery_reset_non_rsi_only", False)
         ),
+        standing_recovery_reset_torso_roll_range=env.get(
+            "standing_recovery_reset_torso_roll_range"
+        ),
+        standing_recovery_reset_torso_pitch_range=env.get(
+            "standing_recovery_reset_torso_pitch_range"
+        ),
         standing_recovery_trigger_angle_rad=float(
             env.get("standing_recovery_trigger_angle_rad", 0.0872665)
         ),

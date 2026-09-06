@@ -846,6 +846,11 @@ class EnvConfig(Freezable):
     # failures occur only from home starts.  Default False preserves the
     # existing standing-recovery reset contract.
     standing_recovery_reset_non_rsi_only: bool = False
+    # Optional pose envelope used with the recovery reset.  When both ranges
+    # are set, non-recovery starts retain reset_torso_{roll,pitch}_range while
+    # recovery starts use these measured state-distribution ranges instead.
+    standing_recovery_reset_torso_roll_range: Optional[List[float]] = None
+    standing_recovery_reset_torso_pitch_range: Optional[List[float]] = None
     standing_recovery_trigger_angle_rad: float = 0.0872665
     standing_recovery_lookahead_s: float = 0.25
     standing_recovery_capture_gain: float = 1.0
