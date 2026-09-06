@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -25,6 +26,10 @@ sys.path.insert(0, str(project_root))
 from training.runtime_env import configure_training_runtime_env
 
 configure_training_runtime_env()
+if __name__ == "__main__":
+    # JAX documents this as its minimal-memory allocator. The standalone
+    # evaluator favors GPU headroom over allocator speed.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
 
 import jax
 import jax.numpy as jnp
