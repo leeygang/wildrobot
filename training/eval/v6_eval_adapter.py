@@ -73,6 +73,7 @@ from policy_contract.numpy.action import postprocess_action
 from policy_contract.numpy.obs import build_observation
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
+from training.policy_spec_utils import get_home_ctrl_from_mj_model
 from training.utils.ctrl_order import CtrlOrderMapper
 
 V6_LAYOUT_ID = "wr_obs_v6_offline_ref_history"
@@ -498,6 +499,9 @@ class V6EvalAdapter:
         ).astype(np.float32)
 
     def _init_ref_init_q_rad(self) -> None:
+        if bool(getattr(self._cfg.env, "loc_ref_frame_zero_from_home", False)):
+            self._ref_init_q_rad = self._home_q_rad.copy()
+            return
         win0 = self._service.lookup_np(0)
         self._ref_init_q_rad = self._apply_walking_joint_offsets(win0.q_ref)
 
@@ -538,6 +542,23 @@ class V6EvalAdapter:
         self._ctrl_mapper = CtrlOrderMapper(
             self._mj_model, list(self._policy_spec.robot.actuator_names)
         )
+        full_names = [
+            str(self._mj_model.actuator(i).name) for i in range(self._mj_model.nu)
+        ]
+        self._full_home_ctrl_mj = np.asarray(
+            get_home_ctrl_from_mj_model(
+                mj_model=self._mj_model,
+                actuator_names=full_names,
+            ),
+            dtype=np.float32,
+        )
+
+    def _expand_ctrl_to_mj(self, ctrl_policy_order: np.ndarray) -> np.ndarray:
+        target = self._full_home_ctrl_mj.copy()
+        target[self._ctrl_mapper.policy_to_mj_order] = np.asarray(
+            ctrl_policy_order, dtype=np.float32
+        )
+        return target
 
     def _init_dr_joint_offsets(self) -> None:
         """Cache the DR joint-offset half-range so the adapter reset can
@@ -882,7 +903,7 @@ class V6EvalAdapter:
             mj_data.xfrc_applied[:] = 0.0
 
         ctrl_init = self._ctrl_init_policy_order()
-        mj_data.ctrl[:] = self._ctrl_mapper.to_mj_np(ctrl_init)
+        mj_data.ctrl[:] = self._expand_ctrl_to_mj(ctrl_init)
         mujoco.mj_forward(self._mj_model, mj_data)
         self.reset()
 
@@ -1100,7 +1121,7 @@ class V6EvalAdapter:
         target_q = np.clip(
             base_q + residual, self._joint_min, self._joint_max
         ).astype(np.float32)
-        ctrl_mj = self._ctrl_mapper.to_mj_np(target_q)
+        ctrl_mj = self._expand_ctrl_to_mj(target_q)
         mj_data.ctrl[:] = np.asarray(ctrl_mj, dtype=np.float32)
 
         # Save for next iteration.

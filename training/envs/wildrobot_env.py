@@ -610,9 +610,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # graph at trace time).  False (default) preserves the pre-smoke12
         # standing payout (~1.0 at grounded, falls off with lift); True
         # is the smoke12 bootstrap (standing returns 0).  The walking
-        # branch is always the smoke12 baseline-subtract form regardless.
+        # branch baseline behavior is selected independently below.
         self._feet_phase_zero_on_standing = bool(
             getattr(self._config.env, "loc_ref_feet_phase_zero_on_standing", False)
+        )
+        self._feet_phase_subtract_flat_baseline = bool(
+            getattr(
+                self._config.env,
+                "loc_ref_feet_phase_subtract_flat_baseline",
+                True,
+            )
         )
         # cmd-forward tracking dimensionality:
         #   1 = legacy scalar vx-only tracking
@@ -1608,6 +1615,26 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._offline_jax_arrays = self._slice_offline_q_ref_to_policy_order(
             self._offline_jax_arrays
         )
+        frame_zero_from_home = bool(
+            getattr(self._config.env, "loc_ref_frame_zero_from_home", False)
+        )
+        if frame_zero_from_home:
+            home = self._home_q_rad.astype(jp.float32)
+            q_ref = self._offline_jax_arrays["q_ref"]
+            if cmd_conditioned:
+                q_ref = q_ref.at[:, 0, :].set(home)
+                static_bins = jp.linalg.norm(
+                    jp.asarray(cmd_keys, dtype=jp.float32), axis=1
+                ) < jp.float32(1e-6)
+                q_ref = jp.where(static_bins[:, None, None], home, q_ref)
+            else:
+                q_ref = q_ref.at[0, :].set(home)
+                if np.linalg.norm(np.asarray(cmd_keys[0], dtype=np.float32)) < 1e-6:
+                    q_ref = jp.broadcast_to(home, q_ref.shape)
+            self._offline_jax_arrays = {
+                **self._offline_jax_arrays,
+                "q_ref": q_ref.astype(jp.float32),
+            }
         # v0.21.0 P5 — 3D nearest-key lookup uses the full (vx, vy, wz)
         # array; legacy callers (``_lookup_offline_window`` legacy path)
         # never read this, so the array is harmless when 3D mode is off.
@@ -1617,12 +1644,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._offline_command_conditioned = cmd_conditioned
         self._offline_service = primary_service
         self._offline_n_steps = int(n_steps_ref)
-        win0 = self._offline_service.lookup_np(0)
-        self._ref_init_q_rad = jp.clip(
-            self._q_ref_in_policy_order(jp.asarray(win0.q_ref, dtype=jp.float32)),
-            self._joint_range_mins,
-            self._joint_range_maxs,
-        )
+        if frame_zero_from_home:
+            self._ref_init_q_rad = self._home_q_rad
+        else:
+            win0 = self._offline_service.lookup_np(0)
+            self._ref_init_q_rad = jp.clip(
+                self._q_ref_in_policy_order(
+                    jp.asarray(win0.q_ref, dtype=jp.float32)
+                ),
+                self._joint_range_mins,
+                self._joint_range_maxs,
+            )
 
         if self._config.env.max_episode_steps > self._offline_n_steps:
             raise ValueError(
@@ -1805,12 +1837,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         swing_height: jax.Array,
         alpha: jax.Array,
         zero_on_standing: bool = False,
+        subtract_flat_baseline: bool = True,
     ) -> jax.Array:
         """Phase-derived foot-height tracking reward.
 
-        Walking branch (||cmd|| > 0) — smoke12 basin-break form:
+        Walking branch (||cmd|| > 0) — selectable form:
 
-            walking_reward = max(0, raw - flat_foot_baseline)
+            subtract_flat_baseline=True:  max(0, raw - flat_foot_baseline)
+            subtract_flat_baseline=False: raw
 
         Earlier history: smoke9 introduced a TB-faithful copy of TB's
         ``_reward_feet_phase`` (walk_env.py:631-695): the raw formula
@@ -1825,8 +1859,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         basin.  smoke12 (2026-05-17) subtracts the flat-foot baseline
         at the same phase + clamps at 0, so flat-foot walking pays
         zero and only real swing tracking pays positive.  This walking
-        branch is the smoke12 default and is NOT gated by
-        ``zero_on_standing`` — the basin-break fix is permanent.
+        branch remains the default for existing WR configs. The tb1 direct-PPO
+        branch disables subtraction to reproduce ToddlerBot's active reward.
 
         Standing branch (||cmd|| ≈ 0) — configurable:
 
@@ -1908,7 +1942,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Subtracting this kills the "do nothing during walking" payout
         # without changing the gradient toward actually lifting feet.
         flat_baseline = _raw(jp.float32(0.0), jp.float32(0.0))
-        walking_reward = jp.maximum(jp.float32(0.0), raw - flat_baseline)
+        if subtract_flat_baseline:
+            walking_reward = jp.maximum(jp.float32(0.0), raw - flat_baseline)
+        else:
+            walking_reward = raw
 
         # Standing branch is configurable; see docstring.  Note that
         # under standing, the ``expected_z_*`` values above are 0 for
@@ -2052,11 +2089,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         call site, matching TB's ``get_local_vec(ang)[2]``.
 
         ``alpha`` should come from
-        ``reward_weights.cmd_yaw_rate_alpha`` (default 0.25 — TB
-        walk.gin ang_vel_tracking_sigma = 4.0 → 1/4.0).  Reusing the
-        much-tighter ``cmd_forward_velocity_alpha`` (4.0) here would
-        crush the reward to ~exp(-5.6) ≈ 0.004 at a typical 0.1 rad/s
-        error, suppressing the gradient on initialization."""
+        ``reward_weights.cmd_yaw_rate_alpha``. ToddlerBot directly uses
+        ``ang_vel_tracking_sigma=4.0`` as this multiplier. The dataclass
+        default 0.25 is a legacy WR-specific broad setting; parity configs
+        must set the morphology-normalized value explicitly."""
         err = ang_vel_z - yaw_rate_cmd
         return jp.exp(-alpha * err * err).astype(jp.float32)
 
@@ -2566,13 +2602,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
     def _stack_critic_obs(self, history: jax.Array) -> jax.Array:
         """Flatten the trailing N frames of ``history`` into a single
         critic obs vector.  ``history`` has shape
-        ``(PRIVILEGED_OBS_HISTORY_FRAMES, privileged_obs_dim(action_size))``; the
+        ``(PRIVILEGED_OBS_HISTORY_FRAMES, privileged_obs_dim(full_actuator_count))``; the
         rolling buffer is oldest-first (index 0) → newest-last, matching
         TB convention (mjx_env.py:2166-2171).
 
         Under depth==1 we return the newest single frame (legacy
         byte-equal path); under depth==N we take the last N frames and
-        flatten to length ``N * privileged_obs_dim(action_size)``."""
+        flatten to length ``N * privileged_obs_dim(full_actuator_count)``."""
         n = self._critic_obs_history_frames
         if n == 1:
             return history[-1].astype(jp.float32)
@@ -2870,9 +2906,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
         delta_action = applied_action - prev_applied_action
         penalty_action_rate = jp.sum(delta_action * delta_action)
         penalty_torque = jp.sum(data.actuator_force * data.actuator_force)
+        policy_actuator_force = data.actuator_force[self._cal._actuator_ids][
+            self._policy_signal_indices
+        ]
+        policy_force_limits = self._cal._force_limits[self._policy_signal_indices]
         penalty_saturation = torque_saturation_penalty(
-            data.actuator_force[self._cal._actuator_ids],
-            self._cal._force_limits,
+            policy_actuator_force,
+            policy_force_limits,
             soft_limit_ratio=self._torque_saturation_soft_limit_ratio,
             actuator_weights=self._torque_saturation_weights,
         )
@@ -3140,6 +3180,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             swing_height=jp.float32(weights.feet_phase_swing_height),
             alpha=jp.float32(weights.feet_phase_alpha),
             zero_on_standing=self._feet_phase_zero_on_standing,
+            subtract_flat_baseline=self._feet_phase_subtract_flat_baseline,
         )
 
         # v0.22.3 standing support.  Normalizing by total support force makes
@@ -4461,7 +4502,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         critic_obs_history = jp.zeros(
             (
                 PRIVILEGED_OBS_HISTORY_FRAMES,
-                privileged_obs_dim(self.action_size),
+                privileged_obs_dim(self._full_actuator_count),
             ),
             dtype=jp.float32,
         )
@@ -5622,8 +5663,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # Torque diagnostics.  data.actuator_force is in Nm; CAL caches
         # per-actuator force limits (from MJCF forcerange) so the
         # normalised |τ| / limit is well-defined per joint.
-        torque_abs = jp.abs(data.actuator_force[self._cal._actuator_ids])
-        torque_ratio = torque_abs / (self._cal._force_limits + jp.float32(1e-6))
+        torque_abs = jp.abs(data.actuator_force[self._cal._actuator_ids])[
+            self._policy_signal_indices
+        ]
+        torque_ratio = torque_abs / (
+            self._cal._force_limits[self._policy_signal_indices] + jp.float32(1e-6)
+        )
         terminal_metrics_dict["tracking/avg_torque"] = jp.mean(torque_abs).astype(jp.float32)
         terminal_metrics_dict["tracking/max_torque"] = jp.max(torque_ratio).astype(jp.float32)
         terminal_metrics_dict["debug/torque_abs_max"] = jp.max(torque_ratio).astype(jp.float32)

@@ -144,6 +144,88 @@ def test_codex_can_retry_config_managed_bootstrap_without_checkpoint(
     )
 
 
+def test_codex_can_start_direct_ppo_without_checkpoint_or_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/direct_ppo.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "env:\n"
+        "  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio\n"
+    )
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+    }
+    decision = {
+        **_experiment_fields("infrastructure"),
+        "decision": "continue",
+        "summary": "start a direct PPO baseline",
+        "config": "training/configs/direct_ppo.yaml",
+        "start_mode": "none",
+        "checkpoint": "",
+        "verification": ["focused tests passed"],
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+
+    auto._validate_codex_result(
+        state,
+        decision,
+        "a" * 40,
+        {"job_id": "job-1", "status": "failed"},
+    )
+
+
+def test_codex_cannot_reintroduce_rsi_into_a_frozen_direct_ppo_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "training/configs/direct_ppo.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "env:\n"
+        "  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio\n"
+        "  loc_ref_frame_zero_from_home: true\n"
+        "  loc_ref_rsi_enabled: true\n"
+    )
+    state = {
+        **_state(tmp_path),
+        "required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+        "required_training_contract": {
+            "actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio",
+            "policy_excluded_actuator_names": [],
+            "loc_ref_residual_base": "home",
+            "loc_ref_reset_base": "home",
+            "loc_ref_frame_zero_from_home": True,
+            "loc_ref_walking_base_from_ref_init_roll": False,
+            "loc_ref_rsi_enabled": False,
+            "source_policy_kl_coef": 0.0,
+            "bootstrap_mode": None,
+        },
+    }
+    decision = {
+        **_experiment_fields("infrastructure"),
+        "decision": "continue",
+        "summary": "retry with RSI",
+        "config": "training/configs/direct_ppo.yaml",
+        "start_mode": "none",
+        "checkpoint": "",
+        "verification": ["focused tests passed"],
+    }
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(auto, "_require_clean_branch", lambda _branch: "a" * 40)
+    monkeypatch.setattr(auto.remote, "_repo_config", lambda path: path)
+
+    with pytest.raises(remote.TrainingLoopError, match="frozen campaign"):
+        auto._validate_codex_result(
+            state,
+            decision,
+            "a" * 40,
+            {"job_id": "job-1", "status": "failed"},
+        )
+
+
 def test_next_checkpoint_must_stay_in_approved_gpu_roots(tmp_path: Path) -> None:
     state = _state(tmp_path)
     auto._validate_checkpoint_path(
@@ -714,6 +796,37 @@ def test_repeated_replay_and_recovery_failures_require_teacher_audit(
     )
 
 
+def test_direct_ppo_campaign_does_not_enqueue_teacher_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state(Path("/tmp"))
+    state["required_training_contract"] = {
+        "loc_ref_frame_zero_from_home": True,
+        "loc_ref_rsi_enabled": False,
+        "source_policy_kl_coef": 0.0,
+        "bootstrap_mode": None,
+    }
+    state["experiment_history"] = [
+        {
+            "intervention_family": family,
+            "result": "no_champion_improvement",
+        }
+        for family in (
+            "failure_state_replay",
+            "recovery_curriculum",
+            "failure_state_replay",
+            "recovery_curriculum",
+            "failure_state_replay",
+        )
+    ]
+    monkeypatch.setattr(auto, "_failure_evidence", lambda _manifest: {"falls": 3})
+
+    assert not auto._should_run_teacher_recoverability(
+        state,
+        {"evaluation_purpose": "failure_diagnostic"},
+    )
+
+
 def test_teacher_audit_extends_current_campaign_and_uses_diagnostic_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1211,6 +1324,11 @@ def test_start_can_adopt_an_already_completed_gpu_run(
     monkeypatch.setattr(
         auto, "_actor_obs_layout_id", lambda _path: "wr_obs_v11_cmd3d_proprio"
     )
+    monkeypatch.setattr(
+        auto,
+        "_training_contract_invariants",
+        lambda _path: {"actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio"},
+    )
     monkeypatch.setattr(auto.shutil, "which", lambda _name: "/usr/local/bin/codex")
     monkeypatch.setattr(
         auto.remote,
@@ -1263,6 +1381,9 @@ def test_start_can_adopt_an_already_completed_gpu_run(
         saved[-1]["required_actor_obs_layout_id"]
         == "wr_obs_v11_cmd3d_proprio"
     )
+    assert saved[-1]["required_training_contract"] == {
+        "actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio"
+    }
 
 
 def test_adoption_recovers_an_already_published_job(

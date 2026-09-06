@@ -1489,9 +1489,11 @@ METRIC_SPECS: List[MetricSpec] = [
         reducer=Reducer.MEAN,
         description="Forward velocity command tracking",
     ),
-    # v0.21.0 P6.4 (H5): yaw-rate tracking weighted contribution.  TB
-    # walk.gin ang_vel_tracking_sigma=4.0 -> WR cmd_yaw_rate_alpha=0.25.
-    # Default weight cmd_yaw_rate_track=0.0 keeps legacy YAMLs at 0 here.
+    # v0.21.0 P6.4 (H5): yaw-rate tracking weighted contribution. TB's
+    # walk.gin ang_vel_tracking_sigma=4.0 is the direct WR alpha because both
+    # implementations multiply squared error. The 0.25 dataclass default is a
+    # deliberately broader legacy WR setting. Default weight 0.0 keeps legacy
+    # YAMLs at 0 here.
     MetricSpec(
         name="reward/cmd_yaw_rate_track",
         reducer=Reducer.MEAN,

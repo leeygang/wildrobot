@@ -1106,14 +1106,17 @@ def main():
     prev_action = _initial_prev_action()
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
-    left_hip_pitch_idx, right_hip_pitch_idx = cal._robot_config.get_hip_pitch_indices()
-    left_knee_pitch_idx, right_knee_pitch_idx = (
-        cal._robot_config.get_knee_pitch_indices()
-    )
-    left_hip_roll_idx = cal._robot_config.get_actuator_index("left_hip_roll")
-    right_hip_roll_idx = cal._robot_config.get_actuator_index("right_hip_roll")
-    left_ankle_pitch_idx = cal._robot_config.get_actuator_index("left_ankle_pitch")
-    right_ankle_pitch_idx = cal._robot_config.get_actuator_index("right_ankle_pitch")
+    policy_index = {
+        name: idx for idx, name in enumerate(policy_spec.robot.actuator_names)
+    }
+    left_hip_pitch_idx = policy_index["left_hip_pitch"]
+    right_hip_pitch_idx = policy_index["right_hip_pitch"]
+    left_knee_pitch_idx = policy_index["left_knee_pitch"]
+    right_knee_pitch_idx = policy_index["right_knee_pitch"]
+    left_hip_roll_idx = policy_index["left_hip_roll"]
+    right_hip_roll_idx = policy_index["right_hip_roll"]
+    left_ankle_pitch_idx = policy_index["left_ankle_pitch"]
+    right_ankle_pitch_idx = policy_index["right_ankle_pitch"]
 
     # Control timing
     ctrl_dt = training_cfg.env.ctrl_dt

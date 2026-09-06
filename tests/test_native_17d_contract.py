@@ -106,9 +106,12 @@ def test_post_process_removes_wrist_dofs_but_keeps_hand_bodies(
     assert "left_wrist_yaw" not in text
 
 
-def test_training_config_rejects_legacy_exclusion_key() -> None:
-    with pytest.raises(ValueError, match="was removed"):
-        _parse_env_config({"env": {"policy_excluded_actuator_names": []}})
+def test_training_config_accepts_an_explicit_policy_subset() -> None:
+    cfg = _parse_env_config(
+        {"env": {"policy_excluded_actuator_names": ["waist_yaw"]}}
+    )
+
+    assert cfg.policy_excluded_actuator_names == ("waist_yaw",)
 
 
 def test_distillation_generator_can_select_archived_21d_teacher_config() -> None:

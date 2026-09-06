@@ -31,8 +31,9 @@ Use `start_mode=resume` only when the complete training contract is unchanged.
 Use `start_mode=init_policy` when changing rewards, environment behavior,
 reference generation, or another training-contract input. The checkpoint must
 come from the synchronized manifest or deterministic top-k summary.
-Use `start_mode=none` with an empty checkpoint only when rerunning a config
-whose `bootstrap.mode` creates its own initial policy inside the GPU job.
+Use `start_mode=none` with an empty checkpoint for either a config-managed
+bootstrap or an explicitly reviewed direct-PPO cold start. Do not switch a
+checkpoint-based campaign to a cold start merely to evade a failed experiment.
 
 Do not stop merely because no checkpoint was promoted, a previous reward change
 failed, or the evidence is incomplete. In those cases, choose the smallest
@@ -96,6 +97,9 @@ Constraints:
 - Preserve the `required_actor_obs_layout_id` from the iteration context. The
   supervisor rejects any config that changes the campaign's actor observation
   or deployment sensor contract.
+- Preserve every field in `required_training_contract`. In particular, a
+  direct-PPO campaign must not silently reintroduce RSI, distillation, a
+  separate walking-start pose, or a different actuator subset.
 - Do not update `training/CHANGELOG.md`; results require user confirmation.
 - Do not push Git commits, submit GPU jobs, export bundles, or run hardware.
 - Do not invent a checkpoint. It must be a `.pkl` path present in the remote

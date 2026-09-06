@@ -8,6 +8,33 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb1-ready] - 2026-09-06: canonical home/frame-0 direct PPO baseline
+
+Prepared a new isolated ToddlerBot-parity training lineage at
+`training/configs/ppo_walking_v0210_tb1_direct_ppo.yaml`. It starts from random
+policy weights, uses one zero-command standing/commanded-walking policy,
+disables RSI, distillation, source KL, and rollback, and makes MJCF home equal
+to both reset pose and walking reference frame zero. The actor remains
+contact-free while simulated contact stays available to rewards and the
+privileged critic.
+
+The policy controls and observes WR's ten leg joints; waist and arm joints
+remain at their MJCF home targets in simulation, native evaluation, export
+metadata, and standalone runtime. This deliberately retains the deployable
+contact-free `wr_obs_v11_cmd3d_proprio` contract rather than introducing
+another observation migration. PPO and active reward settings follow local
+ToddlerBot commit `f81679b`, with documented WR morphology scaling for gait
+period, command speed, swing height, feet-phase width, and close-feet
+threshold. The initial budget is 50,012,160 transitions; it is a validation
+gate before any expansion toward ToddlerBot's 1B-transition run, not a
+deployment claim.
+
+See [`docs/toddlerbot_direct_ppo.md`](docs/toddlerbot_direct_ppo.md) for the
+source comparison, remaining hardware-specific differences, launch command,
+and promotion gates.
+
+---
+
 ## [v0.21.0-17d11-result + guarded asymmetric retry] - 2026-09-02: preserve the safe source gait while targeting left-hip margin
 
 The v0.21.0-17d11 run is

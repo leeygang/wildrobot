@@ -184,6 +184,72 @@ class _TargetBlendRobotIO:
         return getattr(self._robot_io, name)
 
 
+class _PolicySubsetRobotIO:
+    """Expose policy actuators while holding excluded hardware joints at home."""
+
+    def __init__(
+        self,
+        robot_io,
+        *,
+        policy_actuator_names: Sequence[str],
+        hardware_actuator_names: Sequence[str],
+        hardware_home_q_rad: np.ndarray,
+    ) -> None:
+        self._robot_io = robot_io
+        self.actuator_names = list(policy_actuator_names)
+        full_names = list(hardware_actuator_names)
+        index_by_name = {name: idx for idx, name in enumerate(full_names)}
+        missing = [name for name in self.actuator_names if name not in index_by_name]
+        if missing:
+            raise ValueError(f"Policy actuators missing from hardware plan: {missing}")
+        self._policy_indices = np.asarray(
+            [index_by_name[name] for name in self.actuator_names], dtype=np.int32
+        )
+        self._full_home = np.asarray(hardware_home_q_rad, dtype=np.float32).reshape(-1)
+        if self._full_home.size != len(full_names):
+            raise ValueError("Hardware home length does not match actuator plan")
+        self.last_commanded_q_rad = self._full_home[self._policy_indices].copy()
+
+    def read(self):
+        signals = self._robot_io.read()
+        return type(signals)(
+            quat_wxyz=signals.quat_wxyz,
+            gyro_rad_s=signals.gyro_rad_s,
+            joint_pos_rad=np.asarray(signals.joint_pos_rad)[self._policy_indices],
+            joint_vel_rad_s=np.asarray(signals.joint_vel_rad_s)[self._policy_indices],
+            foot_switches=signals.foot_switches,
+            timestamp_s=signals.timestamp_s,
+        )
+
+    def write_ctrl(self, target_q_rad: np.ndarray) -> None:
+        target = np.asarray(target_q_rad, dtype=np.float32).reshape(-1)
+        if target.size != len(self.actuator_names):
+            raise ValueError(
+                f"Policy target has {target.size} elements, expected "
+                f"{len(self.actuator_names)}"
+            )
+        full_target = self._full_home.copy()
+        full_target[self._policy_indices] = target
+        self.last_commanded_q_rad = target.copy()
+        self._robot_io.write_ctrl(full_target)
+
+    @property
+    def last_servo_diagnostics(self) -> dict[str, np.ndarray]:
+        diagnostics = getattr(self._robot_io, "last_servo_diagnostics", {})
+        if not isinstance(diagnostics, dict):
+            return {}
+        projected: dict[str, np.ndarray] = {}
+        for key, value in diagnostics.items():
+            array = np.asarray(value)
+            if array.ndim == 1 and array.size == self._full_home.size:
+                array = array[self._policy_indices]
+            projected[str(key)] = array.copy()
+        return projected
+
+    def __getattr__(self, name: str):
+        return getattr(self._robot_io, name)
+
+
 @contextlib.contextmanager
 def _output_log_context(log_path: Optional[str], *, mirror_console: bool):
     if log_path is None:
@@ -393,7 +459,45 @@ def _native_17d_runtime_plan(
 
 
 def _walking_runtime_plan(spec):
-    return _native_17d_runtime_plan(spec, policy_role="walking")
+    fixed = (spec.provenance or {}).get("runtime_fixed_home")
+    if not isinstance(fixed, dict):
+        return _native_17d_runtime_plan(spec, policy_role="walking")
+
+    active_names = list(spec.robot.actuator_names)
+    full_names = [str(name) for name in fixed.get("full_actuator_names", [])]
+    fixed_names = [str(name) for name in fixed.get("fixed_actuator_names", [])]
+    if active_names != [
+        str(name) for name in fixed.get("active_actuator_names", [])
+    ]:
+        raise SystemExit("runtime_fixed_home active actuator order is inconsistent")
+    if not full_names or set(full_names) != set(active_names) | set(fixed_names):
+        raise SystemExit("runtime_fixed_home does not define the full actuator set")
+
+    fixed_home_values = [float(v) for v in fixed.get("fixed_home_ctrl_rad", [])]
+    if len(fixed_home_values) != len(fixed_names):
+        raise SystemExit("runtime_fixed_home fixed actuator/home lengths differ")
+    if spec.robot.home_ctrl_rad is None:
+        raise SystemExit("walking policy_spec.robot.home_ctrl_rad is required")
+    home_by_name = dict(zip(active_names, spec.robot.home_ctrl_rad))
+    home_by_name.update(dict(zip(fixed_names, fixed_home_values)))
+    fixed_ranges = dict(fixed.get("fixed_joint_ranges_rad", {}))
+
+    def _range(name: str) -> tuple[float, float]:
+        if name in spec.robot.joints:
+            joint = spec.robot.joints[name]
+            return float(joint.range_min_rad), float(joint.range_max_rad)
+        values = fixed_ranges.get(name)
+        if not isinstance(values, list) or len(values) != 2:
+            raise SystemExit(f"runtime_fixed_home missing range for {name}")
+        return float(values[0]), float(values[1])
+
+    ranges = [_range(name) for name in full_names]
+    return (
+        full_names,
+        np.asarray([home_by_name[name] for name in full_names], dtype=np.float32),
+        np.asarray([item[0] for item in ranges], dtype=np.float32),
+        np.asarray([item[1] for item in ranges], dtype=np.float32),
+    )
 
 
 def _standing_runtime_plan(spec):
@@ -2742,7 +2846,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
 
     telemetry = _create_telemetry_recorder(
         args,
-        actuator_names=hardware_actuator_names,
+        actuator_names=actuator_names,
         ctrl_dt=ctrl_dt,
         bundle_path=bundle_path,
         hardware_config_path=hardware_config_path,
@@ -2830,6 +2934,14 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                 timeout_s=float(args.imu_startup_timeout_s)
             )
         realtime = not args.no_realtime
+
+    if not stable_only and actuator_names != hardware_actuator_names:
+        robot_io = _PolicySubsetRobotIO(
+            robot_io,
+            policy_actuator_names=actuator_names,
+            hardware_actuator_names=hardware_actuator_names,
+            hardware_home_q_rad=hardware_home,
+        )
 
     startup_pose_blend_steps = 0
     if (

@@ -449,6 +449,19 @@ def _enqueue_candidate_evaluation(
 def _should_run_teacher_recoverability(
     state: dict[str, Any], manifest: dict[str, Any]
 ) -> bool:
+    contract = state.get("required_training_contract")
+    if (
+        isinstance(contract, dict)
+        and contract.get("bootstrap_mode") is None
+        and float(contract.get("source_policy_kl_coef") or 0.0) == 0.0
+        and bool(contract.get("loc_ref_frame_zero_from_home"))
+        and not bool(contract.get("loc_ref_rsi_enabled"))
+    ):
+        # A reviewed canonical direct-PPO campaign must remain direct PPO.
+        # Teacher-recoverability is useful for distillation lineages, but
+        # enqueueing it here would silently steer the campaign back toward the
+        # teacher/DAgger architecture it was created to test independently.
+        return False
     if manifest.get("evaluation_purpose") != "failure_diagnostic":
         return False
     if state.get("teacher_recoverability_completed"):
@@ -1017,6 +1030,7 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         "required_actor_obs_layout_id": state.get(
             "required_actor_obs_layout_id"
         ),
+        "required_training_contract": state.get("required_training_contract"),
         "campaign_objective": state["campaign_objective"],
         "champion": state.get("champion"),
         "recent_experiments": state.get("experiment_history", [])[-10:],
@@ -1045,6 +1059,38 @@ def _actor_obs_layout_id(config: str) -> str:
             f"Training config has no env.actor_obs_layout_id: {config_path}"
         )
     return layout.strip()
+
+
+def _training_contract_invariants(config: str) -> dict[str, Any]:
+    """Return architecture choices that must not drift within a campaign."""
+    config_path = REPO_ROOT / remote._repo_config(config)
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise remote.TrainingLoopError(
+            f"Training config is not a mapping: {config_path}"
+        )
+    env = payload.get("env") if isinstance(payload.get("env"), dict) else {}
+    ppo = payload.get("ppo") if isinstance(payload.get("ppo"), dict) else {}
+    bootstrap = payload.get("bootstrap")
+    return {
+        "actor_obs_layout_id": env.get("actor_obs_layout_id"),
+        "policy_excluded_actuator_names": list(
+            env.get("policy_excluded_actuator_names") or []
+        ),
+        "loc_ref_residual_base": env.get("loc_ref_residual_base", "q_ref"),
+        "loc_ref_reset_base": env.get("loc_ref_reset_base", "home"),
+        "loc_ref_frame_zero_from_home": bool(
+            env.get("loc_ref_frame_zero_from_home", False)
+        ),
+        "loc_ref_walking_base_from_ref_init_roll": bool(
+            env.get("loc_ref_walking_base_from_ref_init_roll", False)
+        ),
+        "loc_ref_rsi_enabled": bool(env.get("loc_ref_rsi_enabled", False)),
+        "source_policy_kl_coef": float(ppo.get("source_policy_kl_coef", 0.0)),
+        "bootstrap_mode": (
+            bootstrap.get("mode") if isinstance(bootstrap, dict) else None
+        ),
+    }
 
 
 def _invoke_codex(
@@ -1217,6 +1263,20 @@ def _validate_codex_result(
                 f"{required_layout} -> {next_layout}. Start a separately reviewed "
                 "campaign to change the deployment sensor contract."
             )
+    required_contract = state.get("required_training_contract")
+    if isinstance(required_contract, dict):
+        next_contract = _training_contract_invariants(next_config)
+        changed_contract = {
+            key: (required_contract.get(key), next_contract.get(key))
+            for key in required_contract
+            if required_contract.get(key) != next_contract.get(key)
+        }
+        if changed_contract:
+            raise remote.TrainingLoopError(
+                "Codex changed the frozen campaign training contract: "
+                f"{changed_contract}. Start a separately reviewed campaign "
+                "for architecture changes."
+            )
     start_mode = str(decision.get("start_mode"))
     checkpoint = str(decision.get("checkpoint", ""))
     if start_mode not in {"init_policy", "resume", "none"}:
@@ -1225,10 +1285,6 @@ def _validate_codex_result(
         if checkpoint:
             raise remote.TrainingLoopError(
                 "start_mode=none requires an empty checkpoint."
-            )
-        if remote._config_bootstrap_mode(REPO_ROOT / next_config) is None:
-            raise remote.TrainingLoopError(
-                "start_mode=none requires a config-managed GPU bootstrap."
             )
     else:
         _validate_checkpoint_path(state, checkpoint)
@@ -1857,6 +1913,7 @@ def _start(args: argparse.Namespace) -> int:
         "initial_git_sha": git_sha,
         "initial_config": config,
         "required_actor_obs_layout_id": required_actor_obs_layout_id,
+        "required_training_contract": _training_contract_invariants(config),
         "campaign_objective": dict(CAMPAIGN_OBJECTIVE),
         "champion": None,
         "experiment_history": [],

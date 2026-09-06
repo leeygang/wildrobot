@@ -228,11 +228,6 @@ def _load_eval_velocity_cmd_probes(
 def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
     """Parse environment configuration from YAML dict."""
     env = config.get("env", {})
-    if "policy_excluded_actuator_names" in env:
-        raise ValueError(
-            "env.policy_excluded_actuator_names was removed; the canonical robot "
-            "configuration is natively 17D"
-        )
     resolved = resolve_env_asset_paths(env)
     controller_stack = str(env.get("controller_stack", "ppo"))
     allowed_controller_stacks = {"ppo", "mpc_standing", "ppo_teacher_standing"}
@@ -276,6 +271,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # action_filter_alpha=0 disables filtering
         action_filter_alpha=env.get("action_filter_alpha", 0.7),
         actor_obs_layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        policy_excluded_actuator_names=tuple(
+            str(name) for name in (env.get("policy_excluded_actuator_names") or [])
+        ),
         loc_ref_version=str(env.get("loc_ref_version", "v3_offline_library")),
         loc_ref_residual_scale=float(env.get("loc_ref_residual_scale", 0.18)),
         # v0.20.1 smoke residual bounds / §4.1 —
@@ -303,6 +301,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         loc_ref_walking_base_from_ref_init_roll=bool(
             env.get("loc_ref_walking_base_from_ref_init_roll", False)
         ),
+        loc_ref_frame_zero_from_home=bool(
+            env.get("loc_ref_frame_zero_from_home", False)
+        ),
         loc_ref_reset_base=str(env.get("loc_ref_reset_base", "home")),
         # v0.21.0 smoke5 — Reference State Initialization (RSI). See dataclass docstring.
         loc_ref_rsi_enabled=bool(env.get("loc_ref_rsi_enabled", False)),
@@ -329,6 +330,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # cmd_zero_chance=0).  See LocomotionEnvConfig docstring.
         loc_ref_feet_phase_zero_on_standing=bool(
             env.get("loc_ref_feet_phase_zero_on_standing", False)
+        ),
+        loc_ref_feet_phase_subtract_flat_baseline=bool(
+            env.get("loc_ref_feet_phase_subtract_flat_baseline", True)
         ),
         # WR-normalized default 0.146 m (see LocomotionEnvConfig docstring
         # for the TB derivation: TB 0.06 m at TB stance 0.074 m →

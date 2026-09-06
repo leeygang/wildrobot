@@ -1,0 +1,278 @@
+# WildRobot v0.21.0-tb1: ToddlerBot-style direct PPO baseline.
+#
+# This is a new lineage, not a fine-tune of 17d38/17d50. It removes the
+# standing/reference-frame mismatch and the distillation/source-KL stack:
+#   * one policy learns zero-command standing and commanded locomotion;
+#   * home pose == walking frame zero == residual-action base;
+#   * frame-zero resets only (no RSI);
+#   * direct PPO from random initialization;
+#   * leg-only action space; waist and arms remain fixed at MJCF home;
+#   * contact-free actor, with simulated contacts retained for rewards/critic;
+#   * ToddlerBot PPO/reward/command structure and 15-frame history.
+#
+# Morphology normalization retained from the validated WR/ToddlerBot parity
+# work: linear speed x4/3, gait period 0.72 -> 0.96 s, swing height
+# 0.04 -> 0.05 m, feet-phase alpha 1428.57 -> 914.304, and close-feet
+# threshold 0.06 -> 0.146 m. Yaw speed is divided by the gait-time ratio
+# (1.0 -> 0.75 rad/s), with alpha scaled inversely by speed squared.
+#
+# Source of truth:
+#   ~/projects/toddlerbot/toddlerbot/locomotion/walk.gin
+#   ~/projects/toddlerbot/toddlerbot/locomotion/mjx_config.py
+#   ~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py
+#   ~/projects/toddlerbot/toddlerbot/locomotion/rsl_rl_config.yml
+#   Shi et al., "ToddlerBot", arXiv:2502.00893
+
+version: "0.21.0-tb1"
+version_name: "v0.21.0 ToddlerBot-parity direct PPO baseline"
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  max_episode_steps: 1000
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+
+  # ToddlerBot walk.gin uses a leg-only action mask. WR has ten leg joints
+  # rather than TB's twelve because WR has no actuated hip-yaw joints.
+  policy_excluded_actuator_names:
+    - waist_yaw
+    - left_shoulder_pitch
+    - left_shoulder_roll
+    - left_elbow_pitch
+    - right_shoulder_pitch
+    - right_shoulder_roll
+    - right_elbow_pitch
+
+  actor_obs_layout_id: wr_obs_v11_cmd3d_proprio
+  action_filter_alpha: 0.0
+  action_delay_steps: 1
+
+  # ToddlerBot's symmetric walk command envelope, scaled for WR's 4/3 body
+  # length ratio. The turn rate is Froude-time scaled by 0.72/0.96.
+  min_velocity: -0.133333
+  max_velocity: 0.133333
+  min_velocity_y: -0.066667
+  max_velocity_y: 0.066667
+  max_yaw_rate: 0.75
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.20
+  cmd_turn_chance: 0.20
+  cmd_deadzone: [0.066667, 0.066667, 0.15]
+  cmd_sampler_3d_branched: true
+  cmd_sampler_walk_vx_positive_only: false
+  cmd_sampler_walk_vy_exact_signed_bins: false
+  eval_velocity_cmd: [0.133333, 0.0, 0.0]
+  eval_velocity_cmd_probes:
+    - [0.0, 0.0, 0.0]
+    - [-0.133333, 0.0, 0.0]
+    - [0.0, 0.066667, 0.0]
+    - [0.0, -0.066667, 0.0]
+    - [0.0, 0.0, 0.75]
+    - [0.0, 0.0, -0.75]
+
+  # One canonical startup pose, matching ToddlerBot's default_qpos/frame-0
+  # contract. The generated moving reference remains critic/reward-only.
+  loc_ref_version: v3_offline_library
+  loc_ref_offline_command_vx: 0.133333
+  loc_ref_default_stance_width_m: 0.0536
+  loc_ref_residual_base: home
+  loc_ref_reset_base: home
+  loc_ref_frame_zero_from_home: true
+  loc_ref_walking_base_from_ref_init_roll: false
+  loc_ref_walking_joint_offsets_rad: {}
+  loc_ref_rsi_enabled: false
+  loc_ref_rsi_probability: 0.0
+  loc_ref_command_conditioned: true
+  loc_ref_command_grid_interval: 0.066667
+  loc_ref_command_axes_3d: true
+  loc_ref_offline_command_vy_grid: [-0.066667, 0.0, 0.066667]
+  loc_ref_offline_command_yaw_rate_grid: [-0.75, 0.0, 0.75]
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.25
+  loc_ref_residual_scale_per_joint: {}
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: false
+  loc_ref_feet_phase_subtract_flat_baseline: false
+  close_feet_threshold: 0.146
+  critic_imitation_refs: true
+  critic_obs_history_frames: 15
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_hip_pitch: 0.01
+    right_hip_roll: 1.0
+    right_knee_pitch: 0.01
+    right_ankle_pitch: 5.0
+    right_ankle_roll: 5.0
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+  push_enabled: false
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.03
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+
+  # WR hardware returns leg feedback more slowly than the policy tick. This is
+  # the only observation-timing divergence retained for measured hardware I/O.
+  joint_feedback_sample_hold_enabled: true
+  joint_feedback_leg_period_steps_range: [4, 7]
+  joint_feedback_upper_period_steps_range: [12, 24]
+
+  # Deployment-specific shaping is deliberately disabled in this parity run.
+  torque_saturation_soft_limit_ratio: 0.95
+  torque_saturation_weight_default: 0.0
+  torque_saturation_weights_per_joint: {}
+
+ppo:
+  # 1024 matches the validated single-GeForce limit. 2442 iterations at a
+  # 20-step rollout is 50,012,160 simulator transitions: the first parity
+  # gate before committing to ToddlerBot's 1B-transition scale.
+  num_envs: 1024
+  rollout_steps: 20
+  iterations: 2442
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.25
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+  log_interval: 10
+  target_kl: 0.01
+  kl_early_stop_multiplier: 1.5
+  kl_lr_backoff_multiplier: 2.0
+  kl_lr_backoff_factor: 0.5
+  lr_schedule_end_factor: 1.0
+  entropy_schedule_end_factor: 1.0
+  critic_privileged_enabled: true
+  critic_includes_actor_obs: true
+  mirror_loss_coef: 1.0
+  critic_warmup_iterations: 0
+  source_policy_kl_coef: 0.0
+  source_policy_kl_limit: 0.0
+  eval:
+    enabled: true
+    interval: 244
+    num_envs: 64
+    num_steps: 1000
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 5
+    post_training_num_envs: 64
+    post_training_num_steps: 1000
+    post_training_checkpoint_label: eval_promoted
+    post_training_strict_lateral_drift: false
+    post_training_strict_walking_safety: true
+  rollback:
+    enabled: false
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    log_std_init: -0.693147
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 562.5
+  cmd_forward_velocity_alpha_y: 562.5
+  cmd_velocity_track_dim: 2
+  cmd_lateral_velocity_track: 0.0
+  cmd_yaw_rate_track: 1.5
+  cmd_yaw_rate_alpha: 7.111111
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  torso_pos_xy: 0.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  saturation: 0.0
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints/ppo_walking_v0210_tb1_direct_ppo
+  interval: 244
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.21.0, tb1, toddlerbot_parity, direct_ppo, from_scratch, leg_only, contact_free_actor, privileged_contact, canonical_home_frame0, no_rsi, no_distillation, no_source_kl, mirror_loss, action_scale_0p25, cycle_0p96, morphology_scaled, eval_64, ep_1000]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
+      post_training_enabled: true
+      post_training_top_k: 1
+      post_training_num_envs: 4
+      post_training_num_steps: 16

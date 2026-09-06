@@ -126,6 +126,10 @@ class EnvConfig(Freezable):
     # Action filtering (alpha=0 disables filtering)
     action_filter_alpha: float = 0.7
     actor_obs_layout_id: str = "wr_obs_v1"
+    # Optional policy action/observation mask. Excluded actuators remain in the
+    # mechanical model and are held at the MJCF home target. This is used by
+    # the ToddlerBot-parity locomotion branch, whose actor controls legs only.
+    policy_excluded_actuator_names: Tuple[str, ...] = field(default_factory=tuple)
     # Reference implementation selector.  v0.20.1 deleted v1/v2; the
     # only supported value is "v3_offline_library", which loads the
     # offline ZMP ReferenceLibrary (requires
@@ -239,6 +243,12 @@ class EnvConfig(Freezable):
     # other action-base joints remain at the calibrated home pose.
     loc_ref_walking_base_from_ref_init_roll: bool = False
 
+    # Make the policy's walking frame zero identical to the MJCF home pose.
+    # This mirrors ToddlerBot walk_zmp_ref.py, where the zero-command state and
+    # frame zero both use default_qpos. Later moving-reference frames remain
+    # available to the privileged critic and reward terms.
+    loc_ref_frame_zero_from_home: bool = False
+
     # Reset/init base selector for actuator-joint qpos.
     #   "home"     - historical reset: default pose + noise + DR offsets.
     #   "ref_init" - smoke9c: actuator joints start exactly at offline
@@ -301,9 +311,13 @@ class EnvConfig(Freezable):
     #                      explicitly do not want the feet_phase term
     #                      paying anything during any residual
     #                      ||cmd||≈0 episode.
-    # The walking branch (||cmd|| > 0) is always the smoke12
-    # baseline-subtract form; that fix is not gated by this flag.
+    # The walking branch baseline behavior is selected separately by
+    # loc_ref_feet_phase_subtract_flat_baseline.
     loc_ref_feet_phase_zero_on_standing: bool = False
+
+    # True preserves the WR smoke12 anti-standstill shaping. False uses the
+    # raw ToddlerBot feet-phase reward for both walking and standing.
+    loc_ref_feet_phase_subtract_flat_baseline: bool = True
 
     # v0.20.1 smoke9 — TB penalty_close_feet_xy threshold (m), normalized
     # to WR body size.  Lateral foot distance (perpendicular to base

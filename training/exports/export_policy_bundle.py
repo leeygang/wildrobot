@@ -420,11 +420,32 @@ def _build_policy_spec(
     actuated_joint_specs = _normalize_actuated_joint_specs_to_rad(robot_cfg)
     if not isinstance(actuated_joint_specs, list) or not actuated_joint_specs:
         raise ValueError("mujoco_robot_config.json missing or invalid 'actuated_joint_specs'")
-    actuator_names = [str(item["name"]) for item in actuated_joint_specs]
-    home_ctrl_rad = _get_home_ctrl_from_mjcf(
-        config_path, actuator_names=actuator_names
+    excluded = _policy_excluded_actuator_names(env)
+    known = {str(item["name"]) for item in actuated_joint_specs}
+    unknown = sorted(set(excluded) - known)
+    if unknown:
+        raise ValueError(
+            "env.policy_excluded_actuator_names contains unknown actuators: "
+            f"{unknown}"
+        )
+    active_joint_specs = [
+        item
+        for item in actuated_joint_specs
+        if str(item["name"]) not in set(excluded)
+    ]
+    if not active_joint_specs:
+        raise ValueError("env.policy_excluded_actuator_names excludes every actuator")
+
+    full_actuator_names = [str(item["name"]) for item in actuated_joint_specs]
+    full_home_ctrl_rad = _get_home_ctrl_from_mjcf(
+        config_path, actuator_names=full_actuator_names
     )
-    home_ctrl_rad = _clamp_home_ctrl(home_ctrl_rad, joints, actuator_names)
+    full_home_ctrl_rad = _clamp_home_ctrl(
+        full_home_ctrl_rad, joints, full_actuator_names
+    )
+    full_home_by_name = dict(zip(full_actuator_names, full_home_ctrl_rad))
+    active_names = [str(item["name"]) for item in active_joint_specs]
+    home_ctrl_rad = [float(full_home_by_name[name]) for name in active_names]
     provenance = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "training_config": str(config_path),
@@ -432,15 +453,60 @@ def _build_policy_spec(
         "robot_config": str(robot_config_path),
     }
     provenance.update(_load_training_job_provenance(checkpoint_path))
+    fixed_metadata = _runtime_fixed_home_metadata_for_export(
+        excluded=excluded,
+        full_actuator_names=full_actuator_names,
+        full_home_by_name=full_home_by_name,
+        joints=joints,
+    )
+    if fixed_metadata is not None:
+        provenance["runtime_fixed_home"] = fixed_metadata
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
-        actuated_joint_specs=actuated_joint_specs,
+        actuated_joint_specs=active_joint_specs,
         action_filter_alpha=action_filter_alpha,
         layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
         mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         home_ctrl_rad=home_ctrl_rad,
         provenance=provenance,
     )
+
+
+def _policy_excluded_actuator_names(env: Dict[str, Any]) -> list[str]:
+    names = env.get("policy_excluded_actuator_names") or []
+    if not isinstance(names, list):
+        raise ValueError("env.policy_excluded_actuator_names must be a list")
+    return [str(name) for name in names]
+
+
+def _runtime_fixed_home_metadata_for_export(
+    *,
+    excluded: list[str],
+    full_actuator_names: list[str],
+    full_home_by_name: dict[str, float],
+    joints: Dict[str, JointSpec],
+) -> Dict[str, Any] | None:
+    excluded_set = set(excluded)
+    if not excluded_set:
+        return None
+    active_names = [
+        name for name in full_actuator_names if name not in excluded_set
+    ]
+    fixed_names = [name for name in full_actuator_names if name in excluded_set]
+    return {
+        "full_actuator_names": list(full_actuator_names),
+        "active_actuator_names": active_names,
+        "fixed_actuator_names": fixed_names,
+        "fixed_home_ctrl_rad": [float(full_home_by_name[name]) for name in fixed_names],
+        "fixed_joint_ranges_rad": {
+            name: [
+                float(joints[name].range_min_rad),
+                float(joints[name].range_max_rad),
+            ]
+            for name in fixed_names
+        },
+        "source": "env.policy_excluded_actuator_names",
+    }
 
 
 def _load_training_job_provenance(checkpoint_path: Path) -> Dict[str, Any]:

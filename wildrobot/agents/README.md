@@ -149,6 +149,21 @@ uv run python wildrobot/agents/autonomous_training_loop.py start \
   --max-cycles 20
 ```
 
+For the isolated ToddlerBot-parity direct-PPO campaign, start from random
+weights by omitting both initialization options:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py start \
+  --new-run \
+  --config training/configs/ppo_walking_v0210_tb1_direct_ppo.yaml \
+  --max-cycles 30
+
+uv run python wildrobot/agents/autonomous_training_loop.py run
+```
+
+This `start_mode=none` path supports either a config-managed bootstrap or a
+true cold-start PPO config. The `tb1` config deliberately uses the latter.
+
 ### Bootstrap a contact-free walking campaign from the stable teacher
 
 When removing foot-switch inputs from an already trained v8 actor, first

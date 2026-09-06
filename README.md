@@ -19,6 +19,7 @@ Current repo reality:
 Architecture references:
 - [docs/system_architecture.md](docs/system_architecture.md)
 - [training/docs/walking_training.md](training/docs/walking_training.md) - active locomotion roadmap
+- [training/docs/toddlerbot_direct_ppo.md](training/docs/toddlerbot_direct_ppo.md) - `v0.21.0-tb1` direct-PPO parity baseline
 - [training/docs/ToddlerBot_direction.md](training/docs/ToddlerBot_direction.md) - ToddlerBot-style pivot rationale
 - [training/docs/standing_training.md](training/docs/standing_training.md) - standing branch history and regression gates
 - [training/docs/footstep_planner_rl_adoption.md](training/docs/footstep_planner_rl_adoption.md)
