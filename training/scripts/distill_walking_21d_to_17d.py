@@ -99,6 +99,10 @@ def _network(config, *, obs_dim: int, action_dim: int):
         policy_hidden_dims=tuple(config.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(config.networks.critic.hidden_sizes),
         activation=actor_activation,
+        distribution_type=config.networks.actor.distribution_type,
+        noise_std_type=config.networks.actor.noise_std_type,
+        init_noise_std=float(np.exp(config.networks.actor.log_std_init)),
+        state_dependent_std=config.networks.actor.state_dependent_std,
     )
 
 

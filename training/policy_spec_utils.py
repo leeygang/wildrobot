@@ -203,6 +203,20 @@ def build_policy_spec_from_training_config(
         training_cfg=training_cfg,
         robot_cfg=robot_cfg,
     )
+    layout_id = str(training_cfg.env.actor_obs_layout_id)
+    observation_joint_specs = None
+    observation_home_ctrl = None
+    if layout_id == "wr_obs_v12_tb_proprio":
+        observation_joint_specs = list(robot_cfg.actuated_joints)
+        observation_names = [str(item["name"]) for item in observation_joint_specs]
+        observation_home_ctrl = clamp_home_ctrl(
+            home_ctrl=get_home_ctrl_from_model_path(
+                model_path=training_cfg.env.model_path,
+                actuator_names=observation_names,
+            ),
+            actuated_joint_specs=observation_joint_specs,
+            actuator_names=observation_names,
+        )
     spec_provenance = dict(provenance or {})
     fixed_home_metadata = _runtime_fixed_home_metadata(
         training_cfg=training_cfg,
@@ -214,12 +228,14 @@ def build_policy_spec_from_training_config(
     return build_policy_spec(
         robot_name=robot_cfg.robot_name,
         actuated_joint_specs=policy_joint_specs,
+        observation_actuated_joint_specs=observation_joint_specs,
+        observation_home_ctrl_rad=observation_home_ctrl,
         action_filter_alpha=float(
             training_cfg.env.action_filter_alpha
             if action_filter_alpha is None
             else action_filter_alpha
         ),
-        layout_id=str(training_cfg.env.actor_obs_layout_id),
+        layout_id=layout_id,
         mapping_id=str(training_cfg.env.action_mapping_id),
         home_ctrl_rad=maybe_get_home_ctrl_from_training_config(
             training_cfg=training_cfg,

@@ -46,6 +46,18 @@ def test_static_bin_clamps_to_single_frame():
     np.testing.assert_allclose(p, [0.0, 1.0], atol=1e-6)
 
 
+def test_toddlerbot_clock_advances_for_static_bin_and_wraps():
+    svc = _service(n_steps=96, n_cycle=48)
+    p12 = svc.phase_sin_cos(
+        bin_idx=3, step_idx=12, continuous_cycle=True
+    )
+    p60 = svc.phase_sin_cos(
+        bin_idx=3, step_idx=60, continuous_cycle=True
+    )
+    np.testing.assert_allclose(p12, [1.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(p60, p12, atol=1e-6)
+
+
 def test_step_idx_clamped_to_array_bound():
     svc = _service(n_steps=96, n_cycle=48)
     # Way past the end -> clamped to last frame, no IndexError.

@@ -1117,7 +1117,11 @@ def start_training(
                     TORQUE_ACTUATOR_NAMES,
                     truncation_from_metrics_vec,
                 )
-                from training.envs.env_info import PRIVILEGED_OBS_DIM, WR_INFO_KEY
+                from training.envs.env_info import (
+                    PRIVILEGED_OBS_DIM,
+                    WR_INFO_KEY,
+                    toddlerbot_privileged_obs_dim,
+                )
 
                 actor_activation = str(training_cfg.networks.actor.activation).lower()
                 critic_activation = str(training_cfg.networks.critic.activation).lower()
@@ -1126,11 +1130,25 @@ def start_training(
                         f"actor.activation ({actor_activation!r}) and "
                         f"critic.activation ({critic_activation!r}) must match."
                     )
-                critic_obs_dim = (
-                    int(PRIVILEGED_OBS_DIM)
-                    if bool(training_cfg.ppo.critic_privileged_enabled)
-                    else int(policy_spec.model.obs_dim)
-                )
+                critic_obs_dim = int(policy_spec.model.obs_dim)
+                if bool(training_cfg.ppo.critic_privileged_enabled):
+                    if policy_spec.observation.layout_id == "wr_obs_v12_tb_proprio":
+                        observed_names = policy_spec.robot.observation_actuator_names
+                        if observed_names is None:
+                            raise ValueError(
+                                "wr_obs_v12_tb_proprio requires "
+                                "observation_actuator_names"
+                            )
+                        critic_frame_dim = toddlerbot_privileged_obs_dim(
+                            len(observed_names), int(policy_spec.model.action_dim)
+                        )
+                    else:
+                        critic_frame_dim = int(PRIVILEGED_OBS_DIM)
+                    critic_obs_dim = critic_frame_dim * int(
+                        training_cfg.env.critic_obs_history_frames
+                    )
+                    if bool(training_cfg.ppo.critic_includes_actor_obs):
+                        critic_obs_dim += int(policy_spec.model.obs_dim)
                 ppo_network = create_networks(
                     obs_dim=int(policy_spec.model.obs_dim),
                     action_dim=int(policy_spec.model.action_dim),
@@ -1138,6 +1156,14 @@ def start_training(
                     value_hidden_dims=training_cfg.networks.critic.hidden_sizes,
                     critic_obs_dim=critic_obs_dim,
                     activation=actor_activation,
+                    distribution_type=training_cfg.networks.actor.distribution_type,
+                    noise_std_type=training_cfg.networks.actor.noise_std_type,
+                    init_noise_std=float(
+                        jnp.exp(
+                            jnp.float32(training_cfg.networks.actor.log_std_init)
+                        )
+                    ),
+                    state_dependent_std=training_cfg.networks.actor.state_dependent_std,
                 )
                 _, post_eval_clean_step_fn, post_eval_reset_fn = make_eval_env_fns(
                     env,

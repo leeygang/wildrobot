@@ -44,7 +44,10 @@ from mujoco_playground._src import mjx_env
 from policy_contract.calib import JaxCalibOps
 from policy_contract.jax import frames as jax_frames
 from policy_contract.jax.action import postprocess_action
-from policy_contract.jax.obs import build_observation
+from policy_contract.jax.obs import (
+    build_observation,
+    build_toddlerbot_proprio_frame,
+)
 from policy_contract.jax.signals import Signals
 from policy_contract.jax.state import PolicyState
 from control.kinematics.leg_ik import LegIkConfig, solve_leg_sagittal_ik_jax
@@ -83,6 +86,7 @@ from training.envs.env_info import (
     WR_INFO_KEY,
     WildRobotInfo,
     privileged_obs_dim,
+    toddlerbot_privileged_obs_dim,
 )
 from training.envs.standing_recovery import (
     HOLD as RECOVERY_HOLD,
@@ -251,6 +255,31 @@ def _apply_imu_noise_and_delay(signals, rng, cfg, prev_hist_quat, prev_hist_gyro
     return signals_override, new_q_hist, new_g_hist, rng_out
 
 
+def _apply_joint_observation_noise(signals, rng, cfg):
+    """Apply ToddlerBot-style uniform encoder noise to actor observations."""
+    pos_half_range = float(getattr(cfg.env, "joint_pos_noise_rad", 0.0))
+    vel_half_range = float(getattr(cfg.env, "joint_vel_noise_rad_s", 0.0))
+    if pos_half_range == 0.0 and vel_half_range == 0.0:
+        return signals
+    pos_rng, vel_rng = jax.random.split(rng)
+    pos_noise = jax.random.uniform(
+        pos_rng,
+        signals.joint_pos_rad.shape,
+        minval=-pos_half_range,
+        maxval=pos_half_range,
+    )
+    vel_noise = jax.random.uniform(
+        vel_rng,
+        signals.joint_vel_rad_s.shape,
+        minval=-vel_half_range,
+        maxval=vel_half_range,
+    )
+    return signals.replace(
+        joint_pos_rad=(signals.joint_pos_rad + pos_noise).astype(jp.float32),
+        joint_vel_rad_s=(signals.joint_vel_rad_s + vel_noise).astype(jp.float32),
+    )
+
+
 def _sample_hold_joint_feedback(
     *,
     current_pos: jax.Array,
@@ -361,13 +390,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             # See policy_contract/spec.py SUPPORTED_LAYOUT_IDS.
             "wr_obs_v8_cmd3d",
             "wr_obs_v11_cmd3d_proprio",
+            "wr_obs_v12_tb_proprio",
         ):
             raise ValueError(
                 "v0.20.1 WildRobotEnv requires env.actor_obs_layout_id in "
                 "{'wr_obs_v1', 'wr_obs_v9_standing', 'wr_obs_v10_standing_recovery', "
                 "'wr_obs_v6_offline_ref_history', "
                 "'wr_obs_v7_phase_proprio', 'wr_obs_v8_cmd3d', "
-                "'wr_obs_v11_cmd3d_proprio'}.  v5 was deprecated along with the "
+                "'wr_obs_v11_cmd3d_proprio', 'wr_obs_v12_tb_proprio'}.  "
+                "v5 was deprecated along with the "
                 "high-confidence prep (proprio history is now always wired); "
                 "v7 (smoke11) drops every reference-trajectory channel from "
                 "the actor obs except the 2-dim gait phase clock; v8 (v0.21.0 "
@@ -696,6 +727,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._uses_actuator_subset = len(self._policy_spec.robot.actuator_names) != len(
             full_actuator_names
         )
+        self._uses_toddlerbot_observation = (
+            self._policy_spec.observation.layout_id == "wr_obs_v12_tb_proprio"
+        )
+        self._observation_actuator_names = (
+            full_actuator_names
+            if self._uses_toddlerbot_observation
+            else list(self._policy_spec.robot.actuator_names)
+        )
+        self._observation_actuator_count = len(self._observation_actuator_names)
 
         # Per-joint range arrays (for residual clipping).
         self._joint_range_mins = jp.asarray(
@@ -735,6 +775,37 @@ class WildRobotEnv(mjx_env.MjxEnv):
             actuator_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
         self._actuator_qpos_addrs = jp.asarray(actuator_qpos_addrs, dtype=jp.int32)
         self._actuator_dof_addrs = jp.asarray(actuator_dof_addrs, dtype=jp.int32)
+        full_qpos_addrs: List[int] = []
+        full_dof_addrs: List[int] = []
+        full_joint_mins: List[float] = []
+        full_joint_maxs: List[float] = []
+        for name in full_actuator_names:
+            act_id = mujoco.mj_name2id(
+                self._mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name
+            )
+            joint_id = int(self._mj_model.actuator_trnid[act_id][0])
+            full_qpos_addrs.append(int(self._mj_model.jnt_qposadr[joint_id]))
+            full_dof_addrs.append(int(self._mj_model.jnt_dofadr[joint_id]))
+            joint_range = self._mj_model.jnt_range[joint_id]
+            full_joint_mins.append(float(joint_range[0]))
+            full_joint_maxs.append(float(joint_range[1]))
+        self._full_actuator_qpos_addrs = jp.asarray(
+            full_qpos_addrs, dtype=jp.int32
+        )
+        self._full_actuator_dof_addrs = jp.asarray(
+            full_dof_addrs, dtype=jp.int32
+        )
+        self._full_joint_range_mins = jp.asarray(
+            full_joint_mins, dtype=jp.float32
+        )
+        self._full_joint_range_maxs = jp.asarray(
+            full_joint_maxs, dtype=jp.float32
+        )
+        self._full_home_q_rad = jp.clip(
+            jp.asarray(full_home_ctrl_list, dtype=jp.float32),
+            self._full_joint_range_mins,
+            self._full_joint_range_maxs,
+        )
 
         self._joint_feedback_sample_hold_enabled = bool(
             getattr(
@@ -744,7 +815,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._joint_feedback_leg_mask = jp.asarray(
             [
                 any(part in name for part in ("hip", "knee", "ankle"))
-                for name in self._policy_spec.robot.actuator_names
+                for name in self._observation_actuator_names
             ],
             dtype=jp.bool_,
         )
@@ -793,12 +864,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # R-hip, R-knee, R-ankle].  WR uses the same structured
         # decomposition; the sign pattern keeps both legs perturbed in a
         # mirror-symmetric way (left and right hips, knees, ankles tilt
-        # in opposite directions about the lateral axis).  WR-specific
-        # deviation from TB: we don't compute the ``torso_z_delta``
-        # geometric compensation (TB ``mjx_env.py:1034-1041`` uses
-        # robot config offsets WR doesn't expose); the perturbation
-        # ranges are small (TB default ±0.1 rad) so physics settles
-        # the residual in a few sim steps.
+        # in opposite directions about the lateral axis). WR uses its
+        # two-link leg geometry for the corresponding reset-height
+        # compensation; only TB's small torso-to-hip term is omitted.
         leg_pitch_joint_names = [
             "left_hip_pitch",
             "left_knee_pitch",
@@ -838,9 +906,55 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._leg_pitch_joint_maxs = jp.asarray(
             leg_pitch_range_maxs, dtype=jp.float32
         )
-        # Mirror-symmetric TB sign pattern (mjx_env.py:674).
+        # Mirror-symmetric TB sign pattern (mjx_env.py:1004).
         self._leg_pitch_joint_signs = jp.asarray(
             [-1.0, 1.0, -1.0, 1.0, -1.0, 1.0], dtype=jp.float32
+        )
+        arm_joint_names = [
+            "left_shoulder_pitch",
+            "left_shoulder_roll",
+            "left_elbow_pitch",
+            "right_shoulder_pitch",
+            "right_shoulder_roll",
+            "right_elbow_pitch",
+        ]
+        self._arm_qpos_addrs = jp.asarray(
+            [
+                int(
+                    self._mj_model.jnt_qposadr[
+                        mujoco.mj_name2id(
+                            self._mj_model, mujoco.mjtObj.mjOBJ_JOINT, name
+                        )
+                    ]
+                )
+                for name in arm_joint_names
+            ],
+            dtype=jp.int32,
+        )
+        arm_indices = [full_name_to_idx[name] for name in arm_joint_names]
+        self._arm_joint_mins = self._full_joint_range_mins[
+            jp.asarray(arm_indices, dtype=jp.int32)
+        ]
+        self._arm_joint_maxs = self._full_joint_range_maxs[
+            jp.asarray(arm_indices, dtype=jp.int32)
+        ]
+        self._reset_arm_joint_offset_range_py = tuple(
+            float(value)
+            for value in getattr(
+                self._config.env, "reset_arm_joint_offset_range", (0.0, 0.0)
+            )
+        )
+        if (
+            len(self._reset_arm_joint_offset_range_py) != 2
+            or self._reset_arm_joint_offset_range_py[0]
+            > self._reset_arm_joint_offset_range_py[1]
+        ):
+            raise ValueError(
+                "env.reset_arm_joint_offset_range must be a two-element "
+                "[low, high] range"
+            )
+        self._reset_arm_joint_offset_range = jp.asarray(
+            self._reset_arm_joint_offset_range_py, dtype=jp.float32
         )
 
         # Reset-perturbation ranges (rad).  Default [0.0, 0.0] preserves
@@ -977,7 +1091,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         full_ctrl_mapper = CtrlOrderMapper(self._mj_model, full_actuator_names)
         self._full_home_ctrl_mj = jp.asarray(
             full_ctrl_mapper.to_mj_np(
-                np.asarray(full_home_ctrl_list, dtype=np.float32)
+                np.asarray(self._full_home_q_rad, dtype=np.float32)
             ),
             dtype=jp.float32,
         )
@@ -987,6 +1101,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._base_body_mass = self._mjx_model.body_mass
         self._base_actuator_gainprm = self._mjx_model.actuator_gainprm
         self._base_actuator_biasprm = self._mjx_model.actuator_biasprm
+        self._base_dof_damping = self._mjx_model.dof_damping
+        self._base_dof_armature = self._mjx_model.dof_armature
         self._base_dof_frictionloss = self._mjx_model.dof_frictionloss
 
         # Push body ids (sentinel [-1] when push disabled — apply_push gates on this).
@@ -1335,6 +1451,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._config.env,
             offline_library_path=offline_path,
         )
+        self._offline_cycle_time_s = float(zmp_config.cycle_time_s)
         # Fallback default 0.20 = Phase 9D operating point.  Should never
         # fire under a normal config (the dataclass default at
         # training_runtime_config.py is also 0.20), but kept defensive.
@@ -1671,6 +1788,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             params = nominal_domain_rand_params(
                 num_bodies=self._mj_model.nbody,
                 num_actuators=self.action_size,
+                num_observation_actuators=self._full_actuator_count,
             )
             params["persistent_torso_pitch_error_rad"] = jp.float32(0.0)
             params["persistent_actuator_calibration_offsets"] = jp.zeros(
@@ -1682,9 +1800,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             rng,
             num_bodies=self._mj_model.nbody,
             num_actuators=self.action_size,
+            num_observation_actuators=self._full_actuator_count,
             friction_range=tuple(self._config.env.domain_rand_friction_range),
             mass_scale_range=tuple(self._config.env.domain_rand_mass_scale_range),
             kp_scale_range=tuple(self._config.env.domain_rand_kp_scale_range),
+            damping_scale_range=tuple(
+                self._config.env.domain_rand_damping_scale_range
+            ),
+            armature_scale_range=tuple(
+                self._config.env.domain_rand_armature_scale_range
+            ),
             frictionloss_scale_range=tuple(
                 self._config.env.domain_rand_frictionloss_scale_range
             ),
@@ -1713,32 +1838,69 @@ class WildRobotEnv(mjx_env.MjxEnv):
             return self._mjx_model
         friction_scale = dr_params["friction_scale"]
         mass_scales = dr_params["mass_scales"]
-        kp_scales = dr_params["kp_scales"]
-        frictionloss_scales = dr_params["frictionloss_scales"]
-        policy_actuator_ids = self._ctrl_mapper.policy_to_mj_order_jax
+        uses_toddlerbot_observation = bool(
+            getattr(self, "_uses_toddlerbot_observation", False)
+        )
+        if uses_toddlerbot_observation:
+            kp_scales = dr_params["full_kp_scales"]
+            frictionloss_scales = dr_params["full_frictionloss_scales"]
+            actuator_ids = jp.arange(self._full_actuator_count, dtype=jp.int32)
+            actuator_dof_addrs = self._full_actuator_dof_addrs
+        else:
+            kp_scales = dr_params["kp_scales"]
+            frictionloss_scales = dr_params["frictionloss_scales"]
+            actuator_ids = self._ctrl_mapper.policy_to_mj_order_jax
+            actuator_dof_addrs = self._actuator_dof_addrs
 
         geom_friction = self._base_geom_friction * friction_scale
         body_mass = self._base_body_mass * mass_scales
         actuator_gainprm = self._base_actuator_gainprm.at[
-            policy_actuator_ids, 0
+            actuator_ids, 0
         ].set(
-            self._base_actuator_gainprm[policy_actuator_ids, 0] * kp_scales
+            self._base_actuator_gainprm[actuator_ids, 0] * kp_scales
         )
         actuator_biasprm = self._base_actuator_biasprm.at[
-            policy_actuator_ids, 1
+            actuator_ids, 1
         ].set(
-            self._base_actuator_biasprm[policy_actuator_ids, 1] * kp_scales
+            self._base_actuator_biasprm[actuator_ids, 1] * kp_scales
         )
-        dof_frictionloss = self._base_dof_frictionloss.at[self._actuator_dof_addrs].set(
-            self._base_dof_frictionloss[self._actuator_dof_addrs] * frictionloss_scales
+        dof_damping = getattr(self, "_base_dof_damping", None)
+        dof_armature = getattr(self, "_base_dof_armature", None)
+        full_dof_addrs = getattr(self, "_full_actuator_dof_addrs", None)
+        if (
+            dof_damping is not None
+            and full_dof_addrs is not None
+            and "damping_scales" in dr_params
+        ):
+            dof_damping = dof_damping.at[full_dof_addrs].set(
+                dof_damping[full_dof_addrs] * dr_params["damping_scales"]
+            )
+        if (
+            dof_armature is not None
+            and full_dof_addrs is not None
+            and "armature_scales" in dr_params
+        ):
+            dof_armature = dof_armature.at[full_dof_addrs].set(
+                dof_armature[full_dof_addrs] * dr_params["armature_scales"]
+            )
+        dof_frictionloss = self._base_dof_frictionloss.at[
+            actuator_dof_addrs
+        ].set(
+            self._base_dof_frictionloss[actuator_dof_addrs]
+            * frictionloss_scales
         )
-        return self._mjx_model.replace(
+        replacements = dict(
             geom_friction=geom_friction,
             body_mass=body_mass,
             actuator_gainprm=actuator_gainprm,
             actuator_biasprm=actuator_biasprm,
             dof_frictionloss=dof_frictionloss,
         )
+        if dof_damping is not None:
+            replacements["dof_damping"] = dof_damping
+        if dof_armature is not None:
+            replacements["dof_armature"] = dof_armature
+        return self._mjx_model.replace(**replacements)
 
     # ------------------------------------------------------------- ctrl write
 
@@ -1778,12 +1940,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         policy_action: jax.Array,
         nominal_q_ref: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        """Absolute-mode residual compose: ``target_q = clip(base_q + clip(a) * scale)``.
+        """Compose a scaled residual around the configured walking base.
 
-        ``policy_action`` is the residual command in PolicySpec [-1, 1]
-        space (post-filter, post-delay).  Scaling is per-joint
-        (``self._residual_q_scale_per_joint``) and the result is
-        clipped to the joint range.  Returns
+        Legacy policies clip ``policy_action`` to ``[-1, 1]`` first. The
+        ToddlerBot-compatible normal actor keeps its unsquashed action before
+        scaling. Scaling is per-joint (``self._residual_q_scale_per_joint``),
+        and the final target is clipped to the physical joint range. Returns
         ``(target_q_rad, residual_delta_q_rad)``.
 
         Base selector (``env.loc_ref_residual_base``):
@@ -1807,10 +1969,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         filtered the composed target in policy-action space, so iter-0
         bare-base replay only held when ``alpha == 0``.
         """
-        residual_delta_q = (
-            jp.clip(jp.asarray(policy_action, dtype=jp.float32), -1.0, 1.0)
-            * self._residual_q_scale_per_joint
-        )
+        residual_action = jp.asarray(policy_action, dtype=jp.float32)
+        if bool(
+            getattr(self._config.env, "loc_ref_clip_residual_action", True)
+        ):
+            residual_action = jp.clip(residual_action, -1.0, 1.0)
+        residual_delta_q = residual_action * self._residual_q_scale_per_joint
         if self._residual_base_mode == "home":
             base_q = self._walking_home_q_rad
         elif self._residual_base_mode == "ref_init":
@@ -2170,7 +2334,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             base["selected_yaw_rate"] = jp.float32(0.0)
             base["cmd_bin_abs_err"] = cmd_bin_abs_err
             base["cmd_bin_l2_err"] = cmd_bin_abs_err
-            return base
+            return self._apply_toddlerbot_phase_clock(base, step_idx)
 
         # ------------------------------------------------------------
         # Command-conditioned path — 1D or 3D depending on the
@@ -2271,7 +2435,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         future_idx = jp.clip(idx + future_offsets, 0, n_steps - 1)
 
         a = self._offline_jax_arrays
-        return {
+        window = {
             "q_ref":          a["q_ref"][bin_idx, idx],
             "phase_sin":      a["phase_sin"][bin_idx, idx],
             "phase_cos":      a["phase_cos"][bin_idx, idx],
@@ -2297,6 +2461,45 @@ class WildRobotEnv(mjx_env.MjxEnv):
             "selected_yaw_rate":       selected_yaw_rate,
             "cmd_bin_abs_err":         cmd_bin_abs_err,
             "cmd_bin_l2_err":          cmd_bin_l2_err,
+        }
+        return self._apply_toddlerbot_phase_clock(window, step_idx)
+
+    def _apply_toddlerbot_phase_clock(
+        self, window: Dict[str, jax.Array], step_idx: jax.Array
+    ) -> Dict[str, jax.Array]:
+        """Use ToddlerBot's time clock instead of a reference-bin phase.
+
+        ToddlerBot computes ``[sin, cos]`` directly from elapsed time, even
+        when a zero command keeps the motor reference at the default pose.
+        WR's static reference bin contains one frame, so reading its stored
+        phase would incorrectly pin the actor to ``[0, 1]`` for the entire
+        standing segment.  The v12 policy contract follows ToddlerBot and
+        therefore advances this clock independently of command-bin length.
+        """
+        if not self._uses_toddlerbot_observation:
+            return window
+        step = jp.asarray(step_idx, dtype=jp.float32)
+        phase_angle = (
+            jp.float32(2.0 * math.pi)
+            * step
+            * jp.float32(self.dt)
+            / jp.float32(self._offline_cycle_time_s)
+        )
+        future_steps = step + jp.arange(
+            1, self._offline_service.n_anchor + 1, dtype=jp.float32
+        )
+        future_angles = (
+            jp.float32(2.0 * math.pi)
+            * future_steps
+            * jp.float32(self.dt)
+            / jp.float32(self._offline_cycle_time_s)
+        )
+        return {
+            **window,
+            "phase_sin": jp.sin(phase_angle).astype(jp.float32),
+            "phase_cos": jp.cos(phase_angle).astype(jp.float32),
+            "future_phase_sin": jp.sin(future_angles).astype(jp.float32),
+            "future_phase_cos": jp.cos(future_angles).astype(jp.float32),
         }
 
     def _v4_compat_channels_from_window(
@@ -2376,6 +2579,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         )
         return jp.concatenate(parts)
 
+    def _compute_toddlerbot_proprio_frame(
+        self,
+        *,
+        signals: Signals,
+        prev_action: jax.Array,
+        velocity_cmd: jax.Array,
+        phase_sin_cos: jax.Array,
+    ) -> jax.Array:
+        """Build one current-ToddlerBot actor frame for WR morphology."""
+        root_quat = jax_frames.normalize_quat_wxyz(signals.quat_wxyz)
+        return build_toddlerbot_proprio_frame(
+            phase_sin_cos=phase_sin_cos,
+            velocity_cmd=velocity_cmd,
+            motor_pos_delta_rad=(
+                signals.joint_pos_rad - self._full_home_q_rad
+            ),
+            motor_vel_rad_s=signals.joint_vel_rad_s,
+            prev_action=prev_action,
+            body_angvel_rad_s=signals.gyro_rad_s,
+            torso_quat_wxyz=root_quat,
+        )
+
     @staticmethod
     def _roll_proprio_history(
         history: jax.Array, new_bundle: jax.Array
@@ -2388,7 +2613,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         """
         return jp.concatenate([history[1:], new_bundle[None, :]], axis=0)
 
+    @staticmethod
+    def _roll_toddlerbot_history(
+        history: jax.Array, new_frame: jax.Array
+    ) -> jax.Array:
+        """Prepend current frame, matching ToddlerBot's newest-first stack."""
+        return jp.concatenate([new_frame[None, :], history[:-1]], axis=0)
+
     def _signals_in_policy_order(self, signals: Signals) -> Signals:
+        if self._uses_toddlerbot_observation:
+            return signals
         if int(signals.joint_pos_rad.shape[0]) == len(self._policy_spec.robot.actuator_names):
             return signals
         return signals.replace(
@@ -2399,6 +2633,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 signals.joint_vel_rad_s, self._policy_signal_indices
             ).astype(jp.float32),
         )
+
+    def _policy_values_in_observation_order(
+        self, values: jax.Array
+    ) -> jax.Array:
+        """Expand active-leg values to the all-motor observation order."""
+        if not self._uses_toddlerbot_observation:
+            return values
+        return jp.zeros(
+            (self._full_actuator_count,), dtype=jp.asarray(values).dtype
+        ).at[self._policy_signal_indices].set(values)
+
+    def _observation_actuator_force(self, data: mjx.Data) -> jax.Array:
+        if self._uses_toddlerbot_observation:
+            return data.qfrc_actuator[self._full_actuator_dof_addrs].astype(
+                jp.float32
+            )
+        return data.qfrc_actuator[self._actuator_dof_addrs].astype(jp.float32)
 
     def _sample_joint_feedback_schedule(
         self, rng: jax.Array
@@ -2416,11 +2667,11 @@ class WildRobotEnv(mjx_env.MjxEnv):
             jp.int32(upper_high - upper_low + 1),
         )
         unit_period = jax.random.uniform(
-            rng_period, shape=(self.action_size,), dtype=jp.float32
+            rng_period, shape=(self._observation_actuator_count,), dtype=jp.float32
         )
         period_steps = lows + jp.floor(unit_period * widths).astype(jp.int32)
         unit_phase = jax.random.uniform(
-            rng_phase, shape=(self.action_size,), dtype=jp.float32
+            rng_phase, shape=(self._observation_actuator_count,), dtype=jp.float32
         )
         phase_steps = jp.floor(
             unit_phase * period_steps.astype(jp.float32)
@@ -2450,6 +2701,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
             None if proprio_history is None
             else proprio_history.astype(jp.float32).reshape(-1)
         )
+        if self._uses_toddlerbot_observation:
+            return build_observation(
+                spec=self._policy_spec,
+                state=policy_state,
+                signals=signals,
+                velocity_cmd=velocity_cmd,
+                toddlerbot_proprio_stack=flat_history,
+            )
         # v0.21.0 P3: ``velocity_cmd`` from callers is now (3,) but the
         # v6 / v7 policy contract still uses a scalar ``velocity_cmd``
         # slot (size=1 ObsFieldSpec).  Slice the vx axis for the
@@ -2469,6 +2728,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         if self._policy_spec.observation.layout_id in {
             "wr_obs_v8_cmd3d",
             "wr_obs_v11_cmd3d_proprio",
+            "wr_obs_v12_tb_proprio",
         }:
             cmd_3vec = jp.asarray(velocity_cmd, dtype=jp.float32).reshape(3)
             lateral_yaw = cmd_3vec[1:]
@@ -2504,6 +2764,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         nominal_q_ref: jax.Array,
         ref_contact_mask: jax.Array,
         phase_sin_cos: jax.Array,
+        velocity_cmd: Optional[jax.Array] = None,
+        applied_action: Optional[jax.Array] = None,
         foot_forces: tuple[jax.Array, jax.Array] | None = None,
     ) -> jax.Array:
         """Privileged critic obs (asymmetric actor-critic, Phase 3 of
@@ -2563,6 +2825,45 @@ class WildRobotEnv(mjx_env.MjxEnv):
         q_actual = data.qpos[self._actuator_qpos_addrs]
         actuator_force = data.actuator_force.astype(jp.float32)
 
+        if self._uses_toddlerbot_observation:
+            if velocity_cmd is None or applied_action is None:
+                raise ValueError(
+                    "ToddlerBot critic observation requires command and action"
+                )
+            q_actual_full = data.qpos[self._full_actuator_qpos_addrs].astype(
+                jp.float32
+            )
+            qvel_full = data.qvel[self._full_actuator_dof_addrs].astype(jp.float32)
+            q_ref_full = self._full_home_q_rad.at[self._policy_signal_indices].set(
+                nominal_q_ref
+            )
+            root_pose = self._cal.get_root_pose(data)
+            root_vel_local = self._cal.get_root_velocity(
+                data, frame=CoordinateFrame.LOCAL
+            )
+            actor_frame = build_toddlerbot_proprio_frame(
+                phase_sin_cos=phase_sin_cos,
+                velocity_cmd=velocity_cmd,
+                motor_pos_delta_rad=q_actual_full - self._full_home_q_rad,
+                motor_vel_rad_s=qvel_full,
+                prev_action=applied_action,
+                body_angvel_rad_s=root_vel_local.angular,
+                torso_quat_wxyz=root_pose.orientation,
+            )
+            stance = (contacts > self._config.env.contact_threshold_force).astype(
+                jp.float32
+            )
+            return jp.concatenate(
+                [
+                    actor_frame,
+                    q_actual_full - q_ref_full,
+                    root_vel_local.linear.astype(jp.float32) * jp.float32(2.0),
+                    actuator_force * jp.float32(0.1),
+                    stance,
+                    ref_contact_mask.astype(jp.float32),
+                ]
+            )
+
         if self._policy_spec.observation.layout_id in {
             "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
         }:
@@ -2610,6 +2911,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
         byte-equal path); under depth==N we take the last N frames and
         flatten to length ``N * privileged_obs_dim(full_actuator_count)``."""
         n = self._critic_obs_history_frames
+        if self._uses_toddlerbot_observation:
+            return history[:n].reshape(-1).astype(jp.float32)
         if n == 1:
             return history[-1].astype(jp.float32)
         # Static slice bound: n is a Python int set at env init, so the
@@ -2618,13 +2921,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
 
     @staticmethod
     def _roll_critic_obs_history(
-        history: jax.Array, new_frame: jax.Array
+        history: jax.Array, new_frame: jax.Array, *, newest_first: bool = False
     ) -> jax.Array:
         """Roll the oldest frame out and append ``new_frame`` at the
         end.  Mirrors TB's
         ``jnp.roll(privileged_obs_history, -privileged_obs_size).at[
             -privileged_obs_size:].set(privileged_obs)``
         but on the (frames, dim) shape rather than a flat vector."""
+        if newest_first:
+            return jp.concatenate(
+                [new_frame[None, :].astype(history.dtype), history[:-1]], axis=0
+            )
         return jp.concatenate(
             [history[1:], new_frame[None, :].astype(history.dtype)], axis=0
         )
@@ -2695,12 +3002,23 @@ class WildRobotEnv(mjx_env.MjxEnv):
         r_q_track = jp.exp(-jp.float32(weights.ref_q_track_alpha) * q_err_sq_sum)
         q_track_rmse = jp.sqrt(jp.mean(q_err * q_err))
 
-        # ---- ref/body_quat_track (geodesic angle vs identity) ----------------
-        # Prior emits pelvis_rpy = zeros (yaw-stationary, no roll/pitch),
-        # so the reference quat is identity [w=1, x=0, y=0, z=0].
-        # angle = 2 * arccos(|qw|).  Unit-norm input from MuJoCo qpos.
-        quat_wxyz = root_pose.orientation
-        qw_abs = jp.abs(quat_wxyz[0])
+        # ---- ref/body_quat_track ---------------------------------------------
+        # ToddlerBot compares torso orientation with the command-integrated
+        # reference orientation. Comparing with identity incorrectly penalizes
+        # commanded turns. The reference has zero roll/pitch and path yaw.
+        quat_wxyz = jax_frames.normalize_quat_wxyz(root_pose.orientation)
+        ref_quat_wxyz = jax_frames.normalize_quat_wxyz(path_state["path_rot"])
+        ref_quat_inv = jp.asarray(
+            [
+                ref_quat_wxyz[0],
+                -ref_quat_wxyz[1],
+                -ref_quat_wxyz[2],
+                -ref_quat_wxyz[3],
+            ],
+            dtype=jp.float32,
+        )
+        quat_error = jax_frames.quat_mul(ref_quat_inv, quat_wxyz)
+        qw_abs = jp.abs(quat_error[0])
         # Numerical guard: arccos arg must be in [0, 1].
         body_quat_angle = 2.0 * jp.arccos(jp.clip(qw_abs, 0.0, 1.0))
         r_body_quat = jp.exp(
@@ -3552,7 +3870,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # the config at env init and is safe to read at trace time.
         roll_lo, roll_hi = self._reset_torso_roll_range_py
         pitch_lo, pitch_hi = self._reset_torso_pitch_range_py
-        return (roll_lo != roll_hi) or (pitch_lo != pitch_hi)
+        arm_lo, arm_hi = self._reset_arm_joint_offset_range_py
+        return (
+            (roll_lo != roll_hi)
+            or (pitch_lo != pitch_hi)
+            or (arm_lo != arm_hi)
+        )
 
     def reset(
         self,
@@ -3794,21 +4117,20 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ``roll_range`` and ``pitch_range`` optionally substitute a
         recovery-specific envelope without changing ordinary reset sampling.
 
-        WR-specific deviations from TB (documented):
+        WR-specific deviation from TB (documented):
           - WR has no waist actuator; ``torso_roll`` only affects the
             root quat (TB also writes it into a waist joint).
-          - WR has no arm-pose-range perturbation here.
-          - WR does not compute the geometric ``torso_z_delta``
-            compensation (TB uses ``robot.config['robot']`` offsets WR
-            doesn't expose); the ranges are small (TB default ±0.1 rad)
-            so the residual is settled by physics in a few sim steps.
+          - WR's directly actuated arm joints do not require TB's arm IK;
+            the same sampled joint-space offset is applied directly.
 
         The CONTROL targets and ``_ref_init_q_rad`` are UNTOUCHED here;
         we only modify the initial physical ``qpos`` (joint positions +
         root quat).  Zero policy action still composes to the constant
         ``ref_init`` ctrl base.
         """
-        rng_roll, rng_pitch, rng_hip, rng_knee = jax.random.split(rng, 4)
+        rng_roll, rng_pitch, rng_hip, rng_knee, rng_arm = jax.random.split(
+            rng, 5
+        )
 
         roll_values = (
             self._reset_torso_roll_range if roll_range is None else roll_range
@@ -3863,6 +4185,40 @@ class WildRobotEnv(mjx_env.MjxEnv):
             self._leg_pitch_joint_maxs,
         )
         qpos = qpos.at[self._leg_pitch_qpos_addrs].set(leg_pitch_qpos_new)
+
+        # Keep the feet at approximately the same reset height after the
+        # structured sagittal perturbation. This is the WR two-link analogue
+        # of ToddlerBot's torso_z_delta compensation.
+        l1 = jp.float32(self._leg_ik_config.upper_leg_length_m)
+        l2 = jp.float32(self._leg_ik_config.lower_leg_length_m)
+
+        def _leg_z(leg_q: jax.Array, *, left: bool) -> jax.Array:
+            hip = -leg_q[0] if left else leg_q[0]
+            knee = leg_q[1]
+            return -l1 * jp.cos(hip) - l2 * jp.cos(hip + knee)
+
+        old_z = jp.float32(0.5) * (
+            _leg_z(leg_pitch_qpos_curr[:3], left=True)
+            + _leg_z(leg_pitch_qpos_curr[3:], left=False)
+        )
+        new_z = jp.float32(0.5) * (
+            _leg_z(leg_pitch_qpos_new[:3], left=True)
+            + _leg_z(leg_pitch_qpos_new[3:], left=False)
+        )
+        qpos = qpos.at[2].add(old_z - new_z)
+
+        arm_offsets = jax.random.uniform(
+            rng_arm,
+            shape=self._arm_qpos_addrs.shape,
+            minval=self._reset_arm_joint_offset_range[0],
+            maxval=self._reset_arm_joint_offset_range[1],
+        ).astype(jp.float32)
+        arm_qpos = jp.clip(
+            qpos[self._arm_qpos_addrs] + arm_offsets,
+            self._arm_joint_mins,
+            self._arm_joint_maxs,
+        )
+        qpos = qpos.at[self._arm_qpos_addrs].set(arm_qpos)
 
         # Compose root-quat update: R_xyz(roll, pitch, 0) * R_curr.
         # MJCF and the policy frame contract both use [w, x, y, z].
@@ -4447,11 +4803,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # backlash applied to the policy's observed joint positions.
         # No-op when backlash is all zeros (DR disabled or range==(0,0)).
         signals_override = self._signals_in_policy_order(signals_override)
+        observed_backlash = (
+            dr_params["full_backlash"]
+            if self._uses_toddlerbot_observation
+            else self._policy_values_in_observation_order(
+                dr_params["backlash"]
+            )
+        )
+        observed_calibration_offsets = self._policy_values_in_observation_order(
+            dr_params["persistent_actuator_calibration_offsets"]
+        )
         signals_override = signals_override.replace(
             joint_pos_rad=apply_backlash_to_joint_pos(
                 signals_override.joint_pos_rad,
-                data.qfrc_actuator[self._actuator_dof_addrs].astype(jp.float32),
-                dr_params["backlash"],
+                self._observation_actuator_force(data),
+                observed_backlash,
                 float(
                     getattr(
                         self._config.env, "domain_rand_backlash_activation", 0.1
@@ -4462,8 +4828,12 @@ class WildRobotEnv(mjx_env.MjxEnv):
         signals_override = signals_override.replace(
             joint_pos_rad=remove_persistent_calibration_from_observation(
                 signals_override.joint_pos_rad,
-                dr_params["persistent_actuator_calibration_offsets"],
+                observed_calibration_offsets,
             )
+        )
+        signals_feedback = signals_override
+        signals_actor = _apply_joint_observation_noise(
+            signals_feedback, jax.random.fold_in(imu_init_rng, 12_012), self._config
         )
         joint_feedback_period_steps, joint_feedback_phase_steps = (
             self._sample_joint_feedback_schedule(joint_feedback_rng)
@@ -4489,6 +4859,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_q_ref=q_ref0,
             ref_contact_mask=win0["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
+            velocity_cmd=velocity_cmd,
+            applied_action=default_action,
             foot_forces=(left_force, right_force),
         )
         # smoke14 critic stacking — initialize the rolling buffer to
@@ -4499,15 +4871,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # stay zero until subsequent steps roll them in).  Under
         # depth==1 this collapses to the legacy single-frame critic
         # obs path.
+        critic_frame_dim = (
+            toddlerbot_privileged_obs_dim(
+                self._observation_actuator_count, self.action_size
+            )
+            if self._uses_toddlerbot_observation
+            else privileged_obs_dim(self._full_actuator_count)
+        )
         critic_obs_history = jp.zeros(
-            (
-                PRIVILEGED_OBS_HISTORY_FRAMES,
-                privileged_obs_dim(self._full_actuator_count),
-            ),
+            (PRIVILEGED_OBS_HISTORY_FRAMES, critic_frame_dim),
             dtype=jp.float32,
         )
         critic_obs_history = self._roll_critic_obs_history(
-            critic_obs_history, single_frame_critic_obs
+            critic_obs_history,
+            single_frame_critic_obs,
+            newest_first=self._uses_toddlerbot_observation,
         )
         critic_obs = self._stack_critic_obs(critic_obs_history)
 
@@ -4520,16 +4898,28 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # The buffer fills in over the first PROPRIO_HISTORY_FRAMES
         # steps as new_bundle gets rolled in (oldest dropped, newest
         # appended).
-        contact_size = (
-            0
-            if self._policy_spec.observation.layout_id
-            == "wr_obs_v11_cmd3d_proprio"
-            else 4
-        )
-        proprio_bundle_size = 3 + contact_size + 3 * self.action_size
-        proprio_history_init = jp.zeros(
-            (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
-        )
+        if self._uses_toddlerbot_observation:
+            initial_actor_frame = self._compute_toddlerbot_proprio_frame(
+                signals=signals_actor,
+                prev_action=default_action,
+                velocity_cmd=velocity_cmd,
+                phase_sin_cos=v4_compat["phase_sin_cos"],
+            )
+            proprio_history_init = jp.zeros(
+                (PROPRIO_HISTORY_FRAMES, int(initial_actor_frame.shape[0])),
+                dtype=jp.float32,
+            ).at[0].set(initial_actor_frame)
+        else:
+            contact_size = (
+                0
+                if self._policy_spec.observation.layout_id
+                == "wr_obs_v11_cmd3d_proprio"
+                else 4
+            )
+            proprio_bundle_size = 3 + contact_size + 3 * self.action_size
+            proprio_history_init = jp.zeros(
+                (PROPRIO_HISTORY_FRAMES, proprio_bundle_size), dtype=jp.float32
+            )
 
         recovery_state = (
             jp.int32(RECOVERY_HOLD),
@@ -4602,10 +4992,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
             prev_right_foot_pos=right_foot_pos.astype(jp.float32),
             imu_quat_hist=imu_quat_hist,
             imu_gyro_hist=imu_gyro_hist,
-            joint_feedback_cached_pos=signals_override.joint_pos_rad,
-            joint_feedback_cached_vel=signals_override.joint_vel_rad_s,
+            joint_feedback_cached_pos=signals_feedback.joint_pos_rad,
+            joint_feedback_cached_vel=signals_feedback.joint_vel_rad_s,
             joint_feedback_age_steps=jp.zeros(
-                (self.action_size,), dtype=jp.int32
+                (self._observation_actuator_count,), dtype=jp.int32
             ),
             joint_feedback_period_steps=joint_feedback_period_steps,
             joint_feedback_phase_steps=joint_feedback_phase_steps,
@@ -4647,6 +5037,13 @@ class WildRobotEnv(mjx_env.MjxEnv):
             domain_rand_frictionloss_scales=dr_params["frictionloss_scales"],
             domain_rand_joint_offsets=dr_params["joint_offsets"],
             domain_rand_backlash=dr_params["backlash"],
+            domain_rand_full_kp_scales=dr_params["full_kp_scales"],
+            domain_rand_damping_scales=dr_params["damping_scales"],
+            domain_rand_armature_scales=dr_params["armature_scales"],
+            domain_rand_full_frictionloss_scales=dr_params[
+                "full_frictionloss_scales"
+            ],
+            domain_rand_full_backlash=dr_params["full_backlash"],
             domain_rand_persistent_torso_pitch_error_rad=dr_params[
                 "persistent_torso_pitch_error_rad"
             ],
@@ -4677,7 +5074,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd=velocity_cmd,
             win=win0,
             v4_compat=v4_compat,
-            signals=signals_override,
+            signals=signals_actor,
             proprio_history=proprio_history_init,
             standing_recovery_command=recovery_command,
         )
@@ -5067,6 +5464,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
                 kp_scales=wr.domain_rand_kp_scales,
                 frictionloss_scales=wr.domain_rand_frictionloss_scales,
                 joint_offsets=wr.domain_rand_joint_offsets,
+                full_kp_scales=wr.domain_rand_full_kp_scales,
+                damping_scales=wr.domain_rand_damping_scales,
+                armature_scales=wr.domain_rand_armature_scales,
+                full_frictionloss_scales=wr.domain_rand_full_frictionloss_scales,
             )
         )
 
@@ -5087,11 +5488,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # backlash applied to the policy's observed joint positions.
         # No-op when wr.domain_rand_backlash is all zeros.
         signals_override = self._signals_in_policy_order(signals_override)
+        observed_backlash = (
+            wr.domain_rand_full_backlash
+            if self._uses_toddlerbot_observation
+            else self._policy_values_in_observation_order(
+                wr.domain_rand_backlash
+            )
+        )
+        observed_calibration_offsets = self._policy_values_in_observation_order(
+            wr.domain_rand_persistent_actuator_offsets
+        )
         signals_override = signals_override.replace(
             joint_pos_rad=apply_backlash_to_joint_pos(
                 signals_override.joint_pos_rad,
-                data.qfrc_actuator[self._actuator_dof_addrs].astype(jp.float32),
-                wr.domain_rand_backlash,
+                self._observation_actuator_force(data),
+                observed_backlash,
                 float(
                     getattr(
                         self._config.env, "domain_rand_backlash_activation", 0.1
@@ -5102,7 +5513,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
         signals_override = signals_override.replace(
             joint_pos_rad=remove_persistent_calibration_from_observation(
                 signals_override.joint_pos_rad,
-                wr.domain_rand_persistent_actuator_offsets,
+                observed_calibration_offsets,
             )
         )
         (
@@ -5126,6 +5537,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         signals_override = signals_override.replace(
             joint_pos_rad=feedback_pos,
             joint_vel_rad_s=feedback_vel,
+        )
+        signals_actor = _apply_joint_observation_noise(
+            signals_override, jax.random.fold_in(rng_imu, 12_012), self._config
         )
 
         root_pose = self._cal.get_root_pose(data)
@@ -5307,6 +5721,8 @@ class WildRobotEnv(mjx_env.MjxEnv):
             nominal_q_ref=nominal_q_ref,
             ref_contact_mask=win["contact_mask"],
             phase_sin_cos=v4_compat["phase_sin_cos"],
+            velocity_cmd=velocity_cmd,
+            applied_action=applied_action,
             foot_forces=(left_force, right_force),
         )
         # smoke14 critic stacking — roll the buffer and flatten the
@@ -5318,7 +5734,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         # only 1/N of the stacked vector — the older N-1 frames still
         # carry pre-jump content.
         new_critic_obs_history = self._roll_critic_obs_history(
-            wr.critic_obs_history, single_frame_critic_obs
+            wr.critic_obs_history,
+            single_frame_critic_obs,
+            newest_first=self._uses_toddlerbot_observation,
         )
         critic_obs = self._stack_critic_obs(new_critic_obs_history)
 
@@ -5334,11 +5752,24 @@ class WildRobotEnv(mjx_env.MjxEnv):
         #   3. Roll the buffer (drop oldest, append new) and store
         #      the rolled buffer in new_wr — that buffer becomes the
         #      "past" for the NEXT step.
-        new_bundle = self._compute_proprio_bundle(
-            signals=self._signals_in_policy_order(signals_override),
-            prev_action=applied_action,
-        )
-        new_proprio_history = self._roll_proprio_history(wr.proprio_history, new_bundle)
+        if self._uses_toddlerbot_observation:
+            new_bundle = self._compute_toddlerbot_proprio_frame(
+                signals=signals_actor,
+                prev_action=applied_action,
+                velocity_cmd=velocity_cmd,
+                phase_sin_cos=v4_compat["phase_sin_cos"],
+            )
+            new_proprio_history = self._roll_toddlerbot_history(
+                wr.proprio_history, new_bundle
+            )
+        else:
+            new_bundle = self._compute_proprio_bundle(
+                signals=self._signals_in_policy_order(signals_actor),
+                prev_action=applied_action,
+            )
+            new_proprio_history = self._roll_proprio_history(
+                wr.proprio_history, new_bundle
+            )
 
         # ToddlerBot-style cmd resampling.  ``cmd_resample_steps == 0``
         # disables resampling (episode-constant cmd, the v0.19.x contract).
@@ -5436,12 +5867,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
             velocity_cmd=velocity_cmd,
             win=win,
             v4_compat=v4_compat,
-            signals=signals_override,
+            signals=signals_actor,
             # PRE-roll buffer: history = past 3 bundles, current frame
             # is supplied by the standard proprio channels.  See the
             # comment on new_proprio_history above for why this isn't
             # the rolled buffer.
-            proprio_history=wr.proprio_history,
+            proprio_history=(
+                new_proprio_history
+                if self._uses_toddlerbot_observation
+                else wr.proprio_history
+            ),
             standing_recovery_command=recovery_command,
         )
 

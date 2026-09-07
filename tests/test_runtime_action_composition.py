@@ -39,6 +39,32 @@ def test_zero_action_maps_exactly_to_home(v8_spec, runtime_policy_config):
     np.testing.assert_allclose(applied, 0.0, atol=1e-6)
 
 
+def test_toddlerbot_normal_action_is_not_preclipped(v12_spec):
+    from conftest import make_runtime_policy_config
+
+    config = make_runtime_policy_config(
+        v12_spec,
+        action_delay_steps=0,
+        clip_residual_action=False,
+    )
+    runner = RuntimePolicyRunner(
+        spec=v12_spec,
+        runtime_config=config,
+        policy=_ZeroPolicy(v12_spec.model.action_dim),
+        robot_io=None,
+    )
+    action = np.full(v12_spec.model.action_dim, 1.25, dtype=np.float32)
+    target, applied = runner.compose_and_apply(action)
+
+    np.testing.assert_array_equal(applied, action)
+    expected = np.clip(
+        runner.home_q_rad + action * runner.residual_scale_per_actuator,
+        runner._joint_min,
+        runner._joint_max,
+    )
+    np.testing.assert_allclose(target, expected, atol=1e-6)
+
+
 def test_zero_action_maps_to_walking_base_offset_while_hold_stays_home(v8_spec):
     names = list(v8_spec.robot.actuator_names)
     offsets = np.zeros(v8_spec.model.action_dim, dtype=np.float32)

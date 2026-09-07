@@ -74,6 +74,7 @@ class RuntimePolicyConfig:
     action_filter_alpha: float
     loc_ref_residual_base: str
     loc_ref_residual_mode: str
+    loc_ref_clip_residual_action: bool
     loc_ref_residual_scale: float
     loc_ref_residual_scale_per_joint: Dict[str, float]
     residual_scale_per_actuator: List[float]
@@ -108,6 +109,9 @@ class RuntimePolicyConfig:
             action_filter_alpha=float(data.get("action_filter_alpha", 0.0)),
             loc_ref_residual_base=str(data.get("loc_ref_residual_base", "q_ref")),
             loc_ref_residual_mode=str(data.get("loc_ref_residual_mode", "absolute")),
+            loc_ref_clip_residual_action=bool(
+                data.get("loc_ref_clip_residual_action", True)
+            ),
             loc_ref_residual_scale=float(data.get("loc_ref_residual_scale", 0.18)),
             loc_ref_residual_scale_per_joint=dict(
                 data.get("loc_ref_residual_scale_per_joint", {}) or {}

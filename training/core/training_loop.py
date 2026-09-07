@@ -220,6 +220,16 @@ def _policy_update_scale(iteration: int, critic_warmup_iterations: int) -> float
     return 0.0 if int(iteration) <= int(critic_warmup_iterations) else 1.0
 
 
+def _rsl_timeout_bootstrap_rewards(
+    rewards: jnp.ndarray,
+    values: jnp.ndarray,
+    truncations: jnp.ndarray,
+    gamma: float,
+) -> jnp.ndarray:
+    """Match RSL-RL's time-limit reward bootstrap before GAE."""
+    return rewards + jnp.float32(gamma) * values * truncations
+
+
 def _should_fire_callback(
     iteration: int,
     log_interval: int,
@@ -485,6 +495,236 @@ def ppo_update_scan(
     )
 
 
+def _normal_policy_mean_std(
+    ppo_network: Any,
+    processor_params: Any,
+    policy_params: Any,
+    obs: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return the mean/std tuple emitted by Brax's unsquashed normal actor."""
+    output = ppo_network.policy_network.apply(
+        processor_params, policy_params, obs
+    )
+    if not isinstance(output, tuple) or len(output) != 2:
+        raise ValueError(
+            "ToddlerBot RSL-RL semantics require distribution_type='normal' "
+            "with a (mean, std) policy output"
+        )
+    return output[0], output[1]
+
+
+def _diagonal_gaussian_kl(
+    old_mean: jnp.ndarray,
+    old_std: jnp.ndarray,
+    new_mean: jnp.ndarray,
+    new_std: jnp.ndarray,
+) -> jnp.ndarray:
+    """RSL-RL 2.3.3's exact KL(old policy || current policy)."""
+    kl = jnp.sum(
+        jnp.log(new_std / old_std + jnp.float32(1.0e-5))
+        + (
+            jnp.square(old_std)
+            + jnp.square(old_mean - new_mean)
+        )
+        / (jnp.float32(2.0) * jnp.square(new_std))
+        - jnp.float32(0.5),
+        axis=-1,
+    )
+    return jnp.mean(kl)
+
+
+def ppo_update_scan_toddlerbot(
+    *,
+    policy_params: Any,
+    value_params: Any,
+    processor_params: Any,
+    policy_opt_state: Any,
+    value_opt_state: Any,
+    ppo_network: Any,
+    policy_optimizer: optax.GradientTransformation,
+    value_optimizer: optax.GradientTransformation,
+    obs: jnp.ndarray,
+    critic_obs: Optional[jnp.ndarray],
+    actions: jnp.ndarray,
+    old_log_probs: jnp.ndarray,
+    old_values: jnp.ndarray,
+    advantages: jnp.ndarray,
+    returns: jnp.ndarray,
+    rng: jax.Array,
+    num_epochs: int,
+    num_minibatches: int,
+    clip_epsilon: float,
+    value_loss_coef: float,
+    entropy_coef: float,
+    max_grad_norm: float,
+    learning_rate: float,
+    target_kl: float,
+    adaptive_kl_factor: float,
+    min_learning_rate: float,
+    max_learning_rate: float,
+) -> tuple:
+    """PPO update matching the current ToddlerBot RSL-RL 2.3.3 path.
+
+    All epochs/minibatches execute. One permutation is reused across epochs,
+    advantages are normalized over the full rollout, value updates are
+    clipped around rollout-time predictions, and exact Gaussian KL adjusts
+    the learning rate before every optimizer step.
+    """
+    batch_size = obs.shape[0]
+    minibatch_size = batch_size // num_minibatches
+    num_updates = num_epochs * num_minibatches
+    advantages = (advantages - jnp.mean(advantages)) / (
+        jnp.std(advantages, ddof=1) + jnp.float32(1.0e-8)
+    )
+
+    rng, perm_rng = jax.random.split(rng)
+    permutation = jax.random.permutation(perm_rng, batch_size)
+    old_policy_params = policy_params
+
+    def ppo_step(carry, update_idx):
+        policy_p, value_p, policy_opt, value_opt, step_rng, current_lr = carry
+        step_rng, loss_rng = jax.random.split(step_rng)
+        minibatch_idx = update_idx % num_minibatches
+        start_idx = minibatch_idx * minibatch_size
+        indices = jax.lax.dynamic_slice(
+            permutation, (start_idx,), (minibatch_size,)
+        )
+
+        mb_obs = obs[indices]
+        mb_critic_obs = None if critic_obs is None else critic_obs[indices]
+        mb_actions = actions[indices]
+        mb_old_log_probs = old_log_probs[indices]
+        mb_old_values = old_values[indices]
+        mb_advantages = advantages[indices]
+        mb_returns = returns[indices]
+
+        old_mean, old_std = _normal_policy_mean_std(
+            ppo_network, processor_params, old_policy_params, mb_obs
+        )
+        new_mean, new_std = _normal_policy_mean_std(
+            ppo_network, processor_params, policy_p, mb_obs
+        )
+        exact_kl = _diagonal_gaussian_kl(
+            old_mean, old_std, new_mean, new_std
+        )
+        next_lr = jnp.where(
+            exact_kl > jnp.float32(target_kl * 2.0),
+            jnp.maximum(
+                jnp.float32(min_learning_rate),
+                current_lr / jnp.float32(adaptive_kl_factor),
+            ),
+            jnp.where(
+                (exact_kl < jnp.float32(target_kl / 2.0)) & (exact_kl > 0.0),
+                jnp.minimum(
+                    jnp.float32(max_learning_rate),
+                    current_lr * jnp.float32(adaptive_kl_factor),
+                ),
+                current_lr,
+            ),
+        )
+
+        def loss_fn(policy_candidate, value_candidate):
+            return compute_ppo_loss(
+                processor_params=processor_params,
+                policy_params=policy_candidate,
+                value_params=value_candidate,
+                ppo_network=ppo_network,
+                obs=mb_obs,
+                value_obs=mb_critic_obs,
+                actions=mb_actions,
+                old_log_probs=mb_old_log_probs,
+                old_values=mb_old_values,
+                advantages=mb_advantages,
+                returns=mb_returns,
+                rng=loss_rng,
+                clip_epsilon=clip_epsilon,
+                value_loss_coef=value_loss_coef,
+                entropy_coef=entropy_coef,
+                normalize_advantages=False,
+                use_clipped_value_loss=True,
+                legacy_value_loss_half_factor=False,
+            )
+
+        (_loss, metrics), (policy_grads, value_grads) = jax.value_and_grad(
+            loss_fn, argnums=(0, 1), has_aux=True
+        )(policy_p, value_p)
+
+        global_norm = optax.global_norm((policy_grads, value_grads))
+        grad_scale = jnp.minimum(
+            jnp.float32(1.0),
+            jnp.float32(max_grad_norm)
+            / (global_norm + jnp.float32(1.0e-6)),
+        )
+        policy_grads = jax.tree_util.tree_map(
+            lambda value: value * grad_scale, policy_grads
+        )
+        value_grads = jax.tree_util.tree_map(
+            lambda value: value * grad_scale, value_grads
+        )
+
+        policy_updates, next_policy_opt = policy_optimizer.update(
+            policy_grads, policy_opt
+        )
+        value_updates, next_value_opt = value_optimizer.update(
+            value_grads, value_opt
+        )
+        policy_updates = jax.tree_util.tree_map(
+            lambda value: value * next_lr, policy_updates
+        )
+        value_updates = jax.tree_util.tree_map(
+            lambda value: value * next_lr, value_updates
+        )
+        next_policy = optax.apply_updates(policy_p, policy_updates)
+        next_value = optax.apply_updates(value_p, value_updates)
+        return (
+            next_policy,
+            next_value,
+            next_policy_opt,
+            next_value_opt,
+            step_rng,
+            next_lr,
+        ), (metrics, exact_kl)
+
+    initial_carry = (
+        policy_params,
+        value_params,
+        policy_opt_state,
+        value_opt_state,
+        rng,
+        jnp.asarray(learning_rate, dtype=jnp.float32),
+    )
+    final_carry, (all_metrics, all_exact_kl) = jax.lax.scan(
+        ppo_step, initial_carry, jnp.arange(num_updates)
+    )
+    (
+        new_policy_params,
+        new_value_params,
+        new_policy_opt,
+        new_value_opt,
+        _,
+        final_learning_rate,
+    ) = final_carry
+
+    return (
+        new_policy_params,
+        new_value_params,
+        new_policy_opt,
+        new_value_opt,
+        jnp.mean(all_metrics.policy_loss),
+        jnp.mean(all_metrics.value_loss),
+        jnp.mean(all_metrics.entropy_loss),
+        jnp.mean(all_metrics.mirror_loss),
+        jnp.mean(all_metrics.source_policy_kl),
+        jnp.mean(all_metrics.total_loss),
+        jnp.mean(all_metrics.clip_fraction),
+        jnp.mean(all_metrics.approx_kl),
+        jnp.float32(num_epochs),
+        jnp.float32(num_updates),
+        jnp.mean(all_exact_kl),
+        final_learning_rate,
+    )
+
+
 # =============================================================================
 # Training Iteration
 # =============================================================================
@@ -499,6 +739,14 @@ def make_train_iteration_fn(
     source_policy_params: Optional[Any] = None,
 ):
     """Create JIT-compiled training iteration function."""
+
+    optimizer_profile = str(config.ppo.optimizer_profile).lower()
+    if optimizer_profile not in {"legacy", "toddlerbot_rsl_rl_2_3_3"}:
+        raise ValueError(
+            "ppo.optimizer_profile must be 'legacy' or "
+            "'toddlerbot_rsl_rl_2_3_3'"
+        )
+    toddlerbot_optimizer = optimizer_profile == "toddlerbot_rsl_rl_2_3_3"
 
     mirror_loss_coef = float(config.ppo.mirror_loss_coef)
     if mirror_loss_coef < 0.0:
@@ -538,6 +786,16 @@ def make_train_iteration_fn(
         raise ValueError(
             "ppo.source_policy_kl_limit > 0 requires training with --init-policy"
         )
+    if toddlerbot_optimizer and (
+        mirror_loss_coef > 0.0
+        or source_policy_kl_coef > 0.0
+        or source_policy_kl_limit > 0.0
+        or int(config.ppo.critic_warmup_iterations) > 0
+    ):
+        raise ValueError(
+            "toddlerbot_rsl_rl_2_3_3 requires mirror/source-KL/critic-warmup "
+            "extensions to be disabled"
+        )
 
     @jax.jit
     def train_iteration(
@@ -547,6 +805,7 @@ def make_train_iteration_fn(
         entropy_coef: float,
         learning_rate_scale: float,
         actor_update_scale: float,
+        adaptive_learning_rate: float,
     ) -> Tuple[TrainingState, Any, IterationMetrics]:
         """Execute one training iteration (fully on GPU)."""
 
@@ -570,6 +829,16 @@ def make_train_iteration_fn(
         )
 
         total_rewards = trajectory.task_rewards
+        if toddlerbot_optimizer:
+            # RSL-RL's PPO.process_env_step adds gamma * V(s_t) on a
+            # time-limit transition before computing GAE. Match that exact
+            # convention while keeping physical terminations unbootstrapped.
+            total_rewards = _rsl_timeout_bootstrap_rewards(
+                total_rewards,
+                trajectory.values,
+                trajectory.truncations,
+                config.ppo.gamma,
+            )
 
         # ================================================================
         # Step 2: Compute GAE advantages
@@ -596,55 +865,108 @@ def make_train_iteration_fn(
         flat_log_probs = trajectory.log_probs.reshape(batch_size)
         flat_advantages = advantages.reshape(batch_size)
         flat_returns = returns.reshape(batch_size)
+        flat_old_values = trajectory.values.reshape(batch_size)
 
-        (
-            new_policy_params,
-            new_value_params,
-            new_policy_opt,
-            new_value_opt,
-            policy_loss,
-            value_loss,
-            entropy_loss,
-            mirror_loss,
-            source_policy_kl,
-            total_loss,
-            clip_fraction,
-            approx_kl,
-            epochs_used,
-            active_updates,
-        ) = ppo_update_scan(
-            policy_params=state.policy_params,
-            value_params=state.value_params,
-            processor_params=state.processor_params,
-            policy_opt_state=state.policy_opt_state,
-            value_opt_state=state.value_opt_state,
-            ppo_network=ppo_network,
-            policy_optimizer=policy_optimizer,
-            value_optimizer=value_optimizer,
-            obs=flat_obs,
-            critic_obs=flat_critic_obs,
-            actions=flat_actions,
-            old_log_probs=flat_log_probs,
-            advantages=flat_advantages,
-            returns=flat_returns,
-            rng=ppo_rng,
-            num_epochs=config.ppo.epochs,
-            active_epochs=active_ppo_epochs,
-            num_minibatches=config.ppo.num_minibatches,
-            clip_epsilon=config.ppo.clip_epsilon,
-            value_loss_coef=config.ppo.value_loss_coef,
-            entropy_coef=entropy_coef,
-            update_scale=learning_rate_scale,
-            policy_update_scale=actor_update_scale,
-            target_kl=config.ppo.target_kl,
-            kl_early_stop_multiplier=config.ppo.kl_early_stop_multiplier,
-            mirror_loss_coef=mirror_loss_coef,
-            mirror_observation_fn=mirror_observation_fn,
-            mirror_action_fn=mirror_action_fn,
-            source_policy_params=source_policy_params,
-            source_policy_kl_coef=source_policy_kl_coef,
-            source_policy_kl_limit=source_policy_kl_limit,
-        )
+        if toddlerbot_optimizer:
+            (
+                new_policy_params,
+                new_value_params,
+                new_policy_opt,
+                new_value_opt,
+                policy_loss,
+                value_loss,
+                entropy_loss,
+                mirror_loss,
+                source_policy_kl,
+                total_loss,
+                clip_fraction,
+                approx_kl,
+                epochs_used,
+                active_updates,
+                adaptive_kl,
+                next_adaptive_learning_rate,
+            ) = ppo_update_scan_toddlerbot(
+                policy_params=state.policy_params,
+                value_params=state.value_params,
+                processor_params=state.processor_params,
+                policy_opt_state=state.policy_opt_state,
+                value_opt_state=state.value_opt_state,
+                ppo_network=ppo_network,
+                policy_optimizer=policy_optimizer,
+                value_optimizer=value_optimizer,
+                obs=flat_obs,
+                critic_obs=flat_critic_obs,
+                actions=flat_actions,
+                old_log_probs=flat_log_probs,
+                old_values=flat_old_values,
+                advantages=flat_advantages,
+                returns=flat_returns,
+                rng=ppo_rng,
+                num_epochs=config.ppo.epochs,
+                num_minibatches=config.ppo.num_minibatches,
+                clip_epsilon=config.ppo.clip_epsilon,
+                value_loss_coef=config.ppo.value_loss_coef,
+                entropy_coef=entropy_coef,
+                max_grad_norm=config.ppo.max_grad_norm,
+                learning_rate=adaptive_learning_rate,
+                target_kl=config.ppo.target_kl,
+                adaptive_kl_factor=config.ppo.adaptive_kl_factor,
+                min_learning_rate=config.ppo.adaptive_kl_min_learning_rate,
+                max_learning_rate=config.ppo.adaptive_kl_max_learning_rate,
+            )
+        else:
+            (
+                new_policy_params,
+                new_value_params,
+                new_policy_opt,
+                new_value_opt,
+                policy_loss,
+                value_loss,
+                entropy_loss,
+                mirror_loss,
+                source_policy_kl,
+                total_loss,
+                clip_fraction,
+                approx_kl,
+                epochs_used,
+                active_updates,
+            ) = ppo_update_scan(
+                policy_params=state.policy_params,
+                value_params=state.value_params,
+                processor_params=state.processor_params,
+                policy_opt_state=state.policy_opt_state,
+                value_opt_state=state.value_opt_state,
+                ppo_network=ppo_network,
+                policy_optimizer=policy_optimizer,
+                value_optimizer=value_optimizer,
+                obs=flat_obs,
+                critic_obs=flat_critic_obs,
+                actions=flat_actions,
+                old_log_probs=flat_log_probs,
+                advantages=flat_advantages,
+                returns=flat_returns,
+                rng=ppo_rng,
+                num_epochs=config.ppo.epochs,
+                active_epochs=active_ppo_epochs,
+                num_minibatches=config.ppo.num_minibatches,
+                clip_epsilon=config.ppo.clip_epsilon,
+                value_loss_coef=config.ppo.value_loss_coef,
+                entropy_coef=entropy_coef,
+                update_scale=learning_rate_scale,
+                policy_update_scale=actor_update_scale,
+                target_kl=config.ppo.target_kl,
+                kl_early_stop_multiplier=config.ppo.kl_early_stop_multiplier,
+                mirror_loss_coef=mirror_loss_coef,
+                mirror_observation_fn=mirror_observation_fn,
+                mirror_action_fn=mirror_action_fn,
+                source_policy_params=source_policy_params,
+                source_policy_kl_coef=source_policy_kl_coef,
+                source_policy_kl_limit=source_policy_kl_limit,
+            )
+            adaptive_kl = approx_kl
+            next_adaptive_learning_rate = jnp.asarray(
+                adaptive_learning_rate, dtype=jnp.float32
+            )
 
         # ================================================================
         # Step 4: Build new state and metrics
@@ -937,6 +1259,8 @@ def make_train_iteration_fn(
             0.0,
         )
         agg_metrics["ppo/active_updates"] = active_updates
+        agg_metrics["ppo/adaptive_kl"] = adaptive_kl
+        agg_metrics["ppo/adaptive_learning_rate"] = next_adaptive_learning_rate
         agg_metrics["ppo/mirror_loss"] = mirror_loss
         agg_metrics["ppo/mirror_action_rmse"] = jnp.sqrt(
             jnp.maximum(mirror_loss, 0.0)
@@ -1056,6 +1380,45 @@ def _validate_resume_checkpoint(
         "num_minibatches", ckpt_config.get("num_minibatches"), config.ppo.num_minibatches
     )
     _check_mismatch("epochs", ckpt_config.get("epochs"), config.ppo.epochs)
+    _check_mismatch(
+        "optimizer_profile",
+        ckpt_config.get("optimizer_profile", "legacy"),
+        config.ppo.optimizer_profile,
+    )
+    if str(config.ppo.optimizer_profile).lower() == "toddlerbot_rsl_rl_2_3_3":
+        _check_mismatch(
+            "target_kl", ckpt_config.get("target_kl"), config.ppo.target_kl
+        )
+        _check_mismatch(
+            "adaptive_kl_min_learning_rate",
+            ckpt_config.get("adaptive_kl_min_learning_rate"),
+            config.ppo.adaptive_kl_min_learning_rate,
+        )
+        _check_mismatch(
+            "adaptive_kl_max_learning_rate",
+            ckpt_config.get("adaptive_kl_max_learning_rate"),
+            config.ppo.adaptive_kl_max_learning_rate,
+        )
+        _check_mismatch(
+            "adaptive_kl_factor",
+            ckpt_config.get("adaptive_kl_factor"),
+            config.ppo.adaptive_kl_factor,
+        )
+    _check_mismatch(
+        "actor_distribution_type",
+        ckpt_config.get("actor_distribution_type", "tanh_normal"),
+        config.networks.actor.distribution_type,
+    )
+    _check_mismatch(
+        "actor_noise_std_type",
+        ckpt_config.get("actor_noise_std_type", "scalar"),
+        config.networks.actor.noise_std_type,
+    )
+    _check_mismatch(
+        "actor_state_dependent_std",
+        ckpt_config.get("actor_state_dependent_std", True),
+        config.networks.actor.state_dependent_std,
+    )
     _check_mismatch(
         "critic_privileged_enabled",
         ckpt_config.get("critic_privileged_enabled", False),
@@ -1202,6 +1565,42 @@ def train(
         raise ValueError("ppo.source_policy_kl_coef must be >= 0")
     if float(config.ppo.source_policy_kl_limit) < 0.0:
         raise ValueError("ppo.source_policy_kl_limit must be >= 0")
+    optimizer_profile = str(config.ppo.optimizer_profile).lower()
+    if optimizer_profile not in {"legacy", "toddlerbot_rsl_rl_2_3_3"}:
+        raise ValueError(
+            "ppo.optimizer_profile must be 'legacy' or "
+            "'toddlerbot_rsl_rl_2_3_3'"
+        )
+    toddlerbot_optimizer = optimizer_profile == "toddlerbot_rsl_rl_2_3_3"
+    if toddlerbot_optimizer:
+        if str(config.networks.actor.distribution_type) != "normal":
+            raise ValueError(
+                "ToddlerBot optimizer profile requires actor.distribution_type='normal'"
+            )
+        if str(config.networks.actor.noise_std_type) != "log":
+            raise ValueError(
+                "ToddlerBot optimizer profile requires actor.noise_std_type='log'"
+            )
+        if bool(config.networks.actor.state_dependent_std):
+            raise ValueError(
+                "ToddlerBot optimizer profile requires a global, state-independent std"
+            )
+        if float(config.ppo.target_kl) <= 0.0:
+            raise ValueError(
+                "ToddlerBot optimizer profile requires ppo.target_kl > 0"
+            )
+        if float(config.ppo.adaptive_kl_factor) <= 1.0:
+            raise ValueError(
+                "ppo.adaptive_kl_factor must be > 1 for ToddlerBot adaptive KL"
+            )
+        min_lr = float(config.ppo.adaptive_kl_min_learning_rate)
+        max_lr = float(config.ppo.adaptive_kl_max_learning_rate)
+        initial_lr = float(config.ppo.learning_rate)
+        if not (0.0 < min_lr <= initial_lr <= max_lr):
+            raise ValueError(
+                "ToddlerBot adaptive learning-rate bounds must satisfy "
+                "0 < min <= learning_rate <= max"
+            )
     source_policy_params = initial_policy_params
     if resume_checkpoint is not None:
         source_policy_params = resume_checkpoint.get("source_policy_params")
@@ -1223,7 +1622,10 @@ def train(
     action_dim = spec.model.action_dim
     critic_obs_dim = obs_dim
     if bool(config.ppo.critic_privileged_enabled):
-        from training.envs.env_info import PRIVILEGED_OBS_DIM
+        from training.envs.env_info import (
+            PRIVILEGED_OBS_DIM,
+            toddlerbot_privileged_obs_dim,
+        )
 
         # smoke14 critic stacking: the env exposes
         # ``critic_obs_history_frames * PRIVILEGED_OBS_DIM`` on
@@ -1239,7 +1641,18 @@ def train(
                 "env.critic_obs_history_frames must be >= 1; "
                 f"got {critic_history_frames}"
             )
-        critic_obs_dim = PRIVILEGED_OBS_DIM * critic_history_frames
+        if spec.observation.layout_id == "wr_obs_v12_tb_proprio":
+            observed_names = spec.robot.observation_actuator_names
+            if observed_names is None:
+                raise ValueError(
+                    "wr_obs_v12_tb_proprio requires observation_actuator_names"
+                )
+            critic_frame_dim = toddlerbot_privileged_obs_dim(
+                len(observed_names), action_dim
+            )
+        else:
+            critic_frame_dim = PRIVILEGED_OBS_DIM
+        critic_obs_dim = critic_frame_dim * critic_history_frames
         # Lever 7 (smoke2+): when critic_includes_actor_obs is True,
         # the rollout pre-concats actor_obs (already history-stacked
         # by the env into obs_dim) onto the privileged_obs_history
@@ -1284,6 +1697,7 @@ def train(
             f"critic.activation ({critic_activation!r}) must match — "
             "Brax's make_ppo_networks shares one activation across both."
         )
+    policy_init_std = float(jnp.exp(jnp.float32(config.networks.actor.log_std_init)))
     ppo_network = create_networks(
         obs_dim=obs_dim,
         action_dim=action_dim,
@@ -1291,6 +1705,10 @@ def train(
         value_hidden_dims=config.networks.critic.hidden_sizes,
         critic_obs_dim=critic_obs_dim,
         activation=actor_activation,
+        distribution_type=config.networks.actor.distribution_type,
+        noise_std_type=config.networks.actor.noise_std_type,
+        init_noise_std=policy_init_std,
+        state_dependent_std=config.networks.actor.state_dependent_std,
     )
 
     # Initialize network parameters.  policy_init_std is exp(log_std_init)
@@ -1299,7 +1717,6 @@ def train(
     # walking_training.md v0.20.1 §, log_std_init
     # = -1.0 → std ≈ 0.368).  Without this thread the scale would default
     # to 0.10 (~ log_std=-2.30) regardless of the YAML.
-    policy_init_std = float(jnp.exp(jnp.float32(config.networks.actor.log_std_init)))
     processor_params, policy_params, value_params = init_network_params(
         ppo_network,
         obs_dim,
@@ -1320,10 +1737,16 @@ def train(
                 "Initial actor parameters are incompatible with the current "
                 f"{obs_dim}D observation contract"
             ) from exc
-        if tuple(initial_logits.shape) != (2 * action_dim,):
+        initial_mean = initial_logits[0] if isinstance(initial_logits, tuple) else initial_logits
+        expected_output_dim = (
+            action_dim
+            if str(config.networks.actor.distribution_type) == "normal"
+            else 2 * action_dim
+        )
+        if tuple(initial_mean.shape) != (expected_output_dim,):
             raise ValueError(
                 "Initial actor output shape mismatch: expected "
-                f"{(2 * action_dim,)}, got {tuple(initial_logits.shape)}"
+                f"{(expected_output_dim,)}, got {tuple(initial_mean.shape)}"
             )
         policy_params = initial_policy_params
         print("✓ Initialized actor for fine-tuning; critic and optimizers are fresh")
@@ -1335,19 +1758,28 @@ def train(
         * int(config.ppo.epochs)
         * int(config.ppo.num_minibatches),
     )
-    lr_schedule = optax.linear_schedule(
-        init_value=float(config.ppo.learning_rate),
-        end_value=float(config.ppo.learning_rate) * float(config.ppo.lr_schedule_end_factor),
-        transition_steps=total_schedule_updates,
-    )
-    policy_optimizer = optax.chain(
-        optax.clip_by_global_norm(config.ppo.max_grad_norm),
-        optax.adam(lr_schedule),
-    )
-    value_optimizer = optax.chain(
-        optax.clip_by_global_norm(config.ppo.max_grad_norm),
-        optax.adam(lr_schedule),
-    )
+    if toddlerbot_optimizer:
+        # RSL-RL changes the scalar learning rate before each minibatch and
+        # clips actor+critic gradients with one global norm. The update scan
+        # applies both operations explicitly, so Adam itself uses unit LR.
+        lr_schedule = lambda _step: jnp.float32(1.0)
+        policy_optimizer = optax.adam(1.0)
+        value_optimizer = optax.adam(1.0)
+    else:
+        lr_schedule = optax.linear_schedule(
+            init_value=float(config.ppo.learning_rate),
+            end_value=float(config.ppo.learning_rate)
+            * float(config.ppo.lr_schedule_end_factor),
+            transition_steps=total_schedule_updates,
+        )
+        policy_optimizer = optax.chain(
+            optax.clip_by_global_norm(config.ppo.max_grad_norm),
+            optax.adam(lr_schedule),
+        )
+        value_optimizer = optax.chain(
+            optax.clip_by_global_norm(config.ppo.max_grad_norm),
+            optax.adam(lr_schedule),
+        )
 
     # Initialize optimizer states
     policy_opt_state = policy_optimizer.init(policy_params)
@@ -2077,6 +2509,7 @@ def train(
             start_iteration + 1,
             config.ppo.critic_warmup_iterations,
         ),
+        float(config.ppo.learning_rate),
     )
     jax.block_until_ready(_)
     print(f"  ✓ train_iteration_fn compiled ({time.time() - compile_start:.1f}s)")
@@ -2110,6 +2543,13 @@ def train(
     start_time = time.time()
     last_approx_kl = 0.0
     lr_backoff_scale = 1.0
+    adaptive_learning_rate = float(config.ppo.learning_rate)
+    if toddlerbot_optimizer and resume_checkpoint is not None:
+        adaptive_learning_rate = float(
+            (resume_checkpoint.get("metrics") or {}).get(
+                "ppo/adaptive_learning_rate", adaptive_learning_rate
+            )
+        )
     last_eval_metrics: Dict[str, float] = {}
     rollback_bad_count = 0
     best_eval = {
@@ -2148,11 +2588,15 @@ def train(
             iteration,
             config.ppo.critic_warmup_iterations,
         )
-        active_epochs = _effective_ppo_epochs(
-            base_epochs=config.ppo.epochs,
-            previous_approx_kl=last_approx_kl,
-            target_kl=float(config.ppo.target_kl),
-            early_stop_multiplier=float(config.ppo.kl_early_stop_multiplier),
+        active_epochs = (
+            int(config.ppo.epochs)
+            if toddlerbot_optimizer
+            else _effective_ppo_epochs(
+                base_epochs=config.ppo.epochs,
+                previous_approx_kl=last_approx_kl,
+                target_kl=float(config.ppo.target_kl),
+                early_stop_multiplier=float(config.ppo.kl_early_stop_multiplier),
+            )
         )
 
         state, env_state, metrics = train_iteration_fn(
@@ -2162,12 +2606,17 @@ def train(
             entropy_coef,
             learning_rate_scale,
             actor_update_scale,
+            adaptive_learning_rate,
         )
         jax.block_until_ready(state.total_steps)
 
         current_approx_kl = float(metrics.approx_kl)
         kl_backoff_applied = False
-        if (
+        if toddlerbot_optimizer:
+            adaptive_learning_rate = float(
+                metrics.env_metrics["ppo/adaptive_learning_rate"]
+            )
+        elif (
             config.ppo.target_kl > 0.0
             and current_approx_kl
             > float(config.ppo.target_kl) * float(config.ppo.kl_lr_backoff_multiplier)
@@ -2183,10 +2632,12 @@ def train(
         active_updates = int(float(env_metrics.get("ppo/active_updates", 0.0)))
         cumulative_ppo_updates += active_updates
         base_lr_now = float(lr_schedule(cumulative_ppo_updates))
-        env_metrics["ppo/lr"] = jnp.asarray(
-            base_lr_now * lr_backoff_scale,
-            dtype=jnp.float32,
+        logged_lr = (
+            adaptive_learning_rate
+            if toddlerbot_optimizer
+            else base_lr_now * lr_backoff_scale
         )
+        env_metrics["ppo/lr"] = jnp.asarray(logged_lr, dtype=jnp.float32)
         env_metrics["ppo/target_kl"] = jnp.asarray(config.ppo.target_kl, dtype=jnp.float32)
         env_metrics["ppo/lr_backoff_scale"] = jnp.asarray(lr_backoff_scale, dtype=jnp.float32)
         env_metrics["ppo/lr_backoff_applied"] = jnp.asarray(

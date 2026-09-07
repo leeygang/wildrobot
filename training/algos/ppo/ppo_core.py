@@ -83,6 +83,10 @@ def create_networks(
     critic_obs_dim: Optional[int] = None,
     preprocess_observations_fn: Optional[Callable] = None,
     activation: str = "silu",
+    distribution_type: str = "tanh_normal",
+    noise_std_type: str = "scalar",
+    init_noise_std: float = 1.0,
+    state_dependent_std: bool = True,
 ):
     """Create PPO networks using Brax's factory.
 
@@ -115,6 +119,10 @@ def create_networks(
         "policy_hidden_layer_sizes": policy_hidden_dims,
         "value_hidden_layer_sizes": value_hidden_dims,
         "activation": activation_fn,
+        "distribution_type": str(distribution_type),
+        "noise_std_type": str(noise_std_type),
+        "init_noise_std": float(init_noise_std),
+        "state_dependent_std": bool(state_dependent_std),
     }
 
     if preprocess_observations_fn is not None:
@@ -205,7 +213,7 @@ def _init_policy_output_bias(
     policy_init_action: jnp.ndarray,
     policy_init_std: float,
 ) -> Any:
-    """Bias-initialize policy outputs so tanh(loc) ~= policy_init_action.
+    """Bias-initialize policy outputs to the requested deterministic action.
 
     This prevents a freshly initialized policy (which typically outputs near 0)
     from immediately driving the robot away from a stable reset pose.
@@ -216,6 +224,30 @@ def _init_policy_output_bias(
       action = tanh(sample Normal(loc, scale))
     """
     init_action = jnp.asarray(policy_init_action, dtype=jnp.float32).reshape((action_dim,))
+    reference_output = ppo_network.policy_network.apply(
+        (), policy_params, jnp.zeros((int(obs_dim),), dtype=jnp.float32)
+    )
+    if isinstance(reference_output, tuple):
+        # Brax's ``normal`` policy has an MLP mean head plus a global learned
+        # standard deviation. The default Dense bias is already zero; support
+        # non-zero initialization by shifting that mean head only.
+        current_mean = jnp.asarray(reference_output[0], dtype=jnp.float32).reshape(
+            (action_dim,)
+        )
+        desired_mean = init_action
+        delta = desired_mean - current_mean
+        params = policy_params.get("params") if isinstance(policy_params, dict) else None
+        if not isinstance(params, dict) or "Dense_0" not in params:
+            raise ValueError(
+                "Unexpected normal-policy params structure: expected "
+                "params['Dense_0']['bias']"
+            )
+        params_mut = dict(params)
+        dense = dict(params_mut["Dense_0"])
+        dense["bias"] = jnp.asarray(dense["bias"], dtype=jnp.float32) + delta
+        params_mut["Dense_0"] = dense
+        return {**policy_params, "params": params_mut}
+
     eps = jnp.float32(1e-5)
     init_action = jnp.clip(init_action, -1.0 + eps, 1.0 - eps)
     loc_bias = jnp.arctanh(init_action)
@@ -234,7 +266,7 @@ def _init_policy_output_bias(
     # Compute the current output at a reference observation and shift the final
     # layer bias so the reference output matches desired_logits exactly.
     ref_obs = jnp.zeros((int(obs_dim),), dtype=jnp.float32)
-    base_logits = ppo_network.policy_network.apply((), policy_params, ref_obs)
+    base_logits = reference_output
     base_logits = jnp.asarray(base_logits, dtype=jnp.float32).reshape((2 * action_dim,))
     delta = desired_logits - base_logits
 
@@ -396,6 +428,7 @@ def compute_ppo_loss(
     advantages: jnp.ndarray,
     returns: jnp.ndarray,
     rng: jax.Array,
+    old_values: Optional[jnp.ndarray] = None,
     clip_epsilon: float = 0.2,
     value_loss_coef: float = 0.5,
     entropy_coef: float = 0.01,
@@ -405,6 +438,8 @@ def compute_ppo_loss(
     mirror_action_fn: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
     source_policy_params: Optional[Any] = None,
     source_policy_kl_coef: float = 0.0,
+    use_clipped_value_loss: bool = False,
+    legacy_value_loss_half_factor: bool = True,
 ) -> Tuple[jnp.ndarray, PPOLossMetrics]:
     """Compute PPO loss with clipped objective.
 
@@ -468,8 +503,25 @@ def compute_ppo_loss(
 
     policy_loss = -jnp.mean(jnp.minimum(ratio * advantages, clipped_ratio * advantages))
 
-    # Value loss (squared error)
-    value_loss = 0.5 * jnp.mean((values - returns) ** 2)
+    # RSL-RL clips the value update around the rollout-time value estimate and
+    # does not apply the historical Brax 0.5 factor. Keep legacy behavior as
+    # the default so existing training lineages remain byte-compatible.
+    if use_clipped_value_loss:
+        if old_values is None:
+            raise ValueError("clipped value loss requires old_values")
+        value_clipped = old_values + jnp.clip(
+            values - old_values, -clip_epsilon, clip_epsilon
+        )
+        value_loss = jnp.mean(
+            jnp.maximum(
+                jnp.square(values - returns),
+                jnp.square(value_clipped - returns),
+            )
+        )
+    else:
+        value_loss = jnp.mean(jnp.square(values - returns))
+        if legacy_value_loss_half_factor:
+            value_loss = jnp.float32(0.5) * value_loss
 
     # Entropy bonus
     entropy = jnp.mean(ppo_network.parametric_action_distribution.entropy(logits, rng))

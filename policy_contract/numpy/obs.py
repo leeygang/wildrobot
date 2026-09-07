@@ -9,6 +9,34 @@ from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PolicySpec
 
 
+def build_toddlerbot_proprio_frame(
+    *,
+    phase_sin_cos: np.ndarray,
+    velocity_cmd: np.ndarray,
+    motor_pos_delta_rad: np.ndarray,
+    motor_vel_rad_s: np.ndarray,
+    prev_action: np.ndarray,
+    body_angvel_rad_s: np.ndarray,
+    torso_quat_wxyz: np.ndarray,
+) -> np.ndarray:
+    """Build one current-ToddlerBot actor frame in source-code order."""
+    quat = np.asarray(torso_quat_wxyz, dtype=np.float32).reshape(4)
+    if quat[0] < 0.0:
+        quat = -quat
+    return np.concatenate(
+        [
+            np.asarray(phase_sin_cos, dtype=np.float32).reshape(2),
+            np.asarray(velocity_cmd, dtype=np.float32).reshape(3),
+            np.asarray(motor_pos_delta_rad, dtype=np.float32).reshape(-1),
+            np.asarray(motor_vel_rad_s, dtype=np.float32).reshape(-1)
+            * np.float32(0.05),
+            np.asarray(prev_action, dtype=np.float32).reshape(-1),
+            np.asarray(body_angvel_rad_s, dtype=np.float32).reshape(3),
+            quat,
+        ]
+    ).astype(np.float32)
+
+
 def build_observation_from_components(
     *,
     spec: PolicySpec,
@@ -47,6 +75,7 @@ def build_observation_from_components(
     loc_ref_right_foot_vel: np.ndarray | None = None,
     loc_ref_contact_mask: np.ndarray | None = None,
     proprio_history: np.ndarray | None = None,
+    toddlerbot_proprio_stack: np.ndarray | None = None,
 ) -> np.ndarray:
     if spec.observation.layout_id not in {
         "wr_obs_v1", "wr_obs_v2", "wr_obs_v3", "wr_obs_v4",
@@ -58,8 +87,22 @@ def build_observation_from_components(
         # proprio_history, plus a 2-dim ``velocity_cmd_lateral_yaw`` slot.
         "wr_obs_v8_cmd3d",
         "wr_obs_v11_cmd3d_proprio",
+        "wr_obs_v12_tb_proprio",
     }:
         raise ValueError(f"Unsupported layout_id: {spec.observation.layout_id}")
+
+    if spec.observation.layout_id == "wr_obs_v12_tb_proprio":
+        if toddlerbot_proprio_stack is None:
+            raise ValueError(
+                "wr_obs_v12_tb_proprio requires toddlerbot_proprio_stack"
+            )
+        obs = np.asarray(toddlerbot_proprio_stack, dtype=np.float32).reshape(-1)
+        if obs.shape[0] != int(spec.model.obs_dim):
+            raise ValueError(
+                "wr_obs_v12_tb_proprio stack has wrong size: "
+                f"{obs.shape[0]} != {spec.model.obs_dim}"
+            )
+        return obs
 
     cp_error = (
         np.zeros((2,), dtype=np.float32)
@@ -286,9 +329,24 @@ def build_observation(
     loc_ref_right_foot_vel: np.ndarray | None = None,
     loc_ref_contact_mask: np.ndarray | None = None,
     proprio_history: np.ndarray | None = None,
+    toddlerbot_proprio_stack: np.ndarray | None = None,
 ) -> np.ndarray:
     gravity = gravity_local_from_quat(signals.quat_wxyz)
     angvel = angvel_heading_local(signals.gyro_rad_s, signals.quat_wxyz)
+
+    if spec.observation.layout_id == "wr_obs_v12_tb_proprio":
+        action_dim = int(spec.model.action_dim)
+        return build_observation_from_components(
+            spec=spec,
+            gravity_local=gravity,
+            angvel_heading_local=angvel,
+            joint_pos_normalized=np.zeros(action_dim, dtype=np.float32),
+            joint_vel_normalized=np.zeros(action_dim, dtype=np.float32),
+            foot_switches=signals.foot_switches,
+            prev_action=state.prev_action,
+            velocity_cmd=velocity_cmd,
+            toddlerbot_proprio_stack=toddlerbot_proprio_stack,
+        )
 
     joint_pos_norm = NumpyCalibOps.normalize_joint_pos(spec=spec, joint_pos_rad=signals.joint_pos_rad)
     joint_vel_norm = NumpyCalibOps.normalize_joint_vel(spec=spec, joint_vel_rad_s=signals.joint_vel_rad_s)
@@ -322,4 +380,5 @@ def build_observation(
         loc_ref_right_foot_vel=loc_ref_right_foot_vel,
         loc_ref_contact_mask=loc_ref_contact_mask,
         proprio_history=proprio_history,
+        toddlerbot_proprio_stack=toddlerbot_proprio_stack,
     )

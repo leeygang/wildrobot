@@ -50,6 +50,10 @@ SUPPORTED_LAYOUT_IDS = {
     # foot-switch channels removed; contact remains available to the critic,
     # rewards, evaluator, and runtime telemetry.
     "wr_obs_v11_cmd3d_proprio",
+    # Current ToddlerBot 2.x proprioceptive walking layout, adapted only for
+    # WildRobot's actuator count. It observes all motors while controlling the
+    # leg-only action subset and stacks 15 frames newest-first.
+    "wr_obs_v12_tb_proprio",
 }
 # Proprio bundle size used by wr_obs_v6_offline_ref_history.  Per-frame
 # channels that benefit from history (joint_pos + joint_vel + gyro +
@@ -98,6 +102,8 @@ class RobotSpec:
     actuator_names: List[str]
     joints: Dict[str, JointSpec]
     home_ctrl_rad: Optional[List[float]] = None
+    observation_actuator_names: Optional[List[str]] = None
+    observation_home_ctrl_rad: Optional[List[float]] = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,24 @@ class PolicySpec:
                 **(
                     {"home_ctrl_rad": list(self.robot.home_ctrl_rad)}
                     if self.robot.home_ctrl_rad is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "observation_actuator_names": list(
+                            self.robot.observation_actuator_names
+                        )
+                    }
+                    if self.robot.observation_actuator_names is not None
+                    else {}
+                ),
+                **(
+                    {
+                        "observation_home_ctrl_rad": list(
+                            self.robot.observation_home_ctrl_rad
+                        )
+                    }
+                    if self.robot.observation_home_ctrl_rad is not None
                     else {}
                 ),
             },
@@ -345,6 +369,50 @@ def _validate_robot(robot: RobotSpec) -> None:
                 raise ValueError(
                     f"robot.home_ctrl_rad[{idx}]={value} out of range "
                     f"[{joint.range_min_rad}, {joint.range_max_rad}] for joint '{name}'"
+                )
+
+    observed_names = robot.observation_actuator_names
+    observed_home = robot.observation_home_ctrl_rad
+    if (observed_names is None) != (observed_home is None):
+        raise ValueError(
+            "robot.observation_actuator_names and "
+            "robot.observation_home_ctrl_rad must be provided together"
+        )
+    if observed_names is not None and observed_home is not None:
+        if not observed_names or len(set(observed_names)) != len(observed_names):
+            raise ValueError(
+                "robot.observation_actuator_names must be a non-empty unique list"
+            )
+        missing_actions = [
+            name for name in robot.actuator_names if name not in observed_names
+        ]
+        if missing_actions:
+            raise ValueError(
+                "robot.observation_actuator_names must include every controlled "
+                f"actuator; missing: {missing_actions}"
+            )
+        if len(observed_home) != len(observed_names):
+            raise ValueError(
+                "robot.observation_home_ctrl_rad length must match "
+                "observation_actuator_names"
+            )
+        missing_observed = [name for name in observed_names if name not in robot.joints]
+        if missing_observed:
+            raise ValueError(
+                "robot.joints missing observation actuator specs for: "
+                f"{missing_observed}"
+            )
+        for idx, value in enumerate(observed_home):
+            if not isinstance(value, (int, float)):
+                raise ValueError(
+                    f"robot.observation_home_ctrl_rad[{idx}] must be a number"
+                )
+            joint = robot.joints[observed_names[idx]]
+            if value < joint.range_min_rad or value > joint.range_max_rad:
+                raise ValueError(
+                    f"robot.observation_home_ctrl_rad[{idx}]={value} out of range "
+                    f"[{joint.range_min_rad}, {joint.range_max_rad}] for joint "
+                    f"'{observed_names[idx]}'"
                 )
 
 
@@ -560,6 +628,16 @@ def _validate_observation(obs: ObservationSpec, model: ModelSpec) -> None:
                 f"  expected={expected}\n"
                 f"  got={got}"
             )
+    elif obs.layout_id == "wr_obs_v12_tb_proprio":
+        expected = [("proprio_stack", int(model.obs_dim))]
+        got = [(field.name, int(field.size)) for field in obs.layout]
+        if got != expected:
+            raise ValueError(
+                "observation.layout mismatch for layout_id="
+                "'wr_obs_v12_tb_proprio':\n"
+                f"  expected={expected}\n"
+                f"  got={got}"
+            )
     elif obs.layout_id == "wr_obs_v6_offline_ref_history":
         proprio_bundle = (
             3  # angvel
@@ -697,6 +775,19 @@ def _parse_robot(data: Dict[str, Any]) -> RobotSpec:
         actuator_names=[_require_str({"_": name}, "_", context="robot.actuator_names") for name in actuator_names],
         joints=joints,
         home_ctrl_rad=_parse_optional_float_list(data, "home_ctrl_rad", context="robot"),
+        observation_actuator_names=(
+            None
+            if data.get("observation_actuator_names") is None
+            else [
+                _require_str({"_": name}, "_", context="robot.observation_actuator_names")
+                for name in _require_list(
+                    data, "observation_actuator_names", context="robot"
+                )
+            ]
+        ),
+        observation_home_ctrl_rad=_parse_optional_float_list(
+            data, "observation_home_ctrl_rad", context="robot"
+        ),
     )
 
 

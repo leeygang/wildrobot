@@ -96,6 +96,31 @@ def make_v11_spec(*, action_filter_alpha: float = 0.0):
     )
 
 
+def make_v12_spec(*, action_filter_alpha: float = 0.0):
+    """Build the ToddlerBot-style all-motor observation/leg-action spec."""
+    from policy_contract.spec_builder import build_policy_spec
+
+    full_specs = actuated_joint_specs_rad()
+    full_home = [0.5 * (j["range"][0] + j["range"][1]) for j in full_specs]
+    by_name = dict(zip((j["name"] for j in full_specs), full_home, strict=True))
+    leg_specs = [
+        joint
+        for joint in full_specs
+        if any(part in joint["name"] for part in ("hip", "knee", "ankle"))
+    ]
+    leg_home = [by_name[joint["name"]] for joint in leg_specs]
+    return build_policy_spec(
+        robot_name="wildrobot",
+        actuated_joint_specs=leg_specs,
+        observation_actuated_joint_specs=full_specs,
+        action_filter_alpha=action_filter_alpha,
+        home_ctrl_rad=leg_home,
+        observation_home_ctrl_rad=full_home,
+        layout_id="wr_obs_v12_tb_proprio",
+        mapping_id="pos_target_rad_v1",
+    )
+
+
 def make_reference_dict(*, n_steps: int = 96, n_cycle: int = 48):
     """Small synthetic (bin-independent) phase table for runtime tests."""
     import numpy as np
@@ -122,6 +147,7 @@ def make_runtime_policy_config(
     residual_base: str = "home",
     action_delay_steps: int = 1,
     action_filter_alpha: float = 0.0,
+    clip_residual_action: bool = True,
     residual_base_offset_per_actuator: list[float] | None = None,
     reference: dict | None = None,
 ):
@@ -146,6 +172,7 @@ def make_runtime_policy_config(
         action_filter_alpha=action_filter_alpha,
         loc_ref_residual_base=residual_base,
         loc_ref_residual_mode="absolute",
+        loc_ref_clip_residual_action=clip_residual_action,
         loc_ref_residual_scale=SMOKE9_RESIDUAL_SCALAR,
         loc_ref_residual_scale_per_joint=dict(SMOKE9_RESIDUAL_PER_JOINT),
         residual_scale_per_actuator=per_actuator,
@@ -169,6 +196,11 @@ def v8_spec():
 @pytest.fixture
 def v11_spec():
     return make_v11_spec()
+
+
+@pytest.fixture
+def v12_spec():
+    return make_v12_spec()
 
 
 @pytest.fixture

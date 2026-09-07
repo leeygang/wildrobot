@@ -53,7 +53,8 @@ def build_reference_phase_table(env: Dict[str, Any]) -> Dict[str, Any]:
         reset; informational)
       - ``n_steps``: global max steps across bins (step-index advance bound)
       - ``cmd_keys``: ``[[vx, vy, wz], ...]`` per bin (nearest-bin selection)
-      - ``per_bin_n_steps``: ``[n_i, ...]`` per bin (absorbing-boundary clamp)
+      - ``per_bin_n_steps``: ``[n_i, ...]`` per bin (legacy absorbing boundary;
+        v12 uses the shared continuous gait cycle)
       - ``phase_sin`` / ``phase_cos``: shared length-``n_steps`` clock arrays
       - ``primary_q_ref0``: frame-zero joint reference for the canonical
         straight-walk bin, used to freeze a generator-native roll action base
@@ -292,6 +293,9 @@ def build_runtime_metadata(
         "loc_ref_residual_base": residual_base,
         "loc_ref_residual_mode": str(
             _env_get(env, "loc_ref_residual_mode", "absolute")
+        ),
+        "loc_ref_clip_residual_action": bool(
+            _env_get(env, "loc_ref_clip_residual_action", True)
         ),
         "loc_ref_residual_scale": scalar_scale,
         "loc_ref_residual_scale_per_joint": {k: float(v) for k, v in per_joint.items()},

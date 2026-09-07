@@ -37,7 +37,10 @@ import numpy as np
 
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.action import postprocess_action
-from policy_contract.numpy.obs import build_observation
+from policy_contract.numpy.obs import (
+    build_observation,
+    build_toddlerbot_proprio_frame,
+)
 from policy_contract.numpy.signals import Signals
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
@@ -45,8 +48,13 @@ from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
 from .reference_phase import ReferencePhaseService
 from .runtime_policy_config import RuntimePolicyConfig
 
-_SUPPORTED_LAYOUTS = {"wr_obs_v8_cmd3d", "wr_obs_v11_cmd3d_proprio"}
+_SUPPORTED_LAYOUTS = {
+    "wr_obs_v8_cmd3d",
+    "wr_obs_v11_cmd3d_proprio",
+    "wr_obs_v12_tb_proprio",
+}
 _CONTACT_FREE_LAYOUT = "wr_obs_v11_cmd3d_proprio"
+_TODDLERBOT_LAYOUT = "wr_obs_v12_tb_proprio"
 _SUPPORTED_RESIDUAL_BASE = "home"
 
 
@@ -91,8 +99,32 @@ class RuntimePolicyRunner:
         self._robot_io = robot_io
         self._zero_cmd_hold_home_deadzone = zero_cmd_hold_home_deadzone
         self._action_dim = int(spec.model.action_dim)
-        contact_size = 0 if layout == _CONTACT_FREE_LAYOUT else 4
-        self._bundle_size = 3 + contact_size + 3 * self._action_dim
+        self._observation_actuator_names = list(
+            spec.robot.observation_actuator_names or spec.robot.actuator_names
+        )
+        self._observation_home_q_rad = np.asarray(
+            spec.robot.observation_home_ctrl_rad or spec.robot.home_ctrl_rad,
+            dtype=np.float32,
+        )
+        observation_index = {
+            name: idx for idx, name in enumerate(self._observation_actuator_names)
+        }
+        self._action_signal_indices = np.asarray(
+            [observation_index[name] for name in spec.robot.actuator_names],
+            dtype=np.int32,
+        )
+        if layout == _TODDLERBOT_LAYOUT:
+            self._bundle_size = (
+                2
+                + 3
+                + 2 * len(self._observation_actuator_names)
+                + self._action_dim
+                + 3
+                + 4
+            )
+        else:
+            contact_size = 0 if layout == _CONTACT_FREE_LAYOUT else 4
+            self._bundle_size = 3 + contact_size + 3 * self._action_dim
 
         delay_steps = int(runtime_config.action_delay_steps)
         if delay_steps not in (0, 1):
@@ -235,7 +267,11 @@ class RuntimePolicyRunner:
         cmd = _as_three_vec(velocity_cmd)
         bin_idx = self._phase_service.select_bin(cmd)
         phase = self._phase_service.phase_sin_cos(
-            bin_idx=bin_idx, step_idx=self._state.step_idx
+            bin_idx=bin_idx,
+            step_idx=self._state.step_idx,
+            continuous_cycle=(
+                self._spec.observation.layout_id == _TODDLERBOT_LAYOUT
+            ),
         )
         obs_debug = {
             "velocity_cmd": cmd.copy(),
@@ -245,6 +281,38 @@ class RuntimePolicyRunner:
         policy_state = PolicyState(
             prev_action=np.asarray(self._state.last_applied_action, dtype=np.float32)
         )
+        if self._spec.observation.layout_id == _TODDLERBOT_LAYOUT:
+            if signals.joint_pos_rad.size != len(self._observation_actuator_names):
+                raise ValueError(
+                    "ToddlerBot observation joint count mismatch: "
+                    f"{signals.joint_pos_rad.size} != "
+                    f"{len(self._observation_actuator_names)}"
+                )
+            current_frame = build_toddlerbot_proprio_frame(
+                phase_sin_cos=phase,
+                velocity_cmd=cmd,
+                motor_pos_delta_rad=(
+                    np.asarray(signals.joint_pos_rad, dtype=np.float32)
+                    - self._observation_home_q_rad
+                ),
+                motor_vel_rad_s=signals.joint_vel_rad_s,
+                prev_action=self._state.last_applied_action,
+                body_angvel_rad_s=signals.gyro_rad_s,
+                torso_quat_wxyz=signals.quat_wxyz,
+            )
+            self._state.proprio_history = np.concatenate(
+                [current_frame[None, :], self._state.proprio_history[:-1]],
+                axis=0,
+            ).astype(np.float32)
+            obs = build_observation(
+                spec=self._spec,
+                state=policy_state,
+                signals=signals,
+                velocity_cmd=cmd,
+                toddlerbot_proprio_stack=self._state.proprio_history.reshape(-1),
+            )
+            self._last_obs_debug = obs_debug
+            return obs
         obs = build_observation(
             spec=self._spec,
             state=policy_state,
@@ -288,11 +356,17 @@ class RuntimePolicyRunner:
         else:
             applied = filtered.copy()
 
-        self._state.step_idx = min(
-            self._state.step_idx + 1, self._phase_service.n_steps - 1
-        )
+        if self._spec.observation.layout_id == _TODDLERBOT_LAYOUT:
+            self._state.step_idx += 1
+        else:
+            self._state.step_idx = min(
+                self._state.step_idx + 1, self._phase_service.n_steps - 1
+            )
 
-        residual = np.clip(applied, -1.0, 1.0) * self._residual_scale
+        residual_action = applied
+        if self._cfg.loc_ref_clip_residual_action:
+            residual_action = np.clip(residual_action, -1.0, 1.0)
+        residual = residual_action * self._residual_scale
         target_q = np.clip(
             self._residual_base_q_rad + residual,
             self._joint_min,
@@ -306,9 +380,12 @@ class RuntimePolicyRunner:
     def hold_home_step(self) -> tuple[np.ndarray, np.ndarray]:
         """Advance runtime state while commanding the policy home pose."""
         zeros = np.zeros(self._action_dim, dtype=np.float32)
-        self._state.step_idx = min(
-            self._state.step_idx + 1, self._phase_service.n_steps - 1
-        )
+        if self._spec.observation.layout_id == _TODDLERBOT_LAYOUT:
+            self._state.step_idx += 1
+        else:
+            self._state.step_idx = min(
+                self._state.step_idx + 1, self._phase_service.n_steps - 1
+            )
         self._state.pending_action = zeros.copy()
         self._state.last_applied_action = zeros.copy()
         return self._home_q_rad.copy(), zeros
@@ -320,6 +397,8 @@ class RuntimePolicyRunner:
         Mirrors V6EvalAdapter.post_physics. The contact-free contract omits
         ``foot_switches`` from both the current observation and this history.
         """
+        if self._spec.observation.layout_id == _TODDLERBOT_LAYOUT:
+            return
         joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
             spec=self._spec, joint_pos_rad=signals.joint_pos_rad
         ).astype(np.float32)
@@ -436,6 +515,21 @@ class RuntimePolicyRunner:
         if not isinstance(servo_diagnostics, dict):
             servo_diagnostics = {}
 
+        action_signals = signals
+        if signals.joint_pos_rad.size != self._action_dim:
+            action_signals = type(signals)(
+                quat_wxyz=signals.quat_wxyz,
+                gyro_rad_s=signals.gyro_rad_s,
+                joint_pos_rad=np.asarray(signals.joint_pos_rad)[
+                    self._action_signal_indices
+                ],
+                joint_vel_rad_s=np.asarray(signals.joint_vel_rad_s)[
+                    self._action_signal_indices
+                ],
+                foot_switches=signals.foot_switches,
+                timestamp_s=signals.timestamp_s,
+            )
+
         return {
             "step_idx": int(self._state.step_idx),
             "obs": obs,
@@ -444,7 +538,8 @@ class RuntimePolicyRunner:
             "target_q_rad": target_q,
             "commanded_q_rad": commanded_q_rad,
             "previous_commanded_q_rad": previous_commanded_q_rad,
-            "signals": signals,
+            "signals": action_signals,
+            "hardware_signals": signals,
             "footswitch_available": bool(
                 getattr(self._robot_io, "footswitch_available", True)
             ),

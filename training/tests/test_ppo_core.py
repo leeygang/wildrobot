@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import optax
 import pytest
 
 from training.algos.ppo.ppo_core import (
@@ -15,6 +16,10 @@ from training.algos.ppo.ppo_core import (
     init_network_params,
     make_inference_fn,
     sample_actions,
+)
+from training.core.training_loop import (
+    _rsl_timeout_bootstrap_rewards,
+    ppo_update_scan_toddlerbot,
 )
 
 
@@ -66,6 +71,34 @@ class TestNetworkCreation:
         assert processor_params == ()
         assert policy_params is not None
         assert value_params is not None
+
+    def test_toddlerbot_normal_actor_uses_global_log_std(self):
+        network = create_networks(
+            obs_dim=OBS_DIM,
+            action_dim=ACTION_DIM,
+            policy_hidden_dims=POLICY_HIDDEN_DIMS,
+            value_hidden_dims=VALUE_HIDDEN_DIMS,
+            activation="elu",
+            distribution_type="normal",
+            noise_std_type="log",
+            init_noise_std=0.5,
+            state_dependent_std=False,
+        )
+        processor, policy_params, _ = init_network_params(
+            network,
+            OBS_DIM,
+            ACTION_DIM,
+            seed=0,
+            policy_init_action=jnp.zeros(ACTION_DIM),
+            policy_init_std=0.5,
+        )
+        mean, std = network.policy_network.apply(
+            processor, policy_params, jnp.zeros((3, OBS_DIM))
+        )
+
+        assert mean.shape == (3, ACTION_DIM)
+        assert std.shape == (ACTION_DIM,)
+        assert jnp.allclose(std, 0.5)
 
 
 class TestPolicySampling:
@@ -166,6 +199,18 @@ class TestGAE:
 
         assert jnp.allclose(returns, advantages + step_values)
 
+    def test_rsl_timeout_bootstrap_matches_toddlerbot_runner(self):
+        rewards = jnp.asarray([[1.0, 2.0]], dtype=jnp.float32)
+        values = jnp.asarray([[3.0, 4.0]], dtype=jnp.float32)
+        truncations = jnp.asarray([[1.0, 0.0]], dtype=jnp.float32)
+
+        adjusted = _rsl_timeout_bootstrap_rewards(
+            rewards, values, truncations, gamma=0.97
+        )
+
+        assert adjusted[0, 0] == pytest.approx(1.0 + 0.97 * 3.0)
+        assert adjusted[0, 1] == pytest.approx(2.0)
+
 
 class TestPPOLoss:
     """Tests for PPO loss computation."""
@@ -203,6 +248,45 @@ class TestPPOLoss:
         assert metrics.entropy_loss.shape == ()
         assert metrics.mirror_loss == pytest.approx(0.0)
         assert metrics.source_policy_kl == pytest.approx(0.0)
+
+    def test_clipped_value_loss_matches_rsl_rl_formula(
+        self, ppo_network, network_params
+    ):
+        processor_params, policy_params, value_params = network_params
+        obs = jnp.zeros((BATCH_SIZE, OBS_DIM), dtype=jnp.float32)
+        values = compute_values(processor_params, value_params, ppo_network, obs)
+        returns = values + 1.0
+        old_values = values - 1.0
+        actions, raw_actions, old_log_probs = sample_actions(
+            processor_params,
+            policy_params,
+            ppo_network,
+            obs,
+            jax.random.PRNGKey(17),
+        )
+        del actions
+
+        _, metrics = compute_ppo_loss(
+            processor_params=processor_params,
+            policy_params=policy_params,
+            value_params=value_params,
+            ppo_network=ppo_network,
+            obs=obs,
+            value_obs=None,
+            actions=raw_actions,
+            old_log_probs=old_log_probs,
+            old_values=old_values,
+            advantages=jnp.zeros(BATCH_SIZE),
+            returns=returns,
+            rng=jax.random.PRNGKey(18),
+            entropy_coef=0.0,
+            use_clipped_value_loss=True,
+            legacy_value_loss_half_factor=False,
+        )
+
+        # value_clipped = old + 0.2 = current - 0.8, so the clipped error is
+        # 1.8 and dominates the unclipped current-vs-return error of 1.0.
+        assert metrics.value_loss == pytest.approx(1.8**2, rel=1e-5)
 
     def test_compute_ppo_loss_adds_fixed_source_policy_kl(
         self, ppo_network, network_params
@@ -301,6 +385,73 @@ class TestPPOLoss:
                 rng=rng,
                 mirror_loss_coef=0.1,
             )
+
+
+class TestToddlerBotUpdate:
+    def test_executes_every_epoch_and_minibatch(self):
+        obs_dim = 4
+        action_dim = 2
+        network = create_networks(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            policy_hidden_dims=(8,),
+            value_hidden_dims=(8,),
+            activation="elu",
+            distribution_type="normal",
+            noise_std_type="log",
+            init_noise_std=0.5,
+            state_dependent_std=False,
+        )
+        processor, policy_params, value_params = init_network_params(
+            network, obs_dim, action_dim, seed=23
+        )
+        obs = jax.random.normal(jax.random.PRNGKey(24), (8, obs_dim))
+        _, actions, old_log_probs = sample_actions(
+            processor,
+            policy_params,
+            network,
+            obs,
+            jax.random.PRNGKey(25),
+        )
+        old_values = compute_values(processor, value_params, network, obs)
+        advantages = jnp.linspace(-1.0, 1.0, 8, dtype=jnp.float32)
+        returns = old_values + advantages
+        policy_optimizer = optax.adam(1.0)
+        value_optimizer = optax.adam(1.0)
+
+        result = ppo_update_scan_toddlerbot(
+            policy_params=policy_params,
+            value_params=value_params,
+            processor_params=processor,
+            policy_opt_state=policy_optimizer.init(policy_params),
+            value_opt_state=value_optimizer.init(value_params),
+            ppo_network=network,
+            policy_optimizer=policy_optimizer,
+            value_optimizer=value_optimizer,
+            obs=obs,
+            critic_obs=None,
+            actions=actions,
+            old_log_probs=old_log_probs,
+            old_values=old_values,
+            advantages=advantages,
+            returns=returns,
+            rng=jax.random.PRNGKey(26),
+            num_epochs=2,
+            num_minibatches=2,
+            clip_epsilon=0.2,
+            value_loss_coef=0.25,
+            entropy_coef=5.0e-4,
+            max_grad_norm=1.0,
+            learning_rate=3.0e-5,
+            target_kl=0.01,
+            adaptive_kl_factor=1.5,
+            min_learning_rate=1.0e-5,
+            max_learning_rate=1.0e-2,
+        )
+
+        assert float(result[12]) == pytest.approx(2.0)
+        assert float(result[13]) == pytest.approx(4.0)
+        assert 1.0e-5 <= float(result[15]) <= 1.0e-2
 
 
 class TestOptimizer:

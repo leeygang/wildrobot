@@ -141,6 +141,10 @@ class EnvConfig(Freezable):
     # Residual joint delta scale.  Interpretation depends on
     # loc_ref_residual_mode (see below).
     loc_ref_residual_scale: float = 0.18
+    # ToddlerBot's normal policy is not squashed before residual composition.
+    # The final motor target is still clipped to each joint's physical range.
+    # Legacy WildRobot policies keep the historical pre-residual [-1, 1] clip.
+    loc_ref_clip_residual_action: bool = True
 
     # v0.20.1 smoke residual bounds / §4.1 — residual
     # interpretation mode.
@@ -671,8 +675,17 @@ class EnvConfig(Freezable):
     domain_rand_friction_range: List[float] = field(default_factory=lambda: [0.5, 1.0])
     domain_rand_mass_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
     domain_rand_kp_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
+    domain_rand_damping_scale_range: List[float] = field(default_factory=lambda: [1.0, 1.0])
+    domain_rand_armature_scale_range: List[float] = field(default_factory=lambda: [1.0, 1.0])
     domain_rand_frictionloss_scale_range: List[float] = field(default_factory=lambda: [0.9, 1.1])
     domain_rand_joint_offset_rad: float = 0.03  # U(-val, val) added to qpos0
+    # ToddlerBot actor-side encoder noise. Values are uniform half-ranges in
+    # physical units and default to zero for existing policies.
+    joint_pos_noise_rad: float = 0.0
+    joint_vel_noise_rad_s: float = 0.0
+    # Reset-time arm joint perturbation around the frame-zero pose. This only
+    # affects joints excluded from the leg action space.
+    reset_arm_joint_offset_range: Tuple[float, float] = (0.0, 0.0)
     # ToddlerBot-style hidden, episode-constant sagittal calibration error.
     # A sampled torso-pitch magnitude is partitioned across bilateral hip,
     # knee, and ankle pitch targets.  Physics receives the biased target while
@@ -944,6 +957,14 @@ class PPOConfig(Freezable):
     num_minibatches: int = 32
     max_grad_norm: float = 0.5
 
+    # ``toddlerbot_rsl_rl_2_3_3`` reproduces the optimizer semantics used by
+    # the current ToddlerBot training entry point while retaining WR's JAX
+    # environment/checkpoint pipeline. Existing configs remain on ``legacy``.
+    optimizer_profile: str = "legacy"
+    adaptive_kl_min_learning_rate: float = 1.0e-5
+    adaptive_kl_max_learning_rate: float = 1.0e-2
+    adaptive_kl_factor: float = 1.5
+
     log_interval: int = 10
 
     target_kl: float = 0.0
@@ -1051,6 +1072,9 @@ class ActorNetworkConfig(Freezable):
     log_std_init: float = -1.0
     min_log_std: float = -5.0
     max_log_std: float = 2.0
+    distribution_type: str = "tanh_normal"
+    noise_std_type: str = "scalar"
+    state_dependent_std: bool = True
 
 
 @dataclass

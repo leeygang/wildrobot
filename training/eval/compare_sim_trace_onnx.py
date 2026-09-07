@@ -296,6 +296,10 @@ def _load_checkpoint_policy(*, checkpoint_path: Path, obs_dim: int, action_dim: 
         policy_hidden_dims=policy_hidden,
         value_hidden_dims=value_hidden,
         activation=activation,
+        distribution_type=training_cfg.networks.actor.distribution_type,
+        noise_std_type=training_cfg.networks.actor.noise_std_type,
+        init_noise_std=float(np.exp(training_cfg.networks.actor.log_std_init)),
+        state_dependent_std=training_cfg.networks.actor.state_dependent_std,
     )
     policy_params = checkpoint["policy_params"]
     processor_params = checkpoint.get("processor_params", ())

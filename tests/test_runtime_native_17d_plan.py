@@ -64,3 +64,35 @@ def test_leg_only_runtime_holds_excluded_actuators_at_home() -> None:
             else home[idx]
         )
         assert full_written[idx] == pytest.approx(expected)
+
+
+def test_toddlerbot_leg_policy_reads_all_hardware_actuators() -> None:
+    cfg = load_training_config(
+        "training/configs/ppo_walking_v0210_tb2_rsl_parity.yaml"
+    )
+    robot_cfg = load_robot_config("assets/v2/mujoco_robot_config.json")
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg, robot_cfg=robot_cfg
+    )
+    hardware_names, home, _, _ = _walking_runtime_plan(spec)
+    observed_names = spec.robot.observation_actuator_names
+    assert observed_names is not None
+
+    base = MockRobotIO(
+        actuator_names=hardware_names,
+        control_dt=0.02,
+        home_q_rad=home,
+    )
+    projected = _PolicySubsetRobotIO(
+        base,
+        policy_actuator_names=spec.robot.actuator_names,
+        hardware_actuator_names=hardware_names,
+        hardware_home_q_rad=home,
+        observation_actuator_names=observed_names,
+    )
+
+    signals = projected.read()
+    assert signals.joint_pos_rad.shape == (17,)
+    assert signals.joint_vel_rad_s.shape == (17,)
+    projected.write_ctrl(home[[hardware_names.index(n) for n in spec.robot.actuator_names]])
+    assert base.written[-1].shape == (17,)

@@ -647,6 +647,10 @@ def main() -> int:
         policy_hidden_dims=tuple(training_cfg.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
         activation=activation,
+        distribution_type=training_cfg.networks.actor.distribution_type,
+        noise_std_type=training_cfg.networks.actor.noise_std_type,
+        init_noise_std=float(np.exp(training_cfg.networks.actor.log_std_init)),
+        state_dependent_std=training_cfg.networks.actor.state_dependent_std,
     )
 
     checkpoint = load_checkpoint(str(checkpoint_path))

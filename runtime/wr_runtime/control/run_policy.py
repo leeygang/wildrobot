@@ -87,7 +87,11 @@ _RUN_POLICY_LOG_DIR = Path(__file__).resolve().parents[3] / "_run_policy_logs"
 _STANDING_LAYOUT_IDS = {
     "wr_obs_v1", "wr_obs_v9_standing", "wr_obs_v10_standing_recovery"
 }
-_WALKING_LAYOUT_IDS = {"wr_obs_v8_cmd3d", "wr_obs_v11_cmd3d_proprio"}
+_WALKING_LAYOUT_IDS = {
+    "wr_obs_v8_cmd3d",
+    "wr_obs_v11_cmd3d_proprio",
+    "wr_obs_v12_tb_proprio",
+}
 
 
 class _LogStream:
@@ -194,6 +198,7 @@ class _PolicySubsetRobotIO:
         policy_actuator_names: Sequence[str],
         hardware_actuator_names: Sequence[str],
         hardware_home_q_rad: np.ndarray,
+        observation_actuator_names: Sequence[str] | None = None,
     ) -> None:
         self._robot_io = robot_io
         self.actuator_names = list(policy_actuator_names)
@@ -205,6 +210,20 @@ class _PolicySubsetRobotIO:
         self._policy_indices = np.asarray(
             [index_by_name[name] for name in self.actuator_names], dtype=np.int32
         )
+        self.observation_actuator_names = list(
+            observation_actuator_names or self.actuator_names
+        )
+        missing_observed = [
+            name for name in self.observation_actuator_names if name not in index_by_name
+        ]
+        if missing_observed:
+            raise ValueError(
+                f"Observation actuators missing from hardware plan: {missing_observed}"
+            )
+        self._observation_indices = np.asarray(
+            [index_by_name[name] for name in self.observation_actuator_names],
+            dtype=np.int32,
+        )
         self._full_home = np.asarray(hardware_home_q_rad, dtype=np.float32).reshape(-1)
         if self._full_home.size != len(full_names):
             raise ValueError("Hardware home length does not match actuator plan")
@@ -215,8 +234,8 @@ class _PolicySubsetRobotIO:
         return type(signals)(
             quat_wxyz=signals.quat_wxyz,
             gyro_rad_s=signals.gyro_rad_s,
-            joint_pos_rad=np.asarray(signals.joint_pos_rad)[self._policy_indices],
-            joint_vel_rad_s=np.asarray(signals.joint_vel_rad_s)[self._policy_indices],
+            joint_pos_rad=np.asarray(signals.joint_pos_rad)[self._observation_indices],
+            joint_vel_rad_s=np.asarray(signals.joint_vel_rad_s)[self._observation_indices],
             foot_switches=signals.foot_switches,
             timestamp_s=signals.timestamp_s,
         )
@@ -2527,15 +2546,15 @@ def _run_deployment_bundle_from_args(
         )
     walking_names = list(walking_bundle.spec.robot.actuator_names)
     standing_names = list(standing_bundle.spec.robot.actuator_names)
-    if walking_names != standing_names:
-        raise SystemExit(
-            "Standing and walking policy actuator orders must match: "
-            f"standing={standing_names}, walking={walking_names}"
-        )
     hardware_names, hardware_home, hardware_min, hardware_max = (
         _walking_runtime_plan(walking_bundle.spec)
     )
-    _standing_runtime_plan(standing_bundle.spec)
+    standing_plan = _standing_runtime_plan(standing_bundle.spec)
+    if list(standing_plan[0]) != hardware_names:
+        raise SystemExit(
+            "Standing policy actuator order must match the walking hardware plan: "
+            f"standing={list(standing_plan[0])}, hardware={hardware_names}"
+        )
     telemetry = _create_telemetry_recorder(
         args,
         actuator_names=walking_names,
@@ -2746,11 +2765,23 @@ def _run_deployment_bundle_from_args(
                 ),
                 blend_steps=blend_steps,
             )
+            walking_robot_io = blended_robot_io
+            if walking_names != hardware_names:
+                walking_robot_io = _PolicySubsetRobotIO(
+                    blended_robot_io,
+                    policy_actuator_names=walking_names,
+                    hardware_actuator_names=hardware_names,
+                    hardware_home_q_rad=hardware_home,
+                    observation_actuator_names=(
+                        walking_bundle.spec.robot.observation_actuator_names
+                        or walking_names
+                    ),
+                )
             walking_runner = RuntimePolicyRunner(
                 spec=walking_bundle.spec,
                 runtime_config=walking_cfg,
                 policy=walking_policy,
-                robot_io=blended_robot_io,
+                robot_io=walking_robot_io,
                 zero_cmd_hold_home_deadzone=(
                     None
                     if bool(args.disable_zero_cmd_hold_home)
@@ -2941,6 +2972,9 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             policy_actuator_names=actuator_names,
             hardware_actuator_names=hardware_actuator_names,
             hardware_home_q_rad=hardware_home,
+            observation_actuator_names=(
+                bundle.spec.robot.observation_actuator_names or actuator_names
+            ),
         )
 
     startup_pose_blend_steps = 0

@@ -48,6 +48,13 @@ def _extract_mlp_layers(policy_params: Dict[str, Any]) -> List[Tuple[np.ndarray,
         raise ValueError("Expected checkpoint['policy_params'] to have a dict key 'params'.")
 
     params = policy_params["params"]
+    output_layer = None
+    if "MLP_0" in params and "Dense_0" in params:
+        # Brax ``distribution_type='normal'`` wraps the hidden MLP and keeps
+        # the deterministic mean in a separate Dense head. The learned global
+        # std is intentionally excluded from deterministic ONNX inference.
+        output_layer = params["Dense_0"]
+        params = params["MLP_0"]
 
     layers: List[Tuple[int, Dict[str, Any]]] = []
     for name, value in params.items():
@@ -76,6 +83,11 @@ def _extract_mlp_layers(policy_params: Dict[str, Any]) -> List[Tuple[np.ndarray,
             raise ValueError(f"Shape mismatch for hidden_{idx}: kernel={w.shape} bias={b.shape}")
         out.append((w, b))
 
+    if output_layer is not None:
+        if "kernel" not in output_layer or "bias" not in output_layer:
+            raise ValueError("Normal policy Dense_0 is missing kernel/bias")
+        out.append((_as_np(output_layer["kernel"]), _as_np(output_layer["bias"])))
+
     # Sanity: chain dimensions
     for i in range(1, len(out)):
         prev_w, _ = out[i - 1]
@@ -87,6 +99,19 @@ def _extract_mlp_layers(policy_params: Dict[str, Any]) -> List[Tuple[np.ndarray,
             )
 
     return out
+
+
+def _checkpoint_distribution_type(ckpt: Dict[str, Any]) -> str:
+    config = ckpt.get("config")
+    if isinstance(config, dict):
+        value = config.get("actor_distribution_type")
+        if value:
+            return str(value)
+    policy_params = ckpt.get("policy_params")
+    params = policy_params.get("params") if isinstance(policy_params, dict) else None
+    if isinstance(params, dict) and "MLP_0" in params and "Dense_0" in params:
+        return "normal"
+    return "tanh_normal"
 
 
 def get_checkpoint_dims(checkpoint_path: Path) -> tuple[int, int]:
@@ -102,9 +127,15 @@ def get_checkpoint_dims(checkpoint_path: Path) -> tuple[int, int]:
 
     obs_dim = int(layers[0][0].shape[0])
     logits_dim = int(layers[-1][1].shape[0])
-    if logits_dim % 2 != 0:
-        raise ValueError(f"Expected final logits_dim to be even (mean+scale), got {logits_dim}")
-    action_dim = logits_dim // 2
+    distribution_type = _checkpoint_distribution_type(ckpt)
+    if distribution_type == "normal":
+        action_dim = logits_dim
+    else:
+        if logits_dim % 2 != 0:
+            raise ValueError(
+                f"Expected final logits_dim to be even (mean+scale), got {logits_dim}"
+            )
+        action_dim = logits_dim // 2
     return obs_dim, action_dim
 
 
@@ -178,9 +209,15 @@ def export_checkpoint_to_onnx(
 
     obs_dim = int(layers[0][0].shape[0])
     logits_dim = int(layers[-1][1].shape[0])
-    if logits_dim % 2 != 0:
-        raise ValueError(f"Expected final logits_dim to be even (mean+scale), got {logits_dim}")
-    action_dim = logits_dim // 2
+    distribution_type = _checkpoint_distribution_type(ckpt)
+    if distribution_type == "normal":
+        action_dim = logits_dim
+    else:
+        if logits_dim % 2 != 0:
+            raise ValueError(
+                f"Expected final logits_dim to be even (mean+scale), got {logits_dim}"
+            )
+        action_dim = logits_dim // 2
 
     # Build ONNX graph
     nodes = []
@@ -231,39 +268,40 @@ def export_checkpoint_to_onnx(
 
     logits = prev
 
-    # mean = logits[:, :action_dim]
-    starts = np.array([0, 0], dtype=np.int64)
-    ends = np.array([1, action_dim], dtype=np.int64)
-    axes = np.array([0, 1], dtype=np.int64)
-    steps = np.array([1, 1], dtype=np.int64)
+    if distribution_type == "normal":
+        nodes.append(helper.make_node("Identity", inputs=[logits], outputs=[output_name]))
+    else:
+        # mean = logits[:, :action_dim]
+        starts = np.array([0, 0], dtype=np.int64)
+        ends = np.array([1, action_dim], dtype=np.int64)
+        axes = np.array([0, 1], dtype=np.int64)
+        steps = np.array([1, 1], dtype=np.int64)
 
-    def add_i64(name: str, arr: np.ndarray) -> str:
-        initializers.append(
-            helper.make_tensor(
-                name=name,
-                data_type=TensorProto.INT64,
-                dims=list(arr.shape),
-                vals=arr.flatten().tolist(),
+        def add_i64(name: str, arr: np.ndarray) -> str:
+            initializers.append(
+                helper.make_tensor(
+                    name=name,
+                    data_type=TensorProto.INT64,
+                    dims=list(arr.shape),
+                    vals=arr.flatten().tolist(),
+                )
+            )
+            return name
+
+        starts_name = add_i64("slice_starts", starts)
+        ends_name = add_i64("slice_ends", ends)
+        axes_name = add_i64("slice_axes", axes)
+        steps_name = add_i64("slice_steps", steps)
+
+        mean = "mean"
+        nodes.append(
+            helper.make_node(
+                "Slice",
+                inputs=[logits, starts_name, ends_name, axes_name, steps_name],
+                outputs=[mean],
             )
         )
-        return name
-
-    starts_name = add_i64("slice_starts", starts)
-    ends_name = add_i64("slice_ends", ends)
-    axes_name = add_i64("slice_axes", axes)
-    steps_name = add_i64("slice_steps", steps)
-
-    mean = "mean"
-    nodes.append(
-        helper.make_node(
-            "Slice",
-            inputs=[logits, starts_name, ends_name, axes_name, steps_name],
-            outputs=[mean],
-        )
-    )
-
-    # action = tanh(mean)
-    nodes.append(helper.make_node("Tanh", inputs=[mean], outputs=[output_name]))
+        nodes.append(helper.make_node("Tanh", inputs=[mean], outputs=[output_name]))
 
     graph = helper.make_graph(
         nodes=nodes,
@@ -293,6 +331,7 @@ def export_checkpoint_to_onnx(
     print(f"  obs_dim:    {obs_dim}")
     print(f"  action_dim: {action_dim}")
     print(f"  activation: {hidden_activation}")
+    print(f"  distribution: {distribution_type}")
 
 
 def main() -> None:

@@ -63,8 +63,12 @@ class MujocoSignalsAdapter(NumpySignalsProvider[Signals]):
         else:
             self._contact_force = None
 
+        observation_names = (
+            policy_spec.robot.observation_actuator_names
+            or policy_spec.robot.actuator_names
+        )
         self._joint_qpos_idx, self._joint_qvel_idx = _resolve_actuator_joint_indices(
-            mj_model, list(policy_spec.robot.actuator_names)
+            mj_model, list(observation_names)
         )
 
     def read(self, mj_data: mujoco.MjData) -> Signals:

@@ -8,6 +8,63 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb1-result + tb2-ready] - 2026-09-07: correct the ToddlerBot/RSL-RL contract
+
+The `v0.21.0-tb1` run is
+`training/wandb/offline-run-20260906_150014-x45g6luf`. Its authoritative
+post-training evaluation selected no checkpoint. The best stable candidate,
+checkpoint 1740, had `0/64` falls and excellent stable tilt
+(`0.97/2.16/1.88 deg` mean/max/final) with `0.009%` maximum stable actuator
+saturation, but it did not walk: forward velocity was `0.00002 m/s` for a
+`0.13333 m/s` command and touchdown step length was `-0.00118 m`. Checkpoint
+2440 reached only `0.00644 m/s` and regressed to `13/64` falls with a
+`23.46 deg` stable/final tilt maximum. Stability alone therefore does not make
+the run deployable.
+
+A source-level comparison with local ToddlerBot commit `f81679b` found that
+`tb1` was not actually running ToddlerBot's current learner contract. Its
+logged updates averaged only `4.57/64` configured minibatches per iteration
+because WR's hard KL stop skipped most of the four epochs. It also used a
+tanh-squashed state-dependent actor, enabled mirror loss by default, observed
+only the controlled leg joints through a WR-specific frame, duplicated those
+actor inputs in its critic, and used the legacy home-reset jitter path.
+
+The new cold-start config is
+`training/configs/ppo_walking_v0210_tb2_rsl_parity.yaml`. It adds a pinned
+`toddlerbot_rsl_rl_2_3_3` optimizer profile: all four epochs execute, exact
+Gaussian KL drives bidirectional learning-rate adaptation, value loss is PPO
+clipped, advantages are normalized over the rollout, and actor/critic
+gradients share the same global-norm limit. Time-limit transitions also use
+RSL-RL's value bootstrap before GAE. The actor is now an unsquashed
+Normal distribution with global learned log standard deviation initialized to
+`0.5`, and symmetry is disabled as in ToddlerBot's default invocation.
+
+The new `wr_obs_v12_tb_proprio` contract controls ten WR leg joints but
+observes all 17 motors in ToddlerBot's exact per-frame order, stacked 15 frames
+newest-first (`840D`). Its privileged critic uses the corresponding clean
+frame plus full-motor reference error, local linear velocity, actuator force,
+actual stance, and reference stance (`97D x 15 = 1455D`) without prepending the
+actor stack a second time. Its gait clock advances from elapsed control time
+even under a zero command while the motor reference remains at home, matching
+ToddlerBot's standing-command behavior. Export, native visualization, and
+runtime now preserve the separate action and observation actuator orders and
+the same phase semantics. Reset uses the canonical home-backed frame zero,
+structured torso and arm perturbations with leg-height compensation, and no
+RSI or independent joint jitter. Damping, armature, friction-loss, gain,
+backlash, and encoder-noise randomization are wired for the corrected run.
+
+The first `tb2` gate remains 50,012,160 transitions (`1024 x 20 x 2442`) and
+must start without `--init-policy` or `--resume`. See
+[`docs/toddlerbot_direct_ppo.md`](docs/toddlerbot_direct_ppo.md) for the exact
+ToddlerBot comparison, deliberate WR hardware/morphology differences, launch
+commands, and deployment gates.
+
+References: Shi et al., *ToddlerBot* (arXiv:2502.00893); Shi et al.,
+*ToddlerBot 2.0* (arXiv:2601.03607); RSL-RL v2.3.3; Schulman et al., PPO
+(arXiv:1707.06347).
+
+---
+
 ## [v0.21.0-tb1-ready] - 2026-09-06: canonical home/frame-0 direct PPO baseline
 
 Prepared a new isolated ToddlerBot-parity training lineage at

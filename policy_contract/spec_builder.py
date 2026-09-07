@@ -21,6 +21,8 @@ def build_policy_spec(
     actuated_joint_specs: List[Dict[str, Any]],
     action_filter_alpha: float,
     home_ctrl_rad: Optional[List[float]] = None,
+    observation_actuated_joint_specs: Optional[List[Dict[str, Any]]] = None,
+    observation_home_ctrl_rad: Optional[List[float]] = None,
     provenance: Optional[Dict[str, Any]] = None,
     contract_name: str = "wildrobot_policy",
     contract_version: str = "1.0.0",
@@ -59,8 +61,27 @@ def build_policy_spec(
             max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
         )
 
+    observation_actuator_names: Optional[List[str]] = None
+    if observation_actuated_joint_specs is not None:
+        observation_actuator_names = []
+        for item in observation_actuated_joint_specs:
+            name = str(item.get("name"))
+            rng = item.get("range") or [0.0, 0.0]
+            observation_actuator_names.append(name)
+            if name not in joints:
+                joints[name] = JointSpec(
+                    range_min_rad=float(rng[0]),
+                    range_max_rad=float(rng[1]),
+                    max_velocity_rad_s=float(item.get("max_velocity", 10.0)),
+                )
+
     action_dim = len(actuator_names)
-    layout = _build_obs_layout(action_dim=action_dim, layout_id=layout_id)
+    observed_dim = len(observation_actuator_names or actuator_names)
+    layout = _build_obs_layout(
+        action_dim=action_dim,
+        layout_id=layout_id,
+        observation_actuator_dim=observed_dim,
+    )
 
     alpha = float(action_filter_alpha)
     postprocess_id = "lowpass_v1" if alpha > 0.0 else "none"
@@ -85,6 +106,12 @@ def build_policy_spec(
             actuator_names=actuator_names,
             joints=joints,
             home_ctrl_rad=list(home_ctrl_rad) if home_ctrl_rad is not None else None,
+            observation_actuator_names=observation_actuator_names,
+            observation_home_ctrl_rad=(
+                list(observation_home_ctrl_rad)
+                if observation_home_ctrl_rad is not None
+                else None
+            ),
         ),
         observation=ObservationSpec(
             dtype="float32",
@@ -104,7 +131,12 @@ def build_policy_spec(
     return spec
 
 
-def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
+def _build_obs_layout(
+    *, action_dim: int, layout_id: str, observation_actuator_dim: Optional[int] = None
+) -> List[ObsFieldSpec]:
+    observed_dim = int(
+        action_dim if observation_actuator_dim is None else observation_actuator_dim
+    )
     if layout_id == "wr_obs_v1":
         return [
             ObsFieldSpec(name="gravity_local", size=3, frame="local", units="unit_vector"),
@@ -241,6 +273,19 @@ def _build_obs_layout(*, action_dim: int, layout_id: str) -> List[ObsFieldSpec]:
                 units="m_s_and_rad_s",
             ),
             ObsFieldSpec(name="padding", size=1, units="unused"),
+        ]
+    if layout_id == "wr_obs_v12_tb_proprio":
+        frame_size = 2 + 3 + 2 * observed_dim + action_dim + 3 + 4
+        return [
+            ObsFieldSpec(
+                name="proprio_stack",
+                size=PROPRIO_HISTORY_FRAMES * frame_size,
+                units=(
+                    "15_frames_newest_to_oldest:[phase_sin_cos,velocity_cmd,"
+                    "motor_pos_delta_rad,motor_vel_x0.05,prev_action,"
+                    "body_angvel_rad_s,torso_quat_wxyz]"
+                ),
+            )
         ]
     if layout_id == "wr_obs_v7_phase_proprio":
         # smoke11 (post-home-migration de-hybridization).  Mirrors

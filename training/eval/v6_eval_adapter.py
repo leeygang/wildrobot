@@ -1,10 +1,12 @@
-"""Native-MuJoCo eval adapter for the active v0.20.1 locomotion actor layouts.
+"""Native-MuJoCo eval adapter for active locomotion actor layouts.
 
 The active v0.20.1 PPO recipes use one of two actor layouts:
 
   - ``wr_obs_v6_offline_ref_history``: full offline-ref actor channels
   - ``wr_obs_v7_phase_proprio``: de-hybridized actor with only phase +
     proprio history on top of the shared proprio base
+  - ``wr_obs_v12_tb_proprio``: current ToddlerBot ordering with all-motor
+    proprioception and a 15-frame newest-first stack
 
 Both layouts still share the same native-MuJoCo runtime requirements:
 
@@ -70,7 +72,10 @@ import numpy as np
 
 from policy_contract.calib import NumpyCalibOps
 from policy_contract.numpy.action import postprocess_action
-from policy_contract.numpy.obs import build_observation
+from policy_contract.numpy.obs import (
+    build_observation,
+    build_toddlerbot_proprio_frame,
+)
 from policy_contract.numpy.state import PolicyState
 from policy_contract.spec import PROPRIO_HISTORY_FRAMES, PolicySpec
 from training.policy_spec_utils import get_home_ctrl_from_mj_model
@@ -84,8 +89,9 @@ V7_LAYOUT_ID = "wr_obs_v7_phase_proprio"
 # checkpoint cannot be evaluated or visualized off-policy.
 V8_LAYOUT_ID = "wr_obs_v8_cmd3d"
 V11_LAYOUT_ID = "wr_obs_v11_cmd3d_proprio"
+V12_LAYOUT_ID = "wr_obs_v12_tb_proprio"
 ADAPTER_LAYOUT_IDS = frozenset(
-    {V6_LAYOUT_ID, V7_LAYOUT_ID, V8_LAYOUT_ID, V11_LAYOUT_ID}
+    {V6_LAYOUT_ID, V7_LAYOUT_ID, V8_LAYOUT_ID, V11_LAYOUT_ID, V12_LAYOUT_ID}
 )
 
 
@@ -144,9 +150,44 @@ class V6EvalAdapter:
         self._policy_spec = policy_spec
         self._signals_adapter = signals_adapter
         self._action_dim = int(action_dim)
-
-        contact_size = 0 if policy_spec.observation.layout_id == V11_LAYOUT_ID else 4
-        self._bundle_size = 3 + contact_size + 3 * self._action_dim
+        self._uses_toddlerbot_observation = (
+            policy_spec.observation.layout_id == V12_LAYOUT_ID
+        )
+        if self._uses_toddlerbot_observation:
+            observation_names = policy_spec.robot.observation_actuator_names
+            observation_home = policy_spec.robot.observation_home_ctrl_rad
+            if observation_names is None or observation_home is None:
+                raise ValueError(
+                    "ToddlerBot observation requires observation actuator names "
+                    "and their home pose"
+                )
+            self._observation_actuator_count = len(observation_names)
+            self._observation_home_q_rad = np.asarray(
+                observation_home, dtype=np.float32
+            )
+            if self._observation_home_q_rad.shape != (
+                self._observation_actuator_count,
+            ):
+                raise ValueError(
+                    "Observation home pose size does not match observation "
+                    f"actuator count: {self._observation_home_q_rad.shape} != "
+                    f"({self._observation_actuator_count},)"
+                )
+            self._bundle_size = (
+                2
+                + 3
+                + 2 * self._observation_actuator_count
+                + self._action_dim
+                + 3
+                + 4
+            )
+        else:
+            self._observation_actuator_count = self._action_dim
+            self._observation_home_q_rad = np.empty(0, dtype=np.float32)
+            contact_size = (
+                0 if policy_spec.observation.layout_id == V11_LAYOUT_ID else 4
+            )
+            self._bundle_size = 3 + contact_size + 3 * self._action_dim
 
         # Action delay flag: env supports {0, 1}; v0.20.1 smoke uses 1.
         delay_steps = int(getattr(self._cfg.env, "action_delay_steps", 0))
@@ -242,6 +283,7 @@ class V6EvalAdapter:
             self._cfg.env,
             offline_library_path=offline_path,
         )
+        self._cycle_time_s = float(zmp_config.cycle_time_s)
         offline_vx = float(getattr(self._cfg.env, "loc_ref_offline_command_vx", 0.20))
         # Mirror env _init_offline_service gate (training/envs/
         # wildrobot_env.py:835): the 3D library only stands up when BOTH
@@ -966,11 +1008,67 @@ class V6EvalAdapter:
                 f"length-3 (vx, vy, wz); got size {cmd_arr.size}"
             )
         bin_idx = self._select_bin_idx(cmd_arr)
-        win = self._services_by_bin[bin_idx].lookup_np(self._state.step_idx)
+        service = self._services_by_bin[bin_idx]
+        lookup_step = self._state.step_idx
+        if self._uses_toddlerbot_observation:
+            # A zero command intentionally selects TB's static default pose,
+            # while its independent time-based phase clock keeps advancing.
+            # Clamp only the pose lookup here to avoid treating that expected
+            # one-frame reference as an episode-horizon overrun.
+            lookup_step = min(lookup_step, service.n_steps - 1)
+        win = service.lookup_np(lookup_step)
 
-        phase_sin_cos = np.array(
-            [float(win.phase_sin), float(win.phase_cos)], dtype=np.float32
-        )
+        if self._uses_toddlerbot_observation:
+            phase_angle = (
+                2.0
+                * np.pi
+                * float(self._state.step_idx)
+                * float(self._cfg.env.ctrl_dt)
+                / self._cycle_time_s
+            )
+            phase_sin_cos = np.array(
+                [np.sin(phase_angle), np.cos(phase_angle)], dtype=np.float32
+            )
+        else:
+            phase_sin_cos = np.array(
+                [float(win.phase_sin), float(win.phase_cos)], dtype=np.float32
+            )
+
+        if self._uses_toddlerbot_observation:
+            current_frame = build_toddlerbot_proprio_frame(
+                phase_sin_cos=phase_sin_cos,
+                velocity_cmd=cmd_arr,
+                motor_pos_delta_rad=(
+                    np.asarray(signals.joint_pos_rad, dtype=np.float32)
+                    - self._observation_home_q_rad
+                ),
+                motor_vel_rad_s=np.asarray(
+                    signals.joint_vel_rad_s, dtype=np.float32
+                ),
+                prev_action=self._state.last_applied_action,
+                body_angvel_rad_s=np.asarray(
+                    signals.gyro_rad_s, dtype=np.float32
+                ),
+                torso_quat_wxyz=np.asarray(
+                    signals.quat_wxyz, dtype=np.float32
+                ),
+            )
+            self._state.proprio_history = np.concatenate(
+                [current_frame[None, :], self._state.proprio_history[:-1]],
+                axis=0,
+            ).astype(np.float32)
+            self._state.pending_history = self._state.proprio_history.copy()
+            return build_observation(
+                spec=self._policy_spec,
+                state=PolicyState(
+                    prev_action=np.asarray(
+                        self._state.last_applied_action, dtype=np.float32
+                    )
+                ),
+                signals=signals,
+                velocity_cmd=cmd_arr,
+                toddlerbot_proprio_stack=self._state.proprio_history.reshape(-1),
+            )
         is_left_stance = int(win.stance_foot_id) == 0
         if is_left_stance:
             next_foothold_xyz = win.right_foot_pos
@@ -1106,12 +1204,21 @@ class V6EvalAdapter:
 
         # Advance step_idx.  Env clamps at n_steps - 1 (lookup beyond is
         # an absorbing-boundary frame).
-        self._state.step_idx = min(self._state.step_idx + 1, self._n_steps - 1)
+        if self._uses_toddlerbot_observation:
+            self._state.step_idx += 1
+        else:
+            self._state.step_idx = min(
+                self._state.step_idx + 1, self._n_steps - 1
+            )
 
         win = self._service.lookup_np(self._state.step_idx)
         q_ref = self._apply_walking_joint_offsets(win.q_ref)
-        clipped = np.clip(applied, -1.0, 1.0)
-        residual = clipped * self._scale_per_joint
+        residual_action = applied
+        if bool(
+            getattr(self._cfg.env, "loc_ref_clip_residual_action", True)
+        ):
+            residual_action = np.clip(residual_action, -1.0, 1.0)
+        residual = residual_action * self._scale_per_joint
         if self._residual_base_mode == "home":
             base_q = self._walking_home_q_rad
         elif self._residual_base_mode == "ref_init":
@@ -1152,6 +1259,9 @@ class V6EvalAdapter:
         roll input = wr.proprio_history at start of step = obs's pre-roll
         view = same value compute_obs read.
         """
+        if self._uses_toddlerbot_observation:
+            return
+
         signals_post = self._signals_adapter.read(mj_data)
         joint_pos_norm = NumpyCalibOps.normalize_joint_pos(
             spec=self._policy_spec, joint_pos_rad=signals_post.joint_pos_rad

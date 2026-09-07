@@ -27,6 +27,7 @@ from typing import Dict, List
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 # Project root ----------------------------------------------------------------
 project_root = Path(__file__).parent.parent.parent
@@ -135,6 +136,10 @@ def _run_single_force_level(
         policy_hidden_dims=tuple(training_cfg.networks.actor.hidden_sizes),
         value_hidden_dims=tuple(training_cfg.networks.critic.hidden_sizes),
         activation=_network_activation_name(training_cfg),
+        distribution_type=training_cfg.networks.actor.distribution_type,
+        noise_std_type=training_cfg.networks.actor.noise_std_type,
+        init_noise_std=float(np.exp(training_cfg.networks.actor.log_std_init)),
+        state_dependent_std=training_cfg.networks.actor.state_dependent_std,
     )
 
     checkpoint = load_checkpoint(str(checkpoint_path))

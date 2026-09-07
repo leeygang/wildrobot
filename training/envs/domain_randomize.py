@@ -98,9 +98,12 @@ def sample_domain_rand_params(
     *,
     num_bodies: int,
     num_actuators: int,
+    num_observation_actuators: int | None = None,
     friction_range: tuple[float, float] = (0.5, 1.0),
     mass_scale_range: tuple[float, float] = (0.9, 1.1),
     kp_scale_range: tuple[float, float] = (0.9, 1.1),
+    damping_scale_range: tuple[float, float] = (1.0, 1.0),
+    armature_scale_range: tuple[float, float] = (1.0, 1.0),
     frictionloss_scale_range: tuple[float, float] = (0.9, 1.1),
     joint_offset_rad: float = 0.03,
     backlash_range: tuple[float, float] = (0.0, 0.0),
@@ -119,7 +122,16 @@ def sample_domain_rand_params(
     the actuator torque (the gear sits on one side of the deadband or
     the other).  Default range (0.0, 0.0) keeps backlash disabled.
     """
+    observation_count = int(
+        num_actuators
+        if num_observation_actuators is None
+        else num_observation_actuators
+    )
+    base_rng = rng
     rng, k1, k2, k3, k4, k5, k6 = jax.random.split(rng, 7)
+    k7, k8, k9, k10, k11 = jax.random.split(
+        jax.random.fold_in(base_rng, 21_233), 5
+    )
 
     friction_scale = jax.random.uniform(
         k1, shape=(), minval=friction_range[0], maxval=friction_range[1]
@@ -145,6 +157,36 @@ def sample_domain_rand_params(
         minval=backlash_range[0],
         maxval=backlash_range[1],
     )
+    full_kp_scales = jax.random.uniform(
+        k7,
+        shape=(observation_count,),
+        minval=kp_scale_range[0],
+        maxval=kp_scale_range[1],
+    )
+    damping_scales = jax.random.uniform(
+        k8,
+        shape=(observation_count,),
+        minval=damping_scale_range[0],
+        maxval=damping_scale_range[1],
+    )
+    armature_scales = jax.random.uniform(
+        k9,
+        shape=(observation_count,),
+        minval=armature_scale_range[0],
+        maxval=armature_scale_range[1],
+    )
+    full_frictionloss_scales = jax.random.uniform(
+        k10,
+        shape=(observation_count,),
+        minval=frictionloss_scale_range[0],
+        maxval=frictionloss_scale_range[1],
+    )
+    full_backlash = jax.random.uniform(
+        k11,
+        shape=(observation_count,),
+        minval=backlash_range[0],
+        maxval=backlash_range[1],
+    )
 
     return {
         "friction_scale": friction_scale,
@@ -153,6 +195,11 @@ def sample_domain_rand_params(
         "frictionloss_scales": frictionloss_scales,
         "joint_offsets": joint_offsets,
         "backlash": backlash,
+        "full_kp_scales": full_kp_scales,
+        "damping_scales": damping_scales,
+        "armature_scales": armature_scales,
+        "full_frictionloss_scales": full_frictionloss_scales,
+        "full_backlash": full_backlash,
     }
 
 
@@ -160,8 +207,14 @@ def nominal_domain_rand_params(
     *,
     num_bodies: int,
     num_actuators: int,
+    num_observation_actuators: int | None = None,
 ) -> dict[str, jax.Array]:
     """Return nominal (no-randomization) parameter values."""
+    observation_count = int(
+        num_actuators
+        if num_observation_actuators is None
+        else num_observation_actuators
+    )
     return {
         "friction_scale": jp.ones(()),
         "mass_scales": jp.ones((num_bodies,)),
@@ -169,6 +222,11 @@ def nominal_domain_rand_params(
         "frictionloss_scales": jp.ones((num_actuators,)),
         "joint_offsets": jp.zeros((num_actuators,)),
         "backlash": jp.zeros((num_actuators,)),
+        "full_kp_scales": jp.ones((observation_count,)),
+        "damping_scales": jp.ones((observation_count,)),
+        "armature_scales": jp.ones((observation_count,)),
+        "full_frictionloss_scales": jp.ones((observation_count,)),
+        "full_backlash": jp.zeros((observation_count,)),
     }
 
 

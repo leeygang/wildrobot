@@ -97,6 +97,10 @@ def main():
         action_dim=action_dim,
         policy_hidden_dims=policy_hidden,
         value_hidden_dims=value_hidden,
+        distribution_type=training_cfg.networks.actor.distribution_type,
+        noise_std_type=training_cfg.networks.actor.noise_std_type,
+        init_noise_std=float(np.exp(training_cfg.networks.actor.log_std_init)),
+        state_dependent_std=training_cfg.networks.actor.state_dependent_std,
     )
 
     policy_params = checkpoint["policy_params"]

@@ -69,6 +69,23 @@ def privileged_obs_dim(action_size: int) -> int:
     return 10 + 2 * int(action_size)
 
 
+def toddlerbot_actor_frame_dim(
+    observation_actuator_count: int, action_size: int
+) -> int:
+    """Current ToddlerBot actor frame width for WR's morphology."""
+    return 2 + 3 + 2 * int(observation_actuator_count) + int(action_size) + 3 + 4
+
+
+def toddlerbot_privileged_obs_dim(
+    observation_actuator_count: int, action_size: int
+) -> int:
+    """Current ToddlerBot privileged frame width for WR's morphology."""
+    actor_dim = toddlerbot_actor_frame_dim(observation_actuator_count, action_size)
+    return actor_dim + int(observation_actuator_count) + 3 + int(
+        observation_actuator_count
+    ) + 2 + 2
+
+
 # v0.20.1 wr_obs_v6_offline_ref_history: number of past proprio frames
 # rolled into the actor obs.  Must equal ``policy_contract.spec.PROPRIO_HISTORY_FRAMES``.
 #
@@ -214,6 +231,14 @@ try:
         # at obs time as motor_pos += 0.5 * backlash * tanh(qfrc_actuator
         # / backlash_activation).  See domain_randomize.apply_backlash_to_joint_pos.
         domain_rand_backlash: jnp.ndarray             # (action_size,)
+        # Full observed-actuator dynamics used by the ToddlerBot-compatible
+        # all-motor observation contract. Legacy policies leave these at one
+        # (or zero for backlash).
+        domain_rand_full_kp_scales: jnp.ndarray
+        domain_rand_damping_scales: jnp.ndarray
+        domain_rand_armature_scales: jnp.ndarray
+        domain_rand_full_frictionloss_scales: jnp.ndarray
+        domain_rand_full_backlash: jnp.ndarray
         # ToddlerBot-style hidden actuator calibration error.  The physical
         # target carries the actuator offset while actor joint observations
         # subtract it, forcing IMU-based compensation for persistent tilt.
@@ -326,6 +351,11 @@ except ImportError:
         domain_rand_frictionloss_scales: jnp.ndarray
         domain_rand_joint_offsets: jnp.ndarray
         domain_rand_backlash: jnp.ndarray
+        domain_rand_full_kp_scales: jnp.ndarray
+        domain_rand_damping_scales: jnp.ndarray
+        domain_rand_armature_scales: jnp.ndarray
+        domain_rand_full_frictionloss_scales: jnp.ndarray
+        domain_rand_full_backlash: jnp.ndarray
         domain_rand_persistent_torso_pitch_error_rad: jnp.ndarray
         domain_rand_persistent_actuator_offsets: jnp.ndarray
         proprio_history: jnp.ndarray
@@ -417,6 +447,13 @@ def get_expected_shapes(action_size: int = None) -> dict:
         "domain_rand_frictionloss_scales": (action_size,),
         "domain_rand_joint_offsets": (action_size,),
         "domain_rand_backlash": (action_size,),
+        # Their width is the observed/full actuator count, which may differ
+        # from action_size for leg-only policies.
+        "domain_rand_full_kp_scales": None,
+        "domain_rand_damping_scales": None,
+        "domain_rand_armature_scales": None,
+        "domain_rand_full_frictionloss_scales": None,
+        "domain_rand_full_backlash": None,
         "domain_rand_persistent_torso_pitch_error_rad": (),
         "domain_rand_persistent_actuator_offsets": (action_size,),
         # proprio_bundle = 3 (gyro) + 4 (foot_switches) + 3*action_size

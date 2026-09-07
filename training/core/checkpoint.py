@@ -119,6 +119,9 @@ def save_checkpoint_from_cpu(
                 "support/load_imbalance",
             )
         }
+        approx_kl = float(
+            getattr(metrics, "approx_kl", env_metrics.get("ppo/approx_kl", 0.0))
+        )
         metrics_dict = {
             "episode_reward": float(metrics.episode_reward),
             "task_reward_mean": float(metrics.task_reward_mean),
@@ -145,6 +148,19 @@ def save_checkpoint_from_cpu(
             ),
             "ppo/actor_update_enabled": float(
                 env_metrics.get("ppo/actor_update_enabled", 1.0)
+            ),
+            "ppo/epochs_used": float(
+                env_metrics.get("ppo/epochs_used", 0.0)
+            ),
+            "ppo/active_updates": float(
+                env_metrics.get("ppo/active_updates", 0.0)
+            ),
+            "ppo/adaptive_kl": float(
+                env_metrics.get("ppo/adaptive_kl", approx_kl)
+            ),
+            "ppo/approx_kl": approx_kl,
+            "ppo/lr": float(
+                env_metrics.get("ppo/lr", config.ppo.learning_rate)
             ),
             "tracking/cmd_vs_achieved_forward": cmd_err,
             "tracking/step_length_touchdown_event_m": step_len,
@@ -184,6 +200,18 @@ def save_checkpoint_from_cpu(
             "max_grad_norm": config.ppo.max_grad_norm,
             "num_minibatches": config.ppo.num_minibatches,
             "epochs": config.ppo.epochs,
+            "target_kl": config.ppo.target_kl,
+            "optimizer_profile": config.ppo.optimizer_profile,
+            "adaptive_kl_min_learning_rate": (
+                config.ppo.adaptive_kl_min_learning_rate
+            ),
+            "adaptive_kl_max_learning_rate": (
+                config.ppo.adaptive_kl_max_learning_rate
+            ),
+            "adaptive_kl_factor": config.ppo.adaptive_kl_factor,
+            "actor_distribution_type": config.networks.actor.distribution_type,
+            "actor_noise_std_type": config.networks.actor.noise_std_type,
+            "actor_state_dependent_std": config.networks.actor.state_dependent_std,
             "critic_privileged_enabled": config.ppo.critic_privileged_enabled,
             # v0.21.0 Lever 7: value-head input shape depends on this
             # flag (privileged_dim alone vs obs_dim + privileged_dim).
@@ -202,6 +230,12 @@ def save_checkpoint_from_cpu(
             "policy_spec_hash": policy_spec_fingerprint,
         },
     }
+    if metrics_dict is not None:
+        metrics_dict["ppo/adaptive_learning_rate"] = float(
+            metrics.env_metrics.get(
+                "ppo/adaptive_learning_rate", config.ppo.learning_rate
+            )
+        )
 
     # Save iteration checkpoint (format: checkpoint_iteration_steps.pkl)
     checkpoint_path = os.path.join(

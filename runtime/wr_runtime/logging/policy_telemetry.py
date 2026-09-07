@@ -45,15 +45,21 @@ class PolicyTelemetryRecorder:
         loop_step: int,
         requested_velocity_cmd: np.ndarray | None = None,
     ) -> None:
+        n_act = len(self.actuator_names)
         signals = info.get("hardware_signals")
+        if signals is not None:
+            signal_pos = np.asarray(
+                getattr(signals, "joint_pos_rad", []), dtype=np.float32
+            ).reshape(-1)
+            if signal_pos.size != n_act:
+                signals = info.get("signals")
         if signals is None:
             signals = info.get("signals")
         if signals is None:
             return
 
-        n_act = len(self.actuator_names)
-        commanded = _vector(
-            info.get("commanded_q_rad", info.get("target_q_rad")), n_act
+        commanded = _first_vector(
+            (info.get("commanded_q_rad"), info.get("target_q_rad")), n_act
         )
         previous_commanded = _vector(info.get("previous_commanded_q_rad"), n_act)
         joint_pos = _vector(getattr(signals, "joint_pos_rad", None), n_act)
@@ -219,6 +225,14 @@ def _vector(value: Any, size: int) -> np.ndarray:
     if array.size != size:
         return np.full(size, np.nan, dtype=np.float32)
     return array.copy()
+
+
+def _first_vector(values: Sequence[Any], size: int) -> np.ndarray:
+    for value in values:
+        vector = _vector(value, size)
+        if np.all(np.isfinite(vector)):
+            return vector
+    return np.full(size, np.nan, dtype=np.float32)
 
 
 def _numeric_values(value: Any) -> dict[str, float]:

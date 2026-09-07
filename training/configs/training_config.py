@@ -708,8 +708,21 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         domain_rand_friction_range=env.get("domain_rand_friction_range", [0.5, 1.0]),
         domain_rand_mass_scale_range=env.get("domain_rand_mass_scale_range", [0.9, 1.1]),
         domain_rand_kp_scale_range=env.get("domain_rand_kp_scale_range", [0.9, 1.1]),
+        domain_rand_damping_scale_range=env.get(
+            "domain_rand_damping_scale_range", [1.0, 1.0]
+        ),
+        domain_rand_armature_scale_range=env.get(
+            "domain_rand_armature_scale_range", [1.0, 1.0]
+        ),
         domain_rand_frictionloss_scale_range=env.get("domain_rand_frictionloss_scale_range", [0.9, 1.1]),
         domain_rand_joint_offset_rad=float(env.get("domain_rand_joint_offset_rad", 0.03)),
+        joint_pos_noise_rad=float(env.get("joint_pos_noise_rad", 0.0)),
+        joint_vel_noise_rad_s=float(env.get("joint_vel_noise_rad_s", 0.0)),
+        reset_arm_joint_offset_range=_load_float_range(
+            env.get("reset_arm_joint_offset_range"),
+            default=(0.0, 0.0),
+            field_name="env.reset_arm_joint_offset_range",
+        ),
         domain_rand_persistent_torso_pitch_error_range=_load_float_range(
             env.get("domain_rand_persistent_torso_pitch_error_range"),
             default=(0.0, 0.0),
@@ -718,6 +731,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             ),
         ),
         action_delay_steps=int(env.get("action_delay_steps", 0)),
+        loc_ref_clip_residual_action=bool(
+            env.get("loc_ref_clip_residual_action", True)
+        ),
         joint_feedback_sample_hold_enabled=bool(
             env.get("joint_feedback_sample_hold_enabled", False)
         ),
@@ -886,6 +902,14 @@ def _parse_ppo_config(config: Dict[str, Any]) -> PPOConfig:
         epochs=ppo.get("epochs", 4),
         num_minibatches=ppo.get("num_minibatches", 32),
         max_grad_norm=ppo.get("max_grad_norm", 0.5),
+        optimizer_profile=str(ppo.get("optimizer_profile", "legacy")),
+        adaptive_kl_min_learning_rate=float(
+            ppo.get("adaptive_kl_min_learning_rate", 1.0e-5)
+        ),
+        adaptive_kl_max_learning_rate=float(
+            ppo.get("adaptive_kl_max_learning_rate", 1.0e-2)
+        ),
+        adaptive_kl_factor=float(ppo.get("adaptive_kl_factor", 1.5)),
         log_interval=ppo.get("log_interval", 10),
         target_kl=ppo.get("target_kl", 0.0),
         kl_early_stop_multiplier=ppo.get("kl_early_stop_multiplier", 1.5),
@@ -965,6 +989,9 @@ def _parse_networks_config(config: Dict[str, Any]) -> NetworksConfig:
             log_std_init=actor.get("log_std_init", -1.0),
             min_log_std=actor.get("min_log_std", -5.0),
             max_log_std=actor.get("max_log_std", 2.0),
+            distribution_type=str(actor.get("distribution_type", "tanh_normal")),
+            noise_std_type=str(actor.get("noise_std_type", "scalar")),
+            state_dependent_std=bool(actor.get("state_dependent_std", True)),
         ),
         critic=CriticNetworkConfig(
             hidden_sizes=_parse_list_to_tuple(

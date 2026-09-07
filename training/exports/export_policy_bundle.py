@@ -186,10 +186,11 @@ def export_deployment_bundle(
         if walking_spec["observation"]["layout_id"] not in {
             "wr_obs_v8_cmd3d",
             "wr_obs_v11_cmd3d_proprio",
+            "wr_obs_v12_tb_proprio",
         }:
             raise ValueError(
                 "Walking policy must use wr_obs_v8_cmd3d or "
-                "wr_obs_v11_cmd3d_proprio"
+                "wr_obs_v11_cmd3d_proprio or wr_obs_v12_tb_proprio"
             )
         if int(standing_spec["model"]["action_dim"]) != 17:
             raise ValueError("Standing policy must have 17 actions")
@@ -200,10 +201,18 @@ def export_deployment_bundle(
                 strict=True,
             )
         )
+        walking_observation_names = walking_spec["robot"].get(
+            "observation_actuator_names",
+            walking_spec["robot"]["actuator_names"],
+        )
+        walking_observation_home = walking_spec["robot"].get(
+            "observation_home_ctrl_rad",
+            walking_spec["robot"]["home_ctrl_rad"],
+        )
         walking_home = dict(
             zip(
-                walking_spec["robot"]["actuator_names"],
-                walking_spec["robot"]["home_ctrl_rad"],
+                walking_observation_names,
+                walking_observation_home,
                 strict=True,
             )
         )
@@ -461,11 +470,24 @@ def _build_policy_spec(
     )
     if fixed_metadata is not None:
         provenance["runtime_fixed_home"] = fixed_metadata
+    layout_id = str(env.get("actor_obs_layout_id", "wr_obs_v1"))
+    observation_joint_specs = (
+        actuated_joint_specs
+        if layout_id == "wr_obs_v12_tb_proprio"
+        else None
+    )
+    observation_home_ctrl_rad = (
+        full_home_ctrl_rad
+        if layout_id == "wr_obs_v12_tb_proprio"
+        else None
+    )
     return build_policy_spec(
         robot_name=str(robot_cfg.get("robot_name", "wildrobot")),
         actuated_joint_specs=active_joint_specs,
+        observation_actuated_joint_specs=observation_joint_specs,
+        observation_home_ctrl_rad=observation_home_ctrl_rad,
         action_filter_alpha=action_filter_alpha,
-        layout_id=str(env.get("actor_obs_layout_id", "wr_obs_v1")),
+        layout_id=layout_id,
         mapping_id=str(env.get("action_mapping_id", "pos_target_rad_v1")),
         home_ctrl_rad=home_ctrl_rad,
         provenance=provenance,

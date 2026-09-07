@@ -72,6 +72,69 @@ def test_contact_free_runtime_obs_is_independent_of_footswitches(v11_spec):
     np.testing.assert_array_equal(obs_pressed, obs_open)
 
 
+def test_toddlerbot_runtime_obs_uses_all_motors_newest_first(v12_spec):
+    from conftest import make_runtime_policy_config
+
+    config = make_runtime_policy_config(v12_spec)
+    runner = _runner(v12_spec, config)
+    observed_count = len(v12_spec.robot.observation_actuator_names or ())
+    home = np.asarray(v12_spec.robot.observation_home_ctrl_rad, dtype=np.float32)
+    signals = Signals(
+        quat_wxyz=np.array([-1.0, -0.1, -0.2, -0.3], dtype=np.float32),
+        gyro_rad_s=np.array([0.4, 0.5, 0.6], dtype=np.float32),
+        joint_pos_rad=home + np.arange(observed_count, dtype=np.float32) * 0.01,
+        joint_vel_rad_s=np.arange(observed_count, dtype=np.float32),
+        foot_switches=np.ones(4, dtype=np.float32),
+        timestamp_s=0.0,
+    )
+    cmd = np.array([0.13, -0.02, 0.1], dtype=np.float32)
+    obs = runner.build_obs(signals, cmd)
+    history = obs.reshape(PROPRIO_HISTORY_FRAMES, 56)
+
+    assert obs.shape == (840,)
+    np.testing.assert_allclose(history[0, 2:5], cmd, atol=1e-6)
+    np.testing.assert_allclose(
+        history[0, 5 : 5 + observed_count],
+        np.arange(observed_count, dtype=np.float32) * 0.01,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(history[0, -4:], [1.0, 0.1, 0.2, 0.3])
+    np.testing.assert_array_equal(history[1:], 0.0)
+
+
+def test_toddlerbot_runtime_zero_command_phase_advances(v12_spec):
+    from conftest import make_runtime_policy_config
+
+    runner = _runner(v12_spec, make_runtime_policy_config(v12_spec))
+    observed_count = len(v12_spec.robot.observation_actuator_names or ())
+    signals = _signals(
+        v12_spec,
+        joint_pos=np.asarray(
+            v12_spec.robot.observation_home_ctrl_rad, dtype=np.float32
+        ),
+    )
+    signals = Signals(
+        quat_wxyz=signals.quat_wxyz,
+        gyro_rad_s=signals.gyro_rad_s,
+        joint_pos_rad=signals.joint_pos_rad,
+        joint_vel_rad_s=np.zeros(observed_count, dtype=np.float32),
+        foot_switches=signals.foot_switches,
+        timestamp_s=signals.timestamp_s,
+    )
+    zero_cmd = np.zeros(3, dtype=np.float32)
+    zero_action = np.zeros(v12_spec.model.action_dim, dtype=np.float32)
+
+    for _ in range(12):
+        runner.compose_and_apply(zero_action)
+    obs = runner.build_obs(signals, zero_cmd).reshape(PROPRIO_HISTORY_FRAMES, 56)
+    np.testing.assert_allclose(obs[0, :2], [1.0, 0.0], atol=1e-6)
+
+    for _ in range(48):
+        runner.compose_and_apply(zero_action)
+    obs = runner.build_obs(signals, zero_cmd).reshape(PROPRIO_HISTORY_FRAMES, 56)
+    np.testing.assert_allclose(obs[0, :2], [1.0, 0.0], atol=1e-6)
+
+
 def _slot_offsets(action_dim: int) -> dict:
     o = {}
     i = 0
