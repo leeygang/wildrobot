@@ -1,26 +1,39 @@
-# ToddlerBot-aligned direct PPO (`v0.21.0-tb2` result, `tb3` screen)
+# ToddlerBot-aligned direct PPO (`v0.21.0-tb3` result, `tb4` margin screen)
 
 ## Current status
 
-The corrected `tb2` run
-`training/wandb/offline-run-20260907_121930-vmaowce2` validated the learner
-implementation but failed deployment. Its best deterministic candidate had
-`0/64` falls and stable torso tilt of `3.27/8.26/7.33 deg`
-(mean/peak/final), but achieved only `0.02845 m/s` at a `0.13333 m/s`
-command, produced `0.02179 m` touchdown steps, and saturated one hip-roll
-actuator for `20.03%` of stable samples. No checkpoint was selected.
-
-The learning trace peaked at `0.05782 m/s` around 5M transitions and regressed
-to `0.01607 m/s` at 50M even as reward rose. Full PPO updates and adaptive KL
-were healthy, so the next experiment does not change the learner again. It
-changes the forward-only task distribution and the WR-specific canonical
-stance that the measured geometry shows lacks hip-roll headroom.
+The completed `tb3` run
+`training/wandb/offline-run-20260908_100107-kol6pwfn` validated the
+forward-only shared-home direction. Checkpoint 480 completed `0/64` falls,
+tracked a `0.13333 m/s` command at `0.13410 m/s`, produced `0.11824 m`
+touchdown steps, and held stable torso tilt to `1.47/4.00/2.88 deg`
+(mean/peak/final). It nevertheless exceeded the deployment torque gate:
+stable left/right hip-roll occupancy above 95% of limit was
+`6.73%/10.89%`, versus the required maximum of `5%`.
 
 The next config is
-[`ppo_walking_v0210_tb3_forward_shared_stance.yaml`](../configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml).
-It is a fresh 14,991,360-transition screen, not a resume from tb2.
+[`ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml`](../configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml).
+It resumes the complete PPO state from tb3 checkpoint 480 for a short,
+same-contract torque-margin screen.
 
-## `tb3` decision
+## `tb4` decision
+
+A corrected measured-support diagnostic localizes the remaining saturation
+to the loaded hip during single support. At checkpoint 480, left-only support
+uses `3.050 Nm` mean hip torque and saturates `21.54%`; right-only support uses
+`3.165 Nm` and saturates `28.12%`. Loaded ankle-roll mean torque is only
+`0.327/0.628 Nm`, with `0%` saturation. Checkpoint 720 reduces the support-foot
+lever and left-side saturation but leaves right-only saturation at `27.12%`,
+so continuing the unchanged objective is not a high-confidence fix.
+
+`tb4` keeps the complete tb3 policy, stance, task, observations, and
+ToddlerBot/RSL-RL learner. It adds only a normalized symmetric hip-roll
+torque-margin penalty beginning at 90% of each actuator limit with coefficient
+`-0.01`. This targets the measured bottleneck while leaving all other
+actuators unpenalized. It is deliberately weaker than the rejected 17d8
+`-0.05` penalty beginning at 80%.
+
+## `tb3` decision (completed)
 
 `tb3` keeps the corrected ToddlerBot actor, observation, critic, PPO update,
 reward magnitudes, and sharp normalized velocity kernel. It makes two explicit
@@ -129,14 +142,14 @@ actuator model rather than copied by name.
 
 ## Training budget and gates
 
-The completed tb2 validation used 50,012,160 transitions. ToddlerBot's walking
-configuration uses 1 billion transitions, but tb2's regression after its early
-peak means unchanged scaling is not a high-confidence next step.
+The completed tb3 screen used `1024 envs x 20 steps x 732 iterations =
+14,991,360` transitions. It passed its forward-learning criterion but the
+right hip-roll saturation plateaued after checkpoint 480.
 
-The tb3 screen uses `1024 envs x 20 steps x 732 iterations = 14,991,360`
-transitions. Evaluation runs every 122 iterations. Continue beyond this screen
-only if a deterministic checkpoint beats tb2's `0.05782 m/s` early peak while
-retaining `0/64` falls and reducing hip-roll saturation.
+The tb4 screen adds `122` resumed iterations, or `2,498,560` transitions.
+Evaluation and checkpoint windows occur every 20 iterations. This is a causal
+fine-tune, not a request to spend ToddlerBot's full 1-billion-transition
+budget on an objective that currently has no torque-margin preference.
 
 Promotion remains stability-first:
 
@@ -146,13 +159,13 @@ Promotion remains stability-first:
 - worst stable per-actuator torque-saturation fraction <= 5%;
 - forward tracking passes the existing command-scaled gate.
 
-The tb2 zero, backward, lateral, and yaw probes were diagnostic. Tb3 omits
+The tb2 zero, backward, lateral, and yaw probes were diagnostic. Tb3/tb4 omit
 them because those commands are outside the accepted forward-only scope; only
 the primary forward rollout participates in selection.
 
 ## Launch
 
-Verify the shared stance first:
+Verify the unchanged shared stance:
 
 ```bash
 uv run python training/eval/verify_walking_stance_geometry.py \
@@ -160,19 +173,13 @@ uv run python training/eval/verify_walking_stance_geometry.py \
   --offset-rad 0
 ```
 
-Run the training smoke verification on the GPU machine:
+Run the short full-state resume on the GPU machine. Do not use
+`--init-policy`; it would discard the trained critic and optimizer state:
 
 ```bash
 uv run python training/train.py \
-  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
-  --verify
-```
-
-Then start a fresh run, with no `--init-policy` and no `--resume`:
-
-```bash
-uv run python training/train.py \
-  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml
+  --config training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml \
+  --resume training/checkpoints/ppo_walking_v0210_tb3_forward_shared_stance/ppo_walking_v0210_tb3_forward_shared_stance_v0210-tb3_20260908_100114-kol6pwfn/checkpoint_480_9830400.pkl
 ```
 
 For the cross-machine loop:
@@ -180,7 +187,8 @@ For the cross-machine loop:
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --new-run \
-  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
+  --config training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml \
+  --resume training/checkpoints/ppo_walking_v0210_tb3_forward_shared_stance/ppo_walking_v0210_tb3_forward_shared_stance_v0210-tb3_20260908_100114-kol6pwfn/checkpoint_480_9830400.pkl \
   --max-cycles 30
 
 uv run python wildrobot/agents/autonomous_training_loop.py run
@@ -193,6 +201,6 @@ single locomotion actor, pass `--disable-zero-cmd-hold-home`; otherwise runtime
 intentionally holds the static home pose at zero command.
 
 The existing standing bundle still encodes the historical home pose. Do not
-combine it silently with a tb3 walking bundle: revalidate and export standing
-against the same canonical home, or use the validated tb3 zero-command policy
+combine it silently with a tb3/tb4 walking bundle: revalidate and export standing
+against the same canonical home, or use the validated locomotion zero-command policy
 path after the walking screen passes.

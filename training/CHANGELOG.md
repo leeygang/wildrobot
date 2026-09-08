@@ -8,6 +8,105 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb3-result + tb4-ready] - 2026-09-08: forward gait clears stability gates; target single-support hip-roll margin
+
+The forward-only shared-home run is
+`training/wandb/offline-run-20260908_100107-kol6pwfn`. It completed all
+`14,991,360` transitions (`1024 x 20 x 732`) without a training failure. The
+authoritative post-training evaluator selected no checkpoint because every
+candidate exceeded the `5%` worst-actuator stable torque-occupancy gate, but
+all other hard forward and safety gates passed.
+
+Checkpoint 480 is the best next-stage source even though it ranked third by
+training score, because it has the lowest deterministic worst-actuator
+saturation while retaining the best command tracking:
+
+| Deployment metric | tb3 checkpoint 480 | Gate | Result |
+|---|---:|---:|:---:|
+| walking falls | **0/64** | 0/64 | pass |
+| forward velocity at `0.13333 m/s` command | **0.13410 m/s** | >=0.075 m/s | pass |
+| achieved / commanded ratio | **1.006** | 0.6--1.5 | pass |
+| forward command error | **0.01344 m/s** | <=0.075 m/s | pass |
+| touchdown step length | **0.11824 m** | >=0.030 m | pass |
+| stable torso tilt mean / peak / survivor-final | **1.47 / 4.00 / 2.88 deg** | <=10 / 15 / 10 deg | pass |
+| stable left/right hip-roll saturation | **6.73% / 10.89%** | each <=5% | fail |
+
+This passes the purpose of the tb3 screen. Its `0.13410 m/s` forward speed is
+`2.32x` tb2's best periodic-evaluation speed (`0.05782 m/s`), while the
+worst stable hip-roll occupancy falls from tb2 checkpoint 220's `20.03%` to
+`10.89%`. The corrected learner remained healthy: all four PPO epochs ran,
+mean approximate KL was `0.01124` against the adaptive `0.01` target, and all
+five post-training candidates completed `0/64` falls. The remaining failure
+is localized rather than an optimizer, locomotion, or torso-stability defect.
+
+The support-phase diagnostic previously failed on this policy because it
+mixed full 17-actuator torque/qpos arrays with the 10 controlled-leg action
+array. It now projects mechanical torque and force limits into policy order;
+the corrected same-seed `8 x 500` diagnostic gives:
+
+| Checkpoint / measured phase | COM-to-foot lever mean / p95 | Loaded hip mean torque | Loaded hip saturation | Loaded ankle mean torque / saturation |
+|---|---:|---:|---:|---:|
+| ckpt 480, left-only | 92.1 / 103.2 mm | 3.050 Nm | **21.54%** | 0.327 Nm / 0% |
+| ckpt 480, right-only | 89.4 / 106.5 mm | 3.165 Nm | **28.12%** | 0.628 Nm / 0% |
+| ckpt 720, left-only | 81.8 / 93.6 mm | 3.119 Nm | **14.87%** | 0.416 Nm / 0% |
+| ckpt 720, right-only | 80.1 / 95.9 mm | 3.126 Nm | **27.12%** | 0.462 Nm / 0% |
+
+The overload is therefore concentrated on the loaded hip during single
+support. Later unchanged training moves the COM closer to each support foot
+and improves the left side, but right-support saturation remains effectively
+flat. Double support is not the cause (checkpoint 480 right-hip saturation is
+only `1.57%` there), and both ankle-roll joints remain far from their limits.
+This also explains why continuing tb3 unchanged is low confidence: post-eval
+worst saturation bottoms at `10.89%` at checkpoint 480, then rises to
+`11.11%` and `11.78%` at checkpoints 610 and 720.
+
+`training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml` is the
+next causal screen. It resumes the complete PPO state from checkpoint 480 and
+keeps the tb3 stance, actor/critic contract, forward-only command distribution,
+reward stack, and ToddlerBot/RSL-RL learner unchanged. The sole behavioral
+change is a symmetric hip-roll-only normalized torque-margin penalty:
+
+- soft-limit onset `90%` of each hip-roll actuator's own torque limit;
+- per-joint weights `1.0` for left/right hip roll and `0.0` elsewhere;
+- reward coefficient `-0.01`;
+- `122` additional iterations / `2,498,560` transitions, with deterministic
+  `64 x 1000` evaluation every 20 iterations.
+
+At the evaluator's 95% boundary this penalty is approximately `11.25x`
+weaker than the rejected 17d8 `-0.05` penalty starting at 80%, reducing the
+risk that PPO obtains lower torque merely by abandoning forward motion.
+Generic torque remains disabled because every non-hip actuator already has
+zero 95%-limit occupancy. Mirror loss remains disabled: it is optional rather
+than default in ToddlerBot, and equalizing left/right load alone would not
+reduce their combined single-support demand below the deployment threshold.
+Rollback also remains disabled because the current rollback ordering does not
+include forward speed and could preserve a slower, lower-torque local optimum;
+the original checkpoint remains the immutable fallback.
+
+Run on the GPU machine after syncing this commit:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml \
+  --resume training/checkpoints/ppo_walking_v0210_tb3_forward_shared_stance/ppo_walking_v0210_tb3_forward_shared_stance_v0210-tb3_20260908_100114-kol6pwfn/checkpoint_480_9830400.pkl
+```
+
+Reject the intervention if it introduces any deterministic fall or reduces
+forward velocity below `0.12 m/s`. Promotion still requires every actuator at
+or below `5%` stable 95%-limit occupancy plus the existing forward and torso
+tilt gates. If torque falls only by slowing the gait, the next intervention is
+a support-phase COM/reference correction rather than a stronger penalty.
+
+ToddlerBot comparison: the current `walk.gin` leaves generic motor-torque
+regularization disabled, while the published ToddlerBot reward includes a
+`0.01` motor-torque term. The normalized hip-only penalty is an explicit WR
+morphology adaptation: WR's corrected static single-support demand is
+`76.5--78.4%` of its `4 Nm` hip limit versus approximately `48%` for
+ToddlerBot. References: Shi et al., *ToddlerBot* (arXiv:2502.00893), local
+ToddlerBot `locomotion/walk.gin`, and RSL-RL v2.3.3.
+
+---
+
 ## [v0.21.0-tb2-result + tb3-ready] - 2026-09-08: corrected PPO is stable, but full command training converges to a torque-limited shuffle
 
 The corrected ToddlerBot/RSL-RL parity run is

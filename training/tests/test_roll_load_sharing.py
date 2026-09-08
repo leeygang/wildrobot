@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from training.eval.diagnose_roll_load_sharing import summarize_roll_load_sharing
+from training.eval.diagnose_roll_load_sharing import (
+    _take_policy_actuator_channels,
+    summarize_roll_load_sharing,
+)
 
 
 JOINT_NAMES = (
@@ -12,6 +16,21 @@ JOINT_NAMES = (
     "right_hip_roll",
     "right_ankle_roll",
 )
+
+
+def test_policy_actuator_projection_handles_leg_only_policy() -> None:
+    full_signal = jnp.arange(2 * 17, dtype=jnp.float32).reshape(2, 17)
+    policy_indices = jnp.asarray([0, 1, 2, 3, 4, 8, 9, 10, 11, 12])
+
+    projected = np.asarray(
+        _take_policy_actuator_channels(full_signal, policy_indices)
+    )
+
+    assert projected.shape == (2, 10)
+    np.testing.assert_array_equal(
+        projected,
+        np.asarray(full_signal)[:, np.asarray(policy_indices)],
+    )
 
 
 def test_roll_load_summary_splits_support_and_excludes_startup() -> None:

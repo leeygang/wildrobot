@@ -42,6 +42,14 @@ ROLL_JOINT_NAMES = (
 )
 
 
+def _take_policy_actuator_channels(
+    values: jax.Array,
+    policy_signal_indices: jax.Array,
+) -> jax.Array:
+    """Project full mechanical-actuator signals into policy actuator order."""
+    return jnp.take(values, policy_signal_indices, axis=-1)
+
+
 def _percentile(values: np.ndarray, percentile: float) -> float:
     if values.size == 0:
         return 0.0
@@ -259,9 +267,13 @@ def _collect_rollout(
         )
     )
     policy_ctrl_ids = env._ctrl_mapper.policy_to_mj_order_jax
+    policy_signal_indices = env._policy_signal_indices
     qpos_ids = env._actuator_qpos_addrs
     actuator_ids = env._cal._actuator_ids
-    force_limits = env._cal._force_limits
+    force_limits = _take_policy_actuator_channels(
+        env._cal._force_limits,
+        policy_signal_indices,
+    )
     root_body_id = int(
         mujoco.mj_name2id(
             env._mj_model,
@@ -287,7 +299,10 @@ def _collect_rollout(
         )
         next_state = batch_step(state, policy_action)
         metrics = next_state.metrics[METRICS_VEC_KEY]
-        torque_nm = next_state.data.actuator_force[:, actuator_ids]
+        torque_nm = _take_policy_actuator_channels(
+            next_state.data.actuator_force[:, actuator_ids],
+            policy_signal_indices,
+        )
         ctrl_policy = next_state.data.ctrl[:, policy_ctrl_ids]
         q_actual = next_state.data.qpos[:, qpos_ids]
         root_quat = next_state.data.qpos[:, 3:7]
