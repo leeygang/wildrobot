@@ -1,6 +1,46 @@
-# ToddlerBot-aligned direct PPO (`v0.21.0-tb2`)
+# ToddlerBot-aligned direct PPO (`v0.21.0-tb2` result, `tb3` screen)
 
-## Decision
+## Current status
+
+The corrected `tb2` run
+`training/wandb/offline-run-20260907_121930-vmaowce2` validated the learner
+implementation but failed deployment. Its best deterministic candidate had
+`0/64` falls and stable torso tilt of `3.27/8.26/7.33 deg`
+(mean/peak/final), but achieved only `0.02845 m/s` at a `0.13333 m/s`
+command, produced `0.02179 m` touchdown steps, and saturated one hip-roll
+actuator for `20.03%` of stable samples. No checkpoint was selected.
+
+The learning trace peaked at `0.05782 m/s` around 5M transitions and regressed
+to `0.01607 m/s` at 50M even as reward rose. Full PPO updates and adaptive KL
+were healthy, so the next experiment does not change the learner again. It
+changes the forward-only task distribution and the WR-specific canonical
+stance that the measured geometry shows lacks hip-roll headroom.
+
+The next config is
+[`ppo_walking_v0210_tb3_forward_shared_stance.yaml`](../configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml).
+It is a fresh 14,991,360-transition screen, not a resume from tb2.
+
+## `tb3` decision
+
+`tb3` keeps the corrected ToddlerBot actor, observation, critic, PPO update,
+reward magnitudes, and sharp normalized velocity kernel. It makes two explicit
+departures:
+
+1. The requested deployment task is forward-only, so training samples exact
+   zero or positive forward commands; lateral, backward, and yaw commands are
+   out of scope. The velocity reward uses only the forward axis so incidental
+   lateral motion cannot erase its gradient.
+2. WR's canonical home is narrowed with the verified symmetric `0.030 rad`
+   hip/ankle-roll correction. This is a morphology-specific change: the raw
+   home stance estimates `89.8%` quasi-static hip-roll load/limit, while the
+   corrected stance estimates `78.4%` and passes the geometry gate.
+
+The new `env.home_joint_offsets_rad` field is policy-scoped but canonical: it
+changes reset, frame zero, residual base, observation centering, export, and
+hardware home together. It does not mutate historical MJCF assets and is not
+the walking-only offset mechanism.
+
+## `tb2` learner decision (historical)
 
 `v0.21.0-tb2` is a cold-start correction of the `tb1` experiment. It does
 not resume, initialize from, or distill any earlier WildRobot policy. The
@@ -89,11 +129,14 @@ actuator model rather than copied by name.
 
 ## Training budget and gates
 
-The first corrected run remains a 50,012,160-transition validation
-(`1024 envs x 20 steps x 2442 iterations`). The lower environment count is a
-GPU-memory constraint; it is not claimed to reproduce ToddlerBot's final
-1-billion-transition budget. Scale only after the corrected learner shows a
-healthy curve and passes deterministic evaluation.
+The completed tb2 validation used 50,012,160 transitions. ToddlerBot's walking
+configuration uses 1 billion transitions, but tb2's regression after its early
+peak means unchanged scaling is not a high-confidence next step.
+
+The tb3 screen uses `1024 envs x 20 steps x 732 iterations = 14,991,360`
+transitions. Evaluation runs every 122 iterations. Continue beyond this screen
+only if a deterministic checkpoint beats tb2's `0.05782 m/s` early peak while
+retaining `0/64` falls and reducing hip-roll saturation.
 
 Promotion remains stability-first:
 
@@ -103,17 +146,25 @@ Promotion remains stability-first:
 - worst stable per-actuator torque-saturation fraction <= 5%;
 - forward tracking passes the existing command-scaled gate.
 
-Zero, backward, lateral, and yaw probes remain report-only for this first
-corrected run. They diagnose command coverage without overriding the primary
-forward stability decision.
+The tb2 zero, backward, lateral, and yaw probes were diagnostic. Tb3 omits
+them because those commands are outside the accepted forward-only scope; only
+the primary forward rollout participates in selection.
 
 ## Launch
 
-Run the smoke verification first on the GPU machine:
+Verify the shared stance first:
+
+```bash
+uv run python training/eval/verify_walking_stance_geometry.py \
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
+  --offset-rad 0
+```
+
+Run the training smoke verification on the GPU machine:
 
 ```bash
 uv run python training/train.py \
-  --config training/configs/ppo_walking_v0210_tb2_rsl_parity.yaml \
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
   --verify
 ```
 
@@ -121,7 +172,7 @@ Then start a fresh run, with no `--init-policy` and no `--resume`:
 
 ```bash
 uv run python training/train.py \
-  --config training/configs/ppo_walking_v0210_tb2_rsl_parity.yaml
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml
 ```
 
 For the cross-machine loop:
@@ -129,7 +180,7 @@ For the cross-machine loop:
 ```bash
 uv run python wildrobot/agents/autonomous_training_loop.py start \
   --new-run \
-  --config training/configs/ppo_walking_v0210_tb2_rsl_parity.yaml \
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
   --max-cycles 30
 
 uv run python wildrobot/agents/autonomous_training_loop.py run
@@ -140,3 +191,8 @@ Do not deploy merely because training completes. Require the generated
 and then use a tethered trial. To exercise zero-command standing through this
 single locomotion actor, pass `--disable-zero-cmd-hold-home`; otherwise runtime
 intentionally holds the static home pose at zero command.
+
+The existing standing bundle still encodes the historical home pose. Do not
+combine it silently with a tb3 walking bundle: revalidate and export standing
+against the same canonical home, or use the validated tb3 zero-command policy
+path after the walking screen passes.

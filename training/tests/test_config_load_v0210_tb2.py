@@ -87,6 +87,7 @@ def test_tb2_pins_current_toddlerbot_learning_contract(cfg) -> None:
     assert raw["quick_verify"]["ppo"]["num_envs"] == 4
     assert cfg.env.actor_obs_layout_id == "wr_obs_v12_tb_proprio"
     assert cfg.env.loc_ref_frame_zero_from_home is True
+    assert cfg.env.home_joint_offsets_rad == {}
     assert cfg.env.loc_ref_reset_base == "ref_init"
     assert cfg.env.loc_ref_residual_base == "home"
     assert cfg.env.loc_ref_rsi_enabled is False

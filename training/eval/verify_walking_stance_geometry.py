@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Evaluate symmetric walking stance offsets with MuJoCo forward kinematics.
+"""Evaluate symmetric stance offsets with MuJoCo forward kinematics.
 
-The candidate offset pattern narrows the stance while counter-rotating each
-ankle so the feet retain their home-pose orientation::
+The configured ``env.home_joint_offsets_rad`` is applied first. Each candidate
+``--offset-rad`` is then added using the pattern below, which narrows the stance
+while counter-rotating each ankle so the feet retain their base orientation::
 
     left_hip_roll   += offset
     right_hip_roll  -= offset
@@ -30,6 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from assets.robot_config import RobotConfig
 from training.configs.training_config import load_training_config
+from training.policy_spec_utils import configured_home_joint_offsets
 
 
 OFFSET_SIGNS = {
@@ -251,6 +253,20 @@ def load_stance_inputs(
     model = mujoco.MjModel.from_xml_path(str(scene_path))
     robot_config = RobotConfig.from_file(robot_config_path)
     home_qpos = _home_qpos(model)
+    excluded = set(training_config.env.policy_excluded_actuator_names)
+    policy_actuator_names = [
+        str(item["name"])
+        for item in robot_config.actuated_joints
+        if str(item["name"]) not in excluded
+    ]
+    configured_offsets = configured_home_joint_offsets(
+        env_config=training_config.env,
+        policy_actuator_names=policy_actuator_names,
+    )
+    for joint_name, offset_rad in configured_offsets.items():
+        joint_id = _named_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        qpos_address = int(model.jnt_qposadr[joint_id])
+        home_qpos[qpos_address] += float(offset_rad)
     home_data = mujoco.MjData(model)
     home_data.qpos[:] = home_qpos
     mujoco.mj_forward(model, home_data)
@@ -298,7 +314,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         nargs="+",
         default=[0.0, 0.03, 0.035, 0.04],
-        help="Symmetric hip-roll offset magnitudes to evaluate",
+        help="Additional symmetric roll-offset magnitudes to evaluate",
     )
     parser.add_argument("--max-support-torque-ratio", type=float, default=0.8)
     parser.add_argument("--max-foot-orientation-delta-deg", type=float, default=1.0)

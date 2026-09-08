@@ -229,6 +229,16 @@ class EnvConfig(Freezable):
     #                Constant over time (does NOT follow q_ref(t)).
     loc_ref_residual_base: str = "q_ref"
 
+    # Optional policy-scoped offset applied to the canonical MJCF home pose.
+    # Unlike ``loc_ref_walking_joint_offsets_rad``, this changes every use of
+    # home for the controlled joints: reset qpos, frame zero, residual base,
+    # observation centering, exported ``home_ctrl_rad``, and hardware home
+    # preparation.  It therefore preserves a single home/frame-zero contract
+    # while allowing morphology-specific stance corrections without mutating
+    # the shared historical MJCF asset. Values are radians and may name only
+    # policy-controlled actuators.
+    home_joint_offsets_rad: Dict[str, float] = field(default_factory=dict)
+
     # Optional walking-only joint offsets added to the residual action base
     # and offline q_ref joint poses. This lets a walking policy use a
     # morphology-specific neutral stance without changing the robot's global

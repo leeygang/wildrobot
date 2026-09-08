@@ -95,6 +95,53 @@ def policy_excluded_actuator_names(training_cfg: Any) -> List[str]:
     return [str(name) for name in names]
 
 
+def configured_home_joint_offsets(
+    *,
+    env_config: Any,
+    policy_actuator_names: List[str],
+) -> Dict[str, float]:
+    """Return validated policy-scoped canonical-home offsets."""
+    raw = (
+        env_config.get("home_joint_offsets_rad", {})
+        if isinstance(env_config, dict)
+        else getattr(env_config, "home_joint_offsets_rad", {})
+    )
+    offsets = {str(name): float(value) for name, value in dict(raw or {}).items()}
+    unknown = sorted(set(offsets) - set(policy_actuator_names))
+    if unknown:
+        raise ValueError(
+            "env.home_joint_offsets_rad contains non-policy actuators: "
+            f"{unknown}"
+        )
+    nonfinite = sorted(
+        name for name, value in offsets.items() if not math.isfinite(value)
+    )
+    if nonfinite:
+        raise ValueError(
+            "env.home_joint_offsets_rad values must be finite; invalid actuators: "
+            f"{nonfinite}"
+        )
+    return offsets
+
+
+def apply_home_joint_offsets(
+    *,
+    home_ctrl: List[float],
+    actuator_names: List[str],
+    offsets: Dict[str, float],
+) -> List[float]:
+    """Apply canonical-home offsets to values in actuator order."""
+    if len(home_ctrl) != len(actuator_names):
+        raise ValueError(
+            "home_ctrl and actuator_names must have equal length: "
+            f"{len(home_ctrl)} != {len(actuator_names)}"
+        )
+    return [
+        float(value) + float(offsets.get(name, 0.0))
+        for name, value in zip(actuator_names, home_ctrl)
+    ]
+
+
 def _policy_actuated_joint_specs(
     *, training_cfg: Any, robot_cfg: Any
 ) -> List[Dict[str, Any]]:
@@ -181,9 +228,18 @@ def maybe_get_home_ctrl_from_training_config(
         robot_cfg=robot_cfg,
     )
     actuator_names = [str(item["name"]) for item in actuated_joint_specs]
+    offsets = configured_home_joint_offsets(
+        env_config=training_cfg.env,
+        policy_actuator_names=actuator_names,
+    )
     home_ctrl = get_home_ctrl_from_model_path(
         model_path=training_cfg.env.model_path,
         actuator_names=actuator_names,
+    )
+    home_ctrl = apply_home_joint_offsets(
+        home_ctrl=home_ctrl,
+        actuator_names=actuator_names,
+        offsets=offsets,
     )
     return clamp_home_ctrl(
         home_ctrl=home_ctrl,
@@ -203,17 +259,28 @@ def build_policy_spec_from_training_config(
         training_cfg=training_cfg,
         robot_cfg=robot_cfg,
     )
+    policy_actuator_names = [str(item["name"]) for item in policy_joint_specs]
+    home_offsets = configured_home_joint_offsets(
+        env_config=training_cfg.env,
+        policy_actuator_names=policy_actuator_names,
+    )
     layout_id = str(training_cfg.env.actor_obs_layout_id)
     observation_joint_specs = None
     observation_home_ctrl = None
     if layout_id == "wr_obs_v12_tb_proprio":
         observation_joint_specs = list(robot_cfg.actuated_joints)
         observation_names = [str(item["name"]) for item in observation_joint_specs]
+        observation_home = get_home_ctrl_from_model_path(
+            model_path=training_cfg.env.model_path,
+            actuator_names=observation_names,
+        )
+        observation_home = apply_home_joint_offsets(
+            home_ctrl=observation_home,
+            actuator_names=observation_names,
+            offsets=home_offsets,
+        )
         observation_home_ctrl = clamp_home_ctrl(
-            home_ctrl=get_home_ctrl_from_model_path(
-                model_path=training_cfg.env.model_path,
-                actuator_names=observation_names,
-            ),
+            home_ctrl=observation_home,
             actuated_joint_specs=observation_joint_specs,
             actuator_names=observation_names,
         )

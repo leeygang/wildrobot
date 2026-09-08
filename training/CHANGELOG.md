@@ -8,6 +8,108 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb2-result + tb3-ready] - 2026-09-08: corrected PPO is stable, but full command training converges to a torque-limited shuffle
+
+The corrected ToddlerBot/RSL-RL parity run is
+`training/wandb/offline-run-20260907_121930-vmaowce2`. It completed all
+`50,012,160` transitions (`1024 x 20 x 2442`) without a training failure, but
+the authoritative post-training evaluator selected no checkpoint. The best
+post-training candidate was checkpoint 220:
+
+| Deployment metric | Checkpoint 220 | Gate | Result |
+|---|---:|---:|:---:|
+| walking falls | **0/64** | 0/64 | pass |
+| stable torso tilt mean / peak / survivor-final | **3.27 / 8.26 / 7.33 deg** | <=10 / 15 / 10 deg | pass |
+| forward velocity at `0.13333 m/s` command | **0.02845 m/s** | >=0.075 m/s | fail |
+| achieved / commanded forward ratio | **0.213** | 0.6--1.5 | fail |
+| touchdown step length | **0.02179 m** | >=0.032 m | fail |
+| stable worst-actuator torque saturation | **20.03%** | <=5% | fail |
+
+The corrected learner contract itself worked. Every logged iteration executed
+all 64 configured minibatch updates, approximate KL stayed near the adaptive
+`0.01` target, and the learning-rate controller moved bidirectionally. This
+rules out tb1's hard-KL early-stop bug. The behavioral trajectory instead
+identifies a reward/task local optimum: deterministic forward velocity peaked
+at `0.05782 m/s` after about 5.0M transitions, then regressed to `0.01607 m/s`
+at 50.0M while per-step reward increased `0.138 -> 0.226`. At the end, the
+feet-phase contribution was `0.18119` versus only `0.00270` from forward
+tracking. The policy learned stable phase-matched stepping/shuffling rather
+than commanded translation. Unchanged continuation is therefore not a
+high-confidence use of ToddlerBot's much larger 1B-transition budget.
+
+The torque failure is actuator-local and structural, not visible in aggregate
+saturation. Checkpoint 220 saturated `right_hip_roll` for `20.03%` of stable
+samples and `left_hip_roll` for `10.68%`; checkpoint 680 instead peaked on the
+left at `17.78%`. The side can change, indicating insufficient bilateral roll
+headroom rather than one faulty learned channel. The active tb2 recipe also
+assigned zero reward weight to saturation, matching ToddlerBot but not
+addressing WR's different morphology and missing hip-yaw authority.
+
+The deterministic MuJoCo stance verifier confirms the mechanical source:
+
+| Canonical stance | Foot-center separation | Worst quasi-static hip-roll load / limit | Result |
+|---|---:|---:|:---:|
+| tb2 MJCF home | 0.1794 m | 89.8% | fail |
+| symmetric 0.030-rad hip/ankle-roll correction | 0.1564 m | 78.4% | pass |
+
+The next configuration is
+`training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml`. A new
+policy-scoped `env.home_joint_offsets_rad` contract applies the verified
+correction consistently to reset qpos, walking frame zero, the residual action
+base, actor/critic observation centering, exported `home_ctrl_rad`, and the
+hardware home target. It intentionally differs from the historical
+`loc_ref_walking_joint_offsets_rad`, which leaves physical home unchanged and
+would recreate the standing-to-walking pose mismatch. Historical MJCF assets
+remain immutable.
+
+`tb3` preserves tb2's Normal actor, 840D contact-free all-motor observation,
+privileged critic, four PPO epochs, 16 minibatches, adaptive KL, reward
+magnitudes, `alpha=562.5`, and hardware randomization. It changes only the
+deployment task scope and the morphology-specific stance:
+
+- command sampling is 20% exact zero and otherwise positive
+  `vx in [0.066667, 0.133333] m/s`; `vy=wz=0`;
+- the velocity reward is one-dimensional, so incidental lateral movement
+  cannot zero the forward gradient;
+- backward, lateral, and yaw probes are omitted because they are out of scope
+  and must not block forward-only selection;
+- the stronger saturation penalty remains disabled. Previous 17d5/17d8
+  attempts reduced saturation primarily by weakening or collapsing the gait;
+  tb3 first fixes the measured stance leverage;
+- the first screen is `14,991,360` transitions (`732` iterations), with a
+  deterministic 64x1000 evaluation every `122` iterations.
+
+Before training, verify the resolved shared stance:
+
+```bash
+uv run python training/eval/verify_walking_stance_geometry.py \
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml \
+  --offset-rad 0
+```
+
+Then run a fresh policy with no initialization or resume:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_tb3_forward_shared_stance.yaml
+```
+
+The 15M screen justifies continuation only if it beats tb2's `0.05782 m/s`
+early peak while retaining `0/64` falls and lowering hip-roll saturation.
+Deployment still requires the full forward gates: at least `0.075 m/s`,
+command ratio at least `0.6`, touchdown step length at least `0.032 m`, stable
+worst-actuator saturation at most `5%`, and the existing tilt limits. Any
+standing policy paired with tb3 must be revalidated/re-exported against this
+same canonical home; the historical standing bundle intentionally remains
+unchanged and must not be silently combined with the new walking home.
+
+References: Shi et al., *ToddlerBot* (arXiv:2502.00893); Shi et al.,
+*Locomotion Beyond Feet / ToddlerBot 2.0* (arXiv:2601.03607); RSL-RL v2.3.3;
+Rudin et al., *Learning to Walk in Minutes Using Massively Parallel Deep
+Reinforcement Learning* (CoRL 2022).
+
+---
+
 ## [v0.21.0-tb1-result + tb2-ready] - 2026-09-07: correct the ToddlerBot/RSL-RL contract
 
 The `v0.21.0-tb1` run is

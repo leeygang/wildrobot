@@ -35,6 +35,10 @@ from policy_contract.spec_builder import build_policy_spec
 
 from training.exports.export_onnx import export_checkpoint_to_onnx, get_checkpoint_dims
 from training.configs.asset_paths import resolve_env_asset_paths
+from training.policy_spec_utils import (
+    apply_home_joint_offsets,
+    configured_home_joint_offsets,
+)
 
 
 def export_policy_bundle(
@@ -578,6 +582,19 @@ def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> li
     else:
         mujoco.mj_resetData(mj_model, mj_data)
 
+    full_actuator_names = [
+        str(mj_model.actuator(actuator_id).name)
+        for actuator_id in range(mj_model.nu)
+    ]
+    excluded = set(_policy_excluded_actuator_names(env))
+    policy_actuator_names = [
+        name for name in full_actuator_names if name not in excluded
+    ]
+    offsets = configured_home_joint_offsets(
+        env_config=env,
+        policy_actuator_names=policy_actuator_names,
+    )
+
     home_ctrl = []
     for name in actuator_names:
         act_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
@@ -592,7 +609,11 @@ def _get_home_ctrl_from_mjcf(config_path: Path, actuator_names: list[str]) -> li
         qpos_adr = int(mj_model.jnt_qposadr[joint_id])
         home_ctrl.append(float(mj_data.qpos[qpos_adr]))
 
-    return home_ctrl
+    return apply_home_joint_offsets(
+        home_ctrl=home_ctrl,
+        actuator_names=actuator_names,
+        offsets=offsets,
+    )
 
 
 def _clamp_home_ctrl(

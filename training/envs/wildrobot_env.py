@@ -97,8 +97,10 @@ from training.envs.standing_recovery import (
     encode_recovery_command,
 )
 from training.policy_spec_utils import (
+    apply_home_joint_offsets,
     build_policy_spec_from_training_config,
     clamp_home_ctrl,
+    configured_home_joint_offsets,
     get_home_ctrl_from_mj_model,
 )
 from training.sim_adapter.mjx_signals import MjxSignalsAdapter
@@ -705,6 +707,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._policy_spec = build_policy_spec_from_training_config(
             training_cfg=self._config,
             robot_cfg=self._robot_config,
+        )
+        home_offsets = configured_home_joint_offsets(
+            env_config=self._config.env,
+            policy_actuator_names=list(self._policy_spec.robot.actuator_names),
+        )
+        full_home_ctrl_list = apply_home_joint_offsets(
+            home_ctrl=full_home_ctrl_list,
+            actuator_names=full_actuator_names,
+            offsets=home_offsets,
         )
         self._actuator_name_to_index = {
             name: i for i, name in enumerate(self._policy_spec.robot.actuator_names)
