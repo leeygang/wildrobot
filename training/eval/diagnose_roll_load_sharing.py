@@ -62,12 +62,16 @@ def _summarize_joint(
     joint_index: int,
     torque_nm: np.ndarray,
     torque_ratio: np.ndarray,
+    joint_velocity_rad_s: np.ndarray,
     policy_action: np.ndarray,
     applied_action: np.ndarray,
     target_error_rad: np.ndarray,
+    hardware_stall_torque_nm: float | None = None,
+    hardware_no_load_speed_rad_s: float | None = None,
 ) -> dict[str, float]:
     torque = torque_nm[..., joint_index][mask]
     ratio = torque_ratio[..., joint_index][mask]
+    velocity = joint_velocity_rad_s[..., joint_index][mask]
     policy = policy_action[..., joint_index][mask]
     applied = applied_action[..., joint_index][mask]
     target_error = target_error_rad[..., joint_index][mask]
@@ -75,13 +79,17 @@ def _summarize_joint(
     abs_policy = np.abs(policy)
     abs_applied = np.abs(applied)
     abs_target_error = np.abs(target_error)
-    return {
+    summary = {
         "torque_signed_mean_nm": float(np.mean(torque)) if torque.size else 0.0,
         "torque_abs_mean_nm": float(np.mean(abs_torque)) if torque.size else 0.0,
         "torque_abs_p95_nm": _percentile(abs_torque, 95.0),
         "torque_ratio_mean": float(np.mean(ratio)) if ratio.size else 0.0,
         "torque_ratio_p95": _percentile(ratio, 95.0),
         "torque_saturation_frac": (float(np.mean(ratio > 0.95)) if ratio.size else 0.0),
+        "joint_velocity_abs_mean_rad_s": (
+            float(np.mean(np.abs(velocity))) if velocity.size else 0.0
+        ),
+        "joint_velocity_abs_p95_rad_s": _percentile(np.abs(velocity), 95.0),
         "policy_action_signed_mean": (float(np.mean(policy)) if policy.size else 0.0),
         "policy_action_abs_mean": (float(np.mean(abs_policy)) if policy.size else 0.0),
         "applied_action_signed_mean": (
@@ -99,6 +107,39 @@ def _summarize_joint(
         ),
         "target_error_abs_p95_rad": _percentile(abs_target_error, 95.0),
     }
+    if (
+        hardware_stall_torque_nm is not None
+        and hardware_no_load_speed_rad_s is not None
+    ):
+        # Conservative endpoint-linear motoring envelope. Braking retains the
+        # stall limit, matching ToddlerBot's asymmetric acceleration/braking
+        # treatment without claiming unmeasured HTD-45H plateau parameters.
+        motoring = torque * velocity > 0.0
+        speed_fraction = np.clip(
+            np.abs(velocity) / hardware_no_load_speed_rad_s,
+            0.0,
+            1.0,
+        )
+        available = np.where(
+            motoring,
+            hardware_stall_torque_nm * (1.0 - speed_fraction),
+            hardware_stall_torque_nm,
+        )
+        envelope_ratio = abs_torque / np.maximum(available, 1e-6)
+        summary.update(
+            {
+                "hardware_envelope_ratio_mean": (
+                    float(np.mean(envelope_ratio)) if envelope_ratio.size else 0.0
+                ),
+                "hardware_envelope_ratio_p95": _percentile(envelope_ratio, 95.0),
+                "hardware_envelope_exceeded_frac": (
+                    float(np.mean(envelope_ratio > 1.0))
+                    if envelope_ratio.size
+                    else 0.0
+                ),
+            }
+        )
+    return summary
 
 
 def _summarize_support_leverage(
@@ -126,6 +167,7 @@ def summarize_roll_load_sharing(
     joint_names: Sequence[str],
     torque_nm: np.ndarray,
     torque_ratio: np.ndarray,
+    joint_velocity_rad_s: np.ndarray,
     policy_action: np.ndarray,
     applied_action: np.ndarray,
     target_error_rad: np.ndarray,
@@ -139,11 +181,14 @@ def summarize_roll_load_sharing(
     robot_weight_n: float,
     stable_start_s: float = WALKING_STABLE_START_S,
     pre_fall_window_s: float = WALKING_PRE_FALL_WINDOW_S,
+    hardware_stall_torque_nm: float | None = None,
+    hardware_no_load_speed_rad_s: float | None = None,
 ) -> dict[str, Any]:
     """Summarize roll-joint behavior by measured foot-support phase."""
     state_arrays = (
         torque_nm,
         torque_ratio,
+        joint_velocity_rad_s,
         policy_action,
         applied_action,
         target_error_rad,
@@ -229,9 +274,12 @@ def summarize_roll_load_sharing(
                         joint_index=joint_index,
                         torque_nm=torque_nm,
                         torque_ratio=torque_ratio,
+                        joint_velocity_rad_s=joint_velocity_rad_s,
                         policy_action=policy_action,
                         applied_action=applied_action,
                         target_error_rad=target_error_rad,
+                        hardware_stall_torque_nm=hardware_stall_torque_nm,
+                        hardware_no_load_speed_rad_s=hardware_no_load_speed_rad_s,
                     )
                     for joint_name, joint_index in joint_indices.items()
                 },
@@ -269,6 +317,7 @@ def _collect_rollout(
     policy_ctrl_ids = env._ctrl_mapper.policy_to_mj_order_jax
     policy_signal_indices = env._policy_signal_indices
     qpos_ids = env._actuator_qpos_addrs
+    qvel_ids = env._actuator_dof_addrs
     actuator_ids = env._cal._actuator_ids
     force_limits = _take_policy_actuator_channels(
         env._cal._force_limits,
@@ -321,6 +370,7 @@ def _collect_rollout(
         output = {
             "torque_nm": torque_nm,
             "torque_ratio": jnp.abs(torque_nm) / (force_limits + 1e-6),
+            "joint_velocity_rad_s": next_state.data.qvel[:, qvel_ids],
             "policy_action": policy_action,
             "applied_action": next_state.info[WR_INFO_KEY].prev_action,
             "target_error_rad": ctrl_policy - q_actual,
@@ -359,6 +409,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-envs", type=int, default=16)
     parser.add_argument("--num-steps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--hardware-stall-torque-nm", type=float, default=None)
+    parser.add_argument("--hardware-no-load-speed-rad-s", type=float, default=None)
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -369,6 +421,17 @@ def main() -> int:
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
     if not args.config.is_file():
         raise FileNotFoundError(f"Config not found: {args.config}")
+    if (args.hardware_stall_torque_nm is None) != (
+        args.hardware_no_load_speed_rad_s is None
+    ):
+        raise ValueError(
+            "hardware stall torque and no-load speed must be provided together"
+        )
+    if args.hardware_stall_torque_nm is not None:
+        if args.hardware_stall_torque_nm <= 0.0:
+            raise ValueError("hardware stall torque must be positive")
+        if args.hardware_no_load_speed_rad_s <= 0.0:
+            raise ValueError("hardware no-load speed must be positive")
 
     training_cfg = load_training_config(args.config)
     robot_cfg_path = Path(training_cfg.env.robot_config_path)
@@ -419,6 +482,7 @@ def main() -> int:
         joint_names=joint_names,
         torque_nm=np.asarray(rollout["torque_nm"]),
         torque_ratio=np.asarray(rollout["torque_ratio"]),
+        joint_velocity_rad_s=np.asarray(rollout["joint_velocity_rad_s"]),
         policy_action=np.asarray(rollout["policy_action"]),
         applied_action=np.asarray(rollout["applied_action"]),
         target_error_rad=np.asarray(rollout["target_error_rad"]),
@@ -439,6 +503,8 @@ def main() -> int:
             ]
             * np.linalg.norm(env._mj_model.opt.gravity)
         ),
+        hardware_stall_torque_nm=args.hardware_stall_torque_nm,
+        hardware_no_load_speed_rad_s=args.hardware_no_load_speed_rad_s,
     )
     result = {
         "checkpoint": str(args.checkpoint.resolve()),
@@ -447,6 +513,15 @@ def main() -> int:
         "num_envs": int(args.num_envs),
         "num_steps": int(args.num_steps),
         "seed": int(args.seed),
+        "hardware_torque_speed_envelope": (
+            None
+            if args.hardware_stall_torque_nm is None
+            else {
+                "model": "endpoint_linear_motoring_constant_stall_braking",
+                "stall_torque_nm": float(args.hardware_stall_torque_nm),
+                "no_load_speed_rad_s": float(args.hardware_no_load_speed_rad_s),
+            }
+        ),
         "summary": summary,
     }
     rendered = json.dumps(result, indent=2, sort_keys=True)

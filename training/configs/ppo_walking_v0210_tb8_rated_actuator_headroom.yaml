@@ -1,0 +1,295 @@
+# WildRobot v0.21.0-tb8: hardware-rated actuator-headroom diagnostic.
+#
+# Initialize actor weights from the frozen tb4 safety champion checkpoint 600.
+# The simulated dynamics change, so use --init-policy, not --resume.
+#
+# Binding campaign stage 3 was falsified by two geometry/timing screens. The
+# required hardware-model diagnostic found that the MJCF's constant 4.0 Nm
+# limit is below the HTD-45H manual's 45 kg.cm (4.413 Nm) stall rating at
+# 11.1 V. The champion's loaded hip speed is low (0.278/0.257 rad/s mean,
+# 0.454/0.490 rad/s p95), and its simulated torque never exceeds the
+# conservative endpoint-linear envelope formed by the manual's 4.413 Nm stall
+# torque and 0.18 s/60 deg (5.818 rad/s) no-load speed. At the same time, the
+# measured p95 gravity support moment is 4.236/4.308 Nm, so the 4.0 Nm clamp
+# truncates feasible hardware torque and makes the current occupancy metric
+# pessimistic.
+#
+# Change only the simulator actuator limit to the hardware rating. Keep the
+# champion's reward, stance, reference timing, contact-free actor, and
+# ToddlerBot/RSL-RL learner unchanged. The 5% gate remains 5% of the modeled
+# physical limit; this does not weaken the fractional gate. Train for only
+# 10 iterations (204,800 transitions) and evaluate at iterations 5 and 10.
+#
+# Hardware source: docs/HTD-45H Serial Bus Servo/1. HTD-45H Servo User
+# Manual/HTD-45H Bus Servo User Manual.pdf, parameter table p.5. Public
+# reference: Shi et al., ToddlerBot (arXiv:2502.00893). ToddlerBot uses
+# measured velocity-dependent motor limits in sim/motor_control.py; this
+# bounded WR experiment corrects only the validated low-speed limit because
+# an HTD-45H breakpoint/braking curve has not been measured.
+
+version: "0.21.0-tb8"
+version_name: "v0.21.0 ToddlerBot forward gait, hardware-rated actuator headroom"
+seed: 42
+
+env:
+  assets_root: assets/v2
+  scene_xml_path: assets/v2/scene_flat_terrain.xml
+  robot_config_path: assets/v2/mujoco_robot_config.json
+  sim_dt: 0.002
+  ctrl_dt: 0.02
+  actuator_force_limit_nm: 4.4129925
+  max_episode_steps: 1000
+
+  target_height: 0.45
+  min_height: 0.30
+  max_height: 0.70
+  max_pitch: 0.8
+  max_roll: 0.8
+  use_relaxed_termination: true
+  reset_torso_roll_range: [-0.1, 0.1]
+  reset_torso_pitch_range: [-0.1, 0.1]
+  reset_arm_joint_offset_range: [-0.1, 0.1]
+
+  # ToddlerBot's walking policy controls legs but observes every motor.
+  policy_excluded_actuator_names:
+    - waist_yaw
+    - left_shoulder_pitch
+    - left_shoulder_roll
+    - left_elbow_pitch
+    - right_shoulder_pitch
+    - right_shoulder_roll
+    - right_elbow_pitch
+
+  actor_obs_layout_id: wr_obs_v12_tb_proprio
+  action_filter_alpha: 0.0
+  action_delay_steps: 1
+
+  # Forward-only deployment scope: 20% exact stand, otherwise positive vx.
+  min_velocity: 0.066667
+  max_velocity: 0.133333
+  min_velocity_y: 0.0
+  max_velocity_y: 0.0
+  max_yaw_rate: 0.0
+  cmd_resample_steps: 150
+  cmd_zero_chance: 0.20
+  cmd_turn_chance: 0.0
+  cmd_deadzone: [0.066667, 0.0, 0.0]
+  cmd_sampler_3d_branched: false
+  cmd_sampler_walk_vx_positive_only: false
+  cmd_sampler_walk_vy_exact_signed_bins: false
+  eval_velocity_cmd: [0.133333, 0.0, 0.0]
+  # Backward/lateral/yaw behavior is outside this screen and must not block
+  # forward-only promotion.
+  eval_velocity_cmd_probes: []
+
+  # Policy-scoped canonical home correction. This is deliberately not the
+  # walking-only offset mechanism: home hold, reset, frame zero, actor/critic
+  # centering, residual base, export, and hardware all resolve to this pose.
+  home_joint_offsets_rad:
+    left_hip_roll: 0.030
+    right_hip_roll: -0.030
+    left_ankle_roll: -0.030
+    right_ankle_roll: 0.030
+
+  loc_ref_version: v3_offline_library
+  loc_ref_offline_command_vx: 0.133333
+  loc_ref_default_stance_width_m: 0.0536
+  loc_ref_residual_base: home
+  loc_ref_reset_base: ref_init
+  loc_ref_frame_zero_from_home: true
+  loc_ref_walking_base_from_ref_init_roll: false
+  loc_ref_walking_joint_offsets_rad: {}
+  loc_ref_rsi_enabled: false
+  loc_ref_rsi_probability: 0.0
+  loc_ref_command_conditioned: true
+  loc_ref_command_grid_interval: 0.066667
+  loc_ref_command_axes_3d: false
+  loc_ref_offline_command_vy_grid: []
+  loc_ref_offline_command_yaw_rate_grid: []
+
+  loc_ref_residual_mode: absolute
+  loc_ref_residual_scale: 0.25
+  loc_ref_residual_scale_per_joint: {}
+  loc_ref_clip_residual_action: false
+  loc_ref_penalty_pose_anchor: home
+  loc_ref_penalty_ang_vel_xy_form: tb_neg_squared
+  loc_ref_penalty_feet_ori_form: tb_linear_lateral
+  loc_ref_feet_phase_zero_on_standing: false
+  loc_ref_feet_phase_subtract_flat_baseline: false
+  close_feet_threshold: 0.146
+  critic_imitation_refs: true
+  critic_obs_history_frames: 15
+
+  penalty_pose_weight_default: 0.0
+  penalty_pose_weights_per_joint:
+    left_hip_pitch: 0.01
+    left_hip_roll: 1.0
+    left_knee_pitch: 0.01
+    left_ankle_pitch: 5.0
+    left_ankle_roll: 5.0
+    right_hip_pitch: 0.01
+    right_hip_roll: 1.0
+    right_knee_pitch: 0.01
+    right_ankle_pitch: 5.0
+    right_ankle_roll: 5.0
+
+  contact_threshold_force: 1.0
+  foot_switch_threshold: 2.0
+  push_enabled: false
+
+  # WR hardware-derived sim-to-real inputs retained from tb2.
+  imu_gyro_noise_std: 0.05
+  imu_quat_noise_deg: 2.0
+  imu_latency_steps: 0
+  joint_feedback_sample_hold_enabled: true
+  joint_feedback_leg_period_steps_range: [4, 7]
+  joint_feedback_upper_period_steps_range: [12, 24]
+
+  domain_randomization_enabled: true
+  domain_rand_friction_range: [0.4, 1.0]
+  domain_rand_mass_scale_range: [0.9, 1.1]
+  domain_rand_kp_scale_range: [0.9, 1.1]
+  domain_rand_damping_scale_range: [0.8, 1.2]
+  domain_rand_armature_scale_range: [0.8, 1.2]
+  domain_rand_frictionloss_scale_range: [0.8, 1.2]
+  domain_rand_joint_offset_rad: 0.0
+  domain_rand_backlash_range: [0.02, 0.10]
+  domain_rand_backlash_activation: 0.1
+  joint_pos_noise_rad: 0.05
+  joint_vel_noise_rad_s: 0.10
+
+  # Target only the measured bottleneck. Starting at 90% supplies a smooth
+  # warning before the evaluator's 95% occupancy boundary without suppressing
+  # normal mid-range torque.
+  torque_saturation_soft_limit_ratio: 0.90
+  torque_saturation_weight_default: 0.0
+  torque_saturation_weights_per_joint:
+    left_hip_roll: 1.0
+    right_hip_roll: 1.0
+
+ppo:
+  num_envs: 1024
+  rollout_steps: 20
+  iterations: 10
+  learning_rate: 3.0e-5
+  gamma: 0.97
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 5.0e-4
+  value_loss_coef: 0.25
+  epochs: 4
+  num_minibatches: 16
+  max_grad_norm: 1.0
+  optimizer_profile: toddlerbot_rsl_rl_2_3_3
+  adaptive_kl_min_learning_rate: 1.0e-5
+  adaptive_kl_max_learning_rate: 1.0e-2
+  adaptive_kl_factor: 1.5
+  log_interval: 10
+  target_kl: 0.01
+  lr_schedule_end_factor: 1.0
+  entropy_schedule_end_factor: 1.0
+  critic_privileged_enabled: true
+  critic_includes_actor_obs: false
+  mirror_loss_coef: 0.0
+  critic_warmup_iterations: 0
+  source_policy_kl_coef: 0.0
+  source_policy_kl_limit: 0.0
+  eval:
+    enabled: true
+    interval: 5
+    num_envs: 64
+    num_steps: 1000
+    deterministic: true
+    seed_offset: 10000
+    post_training_enabled: true
+    post_training_top_k: 2
+    post_training_num_envs: 64
+    post_training_num_steps: 1000
+    post_training_checkpoint_label: eval_promoted
+    post_training_strict_lateral_drift: false
+    post_training_strict_walking_safety: true
+  rollback:
+    enabled: false
+
+networks:
+  actor:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+    distribution_type: normal
+    noise_std_type: log
+    state_dependent_std: false
+    log_std_init: -0.6931471805599453
+    min_log_std: -5.0
+    max_log_std: 2.0
+  critic:
+    hidden_sizes: [512, 256, 128]
+    activation: elu
+
+reward_weights:
+  alive: 1.0
+  cmd_forward_velocity_track: 2.0
+  cmd_forward_velocity_alpha: 562.5
+  cmd_forward_velocity_alpha_y: 562.5
+  cmd_velocity_track_dim: 1
+  cmd_lateral_velocity_track: 0.0
+  cmd_yaw_rate_track: 0.0
+  cmd_yaw_rate_alpha: 7.111111
+  ref_body_quat_track: 2.5
+  ang_vel_xy: 1.0
+  action_rate: -2.0
+  penalty_pose: -0.5
+  penalty_close_feet_xy: 10.0
+  feet_phase: 7.5
+  feet_phase_alpha: 914.304
+  feet_phase_swing_height: 0.05
+  penalty_feet_ori: 5.0
+  ref_q_track: 0.0
+  ref_contact_match: 0.0
+  ref_feet_z_track: 0.0
+  torso_pos_xy: 0.0
+  lin_vel_z: 0.0
+  feet_air_time: 0.0
+  feet_clearance: 0.0
+  feet_distance: 0.0
+  torso_pitch_soft: 0.0
+  torso_roll_soft: 0.0
+  torque: 0.0
+  saturation: -0.01
+  joint_velocity: 0.0
+  slip: 0.0
+  pitch_rate: 0.0
+
+reward:
+  task_weight: 1.0
+  task_reward_clip: null
+
+checkpoints:
+  dir: training/checkpoints/ppo_walking_v0210_tb8_rated_actuator_headroom
+  interval: 5
+
+wandb:
+  enabled: true
+  project: wildrobot-ppo
+  mode: offline
+  tags: [ppo, v0.21.0, tb8, toddlerbot_rsl_rl_parity, direct_ppo, init_policy, forward_only, shared_home_stance, rated_actuator_headroom, hip_roll_margin, leg_only, all_motor_proprio, contact_free_actor, privileged_contact, frame0_reset, no_rsi, no_distillation, no_source_kl, no_symmetry, normal_actor, adaptive_kl, diagnostic_205k, eval_64, ep_1000]
+
+video:
+  enabled: false
+
+quick_verify:
+  enabled: false
+  ppo:
+    num_envs: 4
+    rollout_steps: 8
+    iterations: 3
+    eval:
+      enabled: true
+      interval: 1
+      num_envs: 4
+      num_steps: 16
+      deterministic: true
+      seed_offset: 10000
+      post_training_enabled: true
+      post_training_top_k: 1
+      post_training_num_envs: 4
+      post_training_num_steps: 16

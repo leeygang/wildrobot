@@ -85,6 +85,9 @@ class EnvConfig(Freezable):
     # Timing
     sim_dt: float = 0.002
     ctrl_dt: float = 0.02
+    # Optional symmetric force limit applied to every configured actuator.
+    # None preserves the limits authored in the MJCF.
+    actuator_force_limit_nm: Optional[float] = None
 
     # Episode
     max_episode_steps: int = 500

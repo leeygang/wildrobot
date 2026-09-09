@@ -245,6 +245,11 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         model_path=resolved.model_path,
         sim_dt=env.get("sim_dt", 0.002),
         ctrl_dt=env.get("ctrl_dt", 0.02),
+        actuator_force_limit_nm=(
+            None
+            if env.get("actuator_force_limit_nm") is None
+            else float(env["actuator_force_limit_nm"])
+        ),
         max_episode_steps=env.get("max_episode_steps", 500),
         target_height=env.get("target_height", 0.45),
         height_target_two_sided=bool(env.get("height_target_two_sided", False)),

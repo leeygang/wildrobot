@@ -534,6 +534,15 @@ class WildRobotEnv(mjx_env.MjxEnv):
             xml_path.read_text(), assets=get_assets(root_path)
         )
         self._mj_model.opt.timestep = self.sim_dt
+        force_limit_nm = getattr(
+            self._config.env, "actuator_force_limit_nm", None
+        )
+        if force_limit_nm is not None:
+            force_limit_nm = float(force_limit_nm)
+            if not math.isfinite(force_limit_nm) or force_limit_nm <= 0.0:
+                raise ValueError("env.actuator_force_limit_nm must be positive")
+            self._mj_model.actuator_forcerange[:, 0] = -force_limit_nm
+            self._mj_model.actuator_forcerange[:, 1] = force_limit_nm
         self._mjx_model = mjx.put_model(self._mj_model)
 
         # Robot config: prefer the global singleton (train.py preloads it
