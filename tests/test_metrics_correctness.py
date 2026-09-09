@@ -572,6 +572,20 @@ def test_policy_std_uses_brax_softplus_parameterization() -> None:
     )
 
 
+def test_policy_std_accepts_brax_global_std_tuple() -> None:
+    from training.eval.eval_policy import _policy_std_metrics_from_logits
+
+    mean = jp.zeros((4, 3, 2), dtype=jp.float32)
+    global_std = jp.asarray([0.2, 0.4], dtype=jp.float32)
+
+    metrics = _policy_std_metrics_from_logits((mean, global_std), action_dim=2)
+
+    assert metrics["policy/std_mean"] == pytest.approx(0.3, abs=1e-6)
+    assert metrics["policy/std_min"] == pytest.approx(0.2, abs=1e-6)
+    assert metrics["policy/std_max"] == pytest.approx(0.4, abs=1e-6)
+    assert "policy/scale_param_mean" not in metrics
+
+
 def test_named_torque_metrics_match_robot_config() -> None:
     import json
 

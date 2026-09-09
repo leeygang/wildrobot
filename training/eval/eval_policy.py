@@ -111,24 +111,38 @@ def _startup_action_scale(step_index: jax.Array, ramp_steps: int) -> jax.Array:
 
 
 def _policy_std_metrics_from_logits(
-    policy_logits: jax.Array,
+    policy_output: Any,
     action_dim: int,
     *,
     min_std: float = 0.001,
     var_scale: float = 1.0,
 ) -> Dict[str, float]:
-    """Summarize Brax's state-dependent policy scale over a rollout.
+    """Summarize Brax policy scale over a rollout.
 
-    The actor's final dimension contains ``2 * action_dim`` values:
-    first the Gaussian means, then unconstrained scale parameters.  The
-    actual standard deviation is
-    ``(softplus(scale_param) + min_std) * var_scale``.  A policy whose
-    mean is near zero but standard deviation grows during training
-    reduces to "rely on exploration noise" — surfacing this exposes the
-    failure mode where eval-time deterministic actions go to ~0 even
+    Tanh-normal actors return concatenated mean and unconstrained scale
+    parameters.  Brax normal actors return ``(mean, std)`` instead; the std
+    may be a global ``(action_dim,)`` parameter when it is state-independent.
+    A policy whose mean is near zero but standard deviation grows during
+    training reduces to "rely on exploration noise" — surfacing this exposes
+    the failure mode where eval-time deterministic actions go to ~0 even
     though training metrics looked alive.
     """
-    logits = jnp.asarray(policy_logits, dtype=jnp.float32)
+    if isinstance(policy_output, (tuple, list)) and len(policy_output) == 2:
+        mean = jnp.asarray(policy_output[0], dtype=jnp.float32)
+        std = jnp.asarray(policy_output[1], dtype=jnp.float32)
+        if mean.shape[-1] != action_dim or std.shape[-1] != action_dim:
+            raise ValueError(
+                "Normal policy output has the wrong final dimension: "
+                f"expected {action_dim}, got mean={mean.shape[-1]} "
+                f"and std={std.shape[-1]}"
+            )
+        return {
+            "policy/std_mean": float(jnp.mean(std)),
+            "policy/std_min": float(jnp.min(std)),
+            "policy/std_max": float(jnp.max(std)),
+        }
+
+    logits = jnp.asarray(policy_output, dtype=jnp.float32)
     if logits.shape[-1] != 2 * action_dim:
         raise ValueError(
             "Policy logits have the wrong final dimension: "
