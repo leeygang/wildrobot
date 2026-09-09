@@ -1,0 +1,285 @@
+{
+  "contract_name": "wildrobot_policy",
+  "contract_version": "1.0.0",
+  "spec_version": 2,
+  "model": {
+    "format": "onnx",
+    "input_name": "observation",
+    "output_name": "action",
+    "dtype": "float32",
+    "obs_dim": 840,
+    "action_dim": 10
+  },
+  "robot": {
+    "robot_name": "WildRobot",
+    "actuator_names": [
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "left_ankle_roll",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "right_ankle_roll"
+    ],
+    "joints": {
+      "left_hip_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_hip_roll": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.17453292519943295,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_pitch": {
+        "range_min_rad": -1.5707963267948966,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_hip_roll": {
+        "range_min_rad": -0.17453292519943295,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_knee_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 2.0943951023931953,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_pitch": {
+        "range_min_rad": -0.6981317007977318,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_ankle_roll": {
+        "range_min_rad": -0.7853981633974483,
+        "range_max_rad": 0.7853981633974483,
+        "max_velocity_rad_s": 10.0
+      },
+      "waist_yaw": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_pitch": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 3.141592653589793,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_shoulder_roll": {
+        "range_min_rad": -2.9670597283903604,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "left_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_pitch": {
+        "range_min_rad": -3.141592653589793,
+        "range_max_rad": 0.5235987755982988,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_shoulder_roll": {
+        "range_min_rad": -0.5235987755982988,
+        "range_max_rad": 2.9670597283903604,
+        "max_velocity_rad_s": 10.0
+      },
+      "right_elbow_pitch": {
+        "range_min_rad": 0.0,
+        "range_max_rad": 1.5707963267948966,
+        "max_velocity_rad_s": 10.0
+      }
+    },
+    "home_ctrl_rad": [
+      0.219524,
+      0.029205405,
+      0.517305,
+      -0.250013,
+      -0.029247743,
+      -0.220402,
+      -0.030620676,
+      0.519548,
+      -0.24973,
+      0.02835389
+    ],
+    "observation_actuator_names": [
+      "waist_yaw",
+      "left_shoulder_pitch",
+      "left_shoulder_roll",
+      "left_elbow_pitch",
+      "left_hip_pitch",
+      "left_hip_roll",
+      "left_knee_pitch",
+      "left_ankle_pitch",
+      "left_ankle_roll",
+      "right_shoulder_pitch",
+      "right_shoulder_roll",
+      "right_elbow_pitch",
+      "right_hip_pitch",
+      "right_hip_roll",
+      "right_knee_pitch",
+      "right_ankle_pitch",
+      "right_ankle_roll"
+    ],
+    "observation_home_ctrl_rad": [
+      0.00334485,
+      -0.002596,
+      0.0118466,
+      0.0,
+      0.219524,
+      0.029205405,
+      0.517305,
+      -0.250013,
+      -0.029247743,
+      0.00179528,
+      0.0104106,
+      0.0,
+      -0.220402,
+      -0.030620676,
+      0.519548,
+      -0.24973,
+      0.02835389
+    ]
+  },
+  "observation": {
+    "dtype": "float32",
+    "layout_id": "wr_obs_v12_tb_proprio",
+    "layout": [
+      {
+        "name": "proprio_stack",
+        "size": 840,
+        "frame": null,
+        "units": "15_frames_newest_to_oldest:[phase_sin_cos,velocity_cmd,motor_pos_delta_rad,motor_vel_x0.05,prev_action,body_angvel_rad_s,torso_quat_wxyz]"
+      }
+    ]
+  },
+  "action": {
+    "dtype": "float32",
+    "bounds": {
+      "min": -1.0,
+      "max": 1.0
+    },
+    "postprocess_id": "none",
+    "postprocess_params": {},
+    "mapping_id": "pos_target_rad_v1"
+  },
+  "provenance": {
+    "created_at": "2026-09-09T23:37:20.649787+00:00",
+    "training_config": "/Users/ygli/projects/wildrobot/training/remote_jobs/auto-06-eval-confirmation-f5843def-20260909-104749/effective_training_config.yaml",
+    "source_checkpoint": {
+      "format": "pkl",
+      "path": "/Users/ygli/projects/wildrobot/training/checkpoints/ppo_walking_v0210_tb8_rated_actuator_headroom/effective_training_config_v0210-tb8_20260909_031927-uo5sontr/checkpoint_15_307200.pkl"
+    },
+    "robot_config": "/Users/ygli/projects/wildrobot/assets/v2/mujoco_robot_config.json",
+    "git_commit": "f5843def16784e2c5e4629ccb29d9247c0ec5228",
+    "git_dirty": false,
+    "training_job_id": "auto-06-ppo_walking_v0210_tb8_rated_actuator_headroom-f5843def-20260909-101906",
+    "training_run_id": "uo5sontr",
+    "source_config_sha256": "18780a8a0ad3f5cac1a16ce5d0c48f55a2c21f48438d1e9d90f86431ddcba3b9",
+    "effective_config_sha256": "81acd76b8dceeab86ed38994bdf6279b76869732c39766b5252d9b3e348323b6",
+    "initial_checkpoint_sha256": "bde9a2fb508999734a14db0c3b9dd7e73ee61241859613d82bbe1f169f6a6e9b",
+    "runtime_fixed_home": {
+      "full_actuator_names": [
+        "waist_yaw",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_elbow_pitch",
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_elbow_pitch",
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      "active_actuator_names": [
+        "left_hip_pitch",
+        "left_hip_roll",
+        "left_knee_pitch",
+        "left_ankle_pitch",
+        "left_ankle_roll",
+        "right_hip_pitch",
+        "right_hip_roll",
+        "right_knee_pitch",
+        "right_ankle_pitch",
+        "right_ankle_roll"
+      ],
+      "fixed_actuator_names": [
+        "waist_yaw",
+        "left_shoulder_pitch",
+        "left_shoulder_roll",
+        "left_elbow_pitch",
+        "right_shoulder_pitch",
+        "right_shoulder_roll",
+        "right_elbow_pitch"
+      ],
+      "fixed_home_ctrl_rad": [
+        0.00334485,
+        -0.002596,
+        0.0118466,
+        0.0,
+        0.00179528,
+        0.0104106,
+        0.0
+      ],
+      "fixed_joint_ranges_rad": {
+        "waist_yaw": [
+          -0.5235987755982988,
+          0.5235987755982988
+        ],
+        "left_shoulder_pitch": [
+          -0.5235987755982988,
+          3.141592653589793
+        ],
+        "left_shoulder_roll": [
+          -2.9670597283903604,
+          0.5235987755982988
+        ],
+        "left_elbow_pitch": [
+          0.0,
+          1.5707963267948966
+        ],
+        "right_shoulder_pitch": [
+          -3.141592653589793,
+          0.5235987755982988
+        ],
+        "right_shoulder_roll": [
+          -0.5235987755982988,
+          2.9670597283903604
+        ],
+        "right_elbow_pitch": [
+          0.0,
+          1.5707963267948966
+        ]
+      },
+      "source": "env.policy_excluded_actuator_names"
+    }
+  }
+}

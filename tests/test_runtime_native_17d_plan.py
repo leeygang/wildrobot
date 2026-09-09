@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.policy_spec_utils import build_policy_spec_from_training_config
 from wr_runtime.control.mock_robot_io import MockRobotIO
-from wr_runtime.control.run_policy import _PolicySubsetRobotIO, _walking_runtime_plan
+from wr_runtime.control.run_policy import (
+    _PolicySubsetRobotIO,
+    _TargetBlendRobotIO,
+    _walking_runtime_plan,
+)
 
 
 def test_native_17d_runtime_maps_policy_directly_to_hardware() -> None:
@@ -96,3 +101,43 @@ def test_toddlerbot_leg_policy_reads_all_hardware_actuators() -> None:
     assert signals.joint_vel_rad_s.shape == (17,)
     projected.write_ctrl(home[[hardware_names.index(n) for n in spec.robot.actuator_names]])
     assert base.written[-1].shape == (17,)
+
+
+def test_leg_only_startup_blends_the_full_hardware_pose_before_projection() -> None:
+    cfg = load_training_config(
+        "training/configs/ppo_walking_v0210_tb8_rated_actuator_headroom.yaml"
+    )
+    robot_cfg = load_robot_config("assets/v2/mujoco_robot_config.json")
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=robot_cfg,
+    )
+    hardware_names, home, _, _ = _walking_runtime_plan(spec)
+    measured = home + np.float32(0.2)
+    base = MockRobotIO(
+        actuator_names=hardware_names,
+        control_dt=0.02,
+        home_q_rad=measured,
+    )
+    blended = _TargetBlendRobotIO(
+        base,
+        initial_target=measured,
+        blend_steps=2,
+    )
+    projected = _PolicySubsetRobotIO(
+        blended,
+        policy_actuator_names=spec.robot.actuator_names,
+        hardware_actuator_names=hardware_names,
+        hardware_home_q_rad=home,
+        observation_actuator_names=spec.robot.observation_actuator_names,
+    )
+
+    policy_home = home[
+        [hardware_names.index(name) for name in spec.robot.actuator_names]
+    ]
+    projected.write_ctrl(policy_home)
+    np.testing.assert_allclose(
+        base.written[-1], measured + 0.5 * (home - measured), atol=1e-7
+    )
+    projected.write_ctrl(policy_home)
+    np.testing.assert_allclose(base.written[-1], home, atol=1e-7)

@@ -9,6 +9,7 @@ import pytest
 from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.configs.zmp_reference import zmp_walk_config_from_env
+from training.exports.runtime_metadata import build_runtime_policy_config
 from training.policy_spec_utils import build_policy_spec_from_training_config
 
 
@@ -76,4 +77,30 @@ def test_tb8_applies_hardware_rated_actuator_limit() -> None:
     np.testing.assert_allclose(
         env._mj_model.actuator_forcerange,
         np.tile([-4.4129925, 4.4129925], (env._mj_model.nu, 1)),
+    )
+
+
+def test_tb8_runtime_export_keeps_the_full_forward_command_grid() -> None:
+    cfg = load_training_config(CONFIG)
+    robot_cfg = load_robot_config(cfg.env.robot_config_path)
+    spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=robot_cfg,
+    )
+
+    metadata = build_runtime_policy_config(
+        env=cfg.raw_config["env"],
+        spec=spec,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(metadata["reference"]["cmd_keys"], dtype=np.float32),
+        np.asarray(
+            [
+                [cfg.env.min_velocity, 0.0, 0.0],
+                [cfg.env.max_velocity, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+        atol=5e-5,
     )

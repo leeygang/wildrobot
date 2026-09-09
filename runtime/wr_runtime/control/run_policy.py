@@ -2318,7 +2318,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=float,
         default=_STARTUP_POSE_BLEND_S,
         help=(
-            "Hardware standing startup: linearly blend from the measured servo "
+            "Hardware startup: linearly blend from the measured servo "
             "pose to bundled home before enforcing the stability gate "
             f"(default: {_STARTUP_POSE_BLEND_S:.1f}; set 0 to disable)."
         ),
@@ -2966,21 +2966,9 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             )
         realtime = not args.no_realtime
 
-    if not stable_only and actuator_names != hardware_actuator_names:
-        robot_io = _PolicySubsetRobotIO(
-            robot_io,
-            policy_actuator_names=actuator_names,
-            hardware_actuator_names=hardware_actuator_names,
-            hardware_home_q_rad=hardware_home,
-            observation_actuator_names=(
-                bundle.spec.robot.observation_actuator_names or actuator_names
-            ),
-        )
-
     startup_pose_blend_steps = 0
     if (
-        stable_only
-        and not bool(args.dry_run)
+        not bool(args.dry_run)
         and float(args.startup_home_hold_s) > 0.0
         and float(args.startup_pose_blend_s) > 0.0
     ):
@@ -3020,6 +3008,17 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             robot_io,
             initial_target=initial_q,
             blend_steps=startup_pose_blend_steps,
+        )
+
+    if not stable_only and actuator_names != hardware_actuator_names:
+        robot_io = _PolicySubsetRobotIO(
+            robot_io,
+            policy_actuator_names=actuator_names,
+            hardware_actuator_names=hardware_actuator_names,
+            hardware_home_q_rad=hardware_home,
+            observation_actuator_names=(
+                bundle.spec.robot.observation_actuator_names or actuator_names
+            ),
         )
 
     zero_cmd_hold_home_deadzone = (

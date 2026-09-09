@@ -147,20 +147,7 @@ def _build_trajectories(
         env,
         offline_library_path=offline_path,
     )
-    if offline_path:
-        from control.references.reference_library import ReferenceLibrary
-
-        lib = ReferenceLibrary.load(offline_path)
-        if cmd_conditioned and axes_3d:
-            return list(lib._entries.values())
-        return [lib.lookup(offline_vx)]
-
-    if cmd_conditioned and axes_3d:
-        from control.zmp.zmp_walk import ZMPWalkGenerator
-        vy_grid = list(_env_get(env, "loc_ref_offline_command_vy_grid", ())) or [0.0]
-        wz_grid = list(
-            _env_get(env, "loc_ref_offline_command_yaw_rate_grid", ())
-        ) or [0.0]
+    if cmd_conditioned:
         min_vx = float(env["min_velocity"])
         max_vx = float(env["max_velocity"])
         interval = float(_env_get(env, "loc_ref_command_grid_interval", 0.05))
@@ -168,10 +155,30 @@ def _build_trajectories(
             raise ValueError(
                 f"loc_ref_command_grid_interval must be positive; got {interval!r}"
             )
-        arange_vals = np.arange(min_vx, max_vx + 1e-6, interval, dtype=np.float64)
-        vx_grid = sorted(
-            {round(float(v), 6) for v in arange_vals} | {round(offline_vx, 6)}
+        arange_vals = np.arange(
+            min_vx, max_vx + 1e-6, interval, dtype=np.float64
         )
+        vx_grid = sorted(
+            {round(float(v), 6) for v in arange_vals}
+            | {round(offline_vx, 6)}
+        )
+    else:
+        vx_grid = [offline_vx]
+
+    if offline_path:
+        from control.references.reference_library import ReferenceLibrary
+
+        lib = ReferenceLibrary.load(offline_path)
+        if cmd_conditioned and axes_3d:
+            return list(lib._entries.values())
+        return [lib.lookup(vx) for vx in vx_grid]
+
+    if cmd_conditioned and axes_3d:
+        from control.zmp.zmp_walk import ZMPWalkGenerator
+        vy_grid = list(_env_get(env, "loc_ref_offline_command_vy_grid", ())) or [0.0]
+        wz_grid = list(
+            _env_get(env, "loc_ref_offline_command_yaw_rate_grid", ())
+        ) or [0.0]
         lib = ZMPWalkGenerator(
             config=zmp_config,
             scene_xml_path=_env_get(env, "scene_xml_path", None),
@@ -188,8 +195,8 @@ def _build_trajectories(
         config=zmp_config,
         scene_xml_path=_env_get(env, "scene_xml_path", None),
         robot_config_path=_env_get(env, "robot_config_path", None),
-    ).build_library_for_vx_values([offline_vx])
-    return [lib.lookup(offline_vx)]
+    ).build_library_for_vx_values(vx_grid)
+    return [lib.lookup(vx) for vx in vx_grid]
 
 
 def _detect_n_cycle(phase: np.ndarray) -> int:
