@@ -1145,6 +1145,11 @@ class RewardWeightsConfig(Freezable):
     # zero preserves existing training behavior; safety-focused configs set an
     # explicit negative weight.
     saturation: float = 0.0
+    # WR-specific morphology term: squared whole-body-COM lateral lever from
+    # the measured loaded foot, normalized by 0.10 m and active only during
+    # exclusive single support. Simulator contact/full state remain outside
+    # the deployed actor observation contract.
+    single_support_com_lateral: float = 0.0
 
     # Smoothness
     action_rate: float = -0.01

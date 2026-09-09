@@ -2225,6 +2225,20 @@ METRIC_SPECS.extend(
     ]
 )
 
+# v0.21.0-tb6 single-support geometry reward (append-only).
+METRIC_SPECS.extend(
+    [
+        MetricSpec(
+            name="reward/single_support_com_lateral",
+            reducer=Reducer.MEAN,
+            description=(
+                "Weighted, dt-scaled squared lateral whole-body-COM lever "
+                "from the measured loaded foot during exclusive single support"
+            ),
+        ),
+    ]
+)
+
 # =============================================================================
 # Derived constants
 # =============================================================================

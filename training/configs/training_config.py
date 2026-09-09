@@ -1063,6 +1063,9 @@ def _parse_reward_weights_config(config: Dict[str, Any]) -> RewardWeightsConfig:
         # The saturation field existed before its reward term was wired. Keep
         # missing YAML keys behavior-compatible with those historical runs.
         saturation=rewards.get("saturation", 0.0),
+        single_support_com_lateral=rewards.get(
+            "single_support_com_lateral", 0.0
+        ),
         action_rate=rewards.get("action_rate", -0.01),
         joint_velocity=rewards.get("joint_velocity", -0.001),
         slip=rewards.get("slip", -0.5),

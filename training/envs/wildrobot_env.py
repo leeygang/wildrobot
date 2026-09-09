@@ -112,6 +112,7 @@ __all__ = [
     "WildRobotEnvState",
     "get_assets",
     "projected_gravity_orientation_penalty",
+    "single_support_com_lateral_penalty",
     "torque_saturation_penalty",
 ]
 
@@ -181,6 +182,45 @@ def torque_saturation_penalty(
             raise ValueError("actuator_weights must match actuator_force shape")
         squared_excess = squared_excess * weights
     return jp.sum(squared_excess).astype(jp.float32)
+
+
+def single_support_com_lateral_penalty(
+    *,
+    whole_body_com: jax.Array,
+    left_foot_pos: jax.Array,
+    right_foot_pos: jax.Array,
+    root_quat_wxyz: jax.Array,
+    left_loaded: jax.Array,
+    right_loaded: jax.Array,
+    normalization_m: float = 0.10,
+) -> jax.Array:
+    """Return squared lateral COM leverage during measured single support.
+
+    The lever is measured from the loaded foot to the whole-body COM along
+    the torso lateral axis. Dividing by 0.10 m makes the term dimensionless;
+    that scale is also the reviewed campaign's target p95 lever. Double
+    support and flight return zero so the reward does not alter the shared
+    home stance or encourage a lateral COM bias when both feet are planted.
+    """
+    if normalization_m <= 0.0:
+        raise ValueError("normalization_m must be positive")
+
+    root_quat_wxyz = jax_frames.normalize_quat_wxyz(root_quat_wxyz)
+    base_lateral = jax_frames.rotate_vec_by_quat(
+        root_quat_wxyz,
+        jp.asarray([0.0, 1.0, 0.0], dtype=jp.float32),
+    )
+    left_lever = jp.sum((whole_body_com - left_foot_pos) * base_lateral)
+    right_lever = jp.sum((whole_body_com - right_foot_pos) * base_lateral)
+    left_only = left_loaded & ~right_loaded
+    right_only = right_loaded & ~left_loaded
+    loaded_foot_lever = jp.where(
+        left_only,
+        left_lever,
+        jp.where(right_only, right_lever, jp.float32(0.0)),
+    )
+    normalized_lever = loaded_foot_lever / jp.float32(normalization_m)
+    return (normalized_lever * normalized_lever).astype(jp.float32)
 
 
 def get_assets(root_path: Path) -> Dict[str, bytes]:
@@ -1393,6 +1433,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         right_id = next(s.body_id for s in foot_specs if s.name == "right_foot")
         self._left_foot_body_id = int(left_id)
         self._right_foot_body_id = int(right_id)
+        root_id = mujoco.mj_name2id(
+            self._mj_model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            str(self._robot_config.floating_base_body),
+        )
+        if root_id < 0:
+            raise ValueError(
+                "Floating-base body not found: "
+                f"{self._robot_config.floating_base_body}"
+            )
+        self._root_body_id = int(root_id)
 
         # Compute home-pose foot orientation baseline.  Use mj_forward on
         # a temporary MjData with the home keyframe qpos so we read the
@@ -3522,6 +3573,14 @@ class WildRobotEnv(mjx_env.MjxEnv):
         left_loaded = left_force > jp.float32(contact_thresh)
         right_loaded = right_force > jp.float32(contact_thresh)
         both_loaded = left_loaded & right_loaded
+        penalty_single_support_com_lateral = single_support_com_lateral_penalty(
+            whole_body_com=data.subtree_com[self._root_body_id],
+            left_foot_pos=left_foot_pos,
+            right_foot_pos=right_foot_pos,
+            root_quat_wxyz=root_quat_wxyz,
+            left_loaded=left_loaded,
+            right_loaded=right_loaded,
+        )
         r_standing_support_balance = jp.where(
             is_standing & both_loaded,
             jp.exp(
@@ -3601,6 +3660,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             support_right_loaded=right_loaded.astype(jp.float32),
             support_both_loaded=both_loaded.astype(jp.float32),
             support_load_imbalance=support_load_imbalance,
+            penalty_single_support_com_lateral=(
+                penalty_single_support_com_lateral.astype(jp.float32)
+            ),
             r_cmd_forward_velocity_track=r_vx,
             # v0.21.0 P6.4 (H5) — yaw-rate tracking term (TB-aligned
             # alpha=0.25 via cmd_yaw_rate_alpha; weight defaults 0.0).
@@ -3774,6 +3836,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
             orientation=jp.float32(w.orientation) * terms["penalty_orientation"],
             torque=jp.float32(w.torque) * terms["penalty_torque"],
             saturation=jp.float32(w.saturation) * terms["penalty_saturation"],
+            single_support_com_lateral=jp.float32(
+                w.single_support_com_lateral
+            ) * terms["penalty_single_support_com_lateral"],
             joint_velocity=jp.float32(w.joint_velocity) * terms["penalty_joint_vel"],
             slip=jp.float32(w.slip) * terms["penalty_slip"],
             pitch_rate=jp.float32(w.pitch_rate) * terms["penalty_pitch_rate"],
@@ -6236,6 +6301,9 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["reward/orientation"] = reward_contrib["orientation"]
         terminal_metrics_dict["reward/torque"] = reward_contrib["torque"]
         terminal_metrics_dict["reward/saturation"] = reward_contrib["saturation"]
+        terminal_metrics_dict["reward/single_support_com_lateral"] = reward_contrib[
+            "single_support_com_lateral"
+        ]
         terminal_metrics_dict["reward/joint_vel"] = reward_contrib["joint_velocity"]
         terminal_metrics_dict["reward/slip"] = reward_contrib["slip"]
         terminal_metrics_dict["reward/pitch_rate"] = reward_contrib["pitch_rate"]

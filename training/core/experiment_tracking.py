@@ -80,6 +80,7 @@ REWARD_TERM_KEYS = [
     "reward/standing",
     "reward/torque",
     "reward/saturation",
+    "reward/single_support_com_lateral",
     "reward/action_rate",
     "reward/joint_vel",
     "reward/slip",
@@ -184,6 +185,9 @@ ENV_METRICS_KEYS = {
     "reward/collapse_vz_pen": "Pre-collapse downward vertical velocity penalty",
     "reward/torque": "Torque penalty",
     "reward/saturation": "Actuator saturation penalty",
+    "reward/single_support_com_lateral": (
+        "Measured-single-support lateral COM-to-loaded-foot lever penalty"
+    ),
     "reward/action_rate": "Action smoothness penalty",
     "reward/joint_vel": "Joint velocity penalty",
     "reward/slip": "Foot slip penalty",
