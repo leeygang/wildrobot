@@ -226,10 +226,10 @@ class V6EvalAdapter:
         self._init_residual_scale()
         self._init_joint_ranges()
         self._init_home_q_rad()
+        self._init_ctrl_mapper()
         self._init_walking_joint_offsets()
         self._init_ref_init_q_rad()
         self._init_reference_roll_walking_base()
-        self._init_ctrl_mapper()
         self._init_reset_perturbation()
         self._init_dr_joint_offsets()
         self.reset()
@@ -533,9 +533,27 @@ class V6EvalAdapter:
         self._walking_joint_offsets_rad = offsets
         self._walking_home_q_rad = walking_home.astype(np.float32)
 
+    def _q_ref_in_policy_order(self, q_ref: np.ndarray) -> np.ndarray:
+        """Project a full-model reference into the active policy order."""
+        q_ref = np.asarray(q_ref, dtype=np.float32)
+        if q_ref.shape[-1] == self._action_dim:
+            return q_ref
+        if q_ref.shape[-1] == self._mj_model.nu:
+            return np.take(
+                q_ref,
+                self._ctrl_mapper.policy_to_mj_order,
+                axis=-1,
+            ).astype(np.float32)
+        raise ValueError(
+            "Reference q_ref width must match the policy or full actuator "
+            f"count: {q_ref.shape[-1]} not in "
+            f"{{{self._action_dim}, {self._mj_model.nu}}}"
+        )
+
     def _apply_walking_joint_offsets(self, q_ref: np.ndarray) -> np.ndarray:
+        q_ref_policy = self._q_ref_in_policy_order(q_ref)
         return np.clip(
-            np.asarray(q_ref, dtype=np.float32) + self._walking_joint_offsets_rad,
+            q_ref_policy + self._walking_joint_offsets_rad,
             self._joint_min,
             self._joint_max,
         ).astype(np.float32)

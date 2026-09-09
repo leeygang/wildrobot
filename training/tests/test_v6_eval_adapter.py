@@ -51,6 +51,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_YAML = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke.yaml"
 )
+TB8_YAML = (
+    PROJECT_ROOT
+    / "training"
+    / "configs"
+    / "ppo_walking_v0210_tb8_rated_actuator_headroom.yaml"
+)
 
 
 @pytest.fixture(scope="function")
@@ -138,6 +144,60 @@ def test_reset_state_matches_env_initial_conditions(smoke_setup) -> None:
         a._state.proprio_history,
         np.zeros((PROPRIO_HISTORY_FRAMES, a._bundle_size), dtype=np.float32),
     )
+
+
+def test_toddlerbot_subset_policy_projects_full_reference_to_policy_order() -> None:
+    cfg = load_training_config(str(TB8_YAML))
+    robot_cfg_path = Path(cfg.env.robot_config_path)
+    if not robot_cfg_path.is_absolute():
+        robot_cfg_path = PROJECT_ROOT / robot_cfg_path
+    robot_cfg = load_robot_config(str(robot_cfg_path))
+
+    cfg.env.domain_randomization_enabled = False
+    cfg.env.push_enabled = False
+    cfg.freeze()
+
+    scene_path = Path(cfg.env.scene_xml_path)
+    if not scene_path.is_absolute():
+        scene_path = PROJECT_ROOT / scene_path
+    mj_model = mujoco.MjModel.from_xml_path(str(scene_path))
+    mj_data = mujoco.MjData(mj_model)
+    mujoco.mj_resetDataKeyframe(mj_model, mj_data, 0)
+    mujoco.mj_forward(mj_model, mj_data)
+
+    policy_spec = build_policy_spec_from_training_config(
+        training_cfg=cfg,
+        robot_cfg=robot_cfg,
+        action_filter_alpha=float(cfg.env.action_filter_alpha),
+    )
+    signals = MujocoSignalsAdapter(
+        mj_model=mj_model,
+        robot_config=robot_cfg,
+        policy_spec=policy_spec,
+        foot_switch_threshold=cfg.env.foot_switch_threshold,
+    )
+    adapter = V6EvalAdapter(
+        training_cfg=cfg,
+        mj_model=mj_model,
+        policy_spec=policy_spec,
+        signals_adapter=signals,
+        action_dim=int(policy_spec.model.action_dim),
+    )
+
+    full_q_ref = np.asarray(adapter._service.lookup_np(1).q_ref, dtype=np.float32)
+    expected = np.take(
+        full_q_ref,
+        adapter._ctrl_mapper.policy_to_mj_order,
+        axis=-1,
+    )
+    actual = adapter._apply_walking_joint_offsets(full_q_ref)
+
+    assert mj_model.nu == 17
+    assert policy_spec.model.action_dim == 10
+    assert actual.shape == (10,)
+    np.testing.assert_allclose(actual, expected, atol=1e-6)
+    adapter.apply_action(mj_data, np.zeros(10, dtype=np.float32))
+    assert mj_data.ctrl.shape == (17,)
 
 
 def test_apply_action_advances_step_idx_before_q_ref_lookup(smoke_setup) -> None:
