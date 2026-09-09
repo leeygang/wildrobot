@@ -32,6 +32,14 @@ def zmp_walk_config_from_env(
 ) -> ZMPWalkConfig:
     """Return the ZMP config selected by a training/evaluation environment."""
     width_raw = _env_get(env, "loc_ref_default_stance_width_m", None)
+    single_double_ratio = float(
+        _env_get(env, "loc_ref_single_double_ratio", 2.0)
+    )
+    if not math.isfinite(single_double_ratio) or single_double_ratio <= 0.0:
+        raise ValueError(
+            "env.loc_ref_single_double_ratio must be finite and positive; "
+            f"got {single_double_ratio!r}"
+        )
     use_reference_roll_base = bool(
         _env_get(env, "loc_ref_walking_base_from_ref_init_roll", False)
     )
@@ -52,7 +60,7 @@ def zmp_walk_config_from_env(
                 "combined with loc_ref_walking_joint_offsets_rad"
             )
     if width_raw is None:
-        return ZMPWalkConfig()
+        return ZMPWalkConfig(single_double_ratio=single_double_ratio)
     if offline_library_path:
         raise ValueError(
             "env.loc_ref_default_stance_width_m cannot be combined with "
@@ -65,7 +73,10 @@ def zmp_walk_config_from_env(
             "env.loc_ref_default_stance_width_m must be finite and positive; "
             f"got {width_raw!r}"
         )
-    return ZMPWalkConfig(default_stance_width_m=width)
+    return ZMPWalkConfig(
+        default_stance_width_m=width,
+        single_double_ratio=single_double_ratio,
+    )
 
 
 def reference_roll_base_offsets(

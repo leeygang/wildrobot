@@ -251,6 +251,11 @@ class EnvConfig(Freezable):
     # value), not the final FK foot-center separation.
     loc_ref_default_stance_width_m: Optional[float] = None
 
+    # Ratio of single-support to double-support duration in each half-cycle.
+    # The ToddlerBot ZMP default is 2.0; lower values increase double support
+    # while preserving the Froude-scaled 0.96 s cycle time.
+    loc_ref_single_double_ratio: float = 2.0
+
     # Use the generated frame-zero hip/ankle-roll pose as the static walking
     # residual base while retaining the physical home pose for non-RSI resets
     # and hardware home hold.  This changes only the four roll channels; all

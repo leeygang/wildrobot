@@ -301,6 +301,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             if env.get("loc_ref_default_stance_width_m") is None
             else float(env["loc_ref_default_stance_width_m"])
         ),
+        loc_ref_single_double_ratio=float(
+            env.get("loc_ref_single_double_ratio", 2.0)
+        ),
         loc_ref_walking_base_from_ref_init_roll=bool(
             env.get("loc_ref_walking_base_from_ref_init_roll", False)
         ),
