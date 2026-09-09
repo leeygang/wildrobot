@@ -27,6 +27,15 @@ the measured failure. You must prepare one bounded, falsifiable next experiment:
 6. Return `decision=continue`, the tracked config path, and exactly one starting
    mode/checkpoint for the next GPU job.
 
+If `operator_campaign_plan` is present in the iteration context, it is the
+reviewed campaign strategy and is binding. Follow the first applicable,
+not-yet-falsified stage in its `content.decision_ladder`. Treat stage success,
+continuation, and falsification conditions as hard routing rules. New evidence
+may select a stated branch, but must not silently restart a rejected direction,
+weaken a gate, or replace the plan with local reward/learning-rate tuning. State
+which plan stage and branch you selected in the decision summary. When the plan
+requires a diagnostic, run it before choosing the next intervention.
+
 Use `start_mode=resume` only when the complete training contract is unchanged.
 Use `start_mode=init_policy` when changing rewards, environment behavior,
 reference generation, or another training-contract input. The checkpoint must

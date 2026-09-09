@@ -200,6 +200,10 @@ def _build_start_args(payload: dict[str, Any]) -> list[str]:
         ]
     )
 
+    campaign_plan = _text(payload, "campaign_plan")
+    if campaign_plan:
+        args.extend(["--campaign-plan", campaign_plan])
+
     standing_checkpoint = _text(payload, "standing_checkpoint")
     standing_config = _text(payload, "standing_config")
     if bool(standing_checkpoint) != bool(standing_config):
@@ -259,6 +263,9 @@ class TrainingLoopWebController:
                 (state or {}).get("remote_repo") or remote.DEFAULT_REMOTE_REPO
             ),
             "max_cycles": int((state or {}).get("max_cycles") or 20),
+            "campaign_plan": str(
+                ((state or {}).get("campaign_plan") or {}).get("path") or ""
+            ),
             "standing_checkpoint": str(
                 (state or {}).get("standing_checkpoint") or ""
             ),
@@ -417,6 +424,8 @@ _HTML = r"""<!doctype html>
         <label>Run name or checkpoint<input name="source" placeholder="offline-run-… or checkpoint.pkl"></label>
         <label class="wide">Training Git SHA<input name="training_git_sha" placeholder="Required for an older adopted run"></label>
         <label>Maximum cycles<input name="max_cycles" type="number" min="1" value="20"></label>
+        <label class="wide">Campaign plan<input name="campaign_plan"
+          placeholder="wildrobot/agents/plans/campaign.yaml"></label>
         <label>GPU host<input name="gpu_host"></label><label>GPU user<input name="gpu_user"></label>
         <label>GPU SSH port<input name="gpu_port" type="number" min="1" max="65535"></label>
         <label>Git branch<input name="branch" value="main"></label>
@@ -448,7 +457,7 @@ function applyDefaults(values){if(defaultsApplied)return; defaultsApplied=true; 
   for(const [key,value] of Object.entries(values||{})){const field=form.elements.namedItem(key); if(field&&value!==null&&value!=='')field.value=value;}}
 function render(data){const loop=data.loop||{},mac=data.mac||{},gpu=data.gpu||{};
   text($('loopStatus'),loop.status||'unknown'); tone($('loopStatus'),loop.status);
-  text($('loopDetail'),`${loop.stage||'—'} on ${loop.stage_machine||'—'} · cycle ${loop.cycle??'—'}/${loop.max_cycles??'—'} · ${loop.remaining_cycles??'—'} follow-up cycles`);
+  const plan=loop.campaign_plan?.name; text($('loopDetail'),`${loop.stage||'—'} on ${loop.stage_machine||'—'} · cycle ${loop.cycle??'—'}/${loop.max_cycles??'—'} · ${loop.remaining_cycles??'—'} follow-up cycles${plan?' · '+plan:''}`);
   text($('macStatus'),mac.supervisor_running?'supervisor running':'supervisor stopped'); tone($('macStatus'),mac.supervisor_running);
   text($('macDetail'),mac.host||'—'); text($('gpuStatus'),`${gpu.service||'unknown'} · job ${gpu.job_status||'unknown'}`); tone($('gpuStatus'),gpu.reachable&&gpu.service==='active');
   const champion=loop.champion||{},metrics=champion.metrics||{}; text($('championStatus'),champion.checkpoint_path?champion.checkpoint_path.split('/').pop():'not established');

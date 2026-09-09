@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -1032,6 +1033,7 @@ def _codex_prompt(state: dict[str, Any], manifest: dict[str, Any]) -> str:
         ),
         "required_training_contract": state.get("required_training_contract"),
         "campaign_objective": state["campaign_objective"],
+        "operator_campaign_plan": state.get("campaign_plan"),
         "champion": state.get("champion"),
         "recent_experiments": state.get("experiment_history", [])[-10:],
         "failure_evidence": _failure_evidence(manifest),
@@ -1090,6 +1092,47 @@ def _training_contract_invariants(config: str) -> dict[str, Any]:
         "bootstrap_mode": (
             bootstrap.get("mode") if isinstance(bootstrap, dict) else None
         ),
+    }
+
+
+def _load_campaign_plan(path_text: str | None) -> dict[str, Any] | None:
+    """Load and snapshot a repo-local operator plan for every Codex cycle."""
+    if not path_text:
+        return None
+    requested = Path(path_text)
+    path = (requested if requested.is_absolute() else REPO_ROOT / requested).resolve()
+    try:
+        relative_path = path.relative_to(REPO_ROOT.resolve())
+    except ValueError as exc:
+        raise remote.TrainingLoopError(
+            "--campaign-plan must be a file inside the repository."
+        ) from exc
+    if not path.is_file():
+        raise remote.TrainingLoopError(f"Campaign plan not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise remote.TrainingLoopError(f"Campaign plan is empty: {path}")
+    try:
+        content = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise remote.TrainingLoopError(
+            f"Invalid campaign plan YAML: {path}: {exc}"
+        ) from exc
+    if not isinstance(content, dict):
+        raise remote.TrainingLoopError("Campaign plan must contain a YAML mapping.")
+    name = content.get("name")
+    decision_ladder = content.get("decision_ladder")
+    if not isinstance(name, str) or not name.strip():
+        raise remote.TrainingLoopError("Campaign plan must define a non-empty name.")
+    if not isinstance(decision_ladder, list) or not decision_ladder:
+        raise remote.TrainingLoopError(
+            "Campaign plan must define a non-empty decision_ladder."
+        )
+    return {
+        "name": name.strip(),
+        "path": relative_path.as_posix(),
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "content": content,
     }
 
 
@@ -1862,6 +1905,7 @@ def _start(args: argparse.Namespace) -> int:
             "--training-git-sha is only valid with --adopt-completed."
         )
     config = remote._repo_config(args.config)
+    campaign_plan = _load_campaign_plan(getattr(args, "campaign_plan", None))
     required_actor_obs_layout_id = _actor_obs_layout_id(config)
     codex_path = (
         shutil.which(args.codex_path) if args.codex_path else shutil.which("codex")
@@ -1915,6 +1959,7 @@ def _start(args: argparse.Namespace) -> int:
         "required_actor_obs_layout_id": required_actor_obs_layout_id,
         "required_training_contract": _training_contract_invariants(config),
         "campaign_objective": dict(CAMPAIGN_OBJECTIVE),
+        "campaign_plan": campaign_plan,
         "champion": None,
         "experiment_history": [],
         "confirmation_seeds": list(CONFIRMATION_SEEDS),
@@ -2190,6 +2235,7 @@ def _status(args: argparse.Namespace) -> int:
         "remote_error": remote_error,
         "recent_cycles": history,
         "campaign_objective": state.get("campaign_objective"),
+        "campaign_plan": state.get("campaign_plan"),
         "champion": state.get("champion"),
         "experiment_history": state.get("experiment_history", [])[-args.last :],
     }
@@ -2223,6 +2269,13 @@ def _status(args: argparse.Namespace) -> int:
         )
     )
     print(f"Config: {dashboard['active_config']}")
+    campaign_plan = dashboard.get("campaign_plan")
+    if isinstance(campaign_plan, dict):
+        print(
+            "Campaign plan: "
+            f"{campaign_plan.get('name') or 'unnamed'} "
+            f"({campaign_plan.get('path')})"
+        )
     print(
         "Frozen actor layout: "
         f"{dashboard['required_actor_obs_layout_id'] or 'not recorded'}"
@@ -2380,6 +2433,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     start.add_argument("--codex-path")
     start.add_argument("--codex-model")
     start.add_argument("--codex-timeout-minutes", type=int, default=60)
+    start.add_argument(
+        "--campaign-plan",
+        help=(
+            "repo-local YAML plan snapshotted into every autonomous Codex "
+            "iteration"
+        ),
+    )
     start.add_argument("--standing-checkpoint")
     start.add_argument("--standing-config")
     start.add_argument("--new-run", action="store_true")

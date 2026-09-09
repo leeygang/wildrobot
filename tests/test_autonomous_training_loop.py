@@ -56,6 +56,15 @@ def _experiment_fields(family: str = "reference_tracking") -> dict:
 def test_codex_prompt_contains_exact_run_context(tmp_path: Path) -> None:
     state = _state(tmp_path)
     state["required_actor_obs_layout_id"] = "wr_obs_v11_cmd3d_proprio"
+    state["campaign_plan"] = {
+        "name": "test plan",
+        "path": "wildrobot/agents/plans/test.yaml",
+        "sha256": "f" * 64,
+        "content": {
+            "name": "test plan",
+            "decision_ladder": [{"id": "first", "action": "measure first"}],
+        },
+    }
     manifest = {
         "job_id": "job-1",
         "status": "completed",
@@ -73,7 +82,39 @@ def test_codex_prompt_contains_exact_run_context(tmp_path: Path) -> None:
     assert "Do not modify files under `wildrobot/agents/`" in prompt
     assert '"required_actor_obs_layout_id": "wr_obs_v11_cmd3d_proprio"' in prompt
     assert '"campaign_objective"' in prompt
+    assert '"operator_campaign_plan"' in prompt
+    assert '"measure first"' in prompt
     assert '"required_intervention_families"' in prompt
+
+
+def test_campaign_plan_is_repo_local_valid_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_path = tmp_path / "wildrobot/agents/plans/test.yaml"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text(
+        "name: test plan\ndecision_ladder:\n  - id: first\n    action: measure\n"
+    )
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+
+    plan = auto._load_campaign_plan("wildrobot/agents/plans/test.yaml")
+
+    assert plan is not None
+    assert plan["name"] == "test plan"
+    assert plan["path"] == "wildrobot/agents/plans/test.yaml"
+    assert plan["content"]["name"] == "test plan"
+    assert len(plan["sha256"]) == 64
+
+
+def test_campaign_plan_rejects_path_outside_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path.parent / "outside-plan.yaml"
+    outside.write_text("name: outside\ndecision_ladder: [one]\n")
+    monkeypatch.setattr(auto, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(remote.TrainingLoopError, match="inside the repository"):
+        auto._load_campaign_plan(str(outside))
 
 
 def test_codex_cannot_change_frozen_actor_observation_contract(
@@ -1438,6 +1479,20 @@ def test_start_parser_uses_latest_completed_run_when_name_is_omitted() -> None:
     assert args.adopt_completed == "latest"
 
 
+def test_start_parser_accepts_campaign_plan() -> None:
+    args = auto._parse_args(
+        [
+            "start",
+            "--config",
+            "training/configs/walking.yaml",
+            "--campaign-plan",
+            "wildrobot/agents/plans/walking.yaml",
+        ]
+    )
+
+    assert args.campaign_plan == "wildrobot/agents/plans/walking.yaml"
+
+
 def test_run_parser_defaults_to_ten_second_polling() -> None:
     args = auto._parse_args(["run"])
 
@@ -1473,6 +1528,7 @@ def test_web_start_builds_existing_cli_command() -> None:
             "source": "offline-run-id",
             "training_git_sha": "a" * 40,
             "max_cycles": 20,
+            "campaign_plan": "wildrobot/agents/plans/contact_free.yaml",
             "gpu_host": "gpu.local",
             "gpu_user": "robot",
             "remote_repo": "/srv/wildrobot",
@@ -1490,6 +1546,10 @@ def test_web_start_builds_existing_cli_command() -> None:
     assert args[args.index("--adopt-completed") + 1] == "offline-run-id"
     assert args[args.index("--training-git-sha") + 1] == "a" * 40
     assert args[args.index("--max-cycles") + 1] == "20"
+    assert (
+        args[args.index("--campaign-plan") + 1]
+        == "wildrobot/agents/plans/contact_free.yaml"
+    )
     assert "--max-training-failures" not in args
     assert args[-1] == "--new-run"
 
@@ -1636,6 +1696,12 @@ def test_status_shows_machine_stage_and_recent_cycle_results(
         "active_job_id": "auto-02-next",
         "active_git_sha": "b" * 40,
         "active_config": "training/configs/next.yaml",
+        "campaign_plan": {
+            "name": "safety ladder",
+            "path": "wildrobot/agents/plans/safety.yaml",
+            "sha256": "f" * 64,
+            "content": {"name": "safety ladder", "decision_ladder": ["one"]},
+        },
     }
     local_root = tmp_path / "remote_jobs"
     job_dir = local_root / "auto-01-first"
@@ -1710,6 +1776,10 @@ def test_status_shows_machine_stage_and_recent_cycle_results(
     assert "Stage machine: GPU" in output
     assert "Mac supervisor: not running" in output
     assert "GPU job status: running" in output
+    assert (
+        "Campaign plan: safety ladder (wildrobot/agents/plans/safety.yaml)"
+        in output
+    )
     assert "Cycle 2: running" in output
     assert "Cycle 1: completed" in output
     assert "falls=2/64" in output

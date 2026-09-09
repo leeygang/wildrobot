@@ -18,6 +18,12 @@ orchestration error, or either configured limit. It can also be manually paused
 without cancelling an active GPU job. It
 exports and validates a bundle after promotion. It never starts robot hardware.
 
+An optional repo-local YAML campaign plan can hold a reviewed multi-stage
+hypothesis ladder across restarts and Codex invocations. The controller
+snapshots the parsed plan and its SHA-256 digest into durable state, includes it
+in every Codex iteration, and displays it in `status`. This keeps a failed
+experiment on its declared fallback path instead of restarting local tuning.
+
 ### Stability-first campaign control
 
 The autonomous controller treats training as a sequence of falsifiable
@@ -133,6 +139,19 @@ exact name:
 
 ```bash
 --adopt-completed offline-run-YYYYMMDD_HHMMSS-RUNID
+```
+
+The reviewed tb4 hip-roll campaign can be adopted with its persistent decision
+ladder:
+
+```bash
+uv run python wildrobot/agents/autonomous_training_loop.py start \
+  --new-run \
+  --config training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml \
+  --adopt-completed offline-run-20260908_172356-hhq8tce8 \
+  --training-git-sha 252c6a8da407e3e1525b33e4850758d5509f851b \
+  --campaign-plan wildrobot/agents/plans/tb4_hip_roll_headroom.yaml \
+  --max-cycles 20
 ```
 
 The non-Codex controller creates the job manifest, synchronizes the result, and

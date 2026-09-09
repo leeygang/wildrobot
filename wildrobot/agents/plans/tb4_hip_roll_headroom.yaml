@@ -1,0 +1,123 @@
+schema_version: 1
+name: tb4-to-deployment hip-roll headroom
+
+objective:
+  priority:
+    - zero falls
+    - worst per-actuator torque saturation
+    - stable torso orientation
+    - forward tracking
+  deployment_screen:
+    falls: 0/64
+    stable_tilt_mean_max_deg: 10
+    stable_tilt_peak_max_deg: 15
+    survivor_final_tilt_max_deg: 10
+    worst_stable_torque_saturation_max: 0.05
+    forward_velocity_min_m_s: 0.12
+  confirmation: 0/256 falls across four independent 64-environment seeds
+  lateral_and_yaw_drift: report_only
+
+baseline:
+  run: offline-run-20260908_172356-hhq8tce8
+  config: training/configs/ppo_walking_v0210_tb4_hip_roll_margin_resume.yaml
+  preferred_checkpoint: checkpoint_600_12288000.pkl
+  evidence:
+    falls: 0/64
+    forward_velocity_m_s: 0.12391
+    stable_tilt_mean_peak_final_deg: [1.60, 3.61, 3.33]
+    stable_left_right_hip_roll_saturation: [0.0766, 0.0838]
+    worst_stable_torque_saturation: 0.0838
+    left_right_single_support_saturation: [0.2336, 0.1972]
+    left_right_com_to_support_foot_mean_m: [0.0950, 0.0934]
+  conclusion: >-
+    The weak hip-only margin term improved the worst stable saturation by 23%
+    without falls, but did not reduce the COM-to-support-foot lever. It mainly
+    redistributed the high-torque tail between legs. Do not deploy this policy
+    and do not continue the unchanged objective indefinitely.
+
+fixed_contract:
+  - Preserve actor_obs_layout_id wr_obs_v12_tb_proprio and the contact-free actor.
+  - Preserve the 10-leg-action policy, shared physical home/frame-zero stance,
+    no RSI, no distillation, no source KL, and the ToddlerBot/RSL-RL PPO update.
+  - Simulator contact and full state may be used for critic inputs, rewards, and
+    diagnostics, but must not enter the deployed actor observation.
+  - Keep lateral and yaw drift report-only for this forward-only campaign.
+  - Never trade lower saturation for a fall or forward velocity below 0.12 m/s.
+  - Branch from the frozen campaign champion, not merely the latest checkpoint.
+
+decision_ladder:
+  - id: tb5_stronger_narrow_margin
+    intervention_family: torque_headroom
+    action: >-
+      From the tb4 safety champion, use init_policy because the reward changes.
+      Keep the 90% soft-limit onset and change only the symmetric hip-roll
+      saturation reward coefficient from -0.01 to -0.025. Train 60 iterations
+      (1,228,800 transitions), save/evaluate every 10 iterations, and evaluate
+      the top six checkpoints with the authoritative 64x1000 screen.
+    expected_outcome: >-
+      Preserve 0/64 falls and at least 0.12 m/s forward velocity while reducing
+      worst stable actuator saturation from 8.38% to at most 7%, preferably 5%.
+    success: >-
+      If every deployment gate passes, let the supervisor run its normal
+      four-seed 0/256 confirmation and export path.
+    partial_progress: >-
+      If worst saturation is above 5% but at most 7%, with zero falls and all
+      other gates retained, allow one exact-contract resume of at most 40
+      additional iterations. Do not change another hyperparameter.
+    falsified_if: >-
+      Any fall, forward velocity below 0.12 m/s, or worst saturation above 7%
+      falsifies stronger reward-only optimization. Restore the champion and
+      proceed to the measured single-support stage.
+
+  - id: measured_single_support_com_lever
+    intervention_family: stance_geometry
+    action: >-
+      Run training/eval/diagnose_roll_load_sharing.py on the champion using the
+      same seed, command, horizon, and environment count as its baseline. Then
+      make one training-only morphology correction that directly reduces the
+      COM-to-loaded-foot lateral lever during measured single support. Prefer a
+      simulator-contact-gated COM-lever shaping term over changing the shared
+      home/frame-zero pose. Do not make a reference-only q_ref change: this
+      actor uses a home residual base and ref_q_track is zero, so such a change
+      would not directly constrain actor behavior. Use init_policy and a bounded
+      40-60 iteration screen.
+    expected_outcome: >-
+      Reduce both single-support p95 lever arms toward 0.10 m or below, reduce
+      worst conditional loaded-hip saturation from 23.36% to at most 18%, and
+      reduce stable worst-actuator saturation below 7% without losing a fall,
+      tilt, stride, or forward-speed gate.
+    falsified_if: >-
+      The mean lever fails to improve by at least 5 mm on both sides, stable
+      saturation fails to improve by at least one percentage point, or any
+      stability/forward gate regresses.
+
+  - id: support_timing_or_dynamic_torque
+    intervention_family: stance_geometry
+    branches:
+      lever_did_not_move: >-
+        Verify that the proposed lever reward was nonzero and reached the total
+        reward. Fix signal wiring rather than changing its weight. Do not repeat
+        a passive reference-only edit.
+      lever_moved_but_torque_did_not: >-
+        Treat the residual as dynamic/control torque. Compare loaded-hip target
+        error, torque, and support phase. Test one small increase in double-
+        support fraction while retaining WR's Froude-scaled 0.96 s cycle time;
+        do not change speed, stance, and reward simultaneously.
+      torque_improved_but_gait_regressed: >-
+        Reject the child and restore the champion. Test the smaller of the two
+        prior intervention magnitudes or the support-timing branch; do not
+        weaken the fall, tilt, saturation, stride, or forward gates.
+    expected_outcome: >-
+      Lower the duration and peak of loaded-hip torque without reducing the
+      commanded forward gait or creating a standing/shuffling solution.
+    falsified_if: >-
+      Two independent geometry/timing screens fail to improve the champion.
+      Before any further PPO run, validate the 4 Nm hip torque-speed model and
+      support moment against hardware measurements. Do not relax the 5% gate
+      without that evidence.
+
+references:
+  - https://arxiv.org/abs/2502.00893
+  - https://doi.org/10.1109/ROBOT.2003.1241826
+  - /Users/ygli/projects/toddlerbot/toddlerbot/algorithms/zmp_walk.py
+  - /Users/ygli/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py
