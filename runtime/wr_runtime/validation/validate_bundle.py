@@ -5,14 +5,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from policy_contract.spec import PolicyBundle, validate_runtime_compat, validate_spec
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _RUNTIME_ROOT = _REPO_ROOT / "runtime"
 for _p in (str(_REPO_ROOT), str(_RUNTIME_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from policy_contract.spec import PolicyBundle, validate_runtime_compat, validate_spec
 from wr_runtime.inference.onnx_policy import OnnxPolicy
 from wr_runtime.utils.mjcf import load_mjcf_model_info
 from wr_runtime.deployment_bundle import (
