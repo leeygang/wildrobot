@@ -184,6 +184,24 @@ def test_toddlerbot_subset_policy_projects_full_reference_to_policy_order() -> N
         action_dim=int(policy_spec.model.action_dim),
     )
 
+    np.testing.assert_allclose(
+        adapter._cmd_keys[:, 0],
+        np.array([cfg.env.min_velocity, cfg.env.max_velocity], dtype=np.float32),
+        atol=1e-6,
+    )
+    slow_bin = adapter._select_bin_idx(
+        np.array([cfg.env.min_velocity, 0.0, 0.0], dtype=np.float32)
+    )
+    adapter.compute_obs(
+        mj_data,
+        velocity_cmd=np.array([cfg.env.min_velocity, 0.0, 0.0], dtype=np.float32),
+    )
+    assert adapter._services_by_bin[slow_bin].command_key[0] == pytest.approx(
+        cfg.env.min_velocity,
+        abs=5e-5,
+    )
+    assert adapter._active_service is adapter._services_by_bin[slow_bin]
+
     full_q_ref = np.asarray(adapter._service.lookup_np(1).q_ref, dtype=np.float32)
     expected = np.take(
         full_q_ref,

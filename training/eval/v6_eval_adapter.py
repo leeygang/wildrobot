@@ -243,10 +243,9 @@ class V6EvalAdapter:
         (env.py lines 800-1080):
 
           - **Legacy / 1D mode** (``loc_ref_command_axes_3d=False`` or
-            unset): single forward-vx trajectory; ``_service`` is the
-            canonical lookup, ``_services_by_bin`` collapses to a
-            single-entry list pointing at ``_service`` for adapter-side
-            uniformity, ``_cmd_keys`` is ``[[offline_vx, 0, 0]]``.
+            unset): forward-vx trajectories over the configured command grid
+            when ``loc_ref_command_conditioned=True``; otherwise a single
+            trajectory at ``offline_vx``.
 
           - **3D mode** (``loc_ref_command_axes_3d=True``; v0.21.0 P5
             opt-in, exercised by smoke1): build the full TB-split 3D
@@ -299,6 +298,27 @@ class V6EvalAdapter:
             getattr(self._cfg.env, "loc_ref_command_axes_3d", False)
         )
 
+        if cmd_conditioned:
+            min_vx = float(self._cfg.env.min_velocity)
+            max_vx = float(self._cfg.env.max_velocity)
+            interval = float(
+                getattr(self._cfg.env, "loc_ref_command_grid_interval", 0.05)
+            )
+            if interval <= 0.0:
+                raise ValueError(
+                    f"loc_ref_command_grid_interval must be positive; "
+                    f"got {interval!r}"
+                )
+            arange_vals = np.arange(
+                min_vx, max_vx + 1e-6, interval, dtype=np.float64
+            )
+            vx_grid = sorted(
+                {round(float(v), 6) for v in arange_vals}
+                | {round(offline_vx, 6)}
+            )
+        else:
+            vx_grid = [offline_vx]
+
         if cmd_conditioned and axes_3d:
             # 3D library opt-in.  Build (or load) the full TB-split
             # library and stand up one service per bin.
@@ -320,34 +340,6 @@ class V6EvalAdapter:
                         (),
                     )
                 ) or [0.0]
-                # Mirror env _init_offline_service vx_grid derivation
-                # (training/envs/wildrobot_env.py:835-855): arange over
-                # [min_velocity, max_velocity] at
-                # loc_ref_command_grid_interval, unioned with
-                # loc_ref_offline_command_vx so the eval-cmd anchor
-                # snaps to its own bin exactly.  Previously the adapter
-                # built [offline_vx] only, so any 3D cmd whose vx
-                # axis was NOT offline_vx selected the wrong bin off-JAX
-                # (reviewer 2026-05-24 follow-up #2).
-                min_vx = float(self._cfg.env.min_velocity)
-                max_vx = float(self._cfg.env.max_velocity)
-                interval = float(
-                    getattr(
-                        self._cfg.env, "loc_ref_command_grid_interval", 0.05
-                    )
-                )
-                if interval <= 0.0:
-                    raise ValueError(
-                        f"loc_ref_command_grid_interval must be positive; "
-                        f"got {interval!r}"
-                    )
-                arange_vals = np.arange(
-                    min_vx, max_vx + 1e-6, interval, dtype=np.float64
-                )
-                vx_grid = sorted(
-                    {round(float(v), 6) for v in arange_vals}
-                    | {round(offline_vx, 6)}
-                )
                 lib = ZMPWalkGenerator(
                     config=zmp_config,
                     scene_xml_path=self._cfg.env.scene_xml_path,
@@ -388,7 +380,8 @@ class V6EvalAdapter:
             self._n_steps = max(int(s.n_steps) for s in services)
             return
 
-        # Legacy / 1D path: single forward-vx service.
+        # Legacy / 1D path. Command-conditioned configs retain the full vx
+        # grid, matching WildRobotEnv; non-conditioned configs stay single-bin.
         if offline_path:
             from control.references.reference_library import ReferenceLibrary
             lib = ReferenceLibrary.load(offline_path)
@@ -398,14 +391,18 @@ class V6EvalAdapter:
                 config=zmp_config,
                 scene_xml_path=self._cfg.env.scene_xml_path,
                 robot_config_path=self._cfg.env.robot_config_path,
-            ).build_library_for_vx_values([offline_vx])
-        traj = lib.lookup(offline_vx)
-        self._service = RuntimeReferenceService(traj, n_anchor=2)
-        self._services_by_bin = [self._service]
-        self._cmd_keys = np.array(
-            [[offline_vx, 0.0, 0.0]], dtype=np.float32
+            ).build_library_for_vx_values(vx_grid)
+        trajectories = [lib.lookup(vx) for vx in vx_grid]
+        self._services_by_bin = [
+            RuntimeReferenceService(traj, n_anchor=2) for traj in trajectories
+        ]
+        self._cmd_keys = np.asarray(
+            [(float(vx), 0.0, 0.0) for vx in vx_grid],
+            dtype=np.float32,
         )
-        self._n_steps = int(self._service.n_steps)
+        primary_idx = int(np.argmin(np.abs(self._cmd_keys[:, 0] - offline_vx)))
+        self._service = self._services_by_bin[primary_idx]
+        self._n_steps = max(int(service.n_steps) for service in self._services_by_bin)
 
     def _select_bin_idx(self, velocity_cmd: np.ndarray) -> int:
         """Return the per-bin index nearest to ``velocity_cmd``.
@@ -418,8 +415,8 @@ class V6EvalAdapter:
         eager-eval / visualizer path where the path-frame anchor isn't
         available at the obs site.
 
-        Under 1D / legacy mode this collapses to index 0 because
-        ``_cmd_keys`` is a single-row array.
+        Under non-command-conditioned legacy mode this collapses to index 0.
+        Command-conditioned 1D mode selects the nearest configured vx bin.
         """
         cmd = np.asarray(velocity_cmd, dtype=np.float32).reshape(-1)
         if cmd.size == 1:
@@ -987,6 +984,7 @@ class V6EvalAdapter:
             pending_action=np.zeros(self._action_dim, dtype=np.float32),
             last_applied_action=np.zeros(self._action_dim, dtype=np.float32),
         )
+        self._active_service = self._service
 
     def compute_obs(
         self,
@@ -1005,12 +1003,9 @@ class V6EvalAdapter:
             ``loc_ref_history``, then stored as the new
             ``loc_ref_history`` for the next obs (env's wr.loc_ref_history).
 
-        v0.21.0 P11 follow-up — 3D bin selection: when the env opts into
-        ``loc_ref_command_axes_3d=True``, the reference window MUST come
-        from the per-bin service nearest the incoming ``(vx, vy, wz)``
-        cmd (mirrors env ``_lookup_offline_window`` 3D path).  Under
-        legacy / 1D mode ``_select_bin_idx`` returns 0 and the lookup
-        falls back to the single forward-vx service.
+        Command-conditioned bin selection: the reference window comes from
+        the service nearest the incoming ``(vx, vy, wz)`` command, matching
+        the env for both 1-D forward grids and 3-D command libraries.
         """
         signals = self._signals_adapter.read(mj_data)
         # Normalize velocity_cmd EARLY so the bin selector and the obs
@@ -1027,6 +1022,7 @@ class V6EvalAdapter:
             )
         bin_idx = self._select_bin_idx(cmd_arr)
         service = self._services_by_bin[bin_idx]
+        self._active_service = service
         lookup_step = self._state.step_idx
         if self._uses_toddlerbot_observation:
             # A zero command intentionally selects TB's static default pose,
@@ -1229,7 +1225,7 @@ class V6EvalAdapter:
                 self._state.step_idx + 1, self._n_steps - 1
             )
 
-        win = self._service.lookup_np(self._state.step_idx)
+        win = self._active_service.lookup_np(self._state.step_idx)
         q_ref = self._apply_walking_joint_offsets(win.q_ref)
         residual_action = applied
         if bool(

@@ -10,10 +10,12 @@ from assets.robot_config import load_robot_config
 from training.configs.training_config import load_training_config
 from training.eval.v6_eval_adapter import V6EvalAdapter
 from training.eval.visualize_policy import (
+    _GaitDiagnostics,
     _Tee,
     _adapter_layout_enabled,
     _build_mjcf_ctrl_expander,
     _build_sample_velocity_cmd,
+    _format_gait_diagnostics,
     _is_terminated_from_pose,
     _make_tracking_camera,
     _network_activation_name,
@@ -264,6 +266,70 @@ def test_visualizer_episode_limit_aliases(option: str) -> None:
     args = parse_args([option, "5"])
 
     assert args.num_episodes == 5
+
+
+def test_visualizer_gait_diagnostics_flag() -> None:
+    assert parse_args(["--gait-diagnostics"]).gait_diagnostics is True
+
+
+def test_gait_diagnostics_measure_stride_sway_and_stance_slip() -> None:
+    diagnostics = _GaitDiagnostics.from_initial_state(
+        dt_s=0.1,
+        contact_threshold_force=1.0,
+        root_xy=np.array([0.0, 0.0]),
+        left_foot_xy=np.array([0.0, 0.1]),
+        right_foot_xy=np.array([0.0, -0.1]),
+        foot_forces=np.array([10.0, 10.0]),
+    )
+
+    diagnostics.update(
+        planar_velocity_xy=np.array([0.1, 0.2]),
+        root_xy=np.array([0.01, 0.02]),
+        left_foot_xy=np.array([0.001, 0.1]),
+        right_foot_xy=np.array([0.02, -0.1]),
+        foot_forces=np.array([10.0, 0.0]),
+    )
+    diagnostics.update(
+        planar_velocity_xy=np.array([0.1, -0.3]),
+        root_xy=np.array([0.02, -0.01]),
+        left_foot_xy=np.array([0.002, 0.1]),
+        right_foot_xy=np.array([0.04, -0.1]),
+        foot_forces=np.array([10.0, 10.0]),
+    )
+    diagnostics.update(
+        planar_velocity_xy=np.array([0.1, 0.1]),
+        root_xy=np.array([0.03, 0.0]),
+        left_foot_xy=np.array([0.03, 0.1]),
+        right_foot_xy=np.array([0.041, -0.1]),
+        foot_forces=np.array([0.0, 10.0]),
+    )
+    diagnostics.update(
+        planar_velocity_xy=np.array([0.1, 0.0]),
+        root_xy=np.array([0.04, 0.0]),
+        left_foot_xy=np.array([0.06, 0.1]),
+        right_foot_xy=np.array([0.042, -0.1]),
+        foot_forces=np.array([10.0, 10.0]),
+    )
+
+    summary = diagnostics.summary()
+    assert summary["duration_s"] == pytest.approx(0.4)
+    assert summary["forward_velocity_mean_m_s"] == pytest.approx(0.1)
+    assert summary["lateral_velocity_abs_mean_m_s"] == pytest.approx(0.15)
+    assert summary["lateral_excursion_peak_to_peak_m"] == pytest.approx(0.03)
+    assert summary["forward_progress_m"] == pytest.approx(0.04)
+    assert summary["left_touchdown_count"] == 1
+    assert summary["right_touchdown_count"] == 1
+    assert summary["left_same_foot_stride_mean_m"] == pytest.approx(0.06)
+    assert summary["right_same_foot_stride_mean_m"] == pytest.approx(0.04)
+    assert float(summary["stance_foot_speed_rms_m_s"]) > 0.0
+
+    rendered = _format_gait_diagnostics(
+        diagnostics,
+        command_vx_m_s=0.066667,
+        cycle_time_s=0.96,
+    )
+    assert "alternating_step=0.032000m" in rendered
+    assert "left=0.060000m (n=1)" in rendered
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])

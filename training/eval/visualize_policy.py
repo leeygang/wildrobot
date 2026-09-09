@@ -33,7 +33,7 @@ import atexit
 import pickle
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import jax
@@ -81,6 +81,213 @@ class PushSchedule:
     start_step: int
     end_step: int
     force_xy: np.ndarray  # shape (2,)
+
+
+@dataclass
+class _GaitDiagnostics:
+    """Accumulate full-rate gait measurements for one visualized episode."""
+
+    dt_s: float
+    contact_threshold_force: float
+    start_root_xy: np.ndarray
+    prev_feet_xy: np.ndarray
+    prev_loaded: np.ndarray
+    last_touchdown_x: np.ndarray
+    planar_velocities: list[np.ndarray] = field(default_factory=list)
+    root_positions_xy: list[np.ndarray] = field(default_factory=list)
+    training_slip_raw: list[float] = field(default_factory=list)
+    persistent_stance_velocities: list[np.ndarray] = field(default_factory=list)
+    touchdown_strides: tuple[list[float], list[float]] = field(
+        default_factory=lambda: ([], [])
+    )
+
+    @classmethod
+    def from_initial_state(
+        cls,
+        *,
+        dt_s: float,
+        contact_threshold_force: float,
+        root_xy: np.ndarray,
+        left_foot_xy: np.ndarray,
+        right_foot_xy: np.ndarray,
+        foot_forces: np.ndarray,
+    ) -> "_GaitDiagnostics":
+        root_xy = np.asarray(root_xy, dtype=np.float64).copy()
+        left_foot_xy = np.asarray(left_foot_xy, dtype=np.float64).copy()
+        right_foot_xy = np.asarray(right_foot_xy, dtype=np.float64).copy()
+        loaded = np.asarray(foot_forces, dtype=np.float64) > float(
+            contact_threshold_force
+        )
+        return cls(
+            dt_s=float(dt_s),
+            contact_threshold_force=float(contact_threshold_force),
+            start_root_xy=root_xy.copy(),
+            prev_feet_xy=np.stack([left_foot_xy, right_foot_xy]),
+            prev_loaded=loaded.astype(bool),
+            last_touchdown_x=np.array(
+                [left_foot_xy[0], right_foot_xy[0]], dtype=np.float64
+            ),
+        )
+
+    def update(
+        self,
+        *,
+        planar_velocity_xy: np.ndarray,
+        root_xy: np.ndarray,
+        left_foot_xy: np.ndarray,
+        right_foot_xy: np.ndarray,
+        foot_forces: np.ndarray,
+    ) -> None:
+        planar_velocity_xy = np.asarray(planar_velocity_xy, dtype=np.float64)
+        root_xy = np.asarray(root_xy, dtype=np.float64)
+        feet_xy = np.stack(
+            [
+                np.asarray(left_foot_xy, dtype=np.float64),
+                np.asarray(right_foot_xy, dtype=np.float64),
+            ]
+        )
+        loaded = (
+            np.asarray(foot_forces, dtype=np.float64)
+            > self.contact_threshold_force
+        )
+        foot_vel_xy = (feet_xy - self.prev_feet_xy) / self.dt_s
+
+        self.planar_velocities.append(planar_velocity_xy.copy())
+        self.root_positions_xy.append(root_xy.copy())
+        self.training_slip_raw.append(
+            float(np.sum(np.square(foot_vel_xy[loaded])))
+        )
+
+        for foot_index, strides in enumerate(self.touchdown_strides):
+            if loaded[foot_index] and self.prev_loaded[foot_index]:
+                self.persistent_stance_velocities.append(
+                    foot_vel_xy[foot_index].copy()
+                )
+            if loaded[foot_index] and not self.prev_loaded[foot_index]:
+                strides.append(
+                    float(
+                        feet_xy[foot_index, 0]
+                        - self.last_touchdown_x[foot_index]
+                    )
+                )
+                self.last_touchdown_x[foot_index] = feet_xy[foot_index, 0]
+
+        self.prev_feet_xy = feet_xy.copy()
+        self.prev_loaded = loaded.astype(bool)
+
+    def summary(self) -> dict[str, float | int | None]:
+        sample_count = len(self.planar_velocities)
+        velocity = (
+            np.asarray(self.planar_velocities, dtype=np.float64).reshape(-1, 2)
+            if sample_count
+            else np.zeros((1, 2), dtype=np.float64)
+        )
+        root_xy = np.vstack([self.start_root_xy, self.root_positions_xy])
+        stance_velocity = np.asarray(
+            self.persistent_stance_velocities, dtype=np.float64
+        ).reshape(-1, 2)
+        stance_speed = np.linalg.norm(stance_velocity, axis=1)
+        forward_path = float(np.sum(np.abs(velocity[:, 0])) * self.dt_s)
+        lateral_path = float(np.sum(np.abs(velocity[:, 1])) * self.dt_s)
+
+        def _mean_or_none(values: list[float]) -> float | None:
+            return float(np.mean(values)) if values else None
+
+        return {
+            "duration_s": sample_count * self.dt_s,
+            "forward_velocity_mean_m_s": float(np.mean(velocity[:, 0])),
+            "lateral_velocity_signed_mean_m_s": float(np.mean(velocity[:, 1])),
+            "lateral_velocity_abs_mean_m_s": float(np.mean(np.abs(velocity[:, 1]))),
+            "lateral_velocity_rms_m_s": float(np.sqrt(np.mean(velocity[:, 1] ** 2))),
+            "lateral_velocity_abs_max_m_s": float(np.max(np.abs(velocity[:, 1]))),
+            "forward_progress_m": float(root_xy[-1, 0] - root_xy[0, 0]),
+            "lateral_drift_m": float(root_xy[-1, 1] - root_xy[0, 1]),
+            "lateral_excursion_peak_to_peak_m": float(np.ptp(root_xy[:, 1])),
+            "forward_motion_abs_m": forward_path,
+            "lateral_motion_abs_m": lateral_path,
+            "lateral_to_forward_motion_ratio": lateral_path
+            / max(forward_path, 1e-9),
+            "training_slip_raw_mean_m2_s2": (
+                float(np.mean(self.training_slip_raw))
+                if self.training_slip_raw
+                else 0.0
+            ),
+            "persistent_stance_foot_motion_m": float(np.sum(stance_speed) * self.dt_s),
+            "persistent_stance_forward_motion_signed_m": float(
+                np.sum(stance_velocity[:, 0]) * self.dt_s
+            ),
+            "persistent_stance_forward_motion_abs_m": float(
+                np.sum(np.abs(stance_velocity[:, 0])) * self.dt_s
+            ),
+            "persistent_stance_lateral_motion_abs_m": float(
+                np.sum(np.abs(stance_velocity[:, 1])) * self.dt_s
+            ),
+            "stance_foot_speed_rms_m_s": (
+                float(np.sqrt(np.mean(stance_speed**2)))
+                if stance_speed.size
+                else 0.0
+            ),
+            "stance_foot_speed_p95_m_s": (
+                float(np.percentile(stance_speed, 95))
+                if stance_speed.size
+                else 0.0
+            ),
+            "left_touchdown_count": len(self.touchdown_strides[0]),
+            "right_touchdown_count": len(self.touchdown_strides[1]),
+            "left_same_foot_stride_mean_m": _mean_or_none(
+                self.touchdown_strides[0]
+            ),
+            "right_same_foot_stride_mean_m": _mean_or_none(
+                self.touchdown_strides[1]
+            ),
+        }
+
+
+def _format_gait_diagnostics(
+    diagnostics: _GaitDiagnostics,
+    *,
+    command_vx_m_s: float,
+    cycle_time_s: float,
+) -> str:
+    metrics = diagnostics.summary()
+
+    def _value(name: str) -> str:
+        value = metrics[name]
+        return "n/a" if value is None else f"{float(value):.6f}"
+
+    expected_alternating_step = abs(float(command_vx_m_s)) * cycle_time_s / 2.0
+    expected_same_foot_stride = 2.0 * expected_alternating_step
+    return "\n".join([
+        "Gait diagnostic summary:",
+        f"  run: duration={_value('duration_s')}s cmd_vx={command_vx_m_s:.6f}m/s",
+        "  body: "
+        f"mean_vx={_value('forward_velocity_mean_m_s')}m/s "
+        f"mean_abs_vy={_value('lateral_velocity_abs_mean_m_s')}m/s "
+        f"rms_vy={_value('lateral_velocity_rms_m_s')}m/s "
+        f"max_abs_vy={_value('lateral_velocity_abs_max_m_s')}m/s",
+        "  path: "
+        f"forward={_value('forward_progress_m')}m "
+        f"net_y={_value('lateral_drift_m')}m "
+        f"y_peak_to_peak={_value('lateral_excursion_peak_to_peak_m')}m "
+        f"abs_y/abs_x={_value('lateral_to_forward_motion_ratio')}",
+        "  reference: "
+        f"alternating_step={expected_alternating_step:.6f}m "
+        f"same_foot_stride={expected_same_foot_stride:.6f}m",
+        "  measured_stride: "
+        f"left={_value('left_same_foot_stride_mean_m')}m "
+        f"(n={metrics['left_touchdown_count']}) "
+        f"right={_value('right_same_foot_stride_mean_m')}m "
+        f"(n={metrics['right_touchdown_count']})",
+        "  stance_motion: "
+        f"raw_mean_sq={_value('training_slip_raw_mean_m2_s2')}m2/s2 "
+        f"speed_rms={_value('stance_foot_speed_rms_m_s')}m/s "
+        f"speed_p95={_value('stance_foot_speed_p95_m_s')}m/s",
+        "  stance_path: "
+        f"total={_value('persistent_stance_foot_motion_m')}m "
+        f"forward_signed={_value('persistent_stance_forward_motion_signed_m')}m "
+        f"forward_abs={_value('persistent_stance_forward_motion_abs_m')}m "
+        f"lateral_abs={_value('persistent_stance_lateral_motion_abs_m')}m",
+    ])
 
 
 class _Tee:
@@ -560,6 +767,14 @@ def parse_args(argv: list[str] | None = None):
             "placed under /tmp/; a path with a directory is used as-is."
         ),
     )
+    parser.add_argument(
+        "--gait-diagnostics",
+        action="store_true",
+        help=(
+            "Accumulate full-rate body motion, touchdown stride, and "
+            "stance-foot slip metrics and print an episode summary."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -819,18 +1034,18 @@ def main():
     n_substeps = int(ctrl_dt / sim_dt)
     print(f"Control dt: {ctrl_dt}s, Sim dt: {sim_dt}s, Substeps: {n_substeps}")
 
-    def get_forward_velocity(mj_data, prev_root_pos, prev_root_quat, dt):
-        """Get forward velocity in heading-local frame (matches training).
+    def get_planar_velocity(mj_data, prev_root_pos, prev_root_quat, dt):
+        """Get XY velocity in heading-local frame (matches training).
 
         Uses Pose3D finite-difference for consistency with observation computation.
-        Returns x-component (forward direction in heading-local frame).
         """
         if prev_root_pos is None or prev_root_quat is None:
             # Fallback to qvel-based velocity for first frame (training parity)
-            return float(
+            return np.asarray(
                 cal.get_root_velocity(
                     mj_data, frame=CoordinateFrame.HEADING_LOCAL
-                ).linear[0]
+                ).linear[:2],
+                dtype=np.float64,
             )
 
         curr_pose = Pose3D.from_numpy(
@@ -844,7 +1059,7 @@ def main():
             frame=CoordinateFrame.WORLD,
         )
         linvel = curr_pose.linvel_fd(prev_pose, dt, frame=CoordinateFrame.HEADING_LOCAL)
-        return float(linvel[0])  # x = forward in heading-local
+        return np.asarray(linvel[:2], dtype=np.float64)
 
     # Note: Joint addresses now handled by CAL (get_joint_positions/velocities)
 
@@ -1058,6 +1273,54 @@ def main():
     def wrap_angle(angle):
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
+    def new_gait_diagnostics() -> _GaitDiagnostics:
+        left_foot, right_foot = cal.get_foot_positions(
+            mj_data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        left_force, right_force = cal.get_aggregated_foot_contacts(mj_data)
+        return _GaitDiagnostics.from_initial_state(
+            dt_s=ctrl_dt,
+            contact_threshold_force=float(training_cfg.env.contact_threshold_force),
+            root_xy=np.asarray(mj_data.qpos[0:2], dtype=np.float64),
+            left_foot_xy=np.asarray(left_foot[:2], dtype=np.float64),
+            right_foot_xy=np.asarray(right_foot[:2], dtype=np.float64),
+            foot_forces=np.asarray([left_force, right_force], dtype=np.float64),
+        )
+
+    def record_gait_step(
+        diagnostics: _GaitDiagnostics,
+        planar_velocity: np.ndarray,
+    ) -> None:
+        left_foot, right_foot = cal.get_foot_positions(
+            mj_data, normalize=False, frame=CoordinateFrame.WORLD
+        )
+        left_force, right_force = cal.get_aggregated_foot_contacts(mj_data)
+        diagnostics.update(
+            planar_velocity_xy=planar_velocity,
+            root_xy=np.asarray(mj_data.qpos[0:2], dtype=np.float64),
+            left_foot_xy=np.asarray(left_foot[:2], dtype=np.float64),
+            right_foot_xy=np.asarray(right_foot[:2], dtype=np.float64),
+            foot_forces=np.asarray([left_force, right_force], dtype=np.float64),
+        )
+
+    gait_cycle_time_s = (
+        float(eval_adapter._cycle_time_s)
+        if eval_adapter is not None
+        else float(clock_stride_period_steps) * ctrl_dt
+    )
+
+    def print_gait_summary(
+        diagnostics: _GaitDiagnostics,
+        command: np.ndarray,
+    ) -> None:
+        print(
+            _format_gait_diagnostics(
+                diagnostics,
+                command_vx_m_s=float(command[0]),
+                cycle_time_s=gait_cycle_time_s,
+            )
+        )
+
     user_fixed_velocity = (
         args.fixed_velocity if args.fixed_velocity is not None else args.velocity_cmd
     )
@@ -1113,6 +1376,8 @@ def main():
     prev_action = _initial_prev_action()
     episode_start_pos = mj_data.qpos[0:3].copy()
     episode_start_yaw = get_yaw(mj_data)
+    gait_diagnostics = new_gait_diagnostics() if args.gait_diagnostics else None
+    gait_summary_printed = False
     policy_index = {
         name: idx for idx, name in enumerate(policy_spec.robot.actuator_names)
     }
@@ -1327,15 +1592,18 @@ def main():
 
             step_count += 1
 
+            planar_velocity = None
+            if gait_diagnostics is not None or step_count % 50 == 0:
+                planar_velocity = get_planar_velocity(
+                    mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                )
+            if gait_diagnostics is not None:
+                record_gait_step(gait_diagnostics, planar_velocity)
+
             # Debug: Print progress every 50 steps
             if step_count % 50 == 0:
-                forward_vel = get_forward_velocity(
-                    mj_data, prev_root_pos, prev_root_quat, ctrl_dt
-                )  # heading-local forward velocity
-                root_vel = cal.get_root_velocity(
-                    mj_data, frame=CoordinateFrame.HEADING_LOCAL
-                )
-                lateral_vel = float(root_vel.linear[1])
+                forward_vel = float(planar_velocity[0])
+                lateral_vel = float(planar_velocity[1])
                 height = mj_data.qpos[2]
                 robot_pos = mj_data.qpos[0:3]
                 drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
@@ -1382,13 +1650,18 @@ def main():
             done = check_termination(mj_data, step_count)
             if done:
                 episode_count += 1
-                forward_vel = get_forward_velocity(
-                    mj_data, prev_root_pos, prev_root_quat, ctrl_dt
-                )  # heading-local forward velocity
+                if planar_velocity is None:
+                    planar_velocity = get_planar_velocity(
+                        mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                    )
+                forward_vel = float(planar_velocity[0])
                 height = mj_data.qpos[2]
                 print(
                     f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"
                 )
+                if gait_diagnostics is not None:
+                    print_gait_summary(gait_diagnostics, velocity_cmd)
+                    gait_summary_printed = True
 
                 # Check if we've reached max episodes
                 if max_episodes and episode_count >= max_episodes:
@@ -1404,7 +1677,14 @@ def main():
                 prev_root_quat = None
                 episode_start_pos = mj_data.qpos[0:3].copy()
                 episode_start_yaw = get_yaw(mj_data)
+                gait_diagnostics = (
+                    new_gait_diagnostics() if args.gait_diagnostics else None
+                )
+                gait_summary_printed = False
                 step_count = 0
+
+        if gait_diagnostics is not None and not gait_summary_printed:
+            print_gait_summary(gait_diagnostics, velocity_cmd)
 
         if renderer:
             renderer.close()
@@ -1473,19 +1753,22 @@ def main():
 
                     step_count += 1
 
+                    planar_velocity = None
+                    if gait_diagnostics is not None or step_count % 50 == 0:
+                        planar_velocity = get_planar_velocity(
+                            mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                        )
+                    if gait_diagnostics is not None:
+                        record_gait_step(gait_diagnostics, planar_velocity)
+
                     # Camera tracking: follow the robot
                     robot_pos = mj_data.qpos[0:3]  # [x, y, z] position
                     viewer.cam.lookat[:] = [robot_pos[0], robot_pos[1], 0.4]
 
                     # Debug: Print progress every 50 steps
                     if step_count % 50 == 0:
-                        forward_vel = get_forward_velocity(
-                            mj_data, prev_root_pos, prev_root_quat, ctrl_dt
-                        )  # heading-local forward velocity
-                        root_vel = cal.get_root_velocity(
-                            mj_data, frame=CoordinateFrame.HEADING_LOCAL
-                        )
-                        lateral_vel = float(root_vel.linear[1])
+                        forward_vel = float(planar_velocity[0])
+                        lateral_vel = float(planar_velocity[1])
                         height = mj_data.qpos[2]
                         drift_xy = robot_pos[0:2] - episode_start_pos[0:2]
                         drift_norm = float(np.linalg.norm(drift_xy))
@@ -1567,13 +1850,18 @@ def main():
                     done = check_termination(mj_data, step_count)
                     if done:
                         episode_count += 1
-                        forward_vel = get_forward_velocity(
-                            mj_data, prev_root_pos, prev_root_quat, ctrl_dt
-                        )  # heading-local forward velocity
+                        if planar_velocity is None:
+                            planar_velocity = get_planar_velocity(
+                                mj_data, prev_root_pos, prev_root_quat, ctrl_dt
+                            )
+                        forward_vel = float(planar_velocity[0])
                         height = mj_data.qpos[2]
                         print(
                             f"Episode {episode_count} ended at step {step_count}: vel={forward_vel:.2f}m/s, height={height:.2f}m"
                         )
+                        if gait_diagnostics is not None:
+                            print_gait_summary(gait_diagnostics, velocity_cmd)
+                            gait_summary_printed = True
 
                         # Check if we've reached max episodes
                         if max_episodes and episode_count >= max_episodes:
@@ -1589,6 +1877,10 @@ def main():
                         prev_root_quat = None
                         episode_start_pos = mj_data.qpos[0:3].copy()
                         episode_start_yaw = get_yaw(mj_data)
+                        gait_diagnostics = (
+                            new_gait_diagnostics() if args.gait_diagnostics else None
+                        )
+                        gait_summary_printed = False
                         step_count = 0
 
                     # Sync viewer
@@ -1599,6 +1891,9 @@ def main():
                     sleep_time = (ctrl_dt / args.speed) - elapsed
                     if sleep_time > 0:
                         time.sleep(sleep_time)
+
+            if gait_diagnostics is not None and not gait_summary_printed:
+                print_gait_summary(gait_diagnostics, velocity_cmd)
 
         except RuntimeError as e:
             if "mjpython" in str(e) and is_macos:
