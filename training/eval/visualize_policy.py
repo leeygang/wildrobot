@@ -256,7 +256,10 @@ def _validate_user_fixed_velocity_cmd(training_cfg, velocity_cmd) -> np.ndarray:
     vx, so falling back to vy=wz=0 is the safe default).  Returns a
     (3,) ``np.ndarray`` so downstream callers don't have to special-case.
     """
-    arr = np.atleast_1d(np.asarray(velocity_cmd, dtype=np.float32)).reshape(-1)
+    # Validate in the same precision used by argparse and YAML parsing. Casting
+    # first made an exact decimal boundary such as 0.066667 slightly smaller
+    # in float32, causing a valid minimum command to be rejected.
+    arr = np.atleast_1d(np.asarray(velocity_cmd, dtype=np.float64)).reshape(-1)
     if arr.size == 1:
         vx, vy, wz = float(arr[0]), 0.0, 0.0
     elif arr.size == 3:

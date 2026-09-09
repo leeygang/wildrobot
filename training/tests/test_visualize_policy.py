@@ -41,6 +41,12 @@ SMOKE6_CFG = (
 SMOKE14_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_walking_v0201_smoke14.yaml"
 )
+TB8_CFG = (
+    PROJECT_ROOT
+    / "training"
+    / "configs"
+    / "ppo_walking_v0210_tb8_rated_actuator_headroom.yaml"
+)
 HOME_STABILIZER_CFG = (
     PROJECT_ROOT / "training" / "configs" / "ppo_standing_home_stabilizer.yaml"
 )
@@ -99,6 +105,21 @@ def test_visualizer_rejects_out_of_range_fixed_velocity() -> None:
         _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.min_velocity) - 1e-3)
     with pytest.raises(ValueError, match="outside configured range"):
         _validate_user_fixed_velocity_cmd(cfg, float(cfg.env.max_velocity) + 1e-3)
+
+
+def test_visualizer_accepts_decimal_velocity_boundaries_before_float32_cast() -> None:
+    cfg = load_training_config(str(TB8_CFG))
+
+    minimum = _validate_user_fixed_velocity_cmd(
+        cfg, [float(cfg.env.min_velocity), 0.0, 0.0]
+    )
+    maximum = _validate_user_fixed_velocity_cmd(
+        cfg, [float(cfg.env.max_velocity), 0.0, 0.0]
+    )
+
+    assert minimum.dtype == np.float32
+    assert minimum[0] == pytest.approx(float(cfg.env.min_velocity))
+    assert maximum[0] == pytest.approx(float(cfg.env.max_velocity))
 
 
 def test_visualizer_allows_exact_zero_when_config_has_zero_branch() -> None:
