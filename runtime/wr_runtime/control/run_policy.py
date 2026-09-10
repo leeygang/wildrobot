@@ -86,6 +86,8 @@ _STARTUP_POSE_BLEND_RATE_DEG_S = 15.0
 _STARTUP_POSE_HOLD_S = 5.0
 _STARTUP_POSE_HARD_MAX_TILT_DEG = 45.0
 _STARTUP_POSE_TILT_MARGIN_DEG = 5.0
+_IMU_TILT_SETTLE_CONSECUTIVE_SAMPLES = 6
+_IMU_TILT_SETTLE_POLL_S = 0.02
 _DEFAULT_FALL_TILT_DEG = 45.0
 _RUN_POLICY_LOG_DIR = Path(__file__).resolve().parents[3] / "_run_policy_logs"
 _STANDING_LAYOUT_IDS = {
@@ -1621,6 +1623,7 @@ def _preflight_imu(
     warnings: List[str],
     tilt_warning_deg: float | None = None,
 ) -> None:
+    wait_started_s = time.monotonic()
     try:
         if hasattr(robot_io, "wait_for_valid_imu_sample"):
             robot_io.wait_for_valid_imu_sample(timeout_s=float(imu_startup_timeout_s))
@@ -1631,6 +1634,76 @@ def _preflight_imu(
         errors.append(f"IMU valid sample unavailable: {exc}")
         print(f"  IMU: ERROR {exc}", flush=True)
         return
+
+    initial_tilt_rad = _quat_wxyz_tilt_rad(
+        np.asarray(getattr(sample, "quat_wxyz", []), dtype=np.float32)
+    )
+    initial_tilt_deg = (
+        None if initial_tilt_rad is None else float(math.degrees(initial_tilt_rad))
+    )
+    if (
+        max_tilt_deg is not None
+        and initial_tilt_deg is not None
+        and initial_tilt_deg > float(max_tilt_deg)
+    ):
+        remaining_s = max(
+            0.0,
+            float(imu_startup_timeout_s) - (time.monotonic() - wait_started_s),
+        )
+        print(
+            "  IMU startup orientation: "
+            f"initial tilt={initial_tilt_deg:.1f}deg exceeds "
+            f"{float(max_tilt_deg):.1f}deg; waiting up to {remaining_s:.1f}s "
+            "for the BNO085 fusion estimate to settle (servos remain unpowered).",
+            flush=True,
+        )
+        deadline_s = time.monotonic() + remaining_s
+        consecutive = 0
+        min_tilt_deg = initial_tilt_deg
+        while time.monotonic() <= deadline_s:
+            candidate = robot_io.imu.read()
+            candidate_ready = bool(getattr(candidate, "valid", True)) and bool(
+                getattr(candidate, "fresh", True)
+            )
+            readiness_check = getattr(robot_io, "_imu_sample_is_startup_ready", None)
+            if callable(readiness_check):
+                candidate_ready = candidate_ready and bool(readiness_check(candidate))
+            candidate_tilt_rad = _quat_wxyz_tilt_rad(
+                np.asarray(getattr(candidate, "quat_wxyz", []), dtype=np.float32)
+            )
+            candidate_tilt_deg = (
+                None
+                if candidate_tilt_rad is None
+                else float(math.degrees(candidate_tilt_rad))
+            )
+            if candidate_ready and candidate_tilt_deg is not None:
+                min_tilt_deg = min(min_tilt_deg, candidate_tilt_deg)
+                if candidate_tilt_deg <= float(max_tilt_deg):
+                    consecutive += 1
+                    sample = candidate
+                else:
+                    consecutive = 0
+                    sample = candidate
+            else:
+                consecutive = 0
+            if consecutive >= _IMU_TILT_SETTLE_CONSECUTIVE_SAMPLES:
+                setattr(robot_io, "_last_fresh_imu_sample", sample)
+                if hasattr(robot_io, "_last_fresh_imu_wall_time_s"):
+                    setattr(robot_io, "_last_fresh_imu_wall_time_s", time.monotonic())
+                print(
+                    "  IMU startup orientation settled: "
+                    f"tilt={candidate_tilt_deg:.1f}deg after "
+                    f"{_IMU_TILT_SETTLE_CONSECUTIVE_SAMPLES} consecutive samples.",
+                    flush=True,
+                )
+                break
+            time.sleep(_IMU_TILT_SETTLE_POLL_S)
+        else:
+            print(
+                "  IMU startup orientation did not settle: "
+                f"minimum observed tilt={min_tilt_deg:.1f}deg.",
+                flush=True,
+            )
 
     valid = bool(getattr(sample, "valid", True))
     fresh = bool(getattr(sample, "fresh", True))

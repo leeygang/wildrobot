@@ -650,6 +650,65 @@ def test_bno_read_rejects_bad_quaternion_norm() -> None:
     assert imu.diag["quat_status"] == "bad_norm"
 
 
+def test_spi_packet_driver_preserves_sensor_report_accuracy() -> None:
+    from runtime.wr_runtime.hardware.bno085 import _BNO08XSPIPacketDriver
+
+    driver = _BNO08XSPIPacketDriver.__new__(_BNO08XSPIPacketDriver)
+    driver._rid_game = 0x08
+    driver._rid_rot = 0x05
+    driver._rid_gyro = 0x02
+    driver._readings = {}
+    driver._report_accuracy = {}
+
+    report = bytearray(12)
+    report[0] = 0x08
+    report[2] = 0x03
+    driver._handle_sensor_report(bytes(report))
+
+    assert driver.game_quaternion_accuracy == 3
+
+
+def test_bno_read_reports_game_quaternion_accuracy() -> None:
+    from runtime.wr_runtime.hardware.bno085 import BNO085IMU
+    from runtime.wr_runtime.hardware.imu import ImuSample
+
+    class FakeAdafruitImu:
+        _sequence_number = [0, 0, 0, 0]
+        game_quaternion_accuracy = 2
+
+        @property
+        def game_quaternion(self):
+            self._sequence_number[3] += 1
+            return (0.0, 0.0, 0.0, 1.0)
+
+        @property
+        def gyro(self):
+            return (0.0, 0.0, 0.0)
+
+    imu = BNO085IMU.__new__(BNO085IMU)
+    imu._imu = FakeAdafruitImu()
+    imu._latest = ImuSample(
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=None,
+        valid=False,
+        fresh=False,
+    )
+    imu._last_report_sample = imu._latest
+    imu._use_game_quat = True
+    imu.enable_rotation_vector = False
+    imu.max_quat_norm_deviation = 0.1
+    imu.suppress_debug = True
+    imu.upside_down = False
+    imu._r_bs = None
+    imu._diag = {}
+
+    sample = imu._read_sample_once()
+
+    assert sample.valid is True
+    assert imu.diag["quat_accuracy"] == 2
+
+
 def test_bno_read_integrates_gyro_when_runtime_quaternion_is_bad() -> None:
     import time
 

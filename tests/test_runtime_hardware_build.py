@@ -2264,6 +2264,41 @@ def test_hardware_robot_io_wait_rejects_startup_gyro_integrated_imu_sample() -> 
     assert robot_io._last_fresh_imu_sample is direct_sample
 
 
+def test_hardware_robot_io_wait_rejects_unreliable_quaternion_accuracy() -> None:
+    sample = ImuSample(
+        quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+        fresh=True,
+    )
+
+    class _FakeImu:
+        def __init__(self) -> None:
+            self.accuracies = [0, 1, 1, 1, 1, 1, 1]
+            self.diag = {}
+
+        def read(self):
+            self.diag = {
+                "quat_status": "normalized",
+                "gyro_status": "raw",
+                "quat_accuracy": self.accuracies.pop(0),
+            }
+            return sample
+
+    robot_io = HardwareRobotIO(
+        actuator_names=["j"],
+        control_dt=0.02,
+        actuators=SimpleNamespace(),
+        imu=_FakeImu(),
+        foot_switches=SimpleNamespace(),
+    )
+
+    robot_io.wait_for_valid_imu_sample(timeout_s=1.0, poll_s=0.0)
+
+    assert robot_io._last_fresh_imu_sample is sample
+
+
 def test_hardware_robot_io_wait_counts_direct_samples_across_cached_reads() -> None:
     direct_sample = ImuSample(
         quat_wxyz=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
@@ -2483,6 +2518,78 @@ def test_hardware_preflight_rejects_initial_excessive_tilt(capsys) -> None:
     out = capsys.readouterr().out
     assert "tilt=30.0deg" in out
     assert "Hardware preflight FAILED" in out
+
+
+def test_hardware_preflight_waits_for_bno_tilt_to_settle(monkeypatch, capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    def _sample(tilt_deg: float) -> ImuSample:
+        half_angle = np.deg2rad(tilt_deg) / 2.0
+        return ImuSample(
+            quat_wxyz=np.array(
+                [np.cos(half_angle), 0.0, np.sin(half_angle), 0.0],
+                dtype=np.float32,
+            ),
+            gyro_rad_s=np.zeros(3, dtype=np.float32),
+            timestamp_s=1.0,
+            valid=True,
+            fresh=True,
+        )
+
+    initial_sample = _sample(72.0)
+    settled_sample = _sample(8.0)
+
+    class _FakeImu:
+        diag = {
+            "quat_status": "normalized",
+            "gyro_status": "raw",
+            "quat_accuracy": 3,
+        }
+
+        def read(self):
+            return settled_sample
+
+    class _FakeRobotIO:
+        actuators = SimpleNamespace(
+            port="/dev/ttyUSB0",
+            baudrate=9600,
+            servo_ids_list=[7],
+            controller=SimpleNamespace(get_battery_voltage=lambda: None),
+            get_positions_rad=lambda: np.array([0.0], dtype=np.float32),
+        )
+        imu = _FakeImu()
+        foot_switches = SimpleNamespace(
+            available=False,
+            read=lambda: SimpleNamespace(switches=np.zeros(4, dtype=np.float32)),
+        )
+        _last_fresh_imu_sample = None
+        _last_fresh_imu_wall_time_s = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_fresh_imu_sample = initial_sample
+
+        def _imu_sample_is_startup_ready(self, sample):
+            return True
+
+    monkeypatch.setattr(run_policy.time, "sleep", lambda _seconds: None)
+
+    robot_io = _FakeRobotIO()
+    run_policy._run_hardware_preflight(
+        robot_io=robot_io,
+        actuator_names=["left_hip_pitch"],
+        home_q_rad=np.array([0.0], dtype=np.float32),
+        joint_min_rad=np.array([-1.0], dtype=np.float32),
+        joint_max_rad=np.array([1.0], dtype=np.float32),
+        imu_startup_timeout_s=0.5,
+        home_tolerance_deg=25.0,
+        max_tilt_deg=45.0,
+    )
+
+    out = capsys.readouterr().out
+    assert "initial tilt=72.0deg" in out
+    assert "IMU startup orientation settled: tilt=8.0deg" in out
+    assert "Hardware preflight OK." in out
+    assert robot_io._last_fresh_imu_sample is settled_sample
 
 
 def test_hardware_preflight_warns_for_correctable_passive_pose_tilt(capsys) -> None:

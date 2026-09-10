@@ -51,6 +51,13 @@ class HardwareRobotIO(RobotIO[Signals]):
             return False
         if quat_status in {"missing", "bad_norm", "bad_axis_map_norm"}:
             return False
+        quat_accuracy = diag.get("quat_accuracy")
+        if quat_accuracy is not None:
+            try:
+                if int(quat_accuracy) <= 0:
+                    return False
+            except (TypeError, ValueError):
+                return False
         if gyro_status in {"missing", "bad"}:
             return False
         return True

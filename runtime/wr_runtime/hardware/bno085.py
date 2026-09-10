@@ -454,6 +454,7 @@ class _BNO08XSPIPacketDriver:
         self._sequence_number = [0, 0, 0, 0, 0, 0]
         self._feature_responses: dict[int, tuple[int, ...]] = {}
         self._readings: dict[int, tuple[float, ...]] = {}
+        self._report_accuracy: dict[int, int] = {}
         self._pending_packets: list[tuple[int, int, bytes]] = []
 
     def open(self) -> "_BNO08XSPIPacketDriver":
@@ -518,6 +519,14 @@ class _BNO08XSPIPacketDriver:
             return self._readings[self._rid_game]
         except KeyError:
             raise RuntimeError("No game quaternion report found, is it enabled?") from None
+
+    @property
+    def game_quaternion_accuracy(self) -> int | None:
+        return self._report_accuracy.get(self._rid_game)
+
+    @property
+    def quaternion_accuracy(self) -> int | None:
+        return self._report_accuracy.get(self._rid_rot)
 
     @property
     def gyro(self) -> tuple[float, float, float]:
@@ -685,6 +694,11 @@ class _BNO08XSPIPacketDriver:
 
     def _handle_sensor_report(self, report: bytes) -> None:
         report_id = int(report[0])
+        if len(report) >= 3:
+            # SH-2 sensor reports encode accuracy in the low two status bits:
+            # 0=unreliable, 1=low, 2=medium, 3=high.  Preserve it so startup
+            # does not accept a normalized but not-yet-initialized quaternion.
+            self._report_accuracy[report_id] = int(report[2]) & 0b11
         if report_id == self._rid_gyro and len(report) >= 10:
             self._readings[report_id] = self._parse_fixed_q_report(report, scalar=2.0 ** -9, count=3)
             return
@@ -1087,6 +1101,9 @@ class BNO085IMU(Imu):
                 if self._use_game_quat:
                     quat = self._imu.game_quaternion
                     diag["quat_source"] = "game_quaternion"
+                    diag["quat_accuracy"] = getattr(
+                        self._imu, "game_quaternion_accuracy", None
+                    )
             except Exception as exc:
                 _record_diag_exception(diag, "quat", exc)
                 quat = None
@@ -1095,6 +1112,9 @@ class BNO085IMU(Imu):
                 try:
                     quat = self._imu.quaternion
                     diag["quat_source"] = "quaternion"
+                    diag["quat_accuracy"] = getattr(
+                        self._imu, "quaternion_accuracy", None
+                    )
                 except Exception as exc:
                     _record_diag_exception(diag, "quat", exc)
                     quat = None
