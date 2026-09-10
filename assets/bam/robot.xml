@@ -1,0 +1,64 @@
+<?xml version="1.0" ?>
+<!-- Generated using onshape-to-robot -->
+<!-- Onshape https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/09cfe82abf86880a1925d040/e/f28780c2d6b32b9fc826e5e8 -->
+<mujoco model="bam">
+  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+  <default>
+    <default class="bam">
+      <joint frictionloss="0.1" armature="0.005"/>
+      <position kp="50" dampratio="1"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom group="3"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <!-- Link innor_support -->
+    <body name="innor_support" pos="0 0 0" quat="1 0 0 0" childclass="bam">
+      <freejoint name="innor_support_freejoint"/>
+      <inertial pos="-0.0089867 0.0242111 -0.0913864" mass="0.0727614" fullinertia="0.000166438 0.000136554 4.2744e-05 2.14e-09 2.5053e-07 -6.32988e-07"/>
+      <!-- Part innor_support_parts -->
+      <geom type="mesh" class="visual" pos="-0.0089867 0.0242111 -0.0913864" quat="1 0 0 0" mesh="innor_support_visual" material="innor_support_visual_material"/>
+      <geom type="mesh" class="collision" pos="-0.0089867 0.0242111 -0.0913864" quat="1 0 0 0" mesh="innor_support_collision" material="innor_support_collision_material"/>
+      <!-- Link htd_45h_1circle -->
+      <body name="htd_45h_1circle" pos="-0.00909684 -0.000164783 -0.00223389" quat="0.707107 0.707107 -0 0">
+        <!-- Joint from innor_support to htd_45h_1circle -->
+        <joint axis="0 0 1" name="pitch" type="hinge"/>
+        <inertial pos="-5.13531e-05 0.00935505 -0.0229853" mass="0.065" fullinertia="1.66445e-05 1.00748e-05 1.09569e-05 1.685e-09 -3.599e-09 5.79762e-07"/>
+        <!-- Part htd_45h_1circle_parts -->
+        <geom type="mesh" class="visual" pos="-5.13531e-05 0.00935505 -0.0229853" quat="0.707107 -0.707107 -0 -0" mesh="htd_45h_1circle_visual" material="htd_45h_1circle_visual_material"/>
+        <geom type="mesh" class="collision" pos="-5.13531e-05 0.00935505 -0.0229853" quat="0.707107 -0.707107 -0 -0" mesh="htd_45h_1circle_collision" material="htd_45h_1circle_collision_material"/>
+      </body>
+      <!-- Link weight -->
+      <body name="weight" pos="-0.0084387 0.019234 -0.12265" quat="0.706841 0.707373 3.36603e-05 3.36599e-05">
+        <!-- Joint from innor_support to weight -->
+        <!-- Joint is "fixed", skipping it -->
+        <inertial pos="-0 0 -0.007" mass="0.54" fullinertia="0.000404235 0.000404235 0.00079083 -0 -0 0"/>
+        <!-- Part weight_parts -->
+        <geom type="mesh" class="visual" pos="0 0 -0.007" quat="0.706841 -0.707373 -3.36603e-05 -3.36599e-05" mesh="weight_visual" material="weight_visual_material"/>
+        <geom type="mesh" class="collision" pos="0 0 -0.007" quat="0.706841 -0.707373 -3.36603e-05 -3.36599e-05" mesh="weight_collision" material="weight_collision_material"/>
+      </body>
+    </body>
+  </worldbody>
+  <asset>
+    <mesh file="merged/htd_45h_1circle_collision.stl"/>
+    <mesh file="merged/htd_45h_1circle_visual.stl"/>
+    <mesh file="merged/innor_support_visual.stl"/>
+    <mesh file="merged/innor_support_collision.stl"/>
+    <mesh file="merged/weight_collision.stl"/>
+    <mesh file="merged/weight_visual.stl"/>
+    <material name="innor_support_visual_material" rgba="0.668168 0.706957 0.715756 1"/>
+    <material name="innor_support_collision_material" rgba="0.668168 0.706957 0.715756 1"/>
+    <material name="htd_45h_1circle_visual_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <material name="htd_45h_1circle_collision_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <material name="weight_visual_material" rgba="0.498039 0.498039 0.498039 1"/>
+    <material name="weight_collision_material" rgba="0.498039 0.498039 0.498039 1"/>
+  </asset>
+  <actuator>
+    <position class="bam" name="pitch" joint="pitch"/>
+  </actuator>
+  <equality/>
+</mujoco>

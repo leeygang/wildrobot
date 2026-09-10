@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "ba106cac193c0e2253e1958f",
+    "documentMicroversion": "de288f7f13047140392b3634",
+    "elementId": "73bffdd0201b8932cca2410f",
+    "fullConfiguration": "default",
+    "id": "MlaHXb49jF0hMxAEj",
+    "isStandardContent": false,
+    "name": "power_arm <1>",
+    "partId": "JHD",
+    "suppressed": false,
+    "type": "Part"
+}
