@@ -16,33 +16,63 @@
     </default>
   </default>
   <worldbody>
-    <!-- Link innor_support -->
-    <body name="innor_support" pos="0 0 0" quat="1 0 0 0" childclass="bam">
-      <freejoint name="innor_support_freejoint"/>
-      <inertial pos="-0.00431823 0.0222724 -0.101411" mass="0.612761" fullinertia="0.000633587 0.000990077 0.000447236 -3.89286e-07 1.34767e-06 -7.0924e-07"/>
-      <!-- Part innor_support_parts -->
-      <geom type="mesh" class="visual" pos="-0.00431823 0.0222724 -0.101411" quat="1 0 0 0" mesh="innor_support_visual" material="innor_support_visual_material"/>
-      <geom type="mesh" class="collision" pos="-0.00431823 0.0222724 -0.101411" quat="1 0 0 0" mesh="innor_support_collision" material="innor_support_collision_material"/>
-      <!-- Link htd_45h_1circle -->
-      <body name="htd_45h_1circle" pos="-0.00488909 -0.00293508 0.0154971" quat="0.709981 0.70422 0.000293371 0.000290991">
-        <!-- Joint from innor_support to htd_45h_1circle -->
+    <!-- Link fixed_top -->
+    <body name="fixed_top" pos="0 0 0" quat="1 0 0 0" childclass="bam">
+      <inertial pos="-0.00495945 0.0201257 0.0246646" mass="0.065" fullinertia="1.66445e-05 1.09474e-05 1.00843e-05 8.317e-09 2.1e-09 -5.8687e-07"/>
+      <!-- Part fixed_top -->
+      <geom type="mesh" class="visual" pos="-0.00498609 0.0475757 -0.00597995" quat="1 0 0 0" mesh="fixed_top" material="fixed_top_material"/>
+      <geom type="mesh" class="collision" pos="-0.00498609 0.0475757 -0.00597995" quat="1 0 0 0" mesh="fixed_top" material="fixed_top_material"/>
+      <!-- Part htd_45h_1circle -->
+      <geom type="mesh" class="visual" pos="-0.0645759 0.0492759 0.0213477" quat="0.709455 0.704751 -0 0" mesh="htd_45h_1circle" material="htd_45h_1circle_material"/>
+      <geom type="mesh" class="collision" pos="-0.0645759 0.0492759 0.0213477" quat="0.709455 0.704751 -0 0" mesh="htd_45h_1circle" material="htd_45h_1circle_material"/>
+      <!-- Link innor_support -->
+      <body name="innor_support" pos="-0.00488909 -0.00293508 0.0154971" quat="0.70422 -0.709981 -0.000290991 0.000293371">
+        <!-- Joint from fixed_top to innor_support -->
         <joint axis="0 0 1" name="pitch" type="hinge"/>
-        <inertial pos="-5.13589e-05 0.00935505 -0.0229853" mass="0.065" fullinertia="1.66445e-05 1.00748e-05 1.09569e-05 1.689e-09 -3.6e-09 5.79762e-07"/>
-        <!-- Part htd_45h_1circle_parts -->
-        <geom type="mesh" class="visual" pos="-5.13589e-05 0.00935505 -0.0229853" quat="0.709981 -0.70422 -0.000293371 -0.000290991" mesh="htd_45h_1circle_visual" material="htd_45h_1circle_visual_material"/>
-        <geom type="mesh" class="collision" pos="-5.13589e-05 0.00935505 -0.0229853" quat="0.709981 -0.70422 -0.000293371 -0.000290991" mesh="htd_45h_1circle_collision" material="htd_45h_1circle_collision_material"/>
+        <inertial pos="0.000592486 0.116699 0.0261586" mass="0.612761" fullinertia="0.000633586 0.000447261 0.000990053 -1.34752e-06 -1.05662e-07 -3.7123e-06"/>
+        <!-- Part part_5 -->
+        <geom type="mesh" class="visual" pos="0.000353161 0.000410536 0.0263088" quat="0.706842 0.707372 -3.29423e-05 3.29426e-05" mesh="part_5" material="part_5_material"/>
+        <geom type="mesh" class="collision" pos="0.000353161 0.000410536 0.0263088" quat="0.706842 0.707372 -3.29423e-05 3.29426e-05" mesh="part_5" material="part_5_material"/>
+        <!-- Part innor_support -->
+        <geom type="mesh" class="visual" pos="0.000657483 0.000410562 0.0263086" quat="0.706841 0.707373 -3.36599e-05 3.36603e-05" mesh="innor_support" material="innor_support_material"/>
+        <geom type="mesh" class="collision" pos="0.000657483 0.000410562 0.0263086" quat="0.706841 0.707373 -3.36599e-05 3.36603e-05" mesh="innor_support" material="innor_support_material"/>
+        <!-- Part weight -->
+        <geom type="mesh" class="visual" pos="0.000657483 0.000410562 0.0263086" quat="0.706841 0.707373 -3.36599e-05 3.36603e-05" mesh="weight" material="weight_material"/>
+        <geom type="mesh" class="collision" pos="0.000657483 0.000410562 0.0263086" quat="0.706841 0.707373 -3.36599e-05 3.36603e-05" mesh="weight" material="weight_material"/>
+        <!-- Part support_arm -->
+        <geom type="mesh" class="visual" pos="0 -0 0.0264" quat="0.707107 0.707107 0 0" mesh="support_arm" material="support_arm_material"/>
+        <geom type="mesh" class="collision" pos="0 -0 0.0264" quat="0.707107 0.707107 0 0" mesh="support_arm" material="support_arm_material"/>
+        <!-- Part part_4 -->
+        <geom type="mesh" class="visual" pos="0.00035322 0.000410589 0.0263088" quat="0.706842 0.707372 -3.29423e-05 3.29426e-05" mesh="part_4" material="part_4_material"/>
+        <geom type="mesh" class="collision" pos="0.00035322 0.000410589 0.0263088" quat="0.706842 0.707372 -3.29423e-05 3.29426e-05" mesh="part_4" material="part_4_material"/>
+        <!-- Part power_arm -->
+        <geom type="mesh" class="visual" pos="0 -0 0.0268" quat="0.707107 0.707107 -0 0" mesh="power_arm" material="power_arm_material"/>
+        <geom type="mesh" class="collision" pos="0 -0 0.0268" quat="0.707107 0.707107 -0 0" mesh="power_arm" material="power_arm_material"/>
+        <!-- Part part_3 -->
+        <geom type="mesh" class="visual" pos="0 -0 0.0266" quat="0.707107 0.707107 0 0" mesh="part_3" material="part_3_material"/>
+        <geom type="mesh" class="collision" pos="0 -0 0.0266" quat="0.707107 0.707107 0 0" mesh="part_3" material="part_3_material"/>
       </body>
     </body>
   </worldbody>
   <asset>
-    <mesh file="merged/htd_45h_1circle_visual.stl"/>
-    <mesh file="merged/htd_45h_1circle_collision.stl"/>
-    <mesh file="merged/innor_support_visual.stl"/>
-    <mesh file="merged/innor_support_collision.stl"/>
-    <material name="innor_support_visual_material" rgba="0.518241 0.522847 0.523892 1"/>
-    <material name="innor_support_collision_material" rgba="0.518241 0.522847 0.523892 1"/>
-    <material name="htd_45h_1circle_visual_material" rgba="0.615686 0.811765 0.929412 1"/>
-    <material name="htd_45h_1circle_collision_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <mesh file="weight.stl"/>
+    <mesh file="htd_45h_1circle.stl"/>
+    <mesh file="part_3.stl"/>
+    <mesh file="power_arm.stl"/>
+    <mesh file="innor_support.stl"/>
+    <mesh file="part_4.stl"/>
+    <mesh file="fixed_top.stl"/>
+    <mesh file="part_5.stl"/>
+    <mesh file="support_arm.stl"/>
+    <material name="fixed_top_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <material name="htd_45h_1circle_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <material name="part_5_material" rgba="0.768627 0.886275 0.952941 1"/>
+    <material name="innor_support_material" rgba="0.972549 0.529412 0.00392157 1"/>
+    <material name="weight_material" rgba="0.498039 0.498039 0.498039 1"/>
+    <material name="support_arm_material" rgba="0.647059 0.647059 0.647059 1"/>
+    <material name="part_4_material" rgba="0.917647 0.917647 0.917647 1"/>
+    <material name="power_arm_material" rgba="0.615686 0.811765 0.929412 1"/>
+    <material name="part_3_material" rgba="0.231373 0.380392 0.705882 1"/>
   </asset>
   <actuator>
     <position class="bam" name="pitch" joint="pitch"/>

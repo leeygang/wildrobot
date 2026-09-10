@@ -2,6 +2,6 @@
     "url": "https://cad.onshape.com/documents/ba106cac193c0e2253e1958f/w/09cfe82abf86880a1925d040/e/f28780c2d6b32b9fc826e5e8",
     "robot_name": "bam",
     "output_format": "mujoco",
-    "merge_stls": true,
+    "merge_stls": false,
     "simplify_stls": true
 }
