@@ -16,12 +16,14 @@ import pytest
 from runtime.wr_runtime.control.mock_robot_io import MockRobotIO
 from runtime.wr_runtime.control.policy_runner import RuntimePolicyRunner
 from runtime.wr_runtime.control.run_policy import (
+    _adaptive_startup_pose_blend,
     _bundle_log_tokens,
     _default_run_policy_log_path,
     _format_leg_targets_deg,
     _output_log_context,
     _print_timing_summary,
     _resolve_telemetry_path,
+    _startup_preparation_tilt_limit_deg,
     _startup_home_hold_steps,
     run_policy_loop,
 )
@@ -127,6 +129,46 @@ def test_startup_home_hold_steps_include_stable_only_hardware(
     )
 
 
+@pytest.mark.parametrize(
+    ("max_delta_deg", "expected_duration_s"),
+    [(5.0, 2.0), (37.5, 2.5), (60.0, 3.0)],
+)
+def test_startup_pose_blend_duration_tracks_largest_joint_delta(
+    max_delta_deg, expected_duration_s
+) -> None:
+    steps, measured_delta_deg, duration_s = _adaptive_startup_pose_blend(
+        initial_q_rad=np.zeros(2, dtype=np.float32),
+        home_q_rad=np.deg2rad(
+            np.array([max_delta_deg, -0.5 * max_delta_deg], dtype=np.float32)
+        ),
+        minimum_duration_s=2.0,
+        ctrl_dt=0.02,
+    )
+
+    assert measured_delta_deg == pytest.approx(max_delta_deg, abs=1e-5)
+    assert duration_s == pytest.approx(expected_duration_s)
+    assert steps == round(expected_duration_s / 0.02)
+
+
+@pytest.mark.parametrize(
+    ("initial_tilt_deg", "expected_limit_deg"),
+    [(0.0, 10.0), (11.0, 16.0), (44.0, 45.0)],
+)
+def test_startup_preparation_tilt_limit_tracks_initial_pose_with_hard_cap(
+    initial_tilt_deg, expected_limit_deg
+) -> None:
+    half_angle = np.deg2rad(initial_tilt_deg) / 2.0
+    quat = np.array(
+        [np.cos(half_angle), 0.0, np.sin(half_angle), 0.0], dtype=np.float32
+    )
+
+    assert _startup_preparation_tilt_limit_deg(
+        initial_quat_wxyz=quat,
+        final_stability_max_tilt_deg=10.0,
+        walking_fall_tilt_deg=10.0,
+    ) == pytest.approx(expected_limit_deg, abs=1e-4)
+
+
 def test_mock_loop_runs_without_hardware(v8_spec, runtime_policy_config):
     action_dim = v8_spec.model.action_dim
     home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
@@ -220,6 +262,43 @@ def test_policy_loop_aborts_when_tilt_exceeds_limit_at_any_phase(
         assert "Timing summary: status=partial steps=1" in output
     else:
         assert "Startup home hold: steps=5" in output
+
+
+def test_startup_pose_preparation_allows_initial_tilt_then_requires_final_stability(
+    v8_spec, runtime_policy_config
+):
+    home = np.asarray(v8_spec.robot.home_ctrl_rad, dtype=np.float32)
+    robot_io = _TiltedRobotIO(
+        tilt_deg=11.0,
+        actuator_names=list(v8_spec.robot.actuator_names),
+        control_dt=runtime_policy_config.ctrl_dt,
+        home_q_rad=home,
+    )
+    policy = _CountingPolicy(v8_spec.model.action_dim)
+    runner = RuntimePolicyRunner(
+        spec=v8_spec,
+        runtime_config=runtime_policy_config,
+        policy=policy,
+        robot_io=robot_io,
+    )
+
+    with pytest.raises(SystemExit, match="Startup home stability failed"):
+        run_policy_loop(
+            runner=runner,
+            max_steps=1,
+            velocity_cmd=np.array([0.13, 0.0, 0.0], dtype=np.float32),
+            log_steps=0,
+            ctrl_dt=runtime_policy_config.ctrl_dt,
+            realtime=False,
+            actuator_names=list(v8_spec.robot.actuator_names),
+            startup_home_hold_steps=3,
+            startup_preparation_max_tilt_deg=15.0,
+            startup_stability_max_tilt_deg=10.0,
+            fall_tilt_deg=10.0,
+        )
+
+    assert policy.calls == 0
+    assert len(robot_io.written) == 3
 
 
 def test_policy_loop_accepts_unbounded_execution_until_interrupt() -> None:

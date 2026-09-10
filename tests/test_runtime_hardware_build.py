@@ -2485,6 +2485,57 @@ def test_hardware_preflight_rejects_initial_excessive_tilt(capsys) -> None:
     assert "Hardware preflight FAILED" in out
 
 
+def test_hardware_preflight_warns_for_correctable_passive_pose_tilt(capsys) -> None:
+    from wr_runtime.control import run_policy
+
+    half_angle = np.deg2rad(11.0) / 2.0
+    sample = ImuSample(
+        quat_wxyz=np.array(
+            [np.cos(half_angle), 0.0, np.sin(half_angle), 0.0],
+            dtype=np.float32,
+        ),
+        gyro_rad_s=np.zeros(3, dtype=np.float32),
+        timestamp_s=1.0,
+        valid=True,
+    )
+
+    class _FakeRobotIO:
+        actuators = SimpleNamespace(
+            port="/dev/ttyUSB0",
+            baudrate=9600,
+            servo_ids_list=[7],
+            controller=SimpleNamespace(get_battery_voltage=lambda: None),
+            get_positions_rad=lambda: np.array([0.7], dtype=np.float32),
+        )
+        imu = SimpleNamespace(read=lambda: sample, diag={})
+        foot_switches = SimpleNamespace(
+            available=False,
+            read=lambda: SimpleNamespace(switches=np.zeros(4, dtype=np.float32)),
+        )
+        _last_fresh_imu_sample = None
+
+        def wait_for_valid_imu_sample(self, *, timeout_s):
+            self._last_fresh_imu_sample = sample
+
+    run_policy._run_hardware_preflight(
+        robot_io=_FakeRobotIO(),
+        actuator_names=["left_hip_pitch"],
+        home_q_rad=np.array([0.0], dtype=np.float32),
+        joint_min_rad=np.array([-0.5], dtype=np.float32),
+        joint_max_rad=np.array([0.5], dtype=np.float32),
+        imu_startup_timeout_s=0.1,
+        home_tolerance_deg=25.0,
+        max_tilt_deg=45.0,
+        tilt_warning_deg=10.0,
+    )
+
+    out = capsys.readouterr().out
+    assert "readback +40.1deg is outside policy range" in out
+    assert "initial passive-pose tilt 11.0deg" in out
+    assert "startup pose blend will attempt to correct it" in out
+    assert "Hardware preflight OK." in out
+
+
 def test_hardware_preflight_warns_on_open_footswitch(capsys) -> None:
     from wr_runtime.control import run_policy
 

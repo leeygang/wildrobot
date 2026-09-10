@@ -81,7 +81,11 @@ _STARTUP_STABILITY_MAX_TILT_DEG = 15.0
 _STARTUP_STABILITY_MAX_GYRO_RAD_S = 0.35
 _STARTUP_STABILITY_MAX_LEG_ERROR_DEG = 8.0
 _STARTUP_POSE_BLEND_S = 2.0
+_STARTUP_POSE_BLEND_MAX_S = 3.0
+_STARTUP_POSE_BLEND_RATE_DEG_S = 15.0
 _STARTUP_POSE_HOLD_S = 5.0
+_STARTUP_POSE_HARD_MAX_TILT_DEG = 45.0
+_STARTUP_POSE_TILT_MARGIN_DEG = 5.0
 _DEFAULT_FALL_TILT_DEG = 45.0
 _RUN_POLICY_LOG_DIR = Path(__file__).resolve().parents[3] / "_run_policy_logs"
 _STANDING_LAYOUT_IDS = {
@@ -437,6 +441,51 @@ def _startup_home_hold_steps(
     if not bool(stable_only) and float(command_norm) <= float(command_deadzone):
         return 0
     return max(1, int(round(float(duration_s) / max(float(ctrl_dt), 1e-9))))
+
+
+def _adaptive_startup_pose_blend(
+    *,
+    initial_q_rad: np.ndarray,
+    home_q_rad: np.ndarray,
+    minimum_duration_s: float,
+    ctrl_dt: float,
+) -> tuple[int, float, float]:
+    """Choose a 2--3 s pose blend from the largest measured joint delta."""
+    initial = np.asarray(initial_q_rad, dtype=np.float32).reshape(-1)
+    home = np.asarray(home_q_rad, dtype=np.float32).reshape(-1)
+    if initial.shape != home.shape:
+        raise ValueError(
+            f"startup pose shapes differ: initial={initial.shape}, home={home.shape}"
+        )
+    max_delta_deg = float(np.rad2deg(np.max(np.abs(home - initial))))
+    minimum_s = max(0.0, float(minimum_duration_s))
+    if minimum_s <= 0.0:
+        return 0, max_delta_deg, 0.0
+    maximum_s = max(minimum_s, _STARTUP_POSE_BLEND_MAX_S)
+    duration_s = min(
+        maximum_s,
+        max(minimum_s, max_delta_deg / _STARTUP_POSE_BLEND_RATE_DEG_S),
+    )
+    steps = max(1, int(round(duration_s / max(float(ctrl_dt), 1e-9))))
+    return steps, max_delta_deg, steps * float(ctrl_dt)
+
+
+def _startup_preparation_tilt_limit_deg(
+    *,
+    initial_quat_wxyz: np.ndarray,
+    final_stability_max_tilt_deg: float,
+    walking_fall_tilt_deg: float,
+) -> float:
+    tilt_rad = _quat_wxyz_tilt_rad(initial_quat_wxyz)
+    initial_tilt_deg = 0.0 if tilt_rad is None else float(math.degrees(tilt_rad))
+    return min(
+        _STARTUP_POSE_HARD_MAX_TILT_DEG,
+        max(
+            float(final_stability_max_tilt_deg),
+            float(walking_fall_tilt_deg),
+            initial_tilt_deg + _STARTUP_POSE_TILT_MARGIN_DEG,
+        ),
+    )
 
 
 def _native_17d_runtime_plan(
@@ -1421,6 +1470,7 @@ def _run_hardware_preflight(
     imu_startup_timeout_s: float,
     home_tolerance_deg: float,
     max_tilt_deg: float | None = None,
+    tilt_warning_deg: float | None = None,
 ) -> None:
     """Print and validate hardware state before the policy writes commands."""
     errors: List[str] = []
@@ -1441,7 +1491,9 @@ def _run_hardware_preflight(
         robot_io=robot_io,
         imu_startup_timeout_s=imu_startup_timeout_s,
         max_tilt_deg=max_tilt_deg,
+        tilt_warning_deg=tilt_warning_deg,
         errors=errors,
+        warnings=warnings,
     )
     _preflight_footswitches(
         robot_io=robot_io,
@@ -1566,6 +1618,8 @@ def _preflight_imu(
     imu_startup_timeout_s: float,
     max_tilt_deg: float | None,
     errors: List[str],
+    warnings: List[str],
+    tilt_warning_deg: float | None = None,
 ) -> None:
     try:
         if hasattr(robot_io, "wait_for_valid_imu_sample"):
@@ -1621,6 +1675,16 @@ def _preflight_imu(
     ):
         errors.append(
             f"initial body tilt {tilt_deg:.1f}deg > {float(max_tilt_deg):.1f}deg"
+        )
+    elif (
+        tilt_warning_deg is not None
+        and tilt_deg is not None
+        and tilt_deg > float(tilt_warning_deg)
+    ):
+        warnings.append(
+            f"initial passive-pose tilt {tilt_deg:.1f}deg exceeds the final "
+            f"{float(tilt_warning_deg):.1f}deg stability gate; startup pose blend "
+            "will attempt to correct it"
         )
     if gyro.size != 3 or not np.all(np.isfinite(gyro)):
         errors.append(f"IMU gyro is invalid: gyro={gyro.tolist()}")
@@ -1681,6 +1745,7 @@ def _run_startup_home_hold(
     confirm_imu_timeout_s: float = 3.0,
     input_fn: Callable[[str], str] | None = None,
     fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
+    preparation_max_tilt_deg: float | None = None,
     telemetry: PolicyTelemetryRecorder | None = None,
     telemetry_phase: str = "startup_home",
 ) -> None:
@@ -1720,7 +1785,11 @@ def _run_startup_home_hold(
         _abort_if_fallen(
             info=info,
             step=step,
-            max_tilt_deg=float(fall_tilt_deg),
+            max_tilt_deg=float(
+                fall_tilt_deg
+                if preparation_max_tilt_deg is None
+                else preparation_max_tilt_deg
+            ),
         )
 
         should_log = (
@@ -2036,6 +2105,7 @@ def run_policy_loop(
     startup_confirm_before_walk: bool = False,
     startup_confirm_input_fn: Callable[[str], str] | None = None,
     startup_confirm_imu_timeout_s: float = 3.0,
+    startup_preparation_max_tilt_deg: float | None = None,
     fall_tilt_deg: float = _DEFAULT_FALL_TILT_DEG,
     telemetry: PolicyTelemetryRecorder | None = None,
     telemetry_phase: str = "policy",
@@ -2059,6 +2129,7 @@ def run_policy_loop(
         confirm_imu_timeout_s=float(startup_confirm_imu_timeout_s),
         input_fn=startup_confirm_input_fn,
         fall_tilt_deg=float(fall_tilt_deg),
+        preparation_max_tilt_deg=startup_preparation_max_tilt_deg,
         telemetry=telemetry,
     )
     history_size = max(1, int(round(60.0 / max(float(ctrl_dt), 1e-9))))
@@ -2319,8 +2390,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=_STARTUP_POSE_BLEND_S,
         help=(
             "Hardware startup: linearly blend from the measured servo "
-            "pose to bundled home before enforcing the stability gate "
-            f"(default: {_STARTUP_POSE_BLEND_S:.1f}; set 0 to disable)."
+            "pose to bundled home before enforcing the stability gate. This is "
+            "the minimum duration; large pose deltas extend it up to "
+            f"{_STARTUP_POSE_BLEND_MAX_S:.1f}s (default minimum: "
+            f"{_STARTUP_POSE_BLEND_S:.1f}s; set 0 to disable)."
         ),
     )
     parser.add_argument(
@@ -2416,7 +2489,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         0.0 < float(args.fall_tilt_deg) <= 180.0
     ):
         parser.error("--fall-tilt-deg must be finite and in (0, 180]")
-
     if args.log is not None:
         log_path = Path(args.log).expanduser()
     elif args.log_only is not None:
@@ -2581,6 +2653,21 @@ def _run_deployment_bundle_from_args(
             loaded_runtime_config=hardware_cfg,
         )
         if not args.skip_hardware_preflight:
+            pose_blend_requested = float(args.startup_pose_blend_s) > 0.0
+            preflight_max_tilt_deg = (
+                _STARTUP_POSE_HARD_MAX_TILT_DEG
+                if pose_blend_requested
+                else float(args.startup_stability_max_tilt_deg)
+            )
+            if pose_blend_requested:
+                print(
+                    "Startup pose blend enabled: initial unpowered posture is "
+                    "diagnostic-only unless tilt exceeds the hard "
+                    f"{preflight_max_tilt_deg:.1f}deg safety limit; the final "
+                    "home stability gate remains "
+                    f"{float(args.startup_stability_max_tilt_deg):.1f}deg.",
+                    flush=True,
+                )
             try:
                 _run_hardware_preflight(
                     robot_io=base_robot_io,
@@ -2590,7 +2677,12 @@ def _run_deployment_bundle_from_args(
                     joint_max_rad=hardware_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
-                    max_tilt_deg=float(args.startup_stability_max_tilt_deg),
+                    max_tilt_deg=preflight_max_tilt_deg,
+                    tilt_warning_deg=(
+                        float(args.startup_stability_max_tilt_deg)
+                        if pose_blend_requested
+                        else None
+                    ),
                 )
             except BaseException:
                 base_robot_io.close()
@@ -2611,25 +2703,10 @@ def _run_deployment_bundle_from_args(
         1,
         int(round(max(standing_min_s, requested_standing_s) / ctrl_dt)),
     )
-    pose_blend_steps = (
-        0
-        if bool(args.dry_run)
-        else max(
-            0,
-            int(round(max(0.0, float(args.startup_pose_blend_s)) / ctrl_dt)),
-        )
-    )
-    pose_hold_steps = (
-        0
-        if pose_blend_steps <= 0
-        else max(
-            0,
-            int(round(max(0.0, float(args.startup_pose_hold_s)) / ctrl_dt)),
-        )
-    )
-    pose_prep_steps = pose_blend_steps + pose_hold_steps
     standing_robot_io = base_robot_io
-    if pose_blend_steps > 0:
+    pose_blend_steps = 0
+    preparation_max_tilt_deg: float | None = None
+    if not bool(args.dry_run) and float(args.startup_pose_blend_s) > 0.0:
         try:
             initial_signals = base_robot_io.read()
         except BaseException:
@@ -2641,14 +2718,47 @@ def _run_deployment_bundle_from_args(
         if initial_q.size != len(standing_names) or not np.all(np.isfinite(initial_q)):
             base_robot_io.close()
             raise SystemExit(
-                "Cannot start standing pose blend: initial joint readback is invalid "
+                "Cannot start startup pose blend: initial joint readback is invalid "
                 f"(size={initial_q.size}, expected={len(standing_names)})."
             )
+        pose_blend_steps, max_delta_deg, blend_duration_s = (
+            _adaptive_startup_pose_blend(
+                initial_q_rad=initial_q,
+                home_q_rad=np.asarray(standing_plan[1], dtype=np.float32),
+                minimum_duration_s=float(args.startup_pose_blend_s),
+                ctrl_dt=ctrl_dt,
+            )
+        )
+        preparation_max_tilt_deg = _startup_preparation_tilt_limit_deg(
+            initial_quat_wxyz=np.asarray(
+                initial_signals.quat_wxyz, dtype=np.float32
+            ),
+            final_stability_max_tilt_deg=float(
+                args.startup_stability_max_tilt_deg
+            ),
+            walking_fall_tilt_deg=float(args.fall_tilt_deg),
+        )
+        print(
+            "Startup pose plan: "
+            f"max_joint_delta={max_delta_deg:.1f}deg "
+            f"blend_duration={blend_duration_s:.2f}s "
+            f"preparation_tilt_limit={preparation_max_tilt_deg:.1f}deg.",
+            flush=True,
+        )
         standing_robot_io = _TargetBlendRobotIO(
             base_robot_io,
             initial_target=initial_q,
             blend_steps=pose_blend_steps,
         )
+    pose_hold_steps = (
+        0
+        if pose_blend_steps <= 0
+        else max(
+            0,
+            int(round(max(0.0, float(args.startup_pose_hold_s)) / ctrl_dt)),
+        )
+    )
+    pose_prep_steps = pose_blend_steps + pose_hold_steps
     standing_runner = StandingPolicyRunner(
         spec=standing_bundle.spec,
         policy=standing_policy,
@@ -2694,6 +2804,7 @@ def _run_deployment_bundle_from_args(
                 confirm_before_walk=False,
                 confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
                 fall_tilt_deg=float(args.fall_tilt_deg),
+                preparation_max_tilt_deg=preparation_max_tilt_deg,
                 telemetry=telemetry,
                 telemetry_phase="startup_pose",
             )
@@ -2939,6 +3050,24 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             loaded_runtime_config=loaded_hardware_config,
         )
         if not args.skip_hardware_preflight:
+            pose_blend_requested = (
+                float(args.startup_home_hold_s) > 0.0
+                and float(args.startup_pose_blend_s) > 0.0
+            )
+            preflight_max_tilt_deg = (
+                _STARTUP_POSE_HARD_MAX_TILT_DEG
+                if pose_blend_requested
+                else float(args.startup_stability_max_tilt_deg)
+            )
+            if pose_blend_requested:
+                print(
+                    "Startup pose blend enabled: initial unpowered posture is "
+                    "diagnostic-only unless tilt exceeds the hard "
+                    f"{preflight_max_tilt_deg:.1f}deg safety limit; the final "
+                    "home stability gate remains "
+                    f"{float(args.startup_stability_max_tilt_deg):.1f}deg.",
+                    flush=True,
+                )
             try:
                 _run_hardware_preflight(
                     robot_io=robot_io,
@@ -2948,7 +3077,12 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
                     joint_max_rad=hardware_joint_max,
                     imu_startup_timeout_s=float(args.imu_startup_timeout_s),
                     home_tolerance_deg=float(args.preflight_home_tolerance_deg),
-                    max_tilt_deg=float(args.startup_stability_max_tilt_deg),
+                    max_tilt_deg=preflight_max_tilt_deg,
+                    tilt_warning_deg=(
+                        float(args.startup_stability_max_tilt_deg)
+                        if pose_blend_requested
+                        else None
+                    ),
                 )
             except BaseException:
                 try:
@@ -2967,6 +3101,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         realtime = not args.no_realtime
 
     startup_pose_blend_steps = 0
+    startup_preparation_max_tilt_deg: float | None = None
     if (
         not bool(args.dry_run)
         and float(args.startup_home_hold_s) > 0.0
@@ -2975,18 +3110,6 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         startup_home_steps = max(
             1,
             int(round(float(args.startup_home_hold_s) / max(float(ctrl_dt), 1e-9))),
-        )
-        startup_pose_blend_steps = min(
-            startup_home_steps,
-            max(
-                1,
-                int(
-                    round(
-                        float(args.startup_pose_blend_s)
-                        / max(float(ctrl_dt), 1e-9)
-                    )
-                ),
-            ),
         )
         try:
             initial_signals = robot_io.read()
@@ -3001,9 +3124,40 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         ):
             robot_io.close()
             raise SystemExit(
-                "Cannot start standing pose blend: initial joint readback is invalid "
+                "Cannot start startup pose blend: initial joint readback is invalid "
                 f"(size={initial_q.size}, expected={len(hardware_actuator_names)})."
             )
+        startup_pose_blend_steps, max_delta_deg, blend_duration_s = (
+            _adaptive_startup_pose_blend(
+                initial_q_rad=initial_q,
+                home_q_rad=hardware_home,
+                minimum_duration_s=float(args.startup_pose_blend_s),
+                ctrl_dt=ctrl_dt,
+            )
+        )
+        startup_pose_blend_steps = min(
+            startup_home_steps, startup_pose_blend_steps
+        )
+        blend_duration_s = startup_pose_blend_steps * float(ctrl_dt)
+        startup_preparation_max_tilt_deg = _startup_preparation_tilt_limit_deg(
+            initial_quat_wxyz=np.asarray(
+                initial_signals.quat_wxyz, dtype=np.float32
+            ),
+            final_stability_max_tilt_deg=float(
+                args.startup_stability_max_tilt_deg
+            ),
+            walking_fall_tilt_deg=float(args.fall_tilt_deg),
+        )
+        print(
+            "Startup pose plan: "
+            f"max_joint_delta={max_delta_deg:.1f}deg "
+            f"blend_duration={blend_duration_s:.2f}s "
+            "remaining_home_hold="
+            f"{max(0.0, float(args.startup_home_hold_s) - blend_duration_s):.2f}s "
+            "preparation_tilt_limit="
+            f"{startup_preparation_max_tilt_deg:.1f}deg.",
+            flush=True,
+        )
         robot_io = _TargetBlendRobotIO(
             robot_io,
             initial_target=initial_q,
@@ -3054,6 +3208,19 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         duration_s=float(args.startup_home_hold_s),
         ctrl_dt=float(ctrl_dt),
     )
+    if startup_pose_blend_steps > 0:
+        final_stability_steps = max(
+            1,
+            int(
+                round(
+                    _STARTUP_STABILITY_WINDOW_S / max(float(ctrl_dt), 1e-9)
+                )
+            ),
+        )
+        startup_home_hold_steps = max(
+            startup_home_hold_steps,
+            startup_pose_blend_steps + final_stability_steps,
+        )
     startup_command_ramp_steps = 0
     if cmd_norm > startup_deadzone and float(args.startup_command_ramp_s) > 0.0:
         startup_command_ramp_steps = max(
@@ -3115,6 +3282,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
             startup_stability_max_tilt_deg=startup_stability_max_tilt_deg,
             startup_confirm_before_walk=bool(args.confirm_before_walk),
             startup_confirm_imu_timeout_s=float(args.imu_startup_timeout_s),
+            startup_preparation_max_tilt_deg=startup_preparation_max_tilt_deg,
             fall_tilt_deg=float(args.fall_tilt_deg),
             telemetry=telemetry,
             telemetry_phase="standing" if stable_only else "walking",
