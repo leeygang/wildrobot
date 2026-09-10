@@ -1,0 +1,1374 @@
+#!/usr/bin/env python3
+"""Capture HTD-45H position-servo dynamics on a known-load lever fixture.
+
+The script drives exactly one standalone fixture servo through conservative
+step and chirp targets, records encoder feedback at the deployment control
+rate, and writes an NPZ trace plus a JSON summary.  It does not fit a motor
+model; the capture is the measured input required by the later
+simulator-identification step.
+
+The fixture must have mechanical hard stops and must safely support the lever
+when torque is disabled.  A human confirmation is required before motion and
+again before the normal final unload.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Sequence
+
+import numpy as np
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+_RUNTIME_ROOT = _REPO_ROOT / "runtime"
+if str(_RUNTIME_ROOT) not in sys.path:
+    sys.path.insert(0, str(_RUNTIME_ROOT))
+
+from configs.config import ServoConfig  # noqa: E402
+from wr_runtime.hardware.hiwonder_ttl_bus import (  # noqa: E402
+    RawServoBus,
+    RawServoBusConfig,
+    SerialTransport,
+    SerialTransportConfig,
+)
+
+
+SCHEMA_VERSION = 3
+STANDARD_GRAVITY_M_S2 = 9.80665
+DEFAULT_AMPLITUDES_DEG = (2.0, 5.0, 8.0)
+
+
+def build_fixture_servo_config(servo_id: int) -> ServoConfig:
+    """Return the standalone fixture's raw HTD servo-coordinate contract."""
+
+    return ServoConfig(
+        id=int(servo_id),
+        servo_offset_unit=0,
+        motor_unit_direction=1.0,
+        joint_angle_at_servo_center_deg=0.0,
+        rad_range=(-ServoConfig.RANGE_RAD / 2.0, ServoConfig.RANGE_RAD / 2.0),
+    )
+
+
+@dataclass(frozen=True)
+class ProfileSegment:
+    name: str
+    kind: str
+    targets_rad: tuple[float, ...]
+
+
+@dataclass
+class MujocoFixtureModel:
+    path: Path
+    joint_name: str
+    direction: int
+    qpos_offset_rad: float
+    mujoco: Any
+    model: Any
+    data: Any
+    joint_id: int
+    qpos_address: int
+    dof_address: int
+    root_body_name: str
+    moving_body_name: str
+    moving_subtree_mass_kg: float
+
+    def evaluate(
+        self, hardware_joint_rad: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        positions = np.asarray(hardware_joint_rad, dtype=np.float64).reshape(-1)
+        fixture_qpos = (
+            float(self.qpos_offset_rad) + float(self.direction) * positions
+        )
+        if bool(self.model.jnt_limited[self.joint_id]):
+            lower, upper = self.model.jnt_range[self.joint_id]
+            if np.any(fixture_qpos < lower) or np.any(fixture_qpos > upper):
+                raise ValueError(
+                    f"fixture joint {self.joint_name!r} range [{lower}, {upper}] "
+                    "does not contain the requested profile"
+                )
+        hold_torque = np.zeros(positions.shape, dtype=np.float32)
+        body_inertia = np.zeros(positions.shape, dtype=np.float32)
+        full_mass = np.empty((self.model.nv, self.model.nv), dtype=np.float64)
+        for index, qpos in enumerate(fixture_qpos):
+            self.mujoco.mj_resetData(self.model, self.data)
+            self.data.qpos[self.qpos_address] = float(qpos)
+            self.mujoco.mj_forward(self.model, self.data)
+            self.mujoco.mj_fullM(self.model, full_mass, self.data.qM)
+            hold_torque[index] = np.float32(
+                self.data.qfrc_bias[self.dof_address]
+            )
+            body_inertia[index] = np.float32(
+                full_mass[self.dof_address, self.dof_address]
+                - self.model.dof_armature[self.dof_address]
+            )
+        if np.any(body_inertia <= 0.0):
+            raise ValueError("fixture moving-body inertia must be positive")
+        return fixture_qpos.astype(np.float32), hold_torque, body_inertia
+
+
+def load_mujoco_fixture(
+    path: Path,
+    *,
+    joint_name: str,
+    direction: int,
+    qpos_offset_rad: float,
+) -> MujocoFixtureModel:
+    try:
+        import mujoco
+    except ImportError as exc:
+        raise RuntimeError(
+            "MuJoCo is required when --fixture-mjcf is supplied"
+        ) from exc
+
+    resolved_path = path.expanduser().resolve()
+    if not resolved_path.is_file():
+        raise FileNotFoundError(f"Fixture MJCF not found: {resolved_path}")
+    model = mujoco.MjModel.from_xml_path(str(resolved_path))
+    if model.njnt != 1 or model.nq != 1 or model.nv != 1:
+        raise ValueError(
+            "fixture MJCF must contain exactly one fixed-base one-DOF joint; "
+            f"got njnt={model.njnt}, nq={model.nq}, nv={model.nv}"
+        )
+    joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+    if joint_id < 0:
+        raise ValueError(f"fixture joint not found: {joint_name!r}")
+    if int(model.jnt_type[joint_id]) != int(mujoco.mjtJoint.mjJNT_HINGE):
+        raise ValueError(f"fixture joint {joint_name!r} must be a hinge")
+
+    root_body_ids = [
+        body_id
+        for body_id in range(1, model.nbody)
+        if int(model.body_parentid[body_id]) == 0
+    ]
+    if len(root_body_ids) != 1:
+        raise ValueError(
+            f"fixture MJCF must have one root body; found {len(root_body_ids)}"
+        )
+    root_body_id = root_body_ids[0]
+    if int(model.body_jntnum[root_body_id]) != 0:
+        raise ValueError("fixture root must be fixed to world and contain no joint")
+
+    moving_body_id = int(model.jnt_bodyid[joint_id])
+    moving_subtree_mass_kg = float(model.body_subtreemass[moving_body_id])
+    if moving_subtree_mass_kg <= 0.0:
+        raise ValueError("fixture moving subtree must have positive mass")
+
+    return MujocoFixtureModel(
+        path=resolved_path,
+        joint_name=str(joint_name),
+        direction=int(direction),
+        qpos_offset_rad=float(qpos_offset_rad),
+        mujoco=mujoco,
+        model=model,
+        data=mujoco.MjData(model),
+        joint_id=int(joint_id),
+        qpos_address=int(model.jnt_qposadr[joint_id]),
+        dof_address=int(model.jnt_dofadr[joint_id]),
+        root_body_name=str(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, root_body_id)
+        ),
+        moving_body_name=str(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, moving_body_id)
+        ),
+        moving_subtree_mass_kg=moving_subtree_mass_kg,
+    )
+
+
+def parse_float_list(text: str) -> tuple[float, ...]:
+    try:
+        values = tuple(float(token.strip()) for token in text.split(",") if token.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected comma-separated numbers") from exc
+    if not values:
+        raise argparse.ArgumentTypeError("expected at least one number")
+    return values
+
+
+def build_profile_segments(
+    *,
+    center_rad: float,
+    amplitudes_rad: Sequence[float],
+    sample_hz: float,
+    settle_s: float,
+    step_hold_s: float,
+    chirp_duration_s: float,
+    chirp_start_hz: float,
+    chirp_end_hz: float,
+    chirp_decay_rate: float,
+) -> tuple[ProfileSegment, ...]:
+    """Build the ToddlerBot-style multi-amplitude step/chirp target profile."""
+
+    def sample_count(duration_s: float) -> int:
+        return max(1, int(round(float(duration_s) * float(sample_hz))))
+
+    def hold(name: str, value: float, duration_s: float) -> ProfileSegment:
+        return ProfileSegment(
+            name=name,
+            kind="hold",
+            targets_rad=(float(value),) * sample_count(duration_s),
+        )
+
+    amplitudes = tuple(sorted({abs(float(value)) for value in amplitudes_rad}))
+    if not amplitudes or amplitudes[0] <= 0.0:
+        raise ValueError("amplitudes must contain positive values")
+
+    segments: list[ProfileSegment] = [hold("initial_center", center_rad, settle_s)]
+    for amplitude in amplitudes:
+        label = f"{math.degrees(amplitude):g}deg"
+        segments.extend(
+            (
+                hold(f"step_positive_{label}", center_rad + amplitude, step_hold_s),
+                hold(f"settle_after_positive_{label}", center_rad, settle_s),
+                hold(f"step_negative_{label}", center_rad - amplitude, step_hold_s),
+                hold(f"settle_after_negative_{label}", center_rad, settle_s),
+            )
+        )
+
+    chirp_count = sample_count(chirp_duration_s)
+    t = np.arange(chirp_count, dtype=np.float64) / float(sample_hz)
+    frequency_slope = (float(chirp_end_hz) - float(chirp_start_hz)) / float(
+        chirp_duration_s
+    )
+    phase = 2.0 * np.pi * (
+        float(chirp_start_hz) * t + 0.5 * frequency_slope * t * t
+    )
+    envelope = np.exp(-float(chirp_decay_rate) * t)
+    for amplitude in amplitudes:
+        label = f"{math.degrees(amplitude):g}deg"
+        targets = center_rad + amplitude * envelope * np.sin(phase)
+        segments.append(
+            ProfileSegment(
+                name=f"chirp_{label}",
+                kind="chirp",
+                targets_rad=tuple(float(value) for value in targets),
+            )
+        )
+        segments.append(hold(f"settle_after_chirp_{label}", center_rad, settle_s))
+    return tuple(segments)
+
+
+def validate_profile(
+    segments: Sequence[ProfileSegment],
+    *,
+    servo: ServoConfig,
+    joint_limit_margin_rad: float,
+    sample_hz: float,
+    max_chirp_speed_rad_s: float,
+) -> None:
+    lower = float(servo.rad_range[0]) + float(joint_limit_margin_rad)
+    upper = float(servo.rad_range[1]) - float(joint_limit_margin_rad)
+    if lower >= upper:
+        raise ValueError("joint-limit margin leaves no usable motion range")
+    for segment in segments:
+        targets = np.asarray(segment.targets_rad, dtype=np.float64)
+        if np.any(targets < lower) or np.any(targets > upper):
+            raise ValueError(
+                f"segment {segment.name!r} exceeds the guarded joint range "
+                f"[{math.degrees(lower):.2f}, {math.degrees(upper):.2f}] deg"
+            )
+        units = [servo.joint_target_rad_to_elect_unit(value) for value in targets]
+        if min(units) <= servo.UNITS_MIN or max(units) >= servo.UNITS_MAX:
+            raise ValueError(
+                f"segment {segment.name!r} reaches the electrical servo boundary"
+            )
+        if segment.kind == "chirp" and len(targets) > 1:
+            peak_rate = float(np.max(np.abs(np.diff(targets))) * float(sample_hz))
+            if peak_rate > float(max_chirp_speed_rad_s):
+                raise ValueError(
+                    f"segment {segment.name!r} requests {peak_rate:.3f} rad/s, "
+                    f"above --max-chirp-speed-rad-s={max_chirp_speed_rad_s:.3f}"
+                )
+
+
+def estimate_delay_metrics(
+    target_rad: np.ndarray,
+    position_rad: np.ndarray,
+    *,
+    sample_hz: float,
+    max_delay_s: float,
+) -> dict[str, float | int | None]:
+    target = np.asarray(target_rad, dtype=np.float64).reshape(-1)
+    position = np.asarray(position_rad, dtype=np.float64).reshape(-1)
+    valid = np.isfinite(target) & np.isfinite(position)
+    target = target[valid]
+    position = position[valid]
+    if target.size < 10 or float(np.std(target)) < 1e-8:
+        return {
+            "delay_samples": None,
+            "delay_s": None,
+            "correlation": None,
+            "gain": None,
+            "fit_rmse_deg": None,
+        }
+
+    max_lag = min(
+        max(0, int(round(float(max_delay_s) * float(sample_hz)))),
+        max(0, target.size // 3),
+    )
+    best: tuple[float, int, float, float] | None = None
+    for lag in range(max_lag + 1):
+        x = target[: target.size - lag] if lag else target
+        y = position[lag:] if lag else position
+        if x.size < 8 or float(np.std(x)) < 1e-8 or float(np.std(y)) < 1e-8:
+            continue
+        correlation = float(np.corrcoef(x, y)[0, 1])
+        x_centered = x - float(np.mean(x))
+        y_centered = y - float(np.mean(y))
+        gain = float(np.dot(x_centered, y_centered) / np.dot(x_centered, x_centered))
+        offset = float(np.mean(y) - gain * np.mean(x))
+        rmse = float(np.sqrt(np.mean((y - (gain * x + offset)) ** 2)))
+        candidate = (correlation, lag, gain, rmse)
+        if best is None or candidate[0] > best[0]:
+            best = candidate
+    if best is None:
+        return {
+            "delay_samples": None,
+            "delay_s": None,
+            "correlation": None,
+            "gain": None,
+            "fit_rmse_deg": None,
+        }
+    correlation, lag, gain, rmse = best
+    return {
+        "delay_samples": int(lag),
+        "delay_s": float(lag) / float(sample_hz),
+        "correlation": correlation,
+        "gain": gain,
+        "fit_rmse_deg": math.degrees(rmse),
+    }
+
+
+def summarize_capture(
+    arrays: dict[str, np.ndarray],
+    *,
+    segments: Sequence[ProfileSegment],
+    sample_hz: float,
+    max_delay_s: float,
+) -> dict[str, object]:
+    valid = np.asarray(arrays["position_valid"], dtype=bool)
+    target = np.asarray(arrays["applied_joint_rad"], dtype=np.float64)
+    position = np.asarray(arrays["position_joint_rad"], dtype=np.float64)
+    error = target[valid] - position[valid]
+    summary: dict[str, object] = {
+        "samples": int(target.size),
+        "valid_position_samples": int(np.sum(valid)),
+        "missing_position_samples": int(target.size - np.sum(valid)),
+        "command_write_fraction": (
+            float(np.mean(arrays["command_written"])) if target.size else 0.0
+        ),
+        "tracking_rmse_deg": (
+            math.degrees(float(np.sqrt(np.mean(error * error)))) if error.size else None
+        ),
+        "tracking_abs_p95_deg": (
+            math.degrees(float(np.percentile(np.abs(error), 95.0)))
+            if error.size
+            else None
+        ),
+        "max_loop_lateness_ms": (
+            1000.0 * float(np.max(arrays["loop_lateness_s"])) if target.size else None
+        ),
+        "segments": {},
+    }
+    segment_indices = np.asarray(arrays["segment_index"], dtype=np.int32)
+    per_segment: dict[str, object] = {}
+    for index, segment in enumerate(segments):
+        mask = segment_indices == index
+        segment_valid = mask & valid
+        segment_error = target[segment_valid] - position[segment_valid]
+        item: dict[str, object] = {
+            "kind": segment.kind,
+            "samples": int(np.sum(mask)),
+            "valid_position_samples": int(np.sum(segment_valid)),
+            "tracking_rmse_deg": (
+                math.degrees(float(np.sqrt(np.mean(segment_error * segment_error))))
+                if segment_error.size
+                else None
+            ),
+        }
+        if segment.kind == "chirp":
+            item.update(
+                estimate_delay_metrics(
+                    target[mask],
+                    position[mask],
+                    sample_hz=sample_hz,
+                    max_delay_s=max_delay_s,
+                )
+            )
+        per_segment[segment.name] = item
+    summary["segments"] = per_segment
+    return summary
+
+
+def _empty_capture_arrays() -> dict[str, np.ndarray]:
+    return {
+        "profile_time_s": np.empty(0, dtype=np.float64),
+        "command_elapsed_s": np.empty(0, dtype=np.float64),
+        "position_elapsed_s": np.empty(0, dtype=np.float64),
+        "segment_index": np.empty(0, dtype=np.int32),
+        "segment_name": np.empty(0, dtype="U1"),
+        "target_joint_rad": np.empty(0, dtype=np.float32),
+        "target_servo_units": np.empty(0, dtype=np.int32),
+        "applied_joint_rad": np.empty(0, dtype=np.float32),
+        "applied_servo_units": np.empty(0, dtype=np.int32),
+        "position_joint_rad": np.empty(0, dtype=np.float32),
+        "position_servo_units": np.empty(0, dtype=np.float32),
+        "position_valid": np.empty(0, dtype=bool),
+        "command_written": np.empty(0, dtype=bool),
+        "command_write_s": np.empty(0, dtype=np.float64),
+        "position_read_s": np.empty(0, dtype=np.float64),
+        "loop_lateness_s": np.empty(0, dtype=np.float64),
+    }
+
+
+def _new_capture_fields() -> dict[str, list[object]]:
+    return {key: [] for key in _empty_capture_arrays()}
+
+
+def _arrays_from_fields(fields: dict[str, list[object]]) -> dict[str, np.ndarray]:
+    return {
+        "profile_time_s": np.asarray(fields["profile_time_s"], dtype=np.float64),
+        "command_elapsed_s": np.asarray(
+            fields["command_elapsed_s"], dtype=np.float64
+        ),
+        "position_elapsed_s": np.asarray(
+            fields["position_elapsed_s"], dtype=np.float64
+        ),
+        "segment_index": np.asarray(fields["segment_index"], dtype=np.int32),
+        "segment_name": np.asarray(fields["segment_name"], dtype="U64"),
+        "target_joint_rad": np.asarray(fields["target_joint_rad"], dtype=np.float32),
+        "target_servo_units": np.asarray(
+            fields["target_servo_units"], dtype=np.int32
+        ),
+        "applied_joint_rad": np.asarray(
+            fields["applied_joint_rad"], dtype=np.float32
+        ),
+        "applied_servo_units": np.asarray(
+            fields["applied_servo_units"], dtype=np.int32
+        ),
+        "position_joint_rad": np.asarray(
+            fields["position_joint_rad"], dtype=np.float32
+        ),
+        "position_servo_units": np.asarray(
+            fields["position_servo_units"], dtype=np.int32
+        ),
+        "position_valid": np.asarray(fields["position_valid"], dtype=bool),
+        "command_written": np.asarray(fields["command_written"], dtype=bool),
+        "command_write_s": np.asarray(fields["command_write_s"], dtype=np.float64),
+        "position_read_s": np.asarray(fields["position_read_s"], dtype=np.float64),
+        "loop_lateness_s": np.asarray(fields["loop_lateness_s"], dtype=np.float64),
+    }
+
+
+def add_standard_capture_arrays(
+    arrays: dict[str, np.ndarray],
+    *,
+    fixture_qpos_rad: np.ndarray,
+    estimated_hold_torque_nm: np.ndarray,
+    estimated_load_inertia_kg_m2: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Add the established tools/sysid trace keys and known-load estimate."""
+
+    timestamps = np.asarray(arrays["position_elapsed_s"], dtype=np.float64)
+    position = np.asarray(arrays["position_joint_rad"], dtype=np.float32)
+    for name, values in (
+        ("fixture_qpos_rad", fixture_qpos_rad),
+        ("estimated_hold_torque_nm", estimated_hold_torque_nm),
+        ("estimated_load_inertia_kg_m2", estimated_load_inertia_kg_m2),
+    ):
+        if np.asarray(values).shape != position.shape:
+            raise ValueError(f"{name} must match measured position shape")
+    velocity = np.zeros(position.shape, dtype=np.float32)
+    if position.size > 1:
+        dt = np.diff(timestamps)
+        valid_dt = dt > 1e-6
+        velocity_delta = np.zeros(dt.shape, dtype=np.float32)
+        velocity_delta[valid_dt] = (
+            np.diff(position)[valid_dt] / dt[valid_dt]
+        ).astype(np.float32)
+        velocity[1:] = velocity_delta
+
+    return {
+        **arrays,
+        "timestamps_s": timestamps,
+        "command_rad": np.asarray(arrays["applied_joint_rad"], dtype=np.float32),
+        "requested_command_rad": np.asarray(
+            arrays["target_joint_rad"], dtype=np.float32
+        ),
+        "measured_position_rad": position,
+        "measured_velocity_rad_s": velocity,
+        "fixture_qpos_rad": np.asarray(fixture_qpos_rad, dtype=np.float32),
+        "estimated_hold_torque_nm": np.asarray(
+            estimated_hold_torque_nm, dtype=np.float32
+        ),
+        "estimated_gravity_torque_nm": np.asarray(
+            estimated_hold_torque_nm, dtype=np.float32
+        ),
+        "estimated_load_inertia_kg_m2": np.asarray(
+            estimated_load_inertia_kg_m2, dtype=np.float32
+        ),
+    }
+
+
+def evaluate_manual_horizontal_fixture(
+    hardware_joint_rad: np.ndarray,
+    *,
+    center_rad: float,
+    signed_load_moment_kg_m: float,
+    load_inertia_kg_m2: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    positions = np.asarray(hardware_joint_rad, dtype=np.float64).reshape(-1)
+    hold_torque = (
+        STANDARD_GRAVITY_M_S2
+        * float(signed_load_moment_kg_m)
+        * np.cos(positions - float(center_rad))
+    ).astype(np.float32)
+    inertia = np.full(
+        positions.shape, float(load_inertia_kg_m2), dtype=np.float32
+    )
+    return positions.astype(np.float32), hold_torque, inertia
+
+
+def _read_position_with_retries(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    retries: int,
+    retry_sleep_s: float,
+) -> int:
+    for attempt in range(max(1, int(retries))):
+        position = bus.read_position(int(servo_id))
+        if position is not None:
+            return int(position)
+        if attempt + 1 < max(1, int(retries)) and retry_sleep_s > 0.0:
+            time.sleep(float(retry_sleep_s))
+    raise RuntimeError(
+        f"failed to read servo {int(servo_id)} position after "
+        f"{max(1, int(retries))} attempts"
+    )
+
+
+def capture_profile(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    servo: ServoConfig,
+    segments: Sequence[ProfileSegment],
+    sample_hz: float,
+    move_time_ms: int,
+    write_deadband_units: int,
+    max_position_error_rad: float,
+    read_retries: int,
+    read_retry_sleep_s: float,
+    fields: dict[str, list[object]] | None = None,
+) -> dict[str, np.ndarray]:
+    fields = fields if fields is not None else _new_capture_fields()
+    capture_start = time.monotonic()
+    nominal_step = 0
+    last_written_units: int | None = None
+
+    for segment_index, segment in enumerate(segments):
+        print(
+            f"  [{segment_index + 1:02d}/{len(segments):02d}] {segment.name} "
+            f"({len(segment.targets_rad) / sample_hz:.1f}s)",
+            flush=True,
+        )
+        segment_start = time.monotonic()
+        for local_step, target_rad in enumerate(segment.targets_rad):
+            scheduled = segment_start + float(local_step) / float(sample_hz)
+            remaining = scheduled - time.monotonic()
+            if remaining > 0.0:
+                time.sleep(remaining)
+            loop_start = time.monotonic()
+            target_units = servo.joint_target_rad_to_elect_unit(float(target_rad))
+            should_write = (
+                last_written_units is None
+                or abs(int(target_units) - int(last_written_units))
+                > int(write_deadband_units)
+            )
+            write_start = time.monotonic()
+            if should_write:
+                bus.move_time_write(int(servo_id), int(target_units), int(move_time_ms))
+                last_written_units = int(target_units)
+            write_done = time.monotonic()
+            assert last_written_units is not None
+            applied_rad = servo.servo_elect_units_to_joint_target_rad(
+                int(last_written_units)
+            )
+            read_start = time.monotonic()
+            position_units = _read_position_with_retries(
+                bus,
+                servo_id=int(servo_id),
+                retries=int(read_retries),
+                retry_sleep_s=float(read_retry_sleep_s),
+            )
+            read_done = time.monotonic()
+            position_rad = servo.servo_elect_units_to_joint_target_rad(
+                int(position_units)
+            )
+
+            fields["profile_time_s"].append(float(nominal_step) / float(sample_hz))
+            fields["command_elapsed_s"].append(write_start - capture_start)
+            fields["position_elapsed_s"].append(read_done - capture_start)
+            fields["segment_index"].append(segment_index)
+            fields["segment_name"].append(segment.name)
+            fields["target_joint_rad"].append(float(target_rad))
+            fields["target_servo_units"].append(int(target_units))
+            fields["applied_joint_rad"].append(float(applied_rad))
+            fields["applied_servo_units"].append(int(last_written_units))
+            fields["position_joint_rad"].append(position_rad)
+            fields["position_servo_units"].append(int(position_units))
+            fields["position_valid"].append(True)
+            fields["command_written"].append(should_write)
+            fields["command_write_s"].append(write_done - write_start)
+            fields["position_read_s"].append(read_done - read_start)
+            fields["loop_lateness_s"].append(max(0.0, loop_start - scheduled))
+            nominal_step += 1
+
+            if abs(float(applied_rad) - position_rad) > float(max_position_error_rad):
+                raise RuntimeError(
+                    "position tracking error exceeded safety limit: "
+                    f"command={math.degrees(float(applied_rad)):+.2f}deg "
+                    f"measured={math.degrees(position_rad):+.2f}deg "
+                    f"limit={math.degrees(float(max_position_error_rad)):.2f}deg"
+                )
+
+        segment_end = segment_start + len(segment.targets_rad) / float(sample_hz)
+        remaining = segment_end - time.monotonic()
+        if remaining > 0.0:
+            time.sleep(remaining)
+
+    return _arrays_from_fields(fields)
+
+
+def read_health(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    retries: int = 3,
+    retry_sleep_s: float = 0.01,
+) -> dict[str, float | None]:
+    voltage: float | None = None
+    temperature: float | None = None
+    for attempt in range(max(1, int(retries))):
+        if voltage is None:
+            voltage = bus.read_voltage_v(int(servo_id))
+        if temperature is None:
+            temperature = bus.read_temperature_c(int(servo_id))
+        if voltage is not None and temperature is not None:
+            break
+        if attempt + 1 < max(1, int(retries)) and retry_sleep_s > 0.0:
+            time.sleep(float(retry_sleep_s))
+    return {"voltage_v": voltage, "temperature_c": temperature}
+
+
+def validate_health(
+    health: dict[str, float | None],
+    *,
+    min_voltage_v: float,
+    max_temperature_c: float,
+) -> None:
+    voltage = health.get("voltage_v")
+    temperature = health.get("temperature_c")
+    if voltage is None or temperature is None:
+        raise RuntimeError(
+            "servo voltage/temperature telemetry is unavailable; verify the TTL "
+            "read path before running a loaded test"
+        )
+    if voltage is not None and float(voltage) < float(min_voltage_v):
+        raise RuntimeError(
+            f"servo voltage {float(voltage):.2f}V is below {float(min_voltage_v):.2f}V"
+        )
+    if temperature is not None and float(temperature) > float(max_temperature_c):
+        raise RuntimeError(
+            f"servo temperature {float(temperature):.1f}C exceeds "
+            f"{float(max_temperature_c):.1f}C"
+        )
+
+
+def _verify_loaded_state(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    expected: bool,
+    retries: int = 3,
+) -> None:
+    state: bool | None = None
+    for attempt in range(max(1, int(retries))):
+        state = bus.read_loaded(int(servo_id))
+        if state is expected:
+            return
+        if attempt + 1 < max(1, int(retries)):
+            time.sleep(0.01)
+    raise RuntimeError(
+        f"servo torque-state verification failed: expected loaded={expected}, got {state}"
+    )
+
+
+def _default_output_path(servo_id: int) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return (
+        _REPO_ROOT
+        / "runtime"
+        / "calibration"
+        / "servo_sysid"
+        / f"htd45h_servo_{int(servo_id)}_{timestamp}.npz"
+    )
+
+
+def write_capture(
+    output_path: Path,
+    *,
+    arrays: dict[str, np.ndarray],
+    metadata: dict[str, object],
+    summary: dict[str, object],
+) -> tuple[Path, Path]:
+    npz_path = output_path.expanduser().resolve()
+    if npz_path.suffix.lower() != ".npz":
+        raise ValueError("--output must end in .npz")
+    json_path = npz_path.with_suffix(".json")
+    if npz_path.exists() or json_path.exists():
+        raise FileExistsError(f"refusing to overwrite existing capture: {npz_path}")
+    npz_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        npz_path,
+        schema_version=np.asarray(SCHEMA_VERSION, dtype=np.int32),
+        **arrays,
+    )
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        **metadata,
+        "summary": summary,
+        "npz_path": str(npz_path),
+    }
+    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return npz_path, json_path
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Capture one HTD-45H servo's known-load step/chirp response."
+    )
+    parser.add_argument(
+        "--servo-id",
+        type=int,
+        required=True,
+        help="Raw HTD servo ID on the isolated fixture bus.",
+    )
+    parser.add_argument(
+        "--board-port",
+        "--board_port",
+        dest="board_port",
+        required=True,
+        help="Serial port for the TTL board connected to the fixture servo.",
+    )
+    parser.add_argument("--baudrate", type=int, default=115200)
+    parser.add_argument("--center-deg", type=float, required=True)
+    parser.add_argument(
+        "--fixture-mjcf",
+        type=Path,
+        default=None,
+        help="Fixed-base one-DOF fixture MJCF used for load torque and inertia.",
+    )
+    parser.add_argument("--fixture-joint", default="pitch")
+    parser.add_argument(
+        "--fixture-direction",
+        type=int,
+        choices=(-1, 1),
+        default=1,
+        help="Map raw centered servo radians to the MJCF joint direction.",
+    )
+    parser.add_argument(
+        "--fixture-qpos-offset-deg",
+        type=float,
+        default=0.0,
+        help="MJCF joint position corresponding to raw servo unit 500.",
+    )
+    parser.add_argument("--lever-arm-m", type=float, default=None)
+    parser.add_argument("--load-mass-kg", type=float, default=None)
+    parser.add_argument("--lever-mass-kg", type=float, default=0.0)
+    parser.add_argument("--lever-com-m", type=float, default=0.0)
+    parser.add_argument(
+        "--lever-inertia-kg-m2",
+        type=float,
+        default=None,
+        help=(
+            "Lever inertia about the servo shaft. If omitted, a uniform lever "
+            "with length 2*--lever-com-m is assumed."
+        ),
+    )
+    parser.add_argument(
+        "--gravity-torque-sign",
+        type=int,
+        choices=(-1, 1),
+        default=None,
+        help="Sign of gravity torque in raw centered servo coordinates at center.",
+    )
+    parser.add_argument(
+        "--amplitudes-deg",
+        type=parse_float_list,
+        default=DEFAULT_AMPLITUDES_DEG,
+    )
+    parser.add_argument("--sample-hz", type=float, default=50.0)
+    parser.add_argument("--settle-s", type=float, default=1.0)
+    parser.add_argument("--step-hold-s", type=float, default=1.0)
+    parser.add_argument("--chirp-duration-s", type=float, default=10.0)
+    parser.add_argument("--chirp-start-hz", type=float, default=0.1)
+    parser.add_argument("--chirp-end-hz", type=float, default=2.0)
+    parser.add_argument("--chirp-decay-rate", type=float, default=0.05)
+    parser.add_argument("--move-time-ms", type=int, default=20)
+    parser.add_argument("--write-deadband-units", type=int, default=3)
+    parser.add_argument("--prepare-speed-deg-s", type=float, default=20.0)
+    parser.add_argument("--center-tolerance-deg", type=float, default=2.0)
+    parser.add_argument("--servo-limit-margin-deg", type=float, default=2.0)
+    parser.add_argument("--max-chirp-speed-rad-s", type=float, default=2.5)
+    parser.add_argument("--max-position-error-deg", type=float, default=12.0)
+    parser.add_argument("--max-static-torque-nm", type=float, default=2.5)
+    parser.add_argument("--min-voltage-v", type=float, default=9.0)
+    parser.add_argument("--max-temperature-c", type=float, default=60.0)
+    parser.add_argument("--read-retries", type=int, default=3)
+    parser.add_argument("--read-retry-sleep-s", type=float, default=0.002)
+    parser.add_argument("--max-delay-s", type=float, default=0.6)
+    parser.add_argument("--servo-label", default=None)
+    parser.add_argument("--fixture-label", default=None)
+    parser.add_argument("--notes", default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if int(args.servo_id) < 1 or int(args.servo_id) > 253:
+        raise ValueError("--servo-id must be between 1 and 253")
+    if int(args.baudrate) <= 0:
+        raise ValueError("--baudrate must be positive")
+    positive = {
+        "sample_hz": args.sample_hz,
+        "settle_s": args.settle_s,
+        "step_hold_s": args.step_hold_s,
+        "chirp_duration_s": args.chirp_duration_s,
+        "chirp_start_hz": args.chirp_start_hz,
+        "chirp_end_hz": args.chirp_end_hz,
+        "max_chirp_speed_rad_s": args.max_chirp_speed_rad_s,
+        "max_position_error_deg": args.max_position_error_deg,
+        "max_static_torque_nm": args.max_static_torque_nm,
+        "prepare_speed_deg_s": args.prepare_speed_deg_s,
+    }
+    for name, value in positive.items():
+        if float(value) <= 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if args.chirp_end_hz < args.chirp_start_hz:
+        raise ValueError("--chirp-end-hz must be >= --chirp-start-hz")
+    if args.fixture_mjcf is not None:
+        manual_values = (
+            args.lever_arm_m,
+            args.load_mass_kg,
+            args.gravity_torque_sign,
+        )
+        if any(value is not None for value in manual_values) or any(
+            value not in (None, 0.0)
+            for value in (
+                args.lever_mass_kg,
+                args.lever_com_m,
+                args.lever_inertia_kg_m2,
+            )
+        ):
+            raise ValueError(
+                "--fixture-mjcf cannot be combined with manual lever/load options"
+            )
+    else:
+        if (
+            args.lever_arm_m is None
+            or args.load_mass_kg is None
+            or args.gravity_torque_sign is None
+        ):
+            raise ValueError(
+                "manual fixture mode requires --lever-arm-m, --load-mass-kg, "
+                "and --gravity-torque-sign"
+            )
+        if args.load_mass_kg < 0.0 or args.lever_mass_kg < 0.0:
+            raise ValueError("load and lever masses must be non-negative")
+        if args.lever_arm_m <= 0.0 or args.lever_com_m < 0.0:
+            raise ValueError(
+                "lever distances must be non-negative and lever arm must be positive"
+            )
+        if args.lever_mass_kg > 0.0 and args.lever_com_m <= 0.0:
+            raise ValueError(
+                "--lever-com-m must be positive when --lever-mass-kg is non-zero"
+            )
+        if (
+            args.lever_inertia_kg_m2 is not None
+            and args.lever_inertia_kg_m2 < 0.0
+        ):
+            raise ValueError("--lever-inertia-kg-m2 must be non-negative")
+    if args.move_time_ms < 0 or args.write_deadband_units < 0:
+        raise ValueError("move time and write deadband must be non-negative")
+    if args.read_retries <= 0 or args.read_retry_sleep_s < 0.0:
+        raise ValueError("read retries must be positive and retry sleep non-negative")
+
+
+def _format_health(health: dict[str, float | None]) -> str:
+    voltage = health.get("voltage_v")
+    temperature = health.get("temperature_c")
+    voltage_text = "unsupported" if voltage is None else f"{float(voltage):.2f}V"
+    temperature_text = (
+        "unsupported" if temperature is None else f"{float(temperature):.1f}C"
+    )
+    return f"voltage={voltage_text} temperature={temperature_text}"
+
+
+def main() -> int:
+    args = _parse_args()
+    _validate_args(args)
+    servo_id = int(args.servo_id)
+    port = str(args.board_port)
+    servo = build_fixture_servo_config(servo_id)
+    output_path = args.output or _default_output_path(servo_id)
+    center_rad = math.radians(float(args.center_deg))
+    amplitudes_rad = tuple(math.radians(value) for value in args.amplitudes_deg)
+    segments = build_profile_segments(
+        center_rad=center_rad,
+        amplitudes_rad=amplitudes_rad,
+        sample_hz=float(args.sample_hz),
+        settle_s=float(args.settle_s),
+        step_hold_s=float(args.step_hold_s),
+        chirp_duration_s=float(args.chirp_duration_s),
+        chirp_start_hz=float(args.chirp_start_hz),
+        chirp_end_hz=float(args.chirp_end_hz),
+        chirp_decay_rate=float(args.chirp_decay_rate),
+    )
+    validate_profile(
+        segments,
+        servo=servo,
+        joint_limit_margin_rad=math.radians(float(args.servo_limit_margin_deg)),
+        sample_hz=float(args.sample_hz),
+        max_chirp_speed_rad_s=float(args.max_chirp_speed_rad_s),
+    )
+
+    profile_targets = np.asarray(
+        [target for segment in segments for target in segment.targets_rad],
+        dtype=np.float64,
+    )
+    fixture_model: MujocoFixtureModel | None = None
+    if args.fixture_mjcf is not None:
+        fixture_model = load_mujoco_fixture(
+            args.fixture_mjcf,
+            joint_name=str(args.fixture_joint),
+            direction=int(args.fixture_direction),
+            qpos_offset_rad=math.radians(float(args.fixture_qpos_offset_deg)),
+        )
+        _, profile_hold_torque, _ = fixture_model.evaluate(
+            profile_targets
+        )
+        _, center_hold_torque, center_inertia = fixture_model.evaluate(
+            np.asarray([center_rad], dtype=np.float64)
+        )
+        static_torque_at_center_nm = float(center_hold_torque[0])
+        load_inertia_at_center_kg_m2 = float(center_inertia[0])
+        load_metadata: dict[str, object] = {
+            "load_model": "mujoco_fixture",
+            "fixture_mjcf": str(fixture_model.path),
+            "fixture_mjcf_sha256": hashlib.sha256(
+                fixture_model.path.read_bytes()
+            ).hexdigest(),
+            "fixture_joint": fixture_model.joint_name,
+            "fixture_direction": fixture_model.direction,
+            "fixture_qpos_offset_deg": float(args.fixture_qpos_offset_deg),
+            "fixture_root_body": fixture_model.root_body_name,
+            "fixture_moving_body": fixture_model.moving_body_name,
+            "fixture_moving_subtree_mass_kg": (
+                fixture_model.moving_subtree_mass_kg
+            ),
+            "fixture_excluded_mjcf_armature_kg_m2": float(
+                fixture_model.model.dof_armature[fixture_model.dof_address]
+            ),
+        }
+    else:
+        assert args.load_mass_kg is not None
+        assert args.lever_arm_m is not None
+        assert args.gravity_torque_sign is not None
+        load_moment_kg_m = (
+            float(args.load_mass_kg) * float(args.lever_arm_m)
+            + float(args.lever_mass_kg) * float(args.lever_com_m)
+        )
+        signed_load_moment_kg_m = int(args.gravity_torque_sign) * load_moment_kg_m
+        if args.lever_inertia_kg_m2 is None:
+            lever_inertia_kg_m2 = (
+                (4.0 / 3.0)
+                * float(args.lever_mass_kg)
+                * float(args.lever_com_m) ** 2
+            )
+            lever_inertia_source = "uniform_lever_from_mass_and_com"
+        else:
+            lever_inertia_kg_m2 = float(args.lever_inertia_kg_m2)
+            lever_inertia_source = "command_line"
+        total_load_inertia_kg_m2 = (
+            float(args.load_mass_kg) * float(args.lever_arm_m) ** 2
+            + lever_inertia_kg_m2
+        )
+        _, profile_hold_torque, _ = (
+            evaluate_manual_horizontal_fixture(
+                profile_targets,
+                center_rad=center_rad,
+                signed_load_moment_kg_m=signed_load_moment_kg_m,
+                load_inertia_kg_m2=total_load_inertia_kg_m2,
+            )
+        )
+        static_torque_at_center_nm = float(
+            STANDARD_GRAVITY_M_S2 * signed_load_moment_kg_m
+        )
+        load_inertia_at_center_kg_m2 = total_load_inertia_kg_m2
+        load_metadata = {
+            "load_model": "manual_horizontal_lever",
+            "lever_arm_m": float(args.lever_arm_m),
+            "load_mass_kg": float(args.load_mass_kg),
+            "lever_mass_kg": float(args.lever_mass_kg),
+            "lever_com_m": float(args.lever_com_m),
+            "lever_inertia_kg_m2": lever_inertia_kg_m2,
+            "lever_inertia_source": lever_inertia_source,
+            "gravity_torque_sign": int(args.gravity_torque_sign),
+        }
+
+    max_profile_hold_torque_nm = (
+        float(np.max(np.abs(profile_hold_torque)))
+        if profile_hold_torque.size
+        else 0.0
+    )
+    if max_profile_hold_torque_nm > float(args.max_static_torque_nm):
+        raise ValueError(
+            f"fixture profile reaches {max_profile_hold_torque_nm:.3f}Nm, exceeding "
+            f"--max-static-torque-nm={float(args.max_static_torque_nm):.3f}"
+        )
+    sample_count = sum(len(segment.targets_rad) for segment in segments)
+    duration_s = sample_count / float(args.sample_hz)
+
+    print("HTD-45H single-servo SysID capture")
+    print(f"  servo_id={servo_id} board_port={port}")
+    print(
+        "  coordinate=raw servo angle "
+        "(unit 500 = 0deg, increasing units = positive)"
+    )
+    print(
+        f"  center={float(args.center_deg):+.2f}deg "
+        f"amplitudes={list(float(v) for v in args.amplitudes_deg)}deg"
+    )
+    print(
+        f"  profile={duration_s:.1f}s at {float(args.sample_hz):.1f}Hz "
+        f"move_time_ms={int(args.move_time_ms)} deadband_units={int(args.write_deadband_units)}"
+    )
+    if fixture_model is not None:
+        print(
+            f"  fixture={fixture_model.path} joint={fixture_model.joint_name} "
+            f"root={fixture_model.root_body_name} "
+            f"moving_body={fixture_model.moving_body_name}"
+        )
+        print(
+            f"  moving_mass={fixture_model.moving_subtree_mass_kg:.6f}kg "
+            f"body_inertia={load_inertia_at_center_kg_m2:.6f}kg*m^2 "
+            f"center_hold_torque={static_torque_at_center_nm:+.3f}Nm "
+            f"profile_peak_hold_torque={max_profile_hold_torque_nm:.3f}Nm"
+        )
+    else:
+        print(
+            f"  load={float(args.load_mass_kg):.3f}kg at "
+            f"{float(args.lever_arm_m):.3f}m "
+            f"lever={float(args.lever_mass_kg):.3f}kg at "
+            f"{float(args.lever_com_m):.3f}m "
+            f"static_torque_at_center={static_torque_at_center_nm:+.3f}Nm"
+        )
+        print(
+            f"  estimated_load_inertia={load_inertia_at_center_kg_m2:.6f}kg*m^2"
+        )
+    print(f"  output={output_path.expanduser().resolve()}")
+    if fixture_model is not None:
+        fixture_center_deg = (
+            float(args.fixture_qpos_offset_deg)
+            + int(args.fixture_direction) * float(args.center_deg)
+        )
+        print(
+            "  fixture requirement: rigid fixed top, physical lever matching "
+            f"MJCF pitch={fixture_center_deg:+.2f}deg at center, mechanical hard "
+            "stops, load catcher, and reachable power cutoff"
+        )
+    else:
+        print(
+            "  fixture requirement: rigid servo mount, lever horizontal at center, "
+            "mechanical hard stops, load catcher, and reachable power cutoff"
+        )
+    if args.dry_run:
+        print("Dry run complete; no serial port was opened and no files were written.")
+        return 0
+
+    confirmation = input(
+        "Attach and support the stated load, clear the fixture, then type RUN: "
+    ).strip()
+    if confirmation != "RUN":
+        print("Capture cancelled; no hardware command or file write occurred.")
+        return 2
+
+    capture_fields = _new_capture_fields()
+    health_samples: list[dict[str, object]] = []
+    outcome = "failed"
+    error: str | None = None
+    bus: RawServoBus | None = None
+    exit_code = 1
+    start_wall = datetime.now().astimezone().isoformat()
+    try:
+        transport = SerialTransport(
+            SerialTransportConfig(
+                port=port,
+                baudrate=int(args.baudrate),
+            )
+        )
+        bus = RawServoBus(transport, RawServoBusConfig())
+        reported_id = bus.read_id(servo_id)
+        if reported_id != servo_id:
+            raise RuntimeError(
+                f"servo ID probe failed on {port}: expected {servo_id}, got {reported_id}"
+            )
+        initial_units = _read_position_with_retries(
+            bus,
+            servo_id=servo_id,
+            retries=int(args.read_retries),
+            retry_sleep_s=float(args.read_retry_sleep_s),
+        )
+        initial_rad = servo.servo_elect_units_to_joint_target_rad(initial_units)
+        health_before = read_health(bus, servo_id=servo_id)
+        health_samples.append({"phase": "before", **health_before})
+        validate_health(
+            health_before,
+            min_voltage_v=float(args.min_voltage_v),
+            max_temperature_c=float(args.max_temperature_c),
+        )
+        print(
+            f"Initial position={math.degrees(initial_rad):+.2f}deg; "
+            f"{_format_health(health_before)}"
+        )
+
+        bus.unload(servo_id)
+        _verify_loaded_state(bus, servo_id=servo_id, expected=False)
+        bus.move_time_write(
+            servo_id,
+            int(initial_units),
+            max(500, int(args.move_time_ms)),
+        )
+        bus.load(servo_id)
+        _verify_loaded_state(bus, servo_id=servo_id, expected=True)
+        prepare_ms = max(
+            int(args.move_time_ms),
+            int(
+                math.ceil(
+                    abs(math.degrees(center_rad - initial_rad))
+                    / float(args.prepare_speed_deg_s)
+                    * 1000.0
+                )
+            ),
+        )
+        prepare_ms = min(30000, prepare_ms)
+        print(f"Moving to fixture center over {prepare_ms / 1000.0:.2f}s...")
+        bus.move_time_write(
+            servo_id,
+            servo.joint_target_rad_to_elect_unit(center_rad),
+            prepare_ms,
+        )
+        time.sleep(prepare_ms / 1000.0 + float(args.settle_s))
+        centered_units = _read_position_with_retries(
+            bus,
+            servo_id=servo_id,
+            retries=int(args.read_retries),
+            retry_sleep_s=float(args.read_retry_sleep_s),
+        )
+        centered_rad = servo.servo_elect_units_to_joint_target_rad(centered_units)
+        center_error_deg = abs(math.degrees(centered_rad - center_rad))
+        if center_error_deg > float(args.center_tolerance_deg):
+            raise RuntimeError(
+                f"servo did not reach center: measured={math.degrees(centered_rad):+.2f}deg "
+                f"target={float(args.center_deg):+.2f}deg "
+                f"error={center_error_deg:.2f}deg"
+            )
+        if fixture_model is not None:
+            fixture_center_deg = (
+                float(args.fixture_qpos_offset_deg)
+                + int(args.fixture_direction) * float(args.center_deg)
+            )
+            center_instruction = (
+                "Verify that the lever matches the MJCF pose at "
+                f"pitch={fixture_center_deg:+.2f}deg"
+            )
+        else:
+            center_instruction = "Verify with a level that the lever is horizontal"
+        centered_confirmation = input(
+            f"{center_instruction} and the load path is clear, then type CENTERED: "
+        ).strip()
+        if centered_confirmation != "CENTERED":
+            raise RuntimeError("fixture center was not confirmed")
+
+        print("Running automatic profile...")
+        capture_profile(
+            bus,
+            servo_id=servo_id,
+            servo=servo,
+            segments=segments,
+            sample_hz=float(args.sample_hz),
+            move_time_ms=int(args.move_time_ms),
+            write_deadband_units=int(args.write_deadband_units),
+            max_position_error_rad=math.radians(float(args.max_position_error_deg)),
+            read_retries=int(args.read_retries),
+            read_retry_sleep_s=float(args.read_retry_sleep_s),
+            fields=capture_fields,
+        )
+        bus.move_time_write(
+            servo_id,
+            servo.joint_target_rad_to_elect_unit(center_rad),
+            1000,
+        )
+        time.sleep(1.0 + float(args.settle_s))
+        health_after = read_health(bus, servo_id=servo_id)
+        health_samples.append({"phase": "after", **health_after})
+        validate_health(
+            health_after,
+            min_voltage_v=float(args.min_voltage_v),
+            max_temperature_c=float(args.max_temperature_c),
+        )
+        print(f"Profile complete; {_format_health(health_after)}")
+        while input("Support the lever/load, then type UNLOAD: ").strip() != "UNLOAD":
+            print("Servo remains loaded at center; type UNLOAD when the fixture is supported.")
+        outcome = "completed"
+        exit_code = 0
+    except KeyboardInterrupt:
+        outcome = "aborted"
+        error = "KeyboardInterrupt"
+        exit_code = 130
+        print("\nCapture interrupted; stopping and unloading the servo.", file=sys.stderr)
+    except Exception as exc:
+        outcome = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+        exit_code = 1
+        print(f"Capture failed: {error}", file=sys.stderr)
+    finally:
+        if bus is not None:
+            try:
+                bus.move_stop(servo_id)
+            except Exception as exc:
+                print(f"Warning: servo stop failed: {exc}", file=sys.stderr)
+            try:
+                bus.unload(servo_id)
+                _verify_loaded_state(bus, servo_id=servo_id, expected=False)
+                print("Servo unloaded and verified.")
+            except Exception as exc:
+                print(f"Warning: servo unload failed: {exc}", file=sys.stderr)
+                if exit_code == 0:
+                    outcome = "failed"
+                    error = f"servo unload verification failed: {exc}"
+                    exit_code = 1
+            try:
+                bus.transport.close()
+            except Exception as exc:
+                print(f"Warning: serial close failed: {exc}", file=sys.stderr)
+
+    arrays = _arrays_from_fields(capture_fields)
+    measured_position = np.asarray(arrays["position_joint_rad"], dtype=np.float64)
+    if fixture_model is not None:
+        fixture_qpos, hold_torque, load_inertia = fixture_model.evaluate(
+            measured_position
+        )
+    else:
+        fixture_qpos, hold_torque, load_inertia = (
+            evaluate_manual_horizontal_fixture(
+                measured_position,
+                center_rad=center_rad,
+                signed_load_moment_kg_m=signed_load_moment_kg_m,
+                load_inertia_kg_m2=load_inertia_at_center_kg_m2,
+            )
+        )
+    arrays = add_standard_capture_arrays(
+        arrays,
+        fixture_qpos_rad=fixture_qpos,
+        estimated_hold_torque_nm=hold_torque,
+        estimated_load_inertia_kg_m2=load_inertia,
+    )
+    summary = summarize_capture(
+        arrays,
+        segments=segments,
+        sample_hz=float(args.sample_hz),
+        max_delay_s=float(args.max_delay_s),
+    )
+    metadata: dict[str, object] = {
+        "tool": "runtime/scripts/capture_servo_sysid.py",
+        "mode": "htd45h_known_load_profile",
+        "capture_source": "hardware",
+        "captured_at": start_wall,
+        "outcome": outcome,
+        "error": error,
+        "joint": str(args.servo_label or f"servo_{servo_id}"),
+        "joint_name": str(args.servo_label or f"servo_{servo_id}"),
+        "servo_id": servo_id,
+        "board_port": port,
+        "port": port,
+        "baudrate": int(args.baudrate),
+        "servo_coordinate": "raw_centered",
+        "servo_center_unit": int(ServoConfig.UNITS_CENTER),
+        "servo_units_per_rad": float(ServoConfig.UNITS_PER_RAD),
+        "servo_unit_direction": 1,
+        "servo_offset_unit": 0,
+        "center_deg": float(args.center_deg),
+        "amplitudes_deg": [float(value) for value in args.amplitudes_deg],
+        "sample_hz": float(args.sample_hz),
+        "sample_rate_hz": float(args.sample_hz),
+        "num_samples": int(arrays["timestamps_s"].size),
+        "move_time_ms": int(args.move_time_ms),
+        "write_deadband_units": int(args.write_deadband_units),
+        "chirp_start_hz": float(args.chirp_start_hz),
+        "chirp_end_hz": float(args.chirp_end_hz),
+        "chirp_duration_s": float(args.chirp_duration_s),
+        "chirp_decay_rate": float(args.chirp_decay_rate),
+        **load_metadata,
+        "load_inertia_at_center_kg_m2": load_inertia_at_center_kg_m2,
+        "static_torque_at_center_nm": static_torque_at_center_nm,
+        "max_abs_profile_hold_torque_nm": max_profile_hold_torque_nm,
+        "servo_label": args.servo_label,
+        "fixture_label": args.fixture_label,
+        "notes": args.notes,
+        "health_samples": health_samples,
+        "profile_reference": {
+            "project": "ToddlerBot",
+            "paper": "https://arxiv.org/abs/2502.00893",
+            "local_source": "~/projects/toddlerbot/toddlerbot/policies/sysID.py",
+            "wildrobot_legacy_contract": "tools/sysid/run_capture.py",
+            "servo_protocol_source": (
+                "docs/HTD-45H Serial Bus Servo/2. Bus Servo Secondary Development/"
+                "LSC Series Servo Controller Secondary Develpoment/Jetson Nano "
+                "Development/Program/Library File/sdk/hiwonder_servo_controller.py"
+            ),
+        },
+    }
+    npz_path, json_path = write_capture(
+        output_path,
+        arrays=arrays,
+        metadata=metadata,
+        summary=summary,
+    )
+    print(f"Wrote trace:   {npz_path}")
+    print(f"Wrote summary: {json_path}")
+    if summary["tracking_rmse_deg"] is not None:
+        print(
+            "Tracking: "
+            f"RMSE={float(summary['tracking_rmse_deg']):.2f}deg "
+            f"p95={float(summary['tracking_abs_p95_deg']):.2f}deg"
+        )
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,7 +1,12 @@
 from runtime.wr_runtime.hardware.hiwonder_ttl_bus import (
     CMD_ID_READ,
+    CMD_ID_WRITE,
+    CMD_LOAD_OR_UNLOAD_READ,
+    CMD_LOAD_OR_UNLOAD_WRITE,
     CMD_MOVE_TIME_WRITE,
     CMD_POS_READ,
+    CMD_TEMP_READ,
+    CMD_VIN_READ,
     SERVO_BROADCAST_ID,
     RawServoBus,
     RawServoBusConfig,
@@ -61,6 +66,15 @@ def test_read_id_uses_broadcast_and_returns_reported_id():
     assert transport.reset_input_count == 1
 
 
+def test_write_id_builds_targeted_id_command():
+    transport = FakeTransport()
+    bus = RawServoBus(transport)
+
+    bus.write_id(3, 100)
+
+    assert transport.writes == [build_packet(3, CMD_ID_WRITE, [100])]
+
+
 def test_read_position_returns_little_endian_units():
     transport = FakeTransport([build_packet(3, CMD_POS_READ, [0xF5, 0x01])])
     bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
@@ -78,3 +92,40 @@ def test_move_time_write_builds_position_command():
     assert transport.writes == [
         build_packet(3, CMD_MOVE_TIME_WRITE, [0xF5, 0x01, 0x14, 0x00])
     ]
+
+
+def test_read_temperature_returns_degrees_celsius():
+    transport = FakeTransport([build_packet(3, CMD_TEMP_READ, [42])])
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_temperature_c(3) == 42
+    assert transport.writes == [build_packet(3, CMD_TEMP_READ)]
+
+
+def test_read_voltage_converts_millivolts_to_volts():
+    transport = FakeTransport([build_packet(3, CMD_VIN_READ, [0x5C, 0x2B])])
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_voltage_v(3) == 11.1
+    assert transport.writes == [build_packet(3, CMD_VIN_READ)]
+
+
+def test_load_and_unload_build_torque_enable_commands():
+    transport = FakeTransport()
+    bus = RawServoBus(transport)
+
+    bus.load(3)
+    bus.unload(3)
+
+    assert transport.writes == [
+        build_packet(3, CMD_LOAD_OR_UNLOAD_WRITE, [1]),
+        build_packet(3, CMD_LOAD_OR_UNLOAD_WRITE, [0]),
+    ]
+
+
+def test_read_loaded_returns_servo_torque_state():
+    transport = FakeTransport([build_packet(3, CMD_LOAD_OR_UNLOAD_READ, [1])])
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_loaded(3) is True
+    assert transport.writes == [build_packet(3, CMD_LOAD_OR_UNLOAD_READ)]

@@ -18,8 +18,11 @@ CMD_MOVE_START = 11
 CMD_MOVE_STOP = 12
 CMD_ID_WRITE = 13
 CMD_ID_READ = 14
+CMD_TEMP_READ = 26
+CMD_VIN_READ = 27
 CMD_POS_READ = 28
 CMD_LOAD_OR_UNLOAD_WRITE = 31
+CMD_LOAD_OR_UNLOAD_READ = 32
 
 
 def format_bytes(data: Iterable[int]) -> str:
@@ -250,6 +253,23 @@ class RawServoBus:
             return None
         return int(packet.params[0]) | (int(packet.params[1]) << 8)
 
+    def read_temperature_c(self, servo_id: int) -> int | None:
+        packet = self._request_response(int(servo_id), CMD_TEMP_READ)
+        if packet is None or packet.command != CMD_TEMP_READ or packet.servo_id != int(servo_id):
+            return None
+        if not packet.params:
+            return None
+        return int(packet.params[0])
+
+    def read_voltage_v(self, servo_id: int) -> float | None:
+        packet = self._request_response(int(servo_id), CMD_VIN_READ)
+        if packet is None or packet.command != CMD_VIN_READ or packet.servo_id != int(servo_id):
+            return None
+        if len(packet.params) < 2:
+            return None
+        millivolts = int(packet.params[0]) | (int(packet.params[1]) << 8)
+        return float(millivolts) / 1000.0
+
     def read_positions(self, servo_ids: Sequence[int]) -> dict[int, int]:
         positions: dict[int, int] = {}
         for servo_id in servo_ids:
@@ -258,8 +278,27 @@ class RawServoBus:
                 positions[int(servo_id)] = int(pos)
         return positions
 
+    def set_loaded(self, servo_id: int, *, loaded: bool) -> None:
+        self._write_command(
+            int(servo_id), CMD_LOAD_OR_UNLOAD_WRITE, [1 if loaded else 0]
+        )
+
+    def load(self, servo_id: int) -> None:
+        self.set_loaded(int(servo_id), loaded=True)
+
     def unload(self, servo_id: int) -> None:
-        self._write_command(int(servo_id), CMD_LOAD_OR_UNLOAD_WRITE, [0])
+        self.set_loaded(int(servo_id), loaded=False)
+
+    def read_loaded(self, servo_id: int) -> bool | None:
+        packet = self._request_response(int(servo_id), CMD_LOAD_OR_UNLOAD_READ)
+        if (
+            packet is None
+            or packet.command != CMD_LOAD_OR_UNLOAD_READ
+            or packet.servo_id != int(servo_id)
+            or not packet.params
+        ):
+            return None
+        return bool(packet.params[0])
 
     def _write_position_command(
         self, servo_id: int, command: int, position: int, time_ms: int
@@ -326,8 +365,11 @@ __all__ = [
     "CMD_MOVE_STOP",
     "CMD_ID_WRITE",
     "CMD_ID_READ",
+    "CMD_TEMP_READ",
+    "CMD_VIN_READ",
     "CMD_POS_READ",
     "CMD_LOAD_OR_UNLOAD_WRITE",
+    "CMD_LOAD_OR_UNLOAD_READ",
     "RawServoPacket",
     "RawServoBusConfig",
     "RawServoBus",
