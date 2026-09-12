@@ -834,6 +834,31 @@ def summarize_preparation_trace(arrays: dict[str, np.ndarray]) -> dict[str, obje
         arrays["preparation_estimated_hold_torque_nm"], dtype=np.float64
     )
     valid_voltage = voltage[np.isfinite(voltage)]
+    valid_voltage_indices = np.flatnonzero(np.isfinite(voltage))
+    minimum_voltage_sample: dict[str, object] | None = None
+    if valid_voltage_indices.size:
+        index = int(valid_voltage_indices[np.argmin(voltage[valid_voltage_indices])])
+        minimum_voltage_sample = {
+            "sample_index": index,
+            "attempt": int(arrays["preparation_attempt"][index]),
+            "phase": str(arrays["preparation_phase"][index]),
+            "preparation_elapsed_s": float(
+                arrays["preparation_elapsed_s"][index]
+            ),
+            "phase_elapsed_s": float(
+                arrays["preparation_phase_elapsed_s"][index]
+            ),
+            "position_deg": (
+                math.degrees(float(position[index]))
+                if np.isfinite(position[index])
+                else None
+            ),
+            "estimated_hold_torque_nm": (
+                float(torque[index]) if np.isfinite(torque[index]) else None
+            ),
+            "loaded": int(loaded[index]) if loaded[index] >= 0 else None,
+            "voltage_v": float(voltage[index]),
+        }
     unload_indices = np.flatnonzero(loaded == 0)
     first_unload: dict[str, object] | None = None
     if unload_indices.size:
@@ -875,7 +900,14 @@ def summarize_preparation_trace(arrays: dict[str, np.ndarray]) -> dict[str, obje
         "max_voltage_v": (
             float(np.max(valid_voltage)) if valid_voltage.size else None
         ),
+        "minimum_voltage_sample": minimum_voltage_sample,
         "first_unload": first_unload,
+        "minimum_voltage_to_first_unload_s": (
+            float(first_unload["preparation_elapsed_s"])
+            - float(minimum_voltage_sample["preparation_elapsed_s"])
+            if first_unload is not None and minimum_voltage_sample is not None
+            else None
+        ),
     }
 
 
@@ -2645,21 +2677,67 @@ def main() -> int:
     print(f"Wrote trace:   {npz_path}")
     print(f"Wrote summary: {json_path}")
     first_unload = preparation_summary["first_unload"]
+    minimum_voltage_sample = preparation_summary["minimum_voltage_sample"]
     print(
         "Preparation monitor: "
         f"samples={preparation_summary['samples']} "
         f"min_voltage={preparation_summary['min_voltage_v']}V",
         flush=True,
     )
+    if minimum_voltage_sample is not None:
+        min_voltage_position = (
+            "unknown"
+            if minimum_voltage_sample["position_deg"] is None
+            else f"{float(minimum_voltage_sample['position_deg']):+.2f}deg"
+        )
+        min_voltage_torque = (
+            "unknown"
+            if minimum_voltage_sample["estimated_hold_torque_nm"] is None
+            else f"{float(minimum_voltage_sample['estimated_hold_torque_nm']):+.3f}Nm"
+        )
+        print(
+            "Minimum preparation voltage: "
+            f"phase={minimum_voltage_sample['phase']} "
+            f"phase_elapsed="
+            f"{float(minimum_voltage_sample['phase_elapsed_s']):.3f}s "
+            f"position={min_voltage_position} "
+            f"estimated_hold_torque={min_voltage_torque} "
+            f"loaded={minimum_voltage_sample['loaded']} "
+            f"voltage={float(minimum_voltage_sample['voltage_v']):.3f}V",
+            flush=True,
+        )
     if first_unload is not None:
+        unload_position = (
+            "unknown"
+            if first_unload["position_deg"] is None
+            else f"{float(first_unload['position_deg']):+.2f}deg"
+        )
+        unload_torque = (
+            "unknown"
+            if first_unload["estimated_hold_torque_nm"] is None
+            else f"{float(first_unload['estimated_hold_torque_nm']):+.3f}Nm"
+        )
+        unload_voltage = (
+            "unknown"
+            if first_unload["voltage_v"] is None
+            else f"{float(first_unload['voltage_v']):.3f}V"
+        )
+        after_min_voltage = preparation_summary[
+            "minimum_voltage_to_first_unload_s"
+        ]
+        after_min_voltage_text = (
+            "unknown"
+            if after_min_voltage is None
+            else f"{float(after_min_voltage):.3f}s"
+        )
         print(
             "First torque loss: "
             f"phase={first_unload['phase']} "
             f"phase_elapsed={float(first_unload['phase_elapsed_s']):.3f}s "
-            f"position={first_unload['position_deg']}deg "
-            f"estimated_hold_torque="
-            f"{first_unload['estimated_hold_torque_nm']}Nm "
-            f"voltage={first_unload['voltage_v']}V",
+            f"position={unload_position} "
+            f"estimated_hold_torque={unload_torque} "
+            f"voltage={unload_voltage} "
+            f"after_min_voltage={after_min_voltage_text}",
             flush=True,
         )
     if summary["tracking_rmse_deg"] is not None:

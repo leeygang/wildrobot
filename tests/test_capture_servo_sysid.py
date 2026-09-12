@@ -533,9 +533,9 @@ def test_center_preparation_rearms_after_servo_auto_unloads() -> None:
 
 def test_preparation_monitor_captures_first_torque_loss() -> None:
     class AutoUnloadingBus:
-        positions = iter((500, 505, 510))
+        positions = iter((500, 505, None))
         loaded_states = iter((True, True, False))
-        voltages = iter((11.6, 11.4, 10.8))
+        voltages = iter((11.6, 8.8, 11.4))
 
         def read_position(self, _servo_id):
             return next(self.positions)
@@ -578,18 +578,17 @@ def test_preparation_monitor_captures_first_torque_loss() -> None:
     assert last["phase_elapsed_s"] == pytest.approx(1.0)
     arrays = preparation_trace_arrays(samples)
     arrays["preparation_estimated_hold_torque_nm"] = np.asarray(
-        [0.0, 0.05, 0.1], dtype=np.float32
+        [0.0, 0.05, np.nan], dtype=np.float32
     )
     summary = summarize_preparation_trace(arrays)
 
-    assert arrays["preparation_position_servo_units"].tolist() == [500, 505, 510]
+    assert arrays["preparation_position_servo_units"].tolist() == [500, 505, -1]
     assert arrays["preparation_loaded_state"].tolist() == [1, 1, 0]
-    assert summary["min_voltage_v"] == pytest.approx(10.8)
+    assert summary["min_voltage_v"] == pytest.approx(8.8)
+    assert summary["minimum_voltage_sample"]["position_deg"] == pytest.approx(1.2)
     assert summary["first_unload"]["phase"] == "center_move"
-    assert summary["first_unload"]["position_deg"] == pytest.approx(2.4)
-    assert summary["first_unload"]["estimated_hold_torque_nm"] == pytest.approx(
-        0.1
-    )
+    assert summary["first_unload"]["position_deg"] is None
+    assert summary["minimum_voltage_to_first_unload_s"] == pytest.approx(0.5)
 
 
 def test_center_preparation_reports_monitored_unload_phase() -> None:
