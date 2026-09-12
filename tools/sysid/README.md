@@ -28,9 +28,9 @@ uses the exported fixture mass and inertia directly. The fixture servo is
 addressed in raw centered coordinates: electrical unit 500 is 0 degrees and
 increasing electrical units are positive.
 
-First assign the isolated fixture servo its reserved ID. This command does not
-move or unload the servo, but broadcast discovery requires that every other
-servo be physically disconnected from the selected TTL bus:
+First assign the isolated fixture servo its reserved ID. Without `--set-unit`,
+this command does not move or unload the servo. Broadcast discovery requires
+that every other servo be physically disconnected from the selected TTL bus:
 
 ```bash
 uv run python runtime/scripts/set_sysid_servo_id.py \
@@ -42,8 +42,26 @@ The tool scans all servo addresses, prints the current ID, aborts if more than
 one distinct ID responds, requires explicit confirmation, writes the requested
 ID, and verifies both the old and new addresses. Two servos already sharing the
 same ID cannot be distinguished by the HTD addressed protocol, so the fixture
-servo should still be the only servo physically connected. With that servo
-connected, validate the capture configuration:
+servo should still be the only servo physically connected.
+
+To position a bare replacement servo at its raw electrical center before
+installing the horn, keep the shaft mechanically clear and add `--set-unit
+500`:
+
+```bash
+uv run python runtime/scripts/set_sysid_servo_id.py \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --servo-id 100 \
+  --set-unit 500
+```
+
+`--set-unit` accepts an inclusive raw position from 0 through 1000. The tool
+prints the current encoder unit, primes that position before enabling torque,
+moves at 20 degrees/s, verifies the final position within five raw units, and
+then disables torque. Do not use an endpoint target with an installed linkage
+unless its full travel has been mechanically verified.
+
+With that servo connected, validate the capture configuration:
 
 ```bash
 uv run python runtime/scripts/capture_servo_sysid.py \

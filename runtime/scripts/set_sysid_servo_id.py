@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Detect one isolated HTD-45H servo and assign a requested fixture ID.
+"""Detect one isolated HTD-45H servo and configure its ID or raw position.
 
 The tool scans every valid address individually so it can reject a board with
-multiple distinct servo IDs before writing. No position or torque command is
-sent.
+multiple distinct servo IDs before writing. Raw-position motion is optional and
+requires an explicit ``--set-unit`` target.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,15 @@ from wr_runtime.hardware.hiwonder_ttl_bus import (  # noqa: E402
     SerialTransport,
     SerialTransportConfig,
 )
+
+
+SERVO_MIN_UNIT = 0
+SERVO_MAX_UNIT = 1000
+SERVO_TRAVEL_DEG = 240.0
+SET_UNIT_SPEED_DEG_S = 20.0
+SET_UNIT_MIN_MOVE_MS = 500
+SET_UNIT_SETTLE_S = 0.25
+SET_UNIT_TOLERANCE = 5
 
 
 def scan_servo_ids(bus: RawServoBus) -> tuple[int, ...]:
@@ -122,9 +132,87 @@ def assign_sysid_servo_id(
     return target_id
 
 
+def set_servo_unit(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    target_unit: int,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> int:
+    """Move one isolated servo to a verified raw unit and disable torque."""
+
+    target = int(target_unit)
+    if target < SERVO_MIN_UNIT or target > SERVO_MAX_UNIT:
+        raise ValueError(
+            f"servo unit must be between {SERVO_MIN_UNIT} and {SERVO_MAX_UNIT}"
+        )
+
+    current = bus.read_position(int(servo_id))
+    if current is None:
+        raise RuntimeError(f"failed to read current unit from servo ID {servo_id}")
+    current = int(current)
+    print(f"Current servo unit: {current}")
+    if current == target:
+        bus.unload(int(servo_id))
+        if bus.read_loaded(int(servo_id)) is not False:
+            raise RuntimeError("servo torque did not disable at requested unit")
+        print(
+            f"Servo already uses requested unit {target}; "
+            "no motion needed and torque was disabled."
+        )
+        return current
+
+    delta_deg = (
+        abs(target - current)
+        * SERVO_TRAVEL_DEG
+        / float(SERVO_MAX_UNIT - SERVO_MIN_UNIT)
+    )
+    move_time_ms = max(
+        SET_UNIT_MIN_MOVE_MS,
+        int(math.ceil(delta_deg / SET_UNIT_SPEED_DEG_S * 1000.0)),
+    )
+    print(
+        f"Moving servo ID {servo_id}: {current} -> {target} units "
+        f"over {move_time_ms}ms, then unloading torque."
+    )
+
+    try:
+        bus.move_time_write(int(servo_id), current, SET_UNIT_MIN_MOVE_MS)
+        bus.load(int(servo_id))
+        if bus.read_loaded(int(servo_id)) is not True:
+            raise RuntimeError("servo torque did not enable before position motion")
+        bus.move_time_write(int(servo_id), target, move_time_ms)
+        sleep_fn(move_time_ms / 1000.0 + SET_UNIT_SETTLE_S)
+
+        measured = bus.read_position(int(servo_id))
+        if measured is None:
+            raise RuntimeError("failed to read servo position after motion")
+        measured = int(measured)
+        if bus.read_loaded(int(servo_id)) is not True:
+            raise RuntimeError(
+                f"servo torque disabled during motion at unit {measured}"
+            )
+        error = abs(measured - target)
+        if error > SET_UNIT_TOLERANCE:
+            raise RuntimeError(
+                f"servo did not reach requested unit: measured={measured} "
+                f"target={target} error={error} units"
+            )
+    finally:
+        bus.unload(int(servo_id))
+        if bus.read_loaded(int(servo_id)) is not False:
+            raise RuntimeError("servo torque did not disable after position motion")
+
+    print(f"PASS: servo reached unit {measured} and torque was disabled.")
+    return measured
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Detect one isolated HTD-45H servo and set its requested ID."
+        description=(
+            "Detect one isolated HTD-45H servo, set its requested ID, and "
+            "optionally move it to a verified raw position."
+        )
     )
     parser.add_argument(
         "--board-port",
@@ -139,6 +227,13 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="New servo ID to assign (1-253).",
     )
+    parser.add_argument(
+        "--set-unit",
+        type=int,
+        default=None,
+        metavar="UNIT",
+        help="After ID setup, move the isolated servo to raw unit 0-1000.",
+    )
     parser.add_argument("--baudrate", type=int, default=115200)
     return parser.parse_args()
 
@@ -149,11 +244,24 @@ def main() -> int:
         raise ValueError("--baudrate must be positive")
     if int(args.servo_id) < 1 or int(args.servo_id) > 253:
         raise ValueError("--servo-id must be between 1 and 253")
+    if args.set_unit is not None and not (
+        SERVO_MIN_UNIT <= int(args.set_unit) <= SERVO_MAX_UNIT
+    ):
+        raise ValueError(
+            f"--set-unit must be between {SERVO_MIN_UNIT} and {SERVO_MAX_UNIT}"
+        )
 
     print("HTD-45H SysID fixture servo-ID setup")
     print(f"  board_port={args.board_port}")
     print(f"  requested_servo_id={int(args.servo_id)}")
-    print("  no position or torque command will be sent")
+    if args.set_unit is None:
+        print("  no position or torque command will be sent")
+    else:
+        print(f"  requested_servo_unit={int(args.set_unit)}")
+        print(
+            "  motion enabled: clear the horn/fixture; torque will be disabled "
+            "after verification"
+        )
 
     transport = SerialTransport(
         SerialTransportConfig(
@@ -163,7 +271,15 @@ def main() -> int:
     )
     bus = RawServoBus(transport, RawServoBusConfig())
     try:
-        assign_sysid_servo_id(bus, new_servo_id=int(args.servo_id))
+        configured_id = assign_sysid_servo_id(
+            bus, new_servo_id=int(args.servo_id)
+        )
+        if args.set_unit is not None:
+            set_servo_unit(
+                bus,
+                servo_id=configured_id,
+                target_unit=int(args.set_unit),
+            )
     except Exception as exc:
         print(f"Servo-ID setup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

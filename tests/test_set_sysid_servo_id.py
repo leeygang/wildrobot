@@ -6,6 +6,7 @@ from runtime.scripts.set_sysid_servo_id import (
     assign_sysid_servo_id,
     detect_single_servo_id,
     scan_servo_ids,
+    set_servo_unit,
 )
 
 
@@ -18,6 +19,11 @@ class FakeBus:
         self.config = self.Config()
         self.servo_ids = {int(servo_id) for servo_id in servo_ids}
         self.id_writes: list[tuple[int, int]] = []
+        self.position = 500
+        self.loaded = False
+        self.position_writes: list[tuple[int, int]] = []
+        self.load_count = 0
+        self.unload_count = 0
 
     def read_id(self, target_id: int) -> int | None:
         target = int(target_id)
@@ -28,6 +34,27 @@ class FakeBus:
         self.id_writes.append((int(old_id), int(new_id)))
         self.servo_ids.remove(int(old_id))
         self.servo_ids.add(int(new_id))
+
+    def read_position(self, servo_id: int) -> int | None:
+        return self.position if int(servo_id) in self.servo_ids else None
+
+    def move_time_write(self, servo_id: int, position: int, time_ms: int) -> None:
+        assert int(servo_id) in self.servo_ids
+        self.position_writes.append((int(position), int(time_ms)))
+        self.position = int(position)
+
+    def load(self, servo_id: int) -> None:
+        assert int(servo_id) in self.servo_ids
+        self.load_count += 1
+        self.loaded = True
+
+    def unload(self, servo_id: int) -> None:
+        assert int(servo_id) in self.servo_ids
+        self.unload_count += 1
+        self.loaded = False
+
+    def read_loaded(self, servo_id: int) -> bool | None:
+        return self.loaded if int(servo_id) in self.servo_ids else None
 
 
 def test_scan_servo_ids_returns_every_targeted_response() -> None:
@@ -102,3 +129,54 @@ def test_assign_prints_current_id_before_confirmation_and_write(capsys) -> None:
         input_fn=confirm,
         sleep_fn=lambda _seconds: None,
     )
+
+
+def test_set_servo_unit_reports_moves_verifies_and_unloads(capsys) -> None:
+    bus = FakeBus(100)
+    bus.position = 400
+    sleeps: list[float] = []
+
+    measured = set_servo_unit(
+        bus,
+        servo_id=100,
+        target_unit=500,
+        sleep_fn=sleeps.append,
+    )
+
+    assert measured == 500
+    assert bus.position_writes == [(400, 500), (500, 1200)]
+    assert sleeps == [pytest.approx(1.45)]
+    assert bus.loaded is False
+    assert bus.load_count == 1
+    assert bus.unload_count == 1
+    output = capsys.readouterr().out
+    assert "Current servo unit: 400" in output
+    assert "PASS: servo reached unit 500" in output
+
+
+@pytest.mark.parametrize("target_unit", [-1, 1001])
+def test_set_servo_unit_rejects_out_of_range_target(target_unit: int) -> None:
+    with pytest.raises(ValueError, match="between 0 and 1000"):
+        set_servo_unit(
+            FakeBus(100),
+            servo_id=100,
+            target_unit=target_unit,
+            sleep_fn=lambda _seconds: None,
+        )
+
+
+def test_set_servo_unit_is_noop_when_already_at_target() -> None:
+    bus = FakeBus(100)
+
+    measured = set_servo_unit(
+        bus,
+        servo_id=100,
+        target_unit=500,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert measured == 500
+    assert bus.position_writes == []
+    assert bus.loaded is False
+    assert bus.load_count == 0
+    assert bus.unload_count == 1
