@@ -84,8 +84,10 @@ port, and duration. The script then:
 Use `--write-deadband-units 0` for the actuator-model identification captures;
 this preserves every quantized command. Use a separate run with the deployment
 value `3` to measure the combined actuator plus runtime command-suppression
-behavior. Each load center remains a separate invocation so the operator can
-verify mechanical stops and the catcher before higher-torque tests.
+behavior. Each load center remains a separate capture so the operator can
+verify mechanical stops and the catcher before higher-torque tests. The
+campaign runner below invokes those captures sequentially without removing
+their cooldown or safety confirmations.
 
 Each condition is one invocation so the fixture cannot be reconfigured while
 the servo is energized. Review the hanging-zero capture before running
@@ -111,6 +113,34 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
 
 The reported chirp `delay_s` is explicitly a cross-correlation lag that includes
 servo response dynamics; it is not a pure serial or actuator transport delay.
+
+### Standard follow-up campaign
+
+After validating one zero-load, 0.1-2 Hz baseline capture, run the remaining
+bandwidth, signed-load, held-out validation, and repeatability conditions with
+one command:
+
+```bash
+uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --fixture-mjcf assets/bam/robot.xml \
+  --fixture-joint pitch \
+  --fixture-direction 1 \
+  --fixture-qpos-offset-deg 0
+```
+
+The runner executes six captures in order: a 2-degree 0.1-10 Hz bandwidth
+trace at zero, fit traces at +30 and -30 degrees, held-out validation traces at
++45 and -45 degrees, and a final zero-load repeat. All actuator-model captures
+use zero command-write deadband. Each child capture still requires its own
+`RUN`, `CENTERED`, and `UNLOAD` confirmations and waits unloaded for the servo
+to cool to 35 C. A failure or operator abort stops the campaign immediately;
+already completed capture pairs remain under the campaign directory printed at
+startup.
+
+Use `--dry-run` to validate all six profiles and fixture loads without opening
+the serial port.
 
 The HTD protocol exposes position, supply voltage, and temperature, but not
 motor current or torque. Torque-related parameters therefore require the
