@@ -152,6 +152,12 @@ step/chirp profile. The JSON reports `first_unload`; the NPZ keeps the complete
 `center_move` indicates a motion/load transient or obstruction; and
 `center_settle` indicates that the final static load cannot be held.
 
+The default voltage safety floor is 9.6 V, matching the HTD-45H vendor working
+range. If any preparation sample crosses that floor while torque remains
+enabled, the script skips the profile, returns to the neutral unload pose, and
+marks the capture failed. Console error and exception messages are yellow on a
+color-capable terminal; JSON error strings remain plain text.
+
 The HTD protocol does not report motor current and does not expose a latched
 active fault code. `alarm_mask=7` only means all three LED alarm sources are
 configured. A brief power-rail collapse may therefore require an oscilloscope

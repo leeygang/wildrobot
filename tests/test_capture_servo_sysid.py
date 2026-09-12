@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from runtime.configs.config import ServoConfig
+from runtime.scripts import capture_servo_sysid as capture_module
 from runtime.scripts.capture_servo_sysid import (
     ProfileSegment,
     _empty_capture_arrays,
@@ -19,6 +20,7 @@ from runtime.scripts.capture_servo_sysid import (
     estimate_delay_metrics,
     estimate_step_response_metrics,
     load_mujoco_fixture,
+    minimum_voltage_sample_below,
     monitor_preparation_phase,
     preparation_trace_arrays,
     prepare_servo_center,
@@ -649,3 +651,31 @@ def test_center_preparation_reports_monitored_unload_phase() -> None:
     assert attempts[0]["loaded_after_reload"] is True
     assert attempts[0]["unload_detected_phase"] == "center_move"
     assert attempts[0]["monitor_samples"] == 2
+
+
+def test_preparation_voltage_floor_finds_minimum_sample() -> None:
+    samples = [
+        {"phase": "center_move", "voltage_v": 11.5},
+        {"phase": "center_move", "voltage_v": 8.887},
+        {"phase": "center_settle", "voltage_v": 11.4},
+    ]
+
+    violation = minimum_voltage_sample_below(samples, 9.6)
+
+    assert violation is samples[1]
+    assert minimum_voltage_sample_below(samples, 8.0) is None
+
+
+def test_error_color_is_yellow_only_on_supported_tty(monkeypatch) -> None:
+    class Tty:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(capture_module.sys, "stderr", Tty())
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+
+    assert capture_module._yellow("failed") == "\x1b[33mfailed\x1b[0m"
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert capture_module._yellow("failed") == "failed"

@@ -59,6 +59,7 @@ def test_capture_command_forces_identification_deadband_and_labels_run(
     assert _option(command, "--chirp-end-hz") == "10.0"
     assert _option(command, "--write-deadband-units") == "0"
     assert _option(command, "--center-max-attempts") == "3"
+    assert _option(command, "--min-voltage-v") == "9.6"
     assert _option(command, "--startup-delay-s") == "3.0"
     assert _option(command, "--unload-pose-deg") == "0.0"
     assert _option(command, "--max-unload-static-torque-nm") == "0.05"

@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -47,6 +48,14 @@ from wr_runtime.hardware.hiwonder_ttl_bus import (  # noqa: E402
 SCHEMA_VERSION = 4
 STANDARD_GRAVITY_M_S2 = 9.80665
 DEFAULT_AMPLITUDES_DEG = (2.0, 5.0, 8.0)
+
+
+def _yellow(text: str) -> str:
+    if not sys.stderr.isatty() or "NO_COLOR" in os.environ:
+        return text
+    if os.environ.get("TERM", "") in {"", "dumb"}:
+        return text
+    return f"\x1b[33m{text}\x1b[0m"
 
 
 def build_fixture_servo_config(servo_id: int) -> ServoConfig:
@@ -870,6 +879,18 @@ def summarize_preparation_trace(arrays: dict[str, np.ndarray]) -> dict[str, obje
     }
 
 
+def minimum_voltage_sample_below(
+    samples: Sequence[dict[str, object]], threshold_v: float
+) -> dict[str, object] | None:
+    voltage_samples = [
+        sample for sample in samples if sample.get("voltage_v") is not None
+    ]
+    if not voltage_samples:
+        return None
+    minimum = min(voltage_samples, key=lambda sample: float(sample["voltage_v"]))
+    return minimum if float(minimum["voltage_v"]) < float(threshold_v) else None
+
+
 def capture_profile(
     bus: RawServoBus,
     *,
@@ -1521,7 +1542,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-chirp-speed-rad-s", type=float, default=2.5)
     parser.add_argument("--max-position-error-deg", type=float, default=12.0)
     parser.add_argument("--max-static-torque-nm", type=float, default=2.5)
-    parser.add_argument("--min-voltage-v", type=float, default=9.0)
+    parser.add_argument(
+        "--min-voltage-v",
+        type=float,
+        default=9.6,
+        help="Minimum HTD-45H operating voltage from the vendor specification.",
+    )
     parser.add_argument("--max-temperature-c", type=float, default=60.0)
     parser.add_argument(
         "--cooldown-target-c",
@@ -1919,6 +1945,7 @@ def main() -> int:
     unload_pose_wait_s: float | None = None
     failure_diagnostics: dict[str, object] | None = None
     preparation_monitor_started: float | None = None
+    preparation_voltage_violation: dict[str, object] | None = None
     try:
         transport = SerialTransport(
             SerialTransportConfig(
@@ -2081,6 +2108,16 @@ def main() -> int:
                     f"motion at {position_text}, phase_elapsed="
                     f"{float(hold_sample['phase_elapsed_s']):.3f}s"
                 )
+            hold_voltage_violation = minimum_voltage_sample_below(
+                preparation_samples, float(args.min_voltage_v)
+            )
+            if hold_voltage_violation is not None:
+                raise RuntimeError(
+                    "servo voltage dropped below the safety floor during "
+                    f"{hold_voltage_violation['phase']}: "
+                    f"{float(hold_voltage_violation['voltage_v']):.3f}V < "
+                    f"{float(args.min_voltage_v):.3f}V"
+                )
             print(
                 "Post-load hold passed; torque remained enabled before motion.",
                 flush=True,
@@ -2125,7 +2162,10 @@ def main() -> int:
             min_voltage_v=float(args.min_voltage_v),
             max_temperature_c=float(args.max_temperature_c),
         )
-        if args.prepare_only:
+        preparation_voltage_violation = minimum_voltage_sample_below(
+            preparation_samples, float(args.min_voltage_v)
+        )
+        if args.prepare_only or preparation_voltage_violation is not None:
             final_center_units = centered_units
             final_center_rad = centered_rad
             health_samples.append(
@@ -2135,10 +2175,21 @@ def main() -> int:
                     **center_health,
                 }
             )
-            print(
-                "Preparation-only diagnostic complete; skipping step/chirp profile.",
-                flush=True,
-            )
+            if args.prepare_only:
+                print(
+                    "Preparation-only diagnostic complete; skipping step/chirp "
+                    "profile.",
+                    flush=True,
+                )
+            else:
+                print(
+                    _yellow(
+                        "Preparation voltage crossed the safety floor; skipping "
+                        "the step/chirp profile and returning to zero."
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
         else:
             health_samples.append(
                 {
@@ -2230,18 +2281,31 @@ def main() -> int:
             "Automatic unload pose verified at "
             f"{math.degrees(unload_pose_position_rad):+.2f}deg; disabling torque."
         )
+        preparation_voltage_violation = minimum_voltage_sample_below(
+            preparation_samples, float(args.min_voltage_v)
+        )
+        if preparation_voltage_violation is not None:
+            raise RuntimeError(
+                "servo voltage dropped below the safety floor during "
+                f"{preparation_voltage_violation['phase']}: "
+                f"{float(preparation_voltage_violation['voltage_v']):.3f}V < "
+                f"{float(args.min_voltage_v):.3f}V"
+            )
         outcome = "completed"
         exit_code = 0
     except KeyboardInterrupt:
         outcome = "aborted"
         error = "KeyboardInterrupt"
         exit_code = 130
-        print("\nCapture interrupted; stopping and unloading the servo.", file=sys.stderr)
+        print(
+            _yellow("\nCapture interrupted; stopping and unloading the servo."),
+            file=sys.stderr,
+        )
     except Exception as exc:
         outcome = "failed"
         error = f"{type(exc).__name__}: {exc}"
         exit_code = 1
-        print(f"Capture failed: {error}", file=sys.stderr)
+        print(_yellow(f"Capture failed: {error}"), file=sys.stderr)
         if bus is not None:
             failure_diagnostics = {}
             try:
@@ -2280,14 +2344,16 @@ def main() -> int:
             try:
                 bus.move_stop(servo_id)
             except Exception as exc:
-                print(f"Warning: servo stop failed: {exc}", file=sys.stderr)
+                print(_yellow(f"Warning: servo stop failed: {exc}"), file=sys.stderr)
             try:
                 bus.unload(servo_id)
                 _verify_loaded_state(bus, servo_id=servo_id, expected=False)
                 final_unloaded_verified = True
                 print("Servo unloaded and verified.")
             except Exception as exc:
-                print(f"Warning: servo unload failed: {exc}", file=sys.stderr)
+                print(
+                    _yellow(f"Warning: servo unload failed: {exc}"), file=sys.stderr
+                )
                 if exit_code == 0:
                     outcome = "failed"
                     error = f"servo unload verification failed: {exc}"
@@ -2295,7 +2361,7 @@ def main() -> int:
             try:
                 bus.transport.close()
             except Exception as exc:
-                print(f"Warning: serial close failed: {exc}", file=sys.stderr)
+                print(_yellow(f"Warning: serial close failed: {exc}"), file=sys.stderr)
 
     finished_wall = datetime.now().astimezone().isoformat()
     operation_elapsed_s = time.monotonic() - operation_started

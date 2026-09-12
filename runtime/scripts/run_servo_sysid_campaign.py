@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -14,6 +15,14 @@ from typing import Sequence
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CAPTURE_SCRIPT = _REPO_ROOT / "runtime" / "scripts" / "capture_servo_sysid.py"
+
+
+def _yellow(text: str) -> str:
+    if not sys.stderr.isatty() or "NO_COLOR" in os.environ:
+        return text
+    if os.environ.get("TERM", "") in {"", "dumb"}:
+        return text
+    return f"\x1b[33m{text}\x1b[0m"
 
 
 @dataclass(frozen=True)
@@ -91,7 +100,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cooldown-target-c", type=float, default=35.0)
     parser.add_argument("--cooldown-timeout-s", type=float, default=900.0)
     parser.add_argument("--cooldown-poll-s", type=float, default=5.0)
-    parser.add_argument("--min-voltage-v", type=float, default=9.0)
+    parser.add_argument(
+        "--min-voltage-v",
+        type=float,
+        default=9.6,
+        help="Minimum HTD-45H operating voltage from the vendor specification.",
+    )
     parser.add_argument("--max-temperature-c", type=float, default=60.0)
     parser.add_argument("--center-max-attempts", type=int, default=3)
     parser.add_argument("--startup-delay-s", type=float, default=3.0)
@@ -222,11 +236,16 @@ def run_campaign(args: argparse.Namespace) -> int:
         result = subprocess.run(command, check=False)
         if result.returncode != 0:
             print(
-                f"Campaign stopped at {campaign_run.run_id}; capture exited "
-                f"with status {result.returncode}.",
+                _yellow(
+                    f"Campaign stopped at {campaign_run.run_id}; capture exited "
+                    f"with status {result.returncode}."
+                ),
                 file=sys.stderr,
             )
-            print(f"Completed artifacts remain in: {campaign_dir}", file=sys.stderr)
+            print(
+                _yellow(f"Completed artifacts remain in: {campaign_dir}"),
+                file=sys.stderr,
+            )
             return int(result.returncode)
 
     if args.dry_run:
