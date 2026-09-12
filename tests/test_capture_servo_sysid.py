@@ -19,8 +19,11 @@ from runtime.scripts.capture_servo_sysid import (
     estimate_delay_metrics,
     estimate_step_response_metrics,
     load_mujoco_fixture,
+    monitor_preparation_phase,
+    preparation_trace_arrays,
     prepare_servo_center,
     summarize_capture,
+    summarize_preparation_trace,
     validate_health,
     validate_profile,
     wait_for_cooldown,
@@ -524,3 +527,125 @@ def test_center_preparation_rearms_after_servo_auto_unloads() -> None:
     assert attempts[0]["loaded_after"] is False
     assert attempts[1]["reloaded_before_attempt"] is True
     assert attempts[1]["loaded_after"] is True
+
+
+def test_preparation_monitor_captures_first_torque_loss() -> None:
+    class AutoUnloadingBus:
+        positions = iter((500, 505, 510))
+        loaded_states = iter((True, True, False))
+        voltages = iter((11.6, 11.4, 10.8))
+
+        def read_position(self, _servo_id):
+            return next(self.positions)
+
+        def read_loaded(self, _servo_id):
+            return next(self.loaded_states)
+
+        def read_voltage_v(self, _servo_id):
+            return next(self.voltages)
+
+        def read_temperature_c(self, _servo_id):
+            return 30
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    samples: list[dict[str, object]] = []
+    last = monitor_preparation_phase(
+        AutoUnloadingBus(),
+        servo_id=100,
+        servo=build_fixture_servo_config(100),
+        phase="center_move",
+        attempt=1,
+        target_units=625,
+        commanded_move_ms=1000,
+        duration_s=1.0,
+        sample_hz=2.0,
+        preparation_started=0.0,
+        samples=samples,
+        monotonic_fn=monotonic,
+        sleep_fn=sleep,
+    )
+
+    assert last["loaded"] is False
+    assert last["phase_elapsed_s"] == pytest.approx(1.0)
+    arrays = preparation_trace_arrays(samples)
+    arrays["preparation_estimated_hold_torque_nm"] = np.asarray(
+        [0.0, 0.05, 0.1], dtype=np.float32
+    )
+    summary = summarize_preparation_trace(arrays)
+
+    assert arrays["preparation_position_servo_units"].tolist() == [500, 505, 510]
+    assert arrays["preparation_loaded_state"].tolist() == [1, 1, 0]
+    assert summary["min_voltage_v"] == pytest.approx(10.8)
+    assert summary["first_unload"]["phase"] == "center_move"
+    assert summary["first_unload"]["position_deg"] == pytest.approx(2.4)
+    assert summary["first_unload"]["estimated_hold_torque_nm"] == pytest.approx(
+        0.1
+    )
+
+
+def test_center_preparation_reports_monitored_unload_phase() -> None:
+    class AutoUnloadingBus:
+        loaded_states = iter((True, True, False))
+        positions = iter((500, 510))
+
+        def move_time_write(self, _servo_id, _position, _move_time_ms):
+            return None
+
+        def read_move_time(self, _servo_id):
+            return 625, 1500
+
+        def read_position(self, _servo_id):
+            return next(self.positions)
+
+        def read_loaded(self, _servo_id):
+            return next(self.loaded_states)
+
+        def read_voltage_v(self, _servo_id):
+            return 11.5
+
+        def read_temperature_c(self, _servo_id):
+            return 30
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    attempts: list[dict[str, object]] = []
+    samples: list[dict[str, object]] = []
+    with pytest.raises(RuntimeError, match="unloaded during center_move"):
+        prepare_servo_center(
+            AutoUnloadingBus(),
+            servo_id=100,
+            servo=build_fixture_servo_config(100),
+            center_rad=math.radians(30.0),
+            initial_units=500,
+            prepare_speed_deg_s=20.0,
+            move_time_ms=20,
+            settle_s=1.0,
+            center_tolerance_deg=2.0,
+            max_attempts=1,
+            min_voltage_v=9.0,
+            max_temperature_c=60.0,
+            read_retries=1,
+            read_retry_sleep_s=0.0,
+            attempts=attempts,
+            monitor_hz=2.0,
+            monitor_samples=samples,
+            monotonic_fn=monotonic,
+            sleep_fn=sleep,
+        )
+
+    assert attempts[0]["loaded_after_reload"] is True
+    assert attempts[0]["unload_detected_phase"] == "center_move"
+    assert attempts[0]["monitor_samples"] == 2

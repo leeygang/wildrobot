@@ -70,11 +70,13 @@ port, and duration. The script then:
 2. reads the unpowered starting position and torque state, unloads the servo,
    and waits until its temperature reaches `--cooldown-target-c`;
 3. records every cooldown temperature, voltage, and actual wait interval;
-4. primes the target at the current position, enables torque, and verifies it;
-5. moves to center at a bounded speed, reads back the servo's accepted target,
-   position, torque state, voltage, and temperature, and retries automatically
-   up to `--center-max-attempts` when the center tolerance is not met; a retry
-   re-primes and reloads a servo that disabled torque, then uses a longer move;
+4. primes the target at the current position, enables torque, verifies it, and
+   monitors a loaded hold before issuing any movement;
+5. moves to center at a bounded speed while continuously sampling position,
+   torque-enable state, voltage, and temperature; it records whether torque was
+   lost during the pre-move hold, center movement, or center settle and retries
+   automatically up to `--center-max-attempts`; a retry re-primes and reloads a
+   servo that disabled torque, then uses a longer move;
 6. runs the full profile while checking encoder reads, tracking error, and loop
    timing;
 7. returns to center, reads voltage and temperature again, moves to the
@@ -106,7 +108,9 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
   `command_rad` is the quantized target actually transmitted after the
   selected write deadband. Schema v4 also records scheduled time, scheduler
   sleep, actual serial-write completion, command age at each read, and cooldown
-  temperature/voltage history;
+  temperature/voltage history. `preparation_*` arrays preserve the monitored
+  pre-move, center-move, center-settle, and unload-pose states even when capture
+  fails before the profile starts;
 - `.json`: fixture geometry and inertia, servo/bus identity, pre/post voltage
   and temperature, initial/center/final positions, torque-load state, all
   operator/cooldown/preparation/profile/return waits, step 10/50/90% response,
@@ -114,6 +118,45 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
 
 The reported chirp `delay_s` is explicitly a cross-correlation lag that includes
 servo response dynamics; it is not a pure serial or actuator transport delay.
+
+### Torque-loss preparation diagnostic
+
+If the servo unexpectedly reports `loaded=false`, do not repeat the full
+campaign. Power-cycle the fixture, leave the load catcher in place, and run one
+slow preparation-only movement:
+
+```bash
+uv run python runtime/scripts/capture_servo_sysid.py \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --center-deg 30 \
+  --fixture-mjcf assets/bam/robot.xml \
+  --fixture-joint pitch \
+  --fixture-direction 1 \
+  --fixture-qpos-offset-deg 0 \
+  --prepare-speed-deg-s 5 \
+  --prepare-monitor-hz 25 \
+  --pre-move-hold-s 2 \
+  --center-max-attempts 1 \
+  --prepare-only \
+  --servo-label htd45h-sysid-id100 \
+  --fixture-label bam-v1
+```
+
+This diagnostic first holds the servo at its measured starting position for two
+seconds, then moves toward +30 degrees at 5 degrees/s, observes the one-second
+center settle, and returns to the gravity-neutral zero pose. It never runs the
+step/chirp profile. The JSON reports `first_unload`; the NPZ keeps the complete
+25 Hz preparation trace and modeled holding torque. A failure in
+`post_load_hold` indicates torque cannot remain enabled before motion;
+`center_move` indicates a motion/load transient or obstruction; and
+`center_settle` indicates that the final static load cannot be held.
+
+The HTD protocol does not report motor current and does not expose a latched
+active fault code. `alarm_mask=7` only means all three LED alarm sources are
+configured. A brief power-rail collapse may therefore require an oscilloscope
+or current-logging supply at the servo connector even when the sampled voltage
+looks normal afterward.
 
 ### Standard follow-up campaign
 
