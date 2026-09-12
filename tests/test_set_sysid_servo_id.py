@@ -136,10 +136,16 @@ def test_set_servo_unit_reports_moves_verifies_and_unloads(capsys) -> None:
     bus.position = 400
     sleeps: list[float] = []
 
+    def confirm(_prompt: str) -> str:
+        assert bus.loaded is True
+        assert bus.position == 500
+        return "y"
+
     measured = set_servo_unit(
         bus,
         servo_id=100,
         target_unit=500,
+        input_fn=confirm,
         sleep_fn=sleeps.append,
     )
 
@@ -151,7 +157,8 @@ def test_set_servo_unit_reports_moves_verifies_and_unloads(capsys) -> None:
     assert bus.unload_count == 1
     output = capsys.readouterr().out
     assert "Current servo unit: 400" in output
-    assert "PASS: servo reached unit 500" in output
+    assert "Servo reached unit 500 and remains loaded" in output
+    assert "torque disabled after confirmation" in output
 
 
 @pytest.mark.parametrize("target_unit", [-1, 1001])
@@ -165,18 +172,50 @@ def test_set_servo_unit_rejects_out_of_range_target(target_unit: int) -> None:
         )
 
 
-def test_set_servo_unit_is_noop_when_already_at_target() -> None:
+def test_set_servo_unit_holds_and_reprompts_when_already_at_target(
+    capsys,
+) -> None:
     bus = FakeBus(100)
+    responses = iter(("n", "Y"))
+    prompts: list[str] = []
+
+    def confirm(prompt: str) -> str:
+        assert bus.loaded is True
+        prompts.append(prompt)
+        return next(responses)
 
     measured = set_servo_unit(
         bus,
         servo_id=100,
         target_unit=500,
+        input_fn=confirm,
         sleep_fn=lambda _seconds: None,
     )
 
     assert measured == 500
-    assert bus.position_writes == []
+    assert bus.position_writes == [(500, 500)]
     assert bus.loaded is False
-    assert bus.load_count == 0
+    assert bus.load_count == 1
+    assert bus.unload_count == 1
+    assert len(prompts) == 2
+    assert "Servo remains loaded; type y" in capsys.readouterr().out
+
+
+def test_set_servo_unit_unloads_when_confirmation_is_interrupted() -> None:
+    bus = FakeBus(100)
+
+    def interrupt(_prompt: str) -> str:
+        assert bus.loaded is True
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        set_servo_unit(
+            bus,
+            servo_id=100,
+            target_unit=500,
+            input_fn=interrupt,
+            sleep_fn=lambda _seconds: None,
+        )
+
+    assert bus.loaded is False
     assert bus.unload_count == 1

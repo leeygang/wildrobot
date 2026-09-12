@@ -137,9 +137,10 @@ def set_servo_unit(
     *,
     servo_id: int,
     target_unit: int,
+    input_fn: Callable[[str], str] = input,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> int:
-    """Move one isolated servo to a verified raw unit and disable torque."""
+    """Move one isolated servo, hold it loaded, then unload on confirmation."""
 
     target = int(target_unit)
     if target < SERVO_MIN_UNIT or target > SERVO_MAX_UNIT:
@@ -152,15 +153,6 @@ def set_servo_unit(
         raise RuntimeError(f"failed to read current unit from servo ID {servo_id}")
     current = int(current)
     print(f"Current servo unit: {current}")
-    if current == target:
-        bus.unload(int(servo_id))
-        if bus.read_loaded(int(servo_id)) is not False:
-            raise RuntimeError("servo torque did not disable at requested unit")
-        print(
-            f"Servo already uses requested unit {target}; "
-            "no motion needed and torque was disabled."
-        )
-        return current
 
     delta_deg = (
         abs(target - current)
@@ -171,18 +163,21 @@ def set_servo_unit(
         SET_UNIT_MIN_MOVE_MS,
         int(math.ceil(delta_deg / SET_UNIT_SPEED_DEG_S * 1000.0)),
     )
-    print(
-        f"Moving servo ID {servo_id}: {current} -> {target} units "
-        f"over {move_time_ms}ms, then unloading torque."
-    )
-
     try:
         bus.move_time_write(int(servo_id), current, SET_UNIT_MIN_MOVE_MS)
         bus.load(int(servo_id))
         if bus.read_loaded(int(servo_id)) is not True:
             raise RuntimeError("servo torque did not enable before position motion")
-        bus.move_time_write(int(servo_id), target, move_time_ms)
-        sleep_fn(move_time_ms / 1000.0 + SET_UNIT_SETTLE_S)
+
+        if current == target:
+            print(f"Servo already uses requested unit {target}; no motion needed.")
+        else:
+            print(
+                f"Moving servo ID {servo_id}: {current} -> {target} units "
+                f"over {move_time_ms}ms, then holding position."
+            )
+            bus.move_time_write(int(servo_id), target, move_time_ms)
+            sleep_fn(move_time_ms / 1000.0 + SET_UNIT_SETTLE_S)
 
         measured = bus.read_position(int(servo_id))
         if measured is None:
@@ -198,12 +193,22 @@ def set_servo_unit(
                 f"servo did not reach requested unit: measured={measured} "
                 f"target={target} error={error} units"
             )
+        print(
+            f"Servo reached unit {measured} and remains loaded. "
+            "Keep the mechanism clear."
+        )
+        while input_fn("Type y to unload servo torque: ").strip().lower() != "y":
+            if bus.read_loaded(int(servo_id)) is not True:
+                raise RuntimeError("servo torque disabled while awaiting confirmation")
+            print("Servo remains loaded; type y when ready to unload.")
+        if bus.read_loaded(int(servo_id)) is not True:
+            raise RuntimeError("servo torque disabled while awaiting confirmation")
     finally:
         bus.unload(int(servo_id))
         if bus.read_loaded(int(servo_id)) is not False:
             raise RuntimeError("servo torque did not disable after position motion")
 
-    print(f"PASS: servo reached unit {measured} and torque was disabled.")
+    print(f"PASS: servo reached unit {measured}; torque disabled after confirmation.")
     return measured
 
 
@@ -259,8 +264,8 @@ def main() -> int:
     else:
         print(f"  requested_servo_unit={int(args.set_unit)}")
         print(
-            "  motion enabled: clear the horn/fixture; torque will be disabled "
-            "after verification"
+            "  motion enabled: clear the horn/fixture; torque remains enabled "
+            "until you type y to unload"
         )
 
     transport = SerialTransport(

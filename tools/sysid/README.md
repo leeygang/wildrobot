@@ -57,9 +57,11 @@ uv run python runtime/scripts/set_sysid_servo_id.py \
 
 `--set-unit` accepts an inclusive raw position from 0 through 1000. The tool
 prints the current encoder unit, primes that position before enabling torque,
-moves at 20 degrees/s, verifies the final position within five raw units, and
-then disables torque. Do not use an endpoint target with an installed linkage
-unless its full travel has been mechanically verified.
+moves at 20 degrees/s, and verifies the final position within five raw units.
+It then holds the target with torque enabled until the operator types `y` to
+unload. Ctrl-C or another exception also executes the torque-off cleanup. Do
+not use an endpoint target with an installed linkage unless its full travel has
+been mechanically verified.
 
 With that servo connected, validate the capture configuration:
 
