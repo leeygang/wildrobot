@@ -164,14 +164,67 @@ configured. A brief power-rail collapse may therefore require an oscilloscope
 or current-logging supply at the servo connector even when the sampled voltage
 looks normal afterward.
 
-### Standard follow-up campaign
+### Separated load/speed characterization
 
-After validating one zero-load, 0.1-2 Hz baseline capture, run the remaining
-bandwidth, signed-load, held-out validation, and repeatability conditions with
-one command:
+Before running chirps, characterize the protection boundary with one factor at
+a time:
 
 ```bash
 uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --plan limits \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --fixture-mjcf assets/bam/robot.xml \
+  --fixture-joint pitch \
+  --fixture-direction 1 \
+  --fixture-qpos-offset-deg 0
+```
+
+The limits plan runs preparation-only moves, never the step/chirp profile:
+
+1. load sweep: 10, 20, and 30 degrees, all at 5 degrees/s;
+2. speed sweep: the identical 0-to-10-degree path at 20, 50, and 100
+   degrees/s; and
+3. interaction check: the identical 0-to-30-degree path at 10, 15, and 20
+   degrees/s.
+
+The load cases hold each endpoint for three seconds. The validated BAM model
+predicts approximately 0.12, 0.24, and 0.35 Nm of static gravity torque at 10,
+20, and 30 degrees. Keeping speed fixed in the first sweep isolates the load
+trend; keeping the endpoint and path fixed in the second isolates the
+speed/current-transient trend. The third sweep then measures their interaction
+at the previously demonstrated 30-degree load.
+
+Every condition uses one center attempt and 50 Hz preparation telemetry. A
+voltage or torque-disable event stops the campaign immediately so a reset
+servo is never mistaken for a valid slower retry. Power-cycle the fixture and
+resume at a named condition only after inspecting the failed JSON/NPZ pair,
+for example:
+
+```bash
+uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --plan limits \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --start-at S1_speed_10deg_20dps
+```
+
+This preserves ToddlerBot's later multi-amplitude/frequency SysID structure,
+but adds an explicit load axis because WildRobot uses a different, larger
+actuator/fixture system and the measured HTD/TTL path has already crossed its
+9.6 V operating floor during motion. Use an oscilloscope or supply-current
+logger for sub-20 ms transients; the 50 Hz protocol telemetry cannot prove
+that faster events did not occur.
+
+### Standard follow-up campaign
+
+After the separated limits plan passes, run the remaining bandwidth,
+signed-load, held-out validation, and repeatability conditions with one
+command:
+
+```bash
+uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --plan sysid \
   --servo-id 100 \
   --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
   --fixture-mjcf assets/bam/robot.xml \
@@ -197,6 +250,7 @@ campaign directory without repeating completed conditions:
 
 ```bash
 uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --plan sysid \
   --servo-id 100 \
   --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
   --start-at B1_fit_plus30

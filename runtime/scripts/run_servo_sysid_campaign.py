@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the standard HTD-45H fixture SysID follow-up campaign."""
+"""Run HTD-45H fixture safety characterization or SysID campaigns."""
 
 from __future__ import annotations
 
@@ -34,6 +34,11 @@ class CampaignRun:
     chirp_start_hz: float = 0.1
     chirp_end_hz: float = 2.0
     chirp_duration_s: float = 10.0
+    prepare_only: bool = False
+    prepare_speed_deg_s: float | None = None
+    prepare_monitor_hz: float | None = None
+    center_max_attempts: int | None = None
+    settle_s: float | None = None
 
 
 CAMPAIGN_RUNS = (
@@ -72,12 +77,109 @@ CAMPAIGN_RUNS = (
 )
 
 
+def _limit_run(
+    run_id: str,
+    description: str,
+    center_deg: float,
+    speed_deg_s: float,
+    *,
+    settle_s: float | None = None,
+) -> CampaignRun:
+    return CampaignRun(
+        run_id=run_id,
+        description=description,
+        center_deg=center_deg,
+        amplitudes_deg="2",
+        prepare_only=True,
+        prepare_speed_deg_s=speed_deg_s,
+        prepare_monitor_hz=50.0,
+        center_max_attempts=1,
+        settle_s=settle_s,
+    )
+
+
+LIMIT_CAMPAIGN_RUNS = (
+    _limit_run(
+        "L1_load_10deg_5dps",
+        "slow load sweep at 10 degrees",
+        10.0,
+        5.0,
+        settle_s=3.0,
+    ),
+    _limit_run(
+        "L2_load_20deg_5dps",
+        "slow load sweep at 20 degrees",
+        20.0,
+        5.0,
+        settle_s=3.0,
+    ),
+    _limit_run(
+        "L3_load_30deg_5dps",
+        "slow load sweep at 30 degrees",
+        30.0,
+        5.0,
+        settle_s=3.0,
+    ),
+    _limit_run(
+        "S1_speed_10deg_20dps",
+        "low-load speed sweep at 20 degrees/s",
+        10.0,
+        20.0,
+    ),
+    _limit_run(
+        "S2_speed_10deg_50dps",
+        "low-load speed sweep at 50 degrees/s",
+        10.0,
+        50.0,
+    ),
+    _limit_run(
+        "S3_speed_10deg_100dps",
+        "low-load speed sweep at 100 degrees/s",
+        10.0,
+        100.0,
+    ),
+    _limit_run(
+        "C1_combined_30deg_10dps",
+        "loaded speed verification at 10 degrees/s",
+        30.0,
+        10.0,
+    ),
+    _limit_run(
+        "C2_combined_30deg_15dps",
+        "loaded speed verification at 15 degrees/s",
+        30.0,
+        15.0,
+    ),
+    _limit_run(
+        "C3_combined_30deg_20dps",
+        "loaded speed verification at 20 degrees/s",
+        30.0,
+        20.0,
+    ),
+)
+
+
+CAMPAIGN_PLANS = {
+    "limits": LIMIT_CAMPAIGN_RUNS,
+    "sysid": CAMPAIGN_RUNS,
+}
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the six HTD-45H captures that follow an accepted zero-load "
-            "baseline with automatic cooldown, preparation, and safe unload."
+            "Run separated HTD-45H load/speed characterization or the full "
+            "SysID follow-up campaign with automatic cooldown and safe unload."
         )
+    )
+    parser.add_argument(
+        "--plan",
+        choices=tuple(CAMPAIGN_PLANS),
+        default="limits",
+        help=(
+            "Use 'limits' before chirps to separate load and speed effects; "
+            "use 'sysid' after the limits plan passes."
+        ),
     )
     parser.add_argument("--servo-id", type=int, required=True)
     parser.add_argument(
@@ -113,8 +215,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-unload-static-torque-nm", type=float, default=0.05)
     parser.add_argument(
         "--start-at",
-        choices=tuple(run.run_id for run in CAMPAIGN_RUNS),
-        default=CAMPAIGN_RUNS[0].run_id,
+        choices=tuple(
+            run.run_id for runs in CAMPAIGN_PLANS.values() for run in runs
+        ),
+        default=None,
         help="Resume the campaign at this condition in a new output directory.",
     )
     parser.add_argument(
@@ -123,7 +227,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=Path("runtime/calibration/servo_sysid"),
     )
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    selected_runs = CAMPAIGN_PLANS[str(args.plan)]
+    if args.start_at is None:
+        args.start_at = selected_runs[0].run_id
+    elif args.start_at not in {run.run_id for run in selected_runs}:
+        parser.error(f"--start-at {args.start_at!r} is not part of --plan {args.plan}")
+    return args
 
 
 def build_capture_command(
@@ -173,7 +283,13 @@ def build_capture_command(
         "--max-temperature-c",
         str(float(args.max_temperature_c)),
         "--center-max-attempts",
-        str(int(args.center_max_attempts)),
+        str(
+            int(
+                campaign_run.center_max_attempts
+                if campaign_run.center_max_attempts is not None
+                else args.center_max_attempts
+            )
+        ),
         "--startup-delay-s",
         str(float(args.startup_delay_s)),
         "--unload-pose-deg",
@@ -185,40 +301,76 @@ def build_capture_command(
         "--fixture-label",
         str(args.fixture_label),
         "--notes",
-        f"standard-sysid-campaign:{campaign_run.run_id}",
+        (
+            "limits-servo-campaign"
+            if args.plan == "limits"
+            else "standard-sysid-campaign"
+        )
+        + f":{campaign_run.run_id}",
         "--output",
         str(output_path),
     ]
+    if campaign_run.prepare_speed_deg_s is not None:
+        command.extend(
+            ["--prepare-speed-deg-s", str(float(campaign_run.prepare_speed_deg_s))]
+        )
+    if campaign_run.prepare_monitor_hz is not None:
+        command.extend(
+            ["--prepare-monitor-hz", str(float(campaign_run.prepare_monitor_hz))]
+        )
+    if campaign_run.settle_s is not None:
+        command.extend(["--settle-s", str(float(campaign_run.settle_s))])
+    if campaign_run.prepare_only:
+        command.append("--prepare-only")
     if args.dry_run:
         command.append("--dry-run")
     return command
 
 
 def run_campaign(args: argparse.Namespace) -> int:
+    campaign_runs = CAMPAIGN_PLANS[str(args.plan)]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    directory_label = "limits" if args.plan == "limits" else "campaign"
     campaign_dir = (
         args.output_dir.expanduser().resolve()
-        / f"htd45h_servo_{int(args.servo_id)}_campaign_{timestamp}"
+        / f"htd45h_servo_{int(args.servo_id)}_{directory_label}_{timestamp}"
     )
     start_index = next(
         index
-        for index, campaign_run in enumerate(CAMPAIGN_RUNS)
+        for index, campaign_run in enumerate(campaign_runs)
         if campaign_run.run_id == args.start_at
     )
-    selected_runs = CAMPAIGN_RUNS[start_index:]
-    print("HTD-45H standard SysID follow-up campaign", flush=True)
+    selected_runs = campaign_runs[start_index:]
+    title = (
+        "HTD-45H separated load/speed characterization"
+        if args.plan == "limits"
+        else "HTD-45H standard SysID follow-up campaign"
+    )
+    print(title, flush=True)
     print(
         f"  runs={len(selected_runs)} servo_id={int(args.servo_id)} "
         f"start_at={args.start_at}",
         flush=True,
     )
     print(f"  output_dir={campaign_dir}", flush=True)
-    print(
-        "  Each run independently cools the unloaded servo, automatically "
-        "verifies center with bounded retries, returns to the gravity-neutral "
-        "unload pose, and disables torque.",
-        flush=True,
-    )
+    if args.plan == "limits":
+        print(
+            "  Preparation-only runs vary one factor at a time: load at 5deg/s, "
+            "speed on the same 10deg path, then speed at 30deg load.",
+            flush=True,
+        )
+        print(
+            "  Every condition gets one attempt. Any voltage/protection failure "
+            "stops the campaign; power-cycle before resuming.",
+            flush=True,
+        )
+    else:
+        print(
+            "  Each run independently cools the unloaded servo, automatically "
+            "verifies center with bounded retries, returns to the gravity-neutral "
+            "unload pose, and disables torque.",
+            flush=True,
+        )
 
     for index, campaign_run in enumerate(selected_runs, start=start_index + 1):
         output_path = campaign_dir / f"{index:02d}_{campaign_run.run_id}.npz"
@@ -229,7 +381,7 @@ def run_campaign(args: argparse.Namespace) -> int:
         )
         print()
         print(
-            f"[{index}/{len(CAMPAIGN_RUNS)}] {campaign_run.run_id}: "
+            f"[{index}/{len(campaign_runs)}] {campaign_run.run_id}: "
             f"{campaign_run.description}",
             flush=True,
         )
