@@ -10,15 +10,19 @@ import pytest
 from runtime.configs.config import ServoConfig
 from runtime.scripts.capture_servo_sysid import (
     ProfileSegment,
+    _empty_capture_arrays,
     add_standard_capture_arrays,
     build_fixture_servo_config,
     build_profile_segments,
     capture_profile,
     evaluate_manual_horizontal_fixture,
     estimate_delay_metrics,
+    estimate_step_response_metrics,
     load_mujoco_fixture,
+    summarize_capture,
     validate_health,
     validate_profile,
+    wait_for_cooldown,
     write_capture,
 )
 
@@ -158,7 +162,56 @@ def test_capture_records_transmitted_command_after_write_deadband() -> None:
 
     assert arrays["command_written"].tolist() == [True, False, False, True]
     assert arrays["applied_servo_units"].tolist() == [500, 500, 500, 505]
+    assert np.isfinite(arrays["command_write_elapsed_s"][[0, 3]]).all()
+    assert np.isnan(arrays["command_write_elapsed_s"][[1, 2]]).all()
+    assert np.all(arrays["command_age_at_read_s"] >= 0.0)
+    assert arrays["scheduler_wait_s"].shape == (4,)
     assert bus.writes == [500, 505]
+
+    summary = summarize_capture(
+        arrays,
+        segments=(
+            ProfileSegment(
+                name="test",
+                kind="chirp",
+                targets_rad=(0.0, 0.004, 0.008, 0.020),
+            ),
+        ),
+        sample_hz=1000.0,
+        max_delay_s=0.1,
+    )
+    assert summary["command_write_fraction"] == pytest.approx(0.5)
+    assert summary["timing_ms"]["position_read"]["max"] >= 0.0
+    assert summary["segments"]["test"]["command_write_fraction"] == pytest.approx(0.5)
+
+
+def test_step_response_metrics_report_gain_and_wait_times() -> None:
+    metrics = estimate_step_response_metrics(
+        np.full(10, 1.0),
+        np.asarray([0.0, 0.1, 0.4, 0.7, 0.85, 0.9, 0.9, 0.9, 0.9, 0.9]),
+        baseline_position_rad=np.zeros(5),
+        sample_hz=10.0,
+    )
+
+    assert metrics["steady_gain"] == pytest.approx(0.9)
+    assert metrics["response_t10_s"] == pytest.approx(0.1)
+    assert metrics["response_t50_s"] == pytest.approx(0.3)
+    assert metrics["response_t90_s"] == pytest.approx(0.4)
+    assert metrics["response_rise_10_90_s"] == pytest.approx(0.3)
+
+
+def test_summary_handles_failure_before_profile_samples() -> None:
+    summary = summarize_capture(
+        _empty_capture_arrays(),
+        segments=(
+            ProfileSegment(name="step_positive_2deg", kind="hold", targets_rad=(0.1,)),
+        ),
+        sample_hz=50.0,
+        max_delay_s=0.6,
+    )
+
+    assert summary["samples"] == 0
+    assert summary["segments"]["step_positive_2deg"]["samples"] == 0
 
 
 def test_standard_arrays_preserve_legacy_sysid_contract_and_load_torque() -> None:
@@ -241,6 +294,7 @@ def test_write_capture_writes_npz_and_manifest_without_overwrite(tmp_path) -> No
 
     with np.load(npz_path) as payload:
         assert set(arrays).issubset(payload.files)
+        assert int(payload["schema_version"]) == 4
     assert json.loads(json_path.read_text())["summary"]["samples"] == 2
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         write_capture(
@@ -264,3 +318,39 @@ def test_health_validation_requires_telemetry_and_applies_limits() -> None:
             min_voltage_v=9.0,
             max_temperature_c=60.0,
         )
+
+
+def test_cooldown_records_temperature_voltage_and_actual_wait() -> None:
+    class FakeBus:
+        temperatures = iter((42, 38, 34))
+
+        def read_voltage_v(self, _servo_id):
+            return 11.6
+
+        def read_temperature_c(self, _servo_id):
+            return next(self.temperatures)
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    samples, waited_s = wait_for_cooldown(
+        FakeBus(),
+        servo_id=100,
+        target_temperature_c=35.0,
+        timeout_s=30.0,
+        poll_s=5.0,
+        min_voltage_v=9.0,
+        max_temperature_c=60.0,
+        monotonic_fn=monotonic,
+        sleep_fn=sleep,
+    )
+
+    assert waited_s == pytest.approx(10.0)
+    assert [sample["temperature_c"] for sample in samples] == [42, 38, 34]
+    assert [sample["cooldown_elapsed_s"] for sample in samples] == [0.0, 5.0, 10.0]
+    assert all(sample["voltage_v"] == pytest.approx(11.6) for sample in samples)

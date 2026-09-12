@@ -55,6 +55,8 @@ uv run python runtime/scripts/capture_servo_sysid.py \
   --fixture-joint pitch \
   --fixture-direction 1 \
   --fixture-qpos-offset-deg 0 \
+  --write-deadband-units 0 \
+  --cooldown-target-c 35 \
   --servo-label htd45h-sysid-id100 \
   --fixture-label bam-v1 \
   --dry-run
@@ -66,16 +68,24 @@ after checking the printed root, moving body, moving mass, inertia, torque,
 port, and duration. The script then:
 
 1. requires `RUN` before opening the bus or applying torque;
-2. reads voltage, temperature, and the unpowered starting position;
-3. primes the target at the current position, enables torque, and verifies it;
-4. moves to center at a bounded speed and requires confirmation that the
+2. reads the unpowered starting position and torque state, unloads the servo,
+   and waits until its temperature reaches `--cooldown-target-c`;
+3. records every cooldown temperature, voltage, and actual wait interval;
+4. primes the target at the current position, enables torque, and verifies it;
+5. moves to center at a bounded speed and requires confirmation that the
    physical pose matches the corresponding MJCF pose;
-5. runs the full profile while checking encoder reads, tracking error, and loop
+6. runs the full profile while checking encoder reads, tracking error, and loop
    timing;
-6. returns to center, reads voltage and temperature again, and waits for
+7. returns to center, reads voltage and temperature again, and waits for
    `UNLOAD`; and
-7. stops and unloads the servo in a `finally` path on completion, error, or
+8. stops and unloads the servo in a `finally` path on completion, error, or
    Ctrl-C.
+
+Use `--write-deadband-units 0` for the actuator-model identification captures;
+this preserves every quantized command. Use a separate run with the deployment
+value `3` to measure the combined actuator plus runtime command-suppression
+behavior. Each load center remains a separate invocation so the operator can
+verify mechanical stops and the catcher before higher-torque tests.
 
 Each condition is one invocation so the fixture cannot be reconfigured while
 the servo is energized. Review the hanging-zero capture before running
@@ -91,9 +101,16 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
   the smooth `requested_command_rad`, segment labels, command/read timing, and
   `fixture_qpos_rad`, MuJoCo-derived holding torque and moving-load inertia.
   `command_rad` is the quantized target actually transmitted after the
-  deployment-equivalent write deadband;
+  selected write deadband. Schema v4 also records scheduled time, scheduler
+  sleep, actual serial-write completion, command age at each read, and cooldown
+  temperature/voltage history;
 - `.json`: fixture geometry and inertia, servo/bus identity, pre/post voltage
-  and temperature, outcome, tracking error, and per-chirp delay estimates.
+  and temperature, initial/center/final positions, torque-load state, all
+  operator/cooldown/preparation/profile/return waits, step 10/50/90% response,
+  steady gain, command-update cadence, outcome, and per-chirp correlation lag.
+
+The reported chirp `delay_s` is explicitly a cross-correlation lag that includes
+servo response dynamics; it is not a pure serial or actuator transport delay.
 
 The HTD protocol exposes position, supply voltage, and temperature, but not
 motor current or torque. Torque-related parameters therefore require the

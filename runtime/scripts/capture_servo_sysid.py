@@ -44,7 +44,7 @@ from wr_runtime.hardware.hiwonder_ttl_bus import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 STANDARD_GRAVITY_M_S2 = 9.80665
 DEFAULT_AMPLITUDES_DEG = (2.0, 5.0, 8.0)
 
@@ -298,7 +298,7 @@ def estimate_delay_metrics(
     *,
     sample_hz: float,
     max_delay_s: float,
-) -> dict[str, float | int | None]:
+) -> dict[str, object]:
     target = np.asarray(target_rad, dtype=np.float64).reshape(-1)
     position = np.asarray(position_rad, dtype=np.float64).reshape(-1)
     valid = np.isfinite(target) & np.isfinite(position)
@@ -308,6 +308,9 @@ def estimate_delay_metrics(
         return {
             "delay_samples": None,
             "delay_s": None,
+            "delay_interpretation": (
+                "cross_correlation_lag_including_servo_response_not_transport_only"
+            ),
             "correlation": None,
             "gain": None,
             "fit_rmse_deg": None,
@@ -336,6 +339,9 @@ def estimate_delay_metrics(
         return {
             "delay_samples": None,
             "delay_s": None,
+            "delay_interpretation": (
+                "cross_correlation_lag_including_servo_response_not_transport_only"
+            ),
             "correlation": None,
             "gain": None,
             "fit_rmse_deg": None,
@@ -344,9 +350,67 @@ def estimate_delay_metrics(
     return {
         "delay_samples": int(lag),
         "delay_s": float(lag) / float(sample_hz),
+        "delay_interpretation": (
+            "cross_correlation_lag_including_servo_response_not_transport_only"
+        ),
         "correlation": correlation,
         "gain": gain,
         "fit_rmse_deg": math.degrees(rmse),
+    }
+
+
+def estimate_step_response_metrics(
+    target_rad: np.ndarray,
+    position_rad: np.ndarray,
+    *,
+    baseline_position_rad: np.ndarray,
+    sample_hz: float,
+) -> dict[str, float | None]:
+    """Estimate steady gain and 10/50/90% response times for one step."""
+
+    target = np.asarray(target_rad, dtype=np.float64).reshape(-1)
+    position = np.asarray(position_rad, dtype=np.float64).reshape(-1)
+    baseline_values = np.asarray(baseline_position_rad, dtype=np.float64).reshape(-1)
+    if target.size == 0 or position.size == 0 or baseline_values.size == 0:
+        return {}
+    steady_count = min(position.size, max(1, int(round(0.4 * float(sample_hz)))))
+    baseline = float(np.mean(baseline_values))
+    command = float(np.mean(target))
+    steady = float(np.mean(position[-steady_count:]))
+    requested_delta = command - baseline
+    realized_delta = steady - baseline
+    gain = None
+    if abs(requested_delta) > 1e-9:
+        gain = realized_delta / requested_delta
+
+    crossings: dict[str, float | None] = {
+        "response_t10_s": None,
+        "response_t50_s": None,
+        "response_t90_s": None,
+    }
+    if abs(realized_delta) > 1e-9:
+        fraction = (position - baseline) / realized_delta
+        for label, threshold in (("t10", 0.1), ("t50", 0.5), ("t90", 0.9)):
+            hits = np.flatnonzero(fraction >= threshold)
+            crossings[f"response_{label}_s"] = (
+                float(hits[0]) / float(sample_hz) if hits.size else None
+            )
+    rise_time = None
+    if (
+        crossings["response_t10_s"] is not None
+        and crossings["response_t90_s"] is not None
+    ):
+        rise_time = float(crossings["response_t90_s"]) - float(
+            crossings["response_t10_s"]
+        )
+    return {
+        "baseline_position_deg": math.degrees(baseline),
+        "command_deg": math.degrees(command),
+        "steady_position_deg": math.degrees(steady),
+        "steady_error_deg": math.degrees(command - steady),
+        "steady_gain": gain,
+        **crossings,
+        "response_rise_10_90_s": rise_time,
     }
 
 
@@ -361,6 +425,22 @@ def summarize_capture(
     target = np.asarray(arrays["applied_joint_rad"], dtype=np.float64)
     position = np.asarray(arrays["position_joint_rad"], dtype=np.float64)
     error = target[valid] - position[valid]
+    position_elapsed = np.asarray(arrays["position_elapsed_s"], dtype=np.float64)
+    sample_period = np.diff(position_elapsed)
+    written = np.asarray(arrays["command_written"], dtype=bool)
+
+    def timing_ms(values: np.ndarray) -> dict[str, float | None]:
+        finite = np.asarray(values, dtype=np.float64)
+        finite = finite[np.isfinite(finite)]
+        if not finite.size:
+            return {"mean": None, "p95": None, "p99": None, "max": None}
+        return {
+            "mean": 1000.0 * float(np.mean(finite)),
+            "p95": 1000.0 * float(np.percentile(finite, 95.0)),
+            "p99": 1000.0 * float(np.percentile(finite, 99.0)),
+            "max": 1000.0 * float(np.max(finite)),
+        }
+
     summary: dict[str, object] = {
         "samples": int(target.size),
         "valid_position_samples": int(np.sum(valid)),
@@ -379,6 +459,13 @@ def summarize_capture(
         "max_loop_lateness_ms": (
             1000.0 * float(np.max(arrays["loop_lateness_s"])) if target.size else None
         ),
+        "timing_ms": {
+            "sample_period": timing_ms(sample_period),
+            "scheduler_wait": timing_ms(arrays["scheduler_wait_s"]),
+            "command_write": timing_ms(arrays["command_write_s"][written]),
+            "position_read": timing_ms(arrays["position_read_s"]),
+            "command_age_at_read": timing_ms(arrays["command_age_at_read_s"]),
+        },
         "segments": {},
     }
     segment_indices = np.asarray(arrays["segment_index"], dtype=np.int32)
@@ -396,7 +483,35 @@ def summarize_capture(
                 if segment_error.size
                 else None
             ),
+            "command_write_fraction": (
+                float(np.mean(written[mask])) if np.any(mask) else None
+            ),
         }
+        segment_write_times = np.asarray(
+            arrays["command_write_elapsed_s"][mask], dtype=np.float64
+        )
+        segment_write_times = segment_write_times[np.isfinite(segment_write_times)]
+        item["mean_command_write_interval_s"] = (
+            float(np.mean(np.diff(segment_write_times)))
+            if segment_write_times.size > 1
+            else None
+        )
+        if (
+            segment.kind == "hold"
+            and segment.name.startswith("step_")
+            and np.any(mask)
+        ):
+            indices = np.flatnonzero(mask)
+            baseline_count = max(1, int(round(0.2 * float(sample_hz))))
+            baseline_start = max(0, int(indices[0]) - baseline_count)
+            item.update(
+                estimate_step_response_metrics(
+                    target[mask],
+                    position[mask],
+                    baseline_position_rad=position[baseline_start : int(indices[0])],
+                    sample_hz=sample_hz,
+                )
+            )
         if segment.kind == "chirp":
             item.update(
                 estimate_delay_metrics(
@@ -414,7 +529,11 @@ def summarize_capture(
 def _empty_capture_arrays() -> dict[str, np.ndarray]:
     return {
         "profile_time_s": np.empty(0, dtype=np.float64),
+        "scheduled_elapsed_s": np.empty(0, dtype=np.float64),
+        "scheduler_wait_s": np.empty(0, dtype=np.float64),
         "command_elapsed_s": np.empty(0, dtype=np.float64),
+        "command_write_elapsed_s": np.empty(0, dtype=np.float64),
+        "command_age_at_read_s": np.empty(0, dtype=np.float64),
         "position_elapsed_s": np.empty(0, dtype=np.float64),
         "segment_index": np.empty(0, dtype=np.int32),
         "segment_name": np.empty(0, dtype="U1"),
@@ -423,7 +542,7 @@ def _empty_capture_arrays() -> dict[str, np.ndarray]:
         "applied_joint_rad": np.empty(0, dtype=np.float32),
         "applied_servo_units": np.empty(0, dtype=np.int32),
         "position_joint_rad": np.empty(0, dtype=np.float32),
-        "position_servo_units": np.empty(0, dtype=np.float32),
+        "position_servo_units": np.empty(0, dtype=np.int32),
         "position_valid": np.empty(0, dtype=bool),
         "command_written": np.empty(0, dtype=bool),
         "command_write_s": np.empty(0, dtype=np.float64),
@@ -439,8 +558,20 @@ def _new_capture_fields() -> dict[str, list[object]]:
 def _arrays_from_fields(fields: dict[str, list[object]]) -> dict[str, np.ndarray]:
     return {
         "profile_time_s": np.asarray(fields["profile_time_s"], dtype=np.float64),
+        "scheduled_elapsed_s": np.asarray(
+            fields["scheduled_elapsed_s"], dtype=np.float64
+        ),
+        "scheduler_wait_s": np.asarray(
+            fields["scheduler_wait_s"], dtype=np.float64
+        ),
         "command_elapsed_s": np.asarray(
             fields["command_elapsed_s"], dtype=np.float64
+        ),
+        "command_write_elapsed_s": np.asarray(
+            fields["command_write_elapsed_s"], dtype=np.float64
+        ),
+        "command_age_at_read_s": np.asarray(
+            fields["command_age_at_read_s"], dtype=np.float64
         ),
         "position_elapsed_s": np.asarray(
             fields["position_elapsed_s"], dtype=np.float64
@@ -577,6 +708,7 @@ def capture_profile(
     capture_start = time.monotonic()
     nominal_step = 0
     last_written_units: int | None = None
+    last_write_done: float | None = None
 
     for segment_index, segment in enumerate(segments):
         print(
@@ -587,10 +719,12 @@ def capture_profile(
         segment_start = time.monotonic()
         for local_step, target_rad in enumerate(segment.targets_rad):
             scheduled = segment_start + float(local_step) / float(sample_hz)
+            wait_start = time.monotonic()
             remaining = scheduled - time.monotonic()
             if remaining > 0.0:
                 time.sleep(remaining)
             loop_start = time.monotonic()
+            scheduler_wait_s = loop_start - wait_start
             target_units = servo.joint_target_rad_to_elect_unit(float(target_rad))
             should_write = (
                 last_written_units is None
@@ -602,7 +736,10 @@ def capture_profile(
                 bus.move_time_write(int(servo_id), int(target_units), int(move_time_ms))
                 last_written_units = int(target_units)
             write_done = time.monotonic()
+            if should_write:
+                last_write_done = write_done
             assert last_written_units is not None
+            assert last_write_done is not None
             applied_rad = servo.servo_elect_units_to_joint_target_rad(
                 int(last_written_units)
             )
@@ -619,7 +756,13 @@ def capture_profile(
             )
 
             fields["profile_time_s"].append(float(nominal_step) / float(sample_hz))
+            fields["scheduled_elapsed_s"].append(scheduled - capture_start)
+            fields["scheduler_wait_s"].append(scheduler_wait_s)
             fields["command_elapsed_s"].append(write_start - capture_start)
+            fields["command_write_elapsed_s"].append(
+                write_done - capture_start if should_write else float("nan")
+            )
+            fields["command_age_at_read_s"].append(read_done - last_write_done)
             fields["position_elapsed_s"].append(read_done - capture_start)
             fields["segment_index"].append(segment_index)
             fields["segment_name"].append(segment.name)
@@ -695,6 +838,58 @@ def validate_health(
             f"servo temperature {float(temperature):.1f}C exceeds "
             f"{float(max_temperature_c):.1f}C"
         )
+
+
+def wait_for_cooldown(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    target_temperature_c: float,
+    timeout_s: float,
+    poll_s: float,
+    min_voltage_v: float,
+    max_temperature_c: float,
+    samples: list[dict[str, object]] | None = None,
+    monotonic_fn=time.monotonic,
+    sleep_fn=time.sleep,
+) -> tuple[list[dict[str, object]], float]:
+    """Wait unloaded until the servo reaches a repeatable start temperature."""
+
+    started = monotonic_fn()
+    samples = samples if samples is not None else []
+    while True:
+        read_started = monotonic_fn()
+        health = read_health(bus, servo_id=servo_id)
+        read_finished = monotonic_fn()
+        validate_health(
+            health,
+            min_voltage_v=min_voltage_v,
+            max_temperature_c=max_temperature_c,
+        )
+        elapsed_s = read_finished - started
+        sample = {
+            "phase": "cooldown",
+            "cooldown_elapsed_s": elapsed_s,
+            "read_duration_s": read_finished - read_started,
+            **health,
+        }
+        samples.append(sample)
+        temperature_c = float(health["temperature_c"])
+        print(
+            f"Cooldown: elapsed={elapsed_s:.1f}s "
+            f"temperature={temperature_c:.1f}C "
+            f"target<={float(target_temperature_c):.1f}C "
+            f"voltage={float(health['voltage_v']):.2f}V",
+            flush=True,
+        )
+        if temperature_c <= float(target_temperature_c):
+            return samples, elapsed_s
+        if elapsed_s >= float(timeout_s):
+            raise RuntimeError(
+                f"cooldown timed out after {elapsed_s:.1f}s at "
+                f"{temperature_c:.1f}C; target is {float(target_temperature_c):.1f}C"
+            )
+        sleep_fn(min(float(poll_s), max(0.0, float(timeout_s) - elapsed_s)))
 
 
 def _verify_loaded_state(
@@ -837,6 +1032,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-static-torque-nm", type=float, default=2.5)
     parser.add_argument("--min-voltage-v", type=float, default=9.0)
     parser.add_argument("--max-temperature-c", type=float, default=60.0)
+    parser.add_argument(
+        "--cooldown-target-c",
+        type=float,
+        default=35.0,
+        help="Wait unloaded until the servo is at or below this temperature.",
+    )
+    parser.add_argument("--cooldown-timeout-s", type=float, default=900.0)
+    parser.add_argument("--cooldown-poll-s", type=float, default=5.0)
     parser.add_argument("--read-retries", type=int, default=3)
     parser.add_argument("--read-retry-sleep-s", type=float, default=0.002)
     parser.add_argument("--max-delay-s", type=float, default=0.6)
@@ -916,6 +1119,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("move time and write deadband must be non-negative")
     if args.read_retries <= 0 or args.read_retry_sleep_s < 0.0:
         raise ValueError("read retries must be positive and retry sleep non-negative")
+    if args.cooldown_target_c <= 0.0:
+        raise ValueError("--cooldown-target-c must be positive")
+    if args.cooldown_target_c > args.max_temperature_c:
+        raise ValueError("--cooldown-target-c must not exceed --max-temperature-c")
+    if args.cooldown_timeout_s < 0.0 or args.cooldown_poll_s <= 0.0:
+        raise ValueError("cooldown timeout must be non-negative and poll must be positive")
 
 
 def _format_health(health: dict[str, float | None]) -> str:
@@ -1067,6 +1276,11 @@ def main() -> int:
         f"  profile={duration_s:.1f}s at {float(args.sample_hz):.1f}Hz "
         f"move_time_ms={int(args.move_time_ms)} deadband_units={int(args.write_deadband_units)}"
     )
+    print(
+        f"  cooldown=unloaded to <= {float(args.cooldown_target_c):.1f}C "
+        f"(poll={float(args.cooldown_poll_s):.1f}s, "
+        f"timeout={float(args.cooldown_timeout_s):.1f}s)"
+    )
     if fixture_model is not None:
         print(
             f"  fixture={fixture_model.path} joint={fixture_model.joint_name} "
@@ -1110,20 +1324,40 @@ def main() -> int:
         print("Dry run complete; no serial port was opened and no files were written.")
         return 0
 
+    invocation_wall = datetime.now().astimezone().isoformat()
+    run_prompt_started = time.monotonic()
     confirmation = input(
         "Attach and support the stated load, clear the fixture, then type RUN: "
     ).strip()
+    run_confirmation_wait_s = time.monotonic() - run_prompt_started
     if confirmation != "RUN":
         print("Capture cancelled; no hardware command or file write occurred.")
         return 2
 
     capture_fields = _new_capture_fields()
     health_samples: list[dict[str, object]] = []
+    cooldown_samples: list[dict[str, object]] = []
     outcome = "failed"
     error: str | None = None
     bus: RawServoBus | None = None
     exit_code = 1
     start_wall = datetime.now().astimezone().isoformat()
+    operation_started = time.monotonic()
+    cooldown_wait_s: float | None = None
+    initial_loaded_state: bool | None = None
+    final_unloaded_verified = False
+    initial_units: int | None = None
+    initial_rad: float | None = None
+    centered_units: int | None = None
+    centered_rad: float | None = None
+    final_center_units: int | None = None
+    final_center_rad: float | None = None
+    prepare_move_s: float | None = None
+    prepare_wait_s: float | None = None
+    center_confirmation_wait_s: float | None = None
+    profile_duration_s: float | None = None
+    return_to_center_wait_s: float | None = None
+    unload_confirmation_wait_s: float | None = None
     try:
         transport = SerialTransport(
             SerialTransportConfig(
@@ -1137,6 +1371,7 @@ def main() -> int:
             raise RuntimeError(
                 f"servo ID probe failed on {port}: expected {servo_id}, got {reported_id}"
             )
+        initial_loaded_state = bus.read_loaded(servo_id)
         initial_units = _read_position_with_retries(
             bus,
             servo_id=servo_id,
@@ -1144,20 +1379,37 @@ def main() -> int:
             retry_sleep_s=float(args.read_retry_sleep_s),
         )
         initial_rad = servo.servo_elect_units_to_joint_target_rad(initial_units)
-        health_before = read_health(bus, servo_id=servo_id)
-        health_samples.append({"phase": "before", **health_before})
-        validate_health(
-            health_before,
-            min_voltage_v=float(args.min_voltage_v),
-            max_temperature_c=float(args.max_temperature_c),
-        )
         print(
-            f"Initial position={math.degrees(initial_rad):+.2f}deg; "
-            f"{_format_health(health_before)}"
+            f"Initial position={math.degrees(initial_rad):+.2f}deg "
+            f"loaded={initial_loaded_state}"
         )
 
         bus.unload(servo_id)
         _verify_loaded_state(bus, servo_id=servo_id, expected=False)
+        cooldown_started = time.monotonic()
+        try:
+            cooldown_samples, _ = wait_for_cooldown(
+                bus,
+                servo_id=servo_id,
+                target_temperature_c=float(args.cooldown_target_c),
+                timeout_s=float(args.cooldown_timeout_s),
+                poll_s=float(args.cooldown_poll_s),
+                min_voltage_v=float(args.min_voltage_v),
+                max_temperature_c=float(args.max_temperature_c),
+                samples=cooldown_samples,
+            )
+        finally:
+            cooldown_wait_s = time.monotonic() - cooldown_started
+        health_samples.extend(cooldown_samples)
+        health_before = {
+            "voltage_v": cooldown_samples[-1]["voltage_v"],
+            "temperature_c": cooldown_samples[-1]["temperature_c"],
+        }
+        print(
+            f"Starting profile preparation after {cooldown_wait_s:.1f}s cooldown; "
+            f"{_format_health(health_before)}"
+        )
+
         bus.move_time_write(
             servo_id,
             int(initial_units),
@@ -1176,13 +1428,16 @@ def main() -> int:
             ),
         )
         prepare_ms = min(30000, prepare_ms)
+        prepare_move_s = prepare_ms / 1000.0
         print(f"Moving to fixture center over {prepare_ms / 1000.0:.2f}s...")
+        prepare_started = time.monotonic()
         bus.move_time_write(
             servo_id,
             servo.joint_target_rad_to_elect_unit(center_rad),
             prepare_ms,
         )
         time.sleep(prepare_ms / 1000.0 + float(args.settle_s))
+        prepare_wait_s = time.monotonic() - prepare_started
         centered_units = _read_position_with_retries(
             bus,
             servo_id=servo_id,
@@ -1208,13 +1463,30 @@ def main() -> int:
             )
         else:
             center_instruction = "Verify with a level that the lever is horizontal"
+        center_prompt_started = time.monotonic()
         centered_confirmation = input(
             f"{center_instruction} and the load path is clear, then type CENTERED: "
         ).strip()
+        center_confirmation_wait_s = time.monotonic() - center_prompt_started
         if centered_confirmation != "CENTERED":
             raise RuntimeError("fixture center was not confirmed")
 
+        health_before_profile = read_health(bus, servo_id=servo_id)
+        validate_health(
+            health_before_profile,
+            min_voltage_v=float(args.min_voltage_v),
+            max_temperature_c=float(args.max_temperature_c),
+        )
+        health_samples.append(
+            {
+                "phase": "before_profile",
+                "operation_elapsed_s": time.monotonic() - operation_started,
+                **health_before_profile,
+            }
+        )
+
         print("Running automatic profile...")
+        profile_started = time.monotonic()
         capture_profile(
             bus,
             servo_id=servo_id,
@@ -1228,22 +1500,42 @@ def main() -> int:
             read_retry_sleep_s=float(args.read_retry_sleep_s),
             fields=capture_fields,
         )
+        profile_duration_s = time.monotonic() - profile_started
+        return_started = time.monotonic()
         bus.move_time_write(
             servo_id,
             servo.joint_target_rad_to_elect_unit(center_rad),
             1000,
         )
         time.sleep(1.0 + float(args.settle_s))
+        return_to_center_wait_s = time.monotonic() - return_started
+        final_center_units = _read_position_with_retries(
+            bus,
+            servo_id=servo_id,
+            retries=int(args.read_retries),
+            retry_sleep_s=float(args.read_retry_sleep_s),
+        )
+        final_center_rad = servo.servo_elect_units_to_joint_target_rad(
+            final_center_units
+        )
         health_after = read_health(bus, servo_id=servo_id)
-        health_samples.append({"phase": "after", **health_after})
+        health_samples.append(
+            {
+                "phase": "after_profile",
+                "operation_elapsed_s": time.monotonic() - operation_started,
+                **health_after,
+            }
+        )
         validate_health(
             health_after,
             min_voltage_v=float(args.min_voltage_v),
             max_temperature_c=float(args.max_temperature_c),
         )
         print(f"Profile complete; {_format_health(health_after)}")
+        unload_prompt_started = time.monotonic()
         while input("Support the lever/load, then type UNLOAD: ").strip() != "UNLOAD":
             print("Servo remains loaded at center; type UNLOAD when the fixture is supported.")
+        unload_confirmation_wait_s = time.monotonic() - unload_prompt_started
         outcome = "completed"
         exit_code = 0
     except KeyboardInterrupt:
@@ -1265,6 +1557,7 @@ def main() -> int:
             try:
                 bus.unload(servo_id)
                 _verify_loaded_state(bus, servo_id=servo_id, expected=False)
+                final_unloaded_verified = True
                 print("Servo unloaded and verified.")
             except Exception as exc:
                 print(f"Warning: servo unload failed: {exc}", file=sys.stderr)
@@ -1277,7 +1570,25 @@ def main() -> int:
             except Exception as exc:
                 print(f"Warning: serial close failed: {exc}", file=sys.stderr)
 
+    finished_wall = datetime.now().astimezone().isoformat()
+    operation_elapsed_s = time.monotonic() - operation_started
     arrays = _arrays_from_fields(capture_fields)
+    arrays.update(
+        {
+            "cooldown_elapsed_s": np.asarray(
+                [sample["cooldown_elapsed_s"] for sample in cooldown_samples],
+                dtype=np.float64,
+            ),
+            "cooldown_temperature_c": np.asarray(
+                [sample["temperature_c"] for sample in cooldown_samples],
+                dtype=np.float32,
+            ),
+            "cooldown_voltage_v": np.asarray(
+                [sample["voltage_v"] for sample in cooldown_samples],
+                dtype=np.float32,
+            ),
+        }
+    )
     measured_position = np.asarray(arrays["position_joint_rad"], dtype=np.float64)
     if fixture_model is not None:
         fixture_qpos, hold_torque, load_inertia = fixture_model.evaluate(
@@ -1304,11 +1615,34 @@ def main() -> int:
         sample_hz=float(args.sample_hz),
         max_delay_s=float(args.max_delay_s),
     )
+    health_by_phase = {
+        str(sample["phase"]): sample
+        for sample in health_samples
+        if sample.get("phase") in ("before_profile", "after_profile")
+    }
+    before_profile_temperature = health_by_phase.get("before_profile", {}).get(
+        "temperature_c"
+    )
+    after_profile_temperature = health_by_phase.get("after_profile", {}).get(
+        "temperature_c"
+    )
+    temperature_rise_c = None
+    temperature_rise_c_per_min = None
+    if before_profile_temperature is not None and after_profile_temperature is not None:
+        temperature_rise_c = float(after_profile_temperature) - float(
+            before_profile_temperature
+        )
+        if profile_duration_s is not None and profile_duration_s > 0.0:
+            temperature_rise_c_per_min = (
+                temperature_rise_c * 60.0 / profile_duration_s
+            )
     metadata: dict[str, object] = {
         "tool": "runtime/scripts/capture_servo_sysid.py",
         "mode": "htd45h_known_load_profile",
         "capture_source": "hardware",
+        "invoked_at": invocation_wall,
         "captured_at": start_wall,
+        "finished_at": finished_wall,
         "outcome": outcome,
         "error": error,
         "joint": str(args.servo_label or f"servo_{servo_id}"),
@@ -1329,6 +1663,60 @@ def main() -> int:
         "num_samples": int(arrays["timestamps_s"].size),
         "move_time_ms": int(args.move_time_ms),
         "write_deadband_units": int(args.write_deadband_units),
+        "timing_semantics": {
+            "command_elapsed_s": "host monotonic time immediately before write decision",
+            "command_write_elapsed_s": (
+                "host monotonic time after serial flush; NaN when the deadband skips a write"
+            ),
+            "command_age_at_read_s": (
+                "time from the latest serial-write completion to position-read completion"
+            ),
+            "position_elapsed_s": "host monotonic time after position response",
+            "delay_s": (
+                "cross-correlation lag including servo response; not pure transport latency"
+            ),
+        },
+        "waits_s": {
+            "run_confirmation": run_confirmation_wait_s,
+            "cooldown": cooldown_wait_s,
+            "prepare_commanded_move": prepare_move_s,
+            "prepare_move_and_settle_actual": prepare_wait_s,
+            "center_confirmation": center_confirmation_wait_s,
+            "profile_actual": profile_duration_s,
+            "return_to_center_actual": return_to_center_wait_s,
+            "unload_confirmation": unload_confirmation_wait_s,
+            "operation_total": operation_elapsed_s,
+        },
+        "cooldown": {
+            "target_temperature_c": float(args.cooldown_target_c),
+            "timeout_s": float(args.cooldown_timeout_s),
+            "poll_s": float(args.cooldown_poll_s),
+            "samples": cooldown_samples,
+        },
+        "thermal_summary": {
+            "before_profile_temperature_c": before_profile_temperature,
+            "after_profile_temperature_c": after_profile_temperature,
+            "profile_temperature_rise_c": temperature_rise_c,
+            "profile_temperature_rise_c_per_min": temperature_rise_c_per_min,
+        },
+        "servo_state": {
+            "initial_loaded": initial_loaded_state,
+            "final_unloaded_verified": final_unloaded_verified,
+            "initial_position_units": initial_units,
+            "initial_position_deg": (
+                math.degrees(initial_rad) if initial_rad is not None else None
+            ),
+            "centered_position_units": centered_units,
+            "centered_position_deg": (
+                math.degrees(centered_rad) if centered_rad is not None else None
+            ),
+            "final_center_position_units": final_center_units,
+            "final_center_position_deg": (
+                math.degrees(final_center_rad)
+                if final_center_rad is not None
+                else None
+            ),
+        },
         "chirp_start_hz": float(args.chirp_start_hz),
         "chirp_end_hz": float(args.chirp_end_hz),
         "chirp_duration_s": float(args.chirp_duration_s),
