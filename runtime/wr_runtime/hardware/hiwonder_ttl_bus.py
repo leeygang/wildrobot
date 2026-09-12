@@ -18,6 +18,7 @@ CMD_MOVE_START = 11
 CMD_MOVE_STOP = 12
 CMD_ID_WRITE = 13
 CMD_ID_READ = 14
+CMD_ANGLE_LIMIT_READ = 21
 CMD_TEMP_READ = 26
 CMD_VIN_READ = 27
 CMD_POS_READ = 28
@@ -236,6 +237,19 @@ class RawServoBus:
     def move_time_write(self, servo_id: int, position: int, time_ms: int) -> None:
         self._write_position_command(servo_id, CMD_MOVE_TIME_WRITE, position, time_ms)
 
+    def read_move_time(self, servo_id: int) -> tuple[int, int] | None:
+        packet = self._request_response(int(servo_id), CMD_MOVE_TIME_READ)
+        if (
+            packet is None
+            or packet.command != CMD_MOVE_TIME_READ
+            or packet.servo_id != int(servo_id)
+            or len(packet.params) < 4
+        ):
+            return None
+        position = int(packet.params[0]) | (int(packet.params[1]) << 8)
+        time_ms = int(packet.params[2]) | (int(packet.params[3]) << 8)
+        return position, time_ms
+
     def move_time_wait_write(self, servo_id: int, position: int, time_ms: int) -> None:
         self._write_position_command(servo_id, CMD_MOVE_TIME_WAIT_WRITE, position, time_ms)
 
@@ -252,6 +266,19 @@ class RawServoBus:
         if len(packet.params) < 2:
             return None
         return int(packet.params[0]) | (int(packet.params[1]) << 8)
+
+    def read_angle_limits(self, servo_id: int) -> tuple[int, int] | None:
+        packet = self._request_response(int(servo_id), CMD_ANGLE_LIMIT_READ)
+        if (
+            packet is None
+            or packet.command != CMD_ANGLE_LIMIT_READ
+            or packet.servo_id != int(servo_id)
+            or len(packet.params) < 4
+        ):
+            return None
+        lower = int(packet.params[0]) | (int(packet.params[1]) << 8)
+        upper = int(packet.params[2]) | (int(packet.params[3]) << 8)
+        return lower, upper
 
     def read_temperature_c(self, servo_id: int) -> int | None:
         packet = self._request_response(int(servo_id), CMD_TEMP_READ)

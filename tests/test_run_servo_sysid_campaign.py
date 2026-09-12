@@ -58,6 +58,10 @@ def test_capture_command_forces_identification_deadband_and_labels_run(
     assert _option(command, "--amplitudes-deg") == "2"
     assert _option(command, "--chirp-end-hz") == "10.0"
     assert _option(command, "--write-deadband-units") == "0"
+    assert _option(command, "--center-max-attempts") == "3"
+    assert _option(command, "--startup-delay-s") == "3.0"
+    assert _option(command, "--unload-pose-deg") == "0.0"
+    assert _option(command, "--max-unload-static-torque-nm") == "0.05"
     assert _option(command, "--notes") == "standard-sysid-campaign:A1_bandwidth"
     assert _option(command, "--output") == str(output)
     assert command[-1] == "--dry-run"
@@ -96,3 +100,21 @@ def test_campaign_stops_after_first_failed_capture(
 
     assert run_campaign(_args(tmp_path)) == 7
     assert len(commands) == 2
+
+
+def test_campaign_can_resume_at_failed_condition(monkeypatch, tmp_path: Path) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, check):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert (
+        run_campaign(_args(tmp_path, "--start-at", "B1_fit_plus30", "--dry-run"))
+        == 0
+    )
+    assert [_option(command, "--notes") for command in commands] == [
+        f"standard-sysid-campaign:{run.run_id}" for run in CAMPAIGN_RUNS[1:]
+    ]

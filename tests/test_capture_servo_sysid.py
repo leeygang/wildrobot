@@ -19,6 +19,7 @@ from runtime.scripts.capture_servo_sysid import (
     estimate_delay_metrics,
     estimate_step_response_metrics,
     load_mujoco_fixture,
+    prepare_servo_center,
     summarize_capture,
     validate_health,
     validate_profile,
@@ -354,3 +355,113 @@ def test_cooldown_records_temperature_voltage_and_actual_wait() -> None:
     assert [sample["temperature_c"] for sample in samples] == [42, 38, 34]
     assert [sample["cooldown_elapsed_s"] for sample in samples] == [0.0, 5.0, 10.0]
     assert all(sample["voltage_v"] == pytest.approx(11.6) for sample in samples)
+
+
+def test_center_preparation_retries_and_records_diagnostics() -> None:
+    class FakeBus:
+        positions = iter((562, 625))
+        writes: list[tuple[int, int]] = []
+
+        def move_time_write(self, _servo_id, position, move_time_ms):
+            self.writes.append((int(position), int(move_time_ms)))
+
+        def read_move_time(self, _servo_id):
+            return self.writes[-1]
+
+        def read_position(self, _servo_id):
+            return next(self.positions)
+
+        def read_voltage_v(self, _servo_id):
+            return 11.6
+
+        def read_temperature_c(self, _servo_id):
+            return 35
+
+        def read_loaded(self, _servo_id):
+            return True
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    attempts: list[dict[str, object]] = []
+    centered_units, centered_rad, commanded_s, actual_s = prepare_servo_center(
+        FakeBus(),
+        servo_id=100,
+        servo=build_fixture_servo_config(100),
+        center_rad=math.radians(30.0),
+        initial_units=500,
+        prepare_speed_deg_s=20.0,
+        move_time_ms=20,
+        settle_s=1.0,
+        center_tolerance_deg=2.0,
+        max_attempts=3,
+        min_voltage_v=9.0,
+        max_temperature_c=60.0,
+        read_retries=1,
+        read_retry_sleep_s=0.0,
+        attempts=attempts,
+        monotonic_fn=monotonic,
+        sleep_fn=sleep,
+    )
+
+    assert centered_units == 625
+    assert math.degrees(centered_rad) == pytest.approx(30.0)
+    assert commanded_s == pytest.approx(3.0)
+    assert actual_s == pytest.approx(5.0)
+    assert len(attempts) == 2
+    assert attempts[0]["accepted_target_units"] == 625
+    assert attempts[0]["measured_position_units"] == 562
+    assert attempts[0]["progress_deg"] == pytest.approx(14.88)
+    assert attempts[1]["error_deg"] == pytest.approx(0.0)
+
+
+def test_center_preparation_stops_after_bounded_retries() -> None:
+    class StalledBus:
+        def move_time_write(self, _servo_id, _position, _move_time_ms):
+            return None
+
+        def read_move_time(self, _servo_id):
+            return 625, 1500
+
+        def read_position(self, _servo_id):
+            return 562
+
+        def read_voltage_v(self, _servo_id):
+            return 11.6
+
+        def read_temperature_c(self, _servo_id):
+            return 36
+
+        def read_loaded(self, _servo_id):
+            return True
+
+    attempts: list[dict[str, object]] = []
+
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
+        prepare_servo_center(
+            StalledBus(),
+            servo_id=100,
+            servo=build_fixture_servo_config(100),
+            center_rad=math.radians(30.0),
+            initial_units=500,
+            prepare_speed_deg_s=20.0,
+            move_time_ms=20,
+            settle_s=0.1,
+            center_tolerance_deg=2.0,
+            max_attempts=3,
+            min_voltage_v=9.0,
+            max_temperature_c=60.0,
+            read_retries=1,
+            read_retry_sleep_s=0.0,
+            attempts=attempts,
+            monotonic_fn=lambda: 0.0,
+            sleep_fn=lambda _seconds: None,
+        )
+
+    assert len(attempts) == 3
+    assert attempts[-1]["measured_position_units"] == 562

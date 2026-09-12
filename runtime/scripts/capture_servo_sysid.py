@@ -7,9 +7,9 @@ rate, and writes an NPZ trace plus a JSON summary.  It does not fit a motor
 model; the capture is the measured input required by the later
 simulator-identification step.
 
-The fixture must have mechanical hard stops and must safely support the lever
-when torque is disabled.  A human confirmation is required before motion and
-again before the normal final unload.
+The fixture must have a verified clear travel range, a load catcher, and a
+reachable power cutoff. The script starts after a cancellable delay and returns
+to a verified gravity-neutral pose before disabling torque.
 """
 
 from __future__ import annotations
@@ -911,6 +911,143 @@ def _verify_loaded_state(
     )
 
 
+def prepare_servo_center(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    servo: ServoConfig,
+    center_rad: float,
+    initial_units: int,
+    prepare_speed_deg_s: float,
+    move_time_ms: int,
+    settle_s: float,
+    center_tolerance_deg: float,
+    max_attempts: int,
+    min_voltage_v: float,
+    max_temperature_c: float,
+    read_retries: int,
+    read_retry_sleep_s: float,
+    attempts: list[dict[str, object]],
+    phase_label: str = "Center",
+    monotonic_fn=time.monotonic,
+    sleep_fn=time.sleep,
+) -> tuple[int, float, float, float]:
+    """Move to the profile center with bounded retries and diagnostics."""
+
+    target_units = servo.joint_target_rad_to_elect_unit(center_rad)
+    current_units = int(initial_units)
+    current_rad = servo.servo_elect_units_to_joint_target_rad(current_units)
+    total_commanded_move_s = 0.0
+    preparation_started = monotonic_fn()
+    minimum_prepare_ms = max(
+        int(move_time_ms),
+        int(
+            math.ceil(
+                abs(math.degrees(center_rad - current_rad))
+                / float(prepare_speed_deg_s)
+                * 1000.0
+            )
+        ),
+    )
+    minimum_prepare_ms = min(30000, minimum_prepare_ms)
+
+    for attempt_index in range(1, int(max_attempts) + 1):
+        starting_error_deg = abs(math.degrees(center_rad - current_rad))
+        prepare_ms = max(
+            minimum_prepare_ms,
+            int(
+                math.ceil(
+                    starting_error_deg / float(prepare_speed_deg_s) * 1000.0
+                )
+            ),
+        )
+        prepare_ms = min(30000, prepare_ms)
+        total_commanded_move_s += prepare_ms / 1000.0
+        attempt_started = monotonic_fn()
+        bus.move_time_write(servo_id, target_units, prepare_ms)
+        accepted_move = bus.read_move_time(servo_id)
+        sleep_fn(prepare_ms / 1000.0 + float(settle_s))
+        measured_units = _read_position_with_retries(
+            bus,
+            servo_id=servo_id,
+            retries=int(read_retries),
+            retry_sleep_s=float(read_retry_sleep_s),
+        )
+        measured_rad = servo.servo_elect_units_to_joint_target_rad(measured_units)
+        error_deg = abs(math.degrees(center_rad - measured_rad))
+        health = read_health(
+            bus,
+            servo_id=servo_id,
+            retries=int(read_retries),
+            retry_sleep_s=float(read_retry_sleep_s),
+        )
+        loaded = bus.read_loaded(servo_id)
+        diagnostic = {
+            "attempt": attempt_index,
+            "start_position_units": current_units,
+            "start_position_deg": math.degrees(current_rad),
+            "requested_target_units": target_units,
+            "requested_target_deg": math.degrees(center_rad),
+            "commanded_move_ms": prepare_ms,
+            "accepted_target_units": (
+                int(accepted_move[0]) if accepted_move is not None else None
+            ),
+            "accepted_move_ms": (
+                int(accepted_move[1]) if accepted_move is not None else None
+            ),
+            "measured_position_units": measured_units,
+            "measured_position_deg": math.degrees(measured_rad),
+            "error_deg": error_deg,
+            "progress_deg": starting_error_deg - error_deg,
+            "loaded": loaded,
+            "voltage_v": health["voltage_v"],
+            "temperature_c": health["temperature_c"],
+            "attempt_elapsed_s": monotonic_fn() - attempt_started,
+        }
+        attempts.append(diagnostic)
+        accepted_text = (
+            "unavailable"
+            if accepted_move is None
+            else f"{accepted_move[0]} units/{accepted_move[1]}ms"
+        )
+        print(
+            f"{phase_label} attempt {attempt_index}/{int(max_attempts)}: "
+            f"requested={target_units} units accepted={accepted_text} "
+            f"measured={measured_units} units "
+            f"({math.degrees(measured_rad):+.2f}deg) "
+            f"error={error_deg:.2f}deg "
+            f"progress={starting_error_deg - error_deg:+.2f}deg "
+            f"loaded={loaded} {_format_health(health)}",
+            flush=True,
+        )
+        validate_health(
+            health,
+            min_voltage_v=float(min_voltage_v),
+            max_temperature_c=float(max_temperature_c),
+        )
+        if loaded is not True:
+            raise RuntimeError(
+                f"servo unloaded unexpectedly during center attempt {attempt_index}"
+            )
+        if error_deg <= float(center_tolerance_deg):
+            return (
+                measured_units,
+                measured_rad,
+                total_commanded_move_s,
+                monotonic_fn() - preparation_started,
+            )
+        current_units = measured_units
+        current_rad = measured_rad
+
+    raise RuntimeError(
+        f"servo did not reach {phase_label.lower()} after "
+        f"{int(max_attempts)} attempts: "
+        f"measured={math.degrees(current_rad):+.2f}deg "
+        f"target={math.degrees(center_rad):+.2f}deg "
+        f"error={abs(math.degrees(center_rad - current_rad)):.2f}deg"
+    )
+
+
 def _default_output_path(servo_id: int) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return (
@@ -1026,6 +1163,30 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--write-deadband-units", type=int, default=3)
     parser.add_argument("--prepare-speed-deg-s", type=float, default=20.0)
     parser.add_argument("--center-tolerance-deg", type=float, default=2.0)
+    parser.add_argument(
+        "--center-max-attempts",
+        type=int,
+        default=3,
+        help="Maximum automatic attempts to reach the requested center pose.",
+    )
+    parser.add_argument(
+        "--startup-delay-s",
+        type=float,
+        default=3.0,
+        help="Cancellable delay before opening the servo bus and applying torque.",
+    )
+    parser.add_argument(
+        "--unload-pose-deg",
+        type=float,
+        default=0.0,
+        help="Gravity-neutral fixture pose reached and verified before torque-off.",
+    )
+    parser.add_argument(
+        "--max-unload-static-torque-nm",
+        type=float,
+        default=0.05,
+        help="Maximum modeled gravity torque allowed at automatic torque-off.",
+    )
     parser.add_argument("--servo-limit-margin-deg", type=float, default=2.0)
     parser.add_argument("--max-chirp-speed-rad-s", type=float, default=2.5)
     parser.add_argument("--max-position-error-deg", type=float, default=12.0)
@@ -1117,6 +1278,12 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError("--lever-inertia-kg-m2 must be non-negative")
     if args.move_time_ms < 0 or args.write_deadband_units < 0:
         raise ValueError("move time and write deadband must be non-negative")
+    if args.center_max_attempts <= 0:
+        raise ValueError("--center-max-attempts must be positive")
+    if args.startup_delay_s < 0.0:
+        raise ValueError("--startup-delay-s must be non-negative")
+    if args.max_unload_static_torque_nm < 0.0:
+        raise ValueError("--max-unload-static-torque-nm must be non-negative")
     if args.read_retries <= 0 or args.read_retry_sleep_s < 0.0:
         raise ValueError("read retries must be positive and retry sleep non-negative")
     if args.cooldown_target_c <= 0.0:
@@ -1145,6 +1312,15 @@ def main() -> int:
     servo = build_fixture_servo_config(servo_id)
     output_path = args.output or _default_output_path(servo_id)
     center_rad = math.radians(float(args.center_deg))
+    unload_pose_rad = math.radians(float(args.unload_pose_deg))
+    lower_rad, upper_rad = servo.rad_range
+    limit_margin_rad = math.radians(float(args.servo_limit_margin_deg))
+    if not (
+        lower_rad + limit_margin_rad
+        <= unload_pose_rad
+        <= upper_rad - limit_margin_rad
+    ):
+        raise ValueError("--unload-pose-deg is outside the guarded servo range")
     amplitudes_rad = tuple(math.radians(value) for value in args.amplitudes_deg)
     segments = build_profile_segments(
         center_rad=center_rad,
@@ -1182,6 +1358,9 @@ def main() -> int:
         )
         _, center_hold_torque, center_inertia = fixture_model.evaluate(
             np.asarray([center_rad], dtype=np.float64)
+        )
+        _, unload_hold_torque, _ = fixture_model.evaluate(
+            np.asarray([unload_pose_rad], dtype=np.float64)
         )
         static_torque_at_center_nm = float(center_hold_torque[0])
         load_inertia_at_center_kg_m2 = float(center_inertia[0])
@@ -1237,6 +1416,12 @@ def main() -> int:
         static_torque_at_center_nm = float(
             STANDARD_GRAVITY_M_S2 * signed_load_moment_kg_m
         )
+        _, unload_hold_torque, _ = evaluate_manual_horizontal_fixture(
+            np.asarray([unload_pose_rad], dtype=np.float64),
+            center_rad=center_rad,
+            signed_load_moment_kg_m=signed_load_moment_kg_m,
+            load_inertia_kg_m2=total_load_inertia_kg_m2,
+        )
         load_inertia_at_center_kg_m2 = total_load_inertia_kg_m2
         load_metadata = {
             "load_model": "manual_horizontal_lever",
@@ -1248,6 +1433,17 @@ def main() -> int:
             "lever_inertia_source": lever_inertia_source,
             "gravity_torque_sign": int(args.gravity_torque_sign),
         }
+
+    static_torque_at_unload_pose_nm = float(unload_hold_torque[0])
+    if abs(static_torque_at_unload_pose_nm) > float(
+        args.max_unload_static_torque_nm
+    ):
+        raise ValueError(
+            f"automatic unload pose has {static_torque_at_unload_pose_nm:+.3f}Nm "
+            "modeled gravity torque, exceeding "
+            f"--max-unload-static-torque-nm="
+            f"{float(args.max_unload_static_torque_nm):.3f}"
+        )
 
     max_profile_hold_torque_nm = (
         float(np.max(np.abs(profile_hold_torque)))
@@ -1281,6 +1477,11 @@ def main() -> int:
         f"(poll={float(args.cooldown_poll_s):.1f}s, "
         f"timeout={float(args.cooldown_timeout_s):.1f}s)"
     )
+    print(
+        f"  automatic_start_delay={float(args.startup_delay_s):.1f}s "
+        f"automatic_unload_pose={float(args.unload_pose_deg):+.2f}deg "
+        f"unload_hold_torque={static_torque_at_unload_pose_nm:+.3f}Nm"
+    )
     if fixture_model is not None:
         print(
             f"  fixture={fixture_model.path} joint={fixture_model.joint_name} "
@@ -1312,27 +1513,29 @@ def main() -> int:
         )
         print(
             "  fixture requirement: rigid fixed top, physical lever matching "
-            f"MJCF pitch={fixture_center_deg:+.2f}deg at center, mechanical hard "
-            "stops, load catcher, and reachable power cutoff"
+            f"MJCF pitch={fixture_center_deg:+.2f}deg at center, verified clear "
+            "travel, load catcher, and reachable power cutoff"
         )
     else:
         print(
             "  fixture requirement: rigid servo mount, lever horizontal at center, "
-            "mechanical hard stops, load catcher, and reachable power cutoff"
+            "verified clear travel, load catcher, and reachable power cutoff"
         )
     if args.dry_run:
         print("Dry run complete; no serial port was opened and no files were written.")
         return 0
 
     invocation_wall = datetime.now().astimezone().isoformat()
-    run_prompt_started = time.monotonic()
-    confirmation = input(
-        "Attach and support the stated load, clear the fixture, then type RUN: "
-    ).strip()
-    run_confirmation_wait_s = time.monotonic() - run_prompt_started
-    if confirmation != "RUN":
-        print("Capture cancelled; no hardware command or file write occurred.")
-        return 2
+    startup_delay_started = time.monotonic()
+    if float(args.startup_delay_s) > 0.0:
+        print(
+            "Automatic start: clear the fixture now; opening the servo bus in "
+            f"{float(args.startup_delay_s):.1f}s. Press Ctrl-C to abort.",
+            flush=True,
+        )
+        time.sleep(float(args.startup_delay_s))
+    startup_delay_wait_s = time.monotonic() - startup_delay_started
+    run_confirmation_wait_s = 0.0
 
     capture_fields = _new_capture_fields()
     health_samples: list[dict[str, object]] = []
@@ -1354,10 +1557,19 @@ def main() -> int:
     final_center_rad: float | None = None
     prepare_move_s: float | None = None
     prepare_wait_s: float | None = None
-    center_confirmation_wait_s: float | None = None
+    center_confirmation_wait_s = 0.0
     profile_duration_s: float | None = None
     return_to_center_wait_s: float | None = None
-    unload_confirmation_wait_s: float | None = None
+    unload_confirmation_wait_s = 0.0
+    servo_angle_limits_units: tuple[int, int] | None = None
+    initial_move_target: tuple[int, int] | None = None
+    preparation_attempts: list[dict[str, object]] = []
+    unload_pose_attempts: list[dict[str, object]] = []
+    unload_pose_units: int | None = None
+    unload_pose_position_rad: float | None = None
+    unload_pose_move_s: float | None = None
+    unload_pose_wait_s: float | None = None
+    failure_diagnostics: dict[str, object] | None = None
     try:
         transport = SerialTransport(
             SerialTransportConfig(
@@ -1370,6 +1582,38 @@ def main() -> int:
         if reported_id != servo_id:
             raise RuntimeError(
                 f"servo ID probe failed on {port}: expected {servo_id}, got {reported_id}"
+            )
+        servo_angle_limits_units = bus.read_angle_limits(servo_id)
+        initial_move_target = bus.read_move_time(servo_id)
+        if servo_angle_limits_units is None:
+            print("Servo diagnostics: EEPROM angle limits unavailable")
+        else:
+            print(
+                "Servo diagnostics: EEPROM angle limits="
+                f"{servo_angle_limits_units[0]}..{servo_angle_limits_units[1]} units"
+            )
+            profile_servo_units = [
+                servo.joint_target_rad_to_elect_unit(float(target))
+                for target in profile_targets
+            ]
+            profile_min_units = min(profile_servo_units)
+            profile_max_units = max(profile_servo_units)
+            if (
+                profile_min_units < servo_angle_limits_units[0]
+                or profile_max_units > servo_angle_limits_units[1]
+            ):
+                raise RuntimeError(
+                    "profile exceeds EEPROM angle limits: "
+                    f"profile={profile_min_units}..{profile_max_units} units "
+                    f"limits={servo_angle_limits_units[0]}.."
+                    f"{servo_angle_limits_units[1]} units"
+                )
+        if initial_move_target is None:
+            print("Servo diagnostics: active move target unavailable")
+        else:
+            print(
+                "Servo diagnostics: active move target="
+                f"{initial_move_target[0]} units/{initial_move_target[1]}ms"
             )
         initial_loaded_state = bus.read_loaded(servo_id)
         initial_units = _read_position_with_retries(
@@ -1417,59 +1661,36 @@ def main() -> int:
         )
         bus.load(servo_id)
         _verify_loaded_state(bus, servo_id=servo_id, expected=True)
-        prepare_ms = max(
-            int(args.move_time_ms),
-            int(
-                math.ceil(
-                    abs(math.degrees(center_rad - initial_rad))
-                    / float(args.prepare_speed_deg_s)
-                    * 1000.0
-                )
-            ),
+        print(
+            f"Moving to fixture center with up to "
+            f"{int(args.center_max_attempts)} attempts..."
         )
-        prepare_ms = min(30000, prepare_ms)
-        prepare_move_s = prepare_ms / 1000.0
-        print(f"Moving to fixture center over {prepare_ms / 1000.0:.2f}s...")
-        prepare_started = time.monotonic()
-        bus.move_time_write(
-            servo_id,
-            servo.joint_target_rad_to_elect_unit(center_rad),
-            prepare_ms,
-        )
-        time.sleep(prepare_ms / 1000.0 + float(args.settle_s))
-        prepare_wait_s = time.monotonic() - prepare_started
-        centered_units = _read_position_with_retries(
+        (
+            centered_units,
+            centered_rad,
+            prepare_move_s,
+            prepare_wait_s,
+        ) = prepare_servo_center(
             bus,
             servo_id=servo_id,
-            retries=int(args.read_retries),
-            retry_sleep_s=float(args.read_retry_sleep_s),
+            servo=servo,
+            center_rad=center_rad,
+            initial_units=int(initial_units),
+            prepare_speed_deg_s=float(args.prepare_speed_deg_s),
+            move_time_ms=int(args.move_time_ms),
+            settle_s=float(args.settle_s),
+            center_tolerance_deg=float(args.center_tolerance_deg),
+            max_attempts=int(args.center_max_attempts),
+            min_voltage_v=float(args.min_voltage_v),
+            max_temperature_c=float(args.max_temperature_c),
+            read_retries=int(args.read_retries),
+            read_retry_sleep_s=float(args.read_retry_sleep_s),
+            attempts=preparation_attempts,
         )
-        centered_rad = servo.servo_elect_units_to_joint_target_rad(centered_units)
-        center_error_deg = abs(math.degrees(centered_rad - center_rad))
-        if center_error_deg > float(args.center_tolerance_deg):
-            raise RuntimeError(
-                f"servo did not reach center: measured={math.degrees(centered_rad):+.2f}deg "
-                f"target={float(args.center_deg):+.2f}deg "
-                f"error={center_error_deg:.2f}deg"
-            )
-        if fixture_model is not None:
-            fixture_center_deg = (
-                float(args.fixture_qpos_offset_deg)
-                + int(args.fixture_direction) * float(args.center_deg)
-            )
-            center_instruction = (
-                "Verify that the lever matches the MJCF pose at "
-                f"pitch={fixture_center_deg:+.2f}deg"
-            )
-        else:
-            center_instruction = "Verify with a level that the lever is horizontal"
-        center_prompt_started = time.monotonic()
-        centered_confirmation = input(
-            f"{center_instruction} and the load path is clear, then type CENTERED: "
-        ).strip()
-        center_confirmation_wait_s = time.monotonic() - center_prompt_started
-        if centered_confirmation != "CENTERED":
-            raise RuntimeError("fixture center was not confirmed")
+        print(
+            f"Center verified automatically at "
+            f"{math.degrees(centered_rad):+.2f}deg."
+        )
 
         health_before_profile = read_health(bus, servo_id=servo_id)
         validate_health(
@@ -1532,10 +1753,37 @@ def main() -> int:
             max_temperature_c=float(args.max_temperature_c),
         )
         print(f"Profile complete; {_format_health(health_after)}")
-        unload_prompt_started = time.monotonic()
-        while input("Support the lever/load, then type UNLOAD: ").strip() != "UNLOAD":
-            print("Servo remains loaded at center; type UNLOAD when the fixture is supported.")
-        unload_confirmation_wait_s = time.monotonic() - unload_prompt_started
+        print(
+            f"Returning automatically to the gravity-neutral unload pose "
+            f"{float(args.unload_pose_deg):+.2f}deg..."
+        )
+        (
+            unload_pose_units,
+            unload_pose_position_rad,
+            unload_pose_move_s,
+            unload_pose_wait_s,
+        ) = prepare_servo_center(
+            bus,
+            servo_id=servo_id,
+            servo=servo,
+            center_rad=unload_pose_rad,
+            initial_units=int(final_center_units),
+            prepare_speed_deg_s=float(args.prepare_speed_deg_s),
+            move_time_ms=int(args.move_time_ms),
+            settle_s=float(args.settle_s),
+            center_tolerance_deg=float(args.center_tolerance_deg),
+            max_attempts=int(args.center_max_attempts),
+            min_voltage_v=float(args.min_voltage_v),
+            max_temperature_c=float(args.max_temperature_c),
+            read_retries=int(args.read_retries),
+            read_retry_sleep_s=float(args.read_retry_sleep_s),
+            attempts=unload_pose_attempts,
+            phase_label="Unload-pose",
+        )
+        print(
+            "Automatic unload pose verified at "
+            f"{math.degrees(unload_pose_position_rad):+.2f}deg; disabling torque."
+        )
         outcome = "completed"
         exit_code = 0
     except KeyboardInterrupt:
@@ -1548,6 +1796,39 @@ def main() -> int:
         error = f"{type(exc).__name__}: {exc}"
         exit_code = 1
         print(f"Capture failed: {error}", file=sys.stderr)
+        if bus is not None:
+            failure_diagnostics = {}
+            try:
+                failure_units = _read_position_with_retries(
+                    bus,
+                    servo_id=servo_id,
+                    retries=int(args.read_retries),
+                    retry_sleep_s=float(args.read_retry_sleep_s),
+                )
+                failure_diagnostics["position_units"] = failure_units
+                failure_diagnostics["position_deg"] = math.degrees(
+                    servo.servo_elect_units_to_joint_target_rad(failure_units)
+                )
+            except Exception as diagnostic_exc:
+                failure_diagnostics["position_error"] = str(diagnostic_exc)
+            try:
+                failure_diagnostics["loaded"] = bus.read_loaded(servo_id)
+            except Exception as diagnostic_exc:
+                failure_diagnostics["loaded_error"] = str(diagnostic_exc)
+            try:
+                failure_move = bus.read_move_time(servo_id)
+                failure_diagnostics["move_target_units"] = (
+                    int(failure_move[0]) if failure_move is not None else None
+                )
+                failure_diagnostics["move_time_ms"] = (
+                    int(failure_move[1]) if failure_move is not None else None
+                )
+            except Exception as diagnostic_exc:
+                failure_diagnostics["move_error"] = str(diagnostic_exc)
+            try:
+                failure_diagnostics.update(read_health(bus, servo_id=servo_id))
+            except Exception as diagnostic_exc:
+                failure_diagnostics["health_error"] = str(diagnostic_exc)
     finally:
         if bus is not None:
             try:
@@ -1657,6 +1938,8 @@ def main() -> int:
         "servo_unit_direction": 1,
         "servo_offset_unit": 0,
         "center_deg": float(args.center_deg),
+        "unload_pose_deg": float(args.unload_pose_deg),
+        "static_torque_at_unload_pose_nm": static_torque_at_unload_pose_nm,
         "amplitudes_deg": [float(value) for value in args.amplitudes_deg],
         "sample_hz": float(args.sample_hz),
         "sample_rate_hz": float(args.sample_hz),
@@ -1678,6 +1961,7 @@ def main() -> int:
         },
         "waits_s": {
             "run_confirmation": run_confirmation_wait_s,
+            "automatic_start_delay": startup_delay_wait_s,
             "cooldown": cooldown_wait_s,
             "prepare_commanded_move": prepare_move_s,
             "prepare_move_and_settle_actual": prepare_wait_s,
@@ -1685,7 +1969,33 @@ def main() -> int:
             "profile_actual": profile_duration_s,
             "return_to_center_actual": return_to_center_wait_s,
             "unload_confirmation": unload_confirmation_wait_s,
+            "return_to_unload_pose_commanded": unload_pose_move_s,
+            "return_to_unload_pose_actual": unload_pose_wait_s,
             "operation_total": operation_elapsed_s,
+        },
+        "servo_diagnostics": {
+            "angle_limits_units": (
+                list(servo_angle_limits_units)
+                if servo_angle_limits_units is not None
+                else None
+            ),
+            "initial_move_target_units": (
+                int(initial_move_target[0])
+                if initial_move_target is not None
+                else None
+            ),
+            "initial_move_time_ms": (
+                int(initial_move_target[1])
+                if initial_move_target is not None
+                else None
+            ),
+            "run_confirmation_required": False,
+            "center_confirmation_required": False,
+            "unload_confirmation_required": False,
+            "center_max_attempts": int(args.center_max_attempts),
+            "preparation_attempts": preparation_attempts,
+            "unload_pose_attempts": unload_pose_attempts,
+            "failure": failure_diagnostics,
         },
         "cooldown": {
             "target_temperature_c": float(args.cooldown_target_c),
@@ -1714,6 +2024,12 @@ def main() -> int:
             "final_center_position_deg": (
                 math.degrees(final_center_rad)
                 if final_center_rad is not None
+                else None
+            ),
+            "unload_pose_position_units": unload_pose_units,
+            "unload_pose_position_deg": (
+                math.degrees(unload_pose_position_rad)
+                if unload_pose_position_rad is not None
                 else None
             ),
         },

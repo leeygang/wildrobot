@@ -19,8 +19,7 @@ The physical fixture must have:
 
 - only the test servo connected to the selected TTL adapter;
 - a rigidly mounted servo housing matching `assets/bam/robot.xml`;
-- mechanical stops just outside the commanded range (about +/-12 degrees for
-  the default profile);
+- verified collision-free travel across the complete commanded range;
 - a catcher that supports the lever and mass whenever torque is disabled; and
 - a reachable power cutoff. Never use a hand as the stop or catcher.
 
@@ -67,17 +66,18 @@ opposite to positive MJCF `pitch`. Remove `--dry-run` only
 after checking the printed root, moving body, moving mass, inertia, torque,
 port, and duration. The script then:
 
-1. requires `RUN` before opening the bus or applying torque;
+1. prints a cancellable startup delay before opening the bus or applying torque;
 2. reads the unpowered starting position and torque state, unloads the servo,
    and waits until its temperature reaches `--cooldown-target-c`;
 3. records every cooldown temperature, voltage, and actual wait interval;
 4. primes the target at the current position, enables torque, and verifies it;
-5. moves to center at a bounded speed and requires confirmation that the
-   physical pose matches the corresponding MJCF pose;
+5. moves to center at a bounded speed, reads back the servo's accepted target,
+   position, torque state, voltage, and temperature, and retries automatically
+   up to `--center-max-attempts` when the center tolerance is not met;
 6. runs the full profile while checking encoder reads, tracking error, and loop
    timing;
-7. returns to center, reads voltage and temperature again, and waits for
-   `UNLOAD`; and
+7. returns to center, reads voltage and temperature again, moves to the
+   configured gravity-neutral unload pose, verifies it, and disables torque;
 8. stops and unloads the servo in a `finally` path on completion, error, or
    Ctrl-C.
 
@@ -85,9 +85,9 @@ Use `--write-deadband-units 0` for the actuator-model identification captures;
 this preserves every quantized command. Use a separate run with the deployment
 value `3` to measure the combined actuator plus runtime command-suppression
 behavior. Each load center remains a separate capture so the operator can
-verify mechanical stops and the catcher before higher-torque tests. The
+verify the clear travel range and catcher before higher-torque tests. The
 campaign runner below invokes those captures sequentially without removing
-their cooldown or safety confirmations.
+their cooldown, diagnostics, or safety checks.
 
 Each condition is one invocation so the fixture cannot be reconfigured while
 the servo is energized. Review the hanging-zero capture before running
@@ -133,11 +133,23 @@ uv run python runtime/scripts/run_servo_sysid_campaign.py \
 The runner executes six captures in order: a 2-degree 0.1-10 Hz bandwidth
 trace at zero, fit traces at +30 and -30 degrees, held-out validation traces at
 +45 and -45 degrees, and a final zero-load repeat. All actuator-model captures
-use zero command-write deadband. Each child capture still requires its own
-`RUN`, `CENTERED`, and `UNLOAD` confirmations and waits unloaded for the servo
-to cool to 35 C. A failure or operator abort stops the campaign immediately;
-already completed capture pairs remain under the campaign directory printed at
-startup.
+use zero command-write deadband. Each child capture reads and records the servo
+EEPROM angle limits and accepted move target. It requires no typed confirmation:
+after a cancellable startup delay, it waits unloaded for the servo to cool to
+35 C, runs the profile, returns to the verified zero-degree gravity-neutral
+pose, and disables torque. A failure or operator abort stops the campaign
+immediately; already completed capture pairs remain under the campaign
+directory printed at startup.
+
+After a corrected setup or transient preparation failure, resume in a new
+campaign directory without repeating completed conditions:
+
+```bash
+uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --start-at B1_fit_plus30
+```
 
 Use `--dry-run` to validate all six profiles and fixture loads without opening
 the serial port.

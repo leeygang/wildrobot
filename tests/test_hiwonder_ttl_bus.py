@@ -1,8 +1,10 @@
 from runtime.wr_runtime.hardware.hiwonder_ttl_bus import (
+    CMD_ANGLE_LIMIT_READ,
     CMD_ID_READ,
     CMD_ID_WRITE,
     CMD_LOAD_OR_UNLOAD_READ,
     CMD_LOAD_OR_UNLOAD_WRITE,
+    CMD_MOVE_TIME_READ,
     CMD_MOVE_TIME_WRITE,
     CMD_POS_READ,
     CMD_TEMP_READ,
@@ -92,6 +94,26 @@ def test_move_time_write_builds_position_command():
     assert transport.writes == [
         build_packet(3, CMD_MOVE_TIME_WRITE, [0xF5, 0x01, 0x14, 0x00])
     ]
+
+
+def test_read_move_time_returns_target_and_duration():
+    transport = FakeTransport(
+        [build_packet(3, CMD_MOVE_TIME_READ, [0x71, 0x02, 0xD0, 0x05])]
+    )
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_move_time(3) == (625, 1488)
+    assert transport.writes == [build_packet(3, CMD_MOVE_TIME_READ)]
+
+
+def test_read_angle_limits_returns_little_endian_bounds():
+    transport = FakeTransport(
+        [build_packet(3, CMD_ANGLE_LIMIT_READ, [0x64, 0x00, 0x84, 0x03])]
+    )
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_angle_limits(3) == (100, 900)
+    assert transport.writes == [build_packet(3, CMD_ANGLE_LIMIT_READ)]
 
 
 def test_read_temperature_returns_degrees_celsius():

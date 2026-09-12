@@ -67,8 +67,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the six HTD-45H captures that follow an accepted zero-load "
-            "baseline. Each capture retains its own cooldown and operator "
-            "safety confirmations."
+            "baseline with automatic cooldown, preparation, and safe unload."
         )
     )
     parser.add_argument("--servo-id", type=int, required=True)
@@ -94,6 +93,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cooldown-poll-s", type=float, default=5.0)
     parser.add_argument("--min-voltage-v", type=float, default=9.0)
     parser.add_argument("--max-temperature-c", type=float, default=60.0)
+    parser.add_argument("--center-max-attempts", type=int, default=3)
+    parser.add_argument("--startup-delay-s", type=float, default=3.0)
+    parser.add_argument("--unload-pose-deg", type=float, default=0.0)
+    parser.add_argument("--max-unload-static-torque-nm", type=float, default=0.05)
+    parser.add_argument(
+        "--start-at",
+        choices=tuple(run.run_id for run in CAMPAIGN_RUNS),
+        default=CAMPAIGN_RUNS[0].run_id,
+        help="Resume the campaign at this condition in a new output directory.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -149,6 +158,14 @@ def build_capture_command(
         str(float(args.min_voltage_v)),
         "--max-temperature-c",
         str(float(args.max_temperature_c)),
+        "--center-max-attempts",
+        str(int(args.center_max_attempts)),
+        "--startup-delay-s",
+        str(float(args.startup_delay_s)),
+        "--unload-pose-deg",
+        str(float(args.unload_pose_deg)),
+        "--max-unload-static-torque-nm",
+        str(float(args.max_unload_static_torque_nm)),
         "--servo-label",
         servo_label,
         "--fixture-label",
@@ -169,19 +186,27 @@ def run_campaign(args: argparse.Namespace) -> int:
         args.output_dir.expanduser().resolve()
         / f"htd45h_servo_{int(args.servo_id)}_campaign_{timestamp}"
     )
+    start_index = next(
+        index
+        for index, campaign_run in enumerate(CAMPAIGN_RUNS)
+        if campaign_run.run_id == args.start_at
+    )
+    selected_runs = CAMPAIGN_RUNS[start_index:]
     print("HTD-45H standard SysID follow-up campaign", flush=True)
     print(
-        f"  runs={len(CAMPAIGN_RUNS)} servo_id={int(args.servo_id)}",
+        f"  runs={len(selected_runs)} servo_id={int(args.servo_id)} "
+        f"start_at={args.start_at}",
         flush=True,
     )
     print(f"  output_dir={campaign_dir}", flush=True)
     print(
-        "  Each run independently cools the unloaded servo and requires RUN, "
-        "CENTERED, and UNLOAD confirmations.",
+        "  Each run independently cools the unloaded servo, automatically "
+        "verifies center with bounded retries, returns to the gravity-neutral "
+        "unload pose, and disables torque.",
         flush=True,
     )
 
-    for index, campaign_run in enumerate(CAMPAIGN_RUNS, start=1):
+    for index, campaign_run in enumerate(selected_runs, start=start_index + 1):
         output_path = campaign_dir / f"{index:02d}_{campaign_run.run_id}.npz"
         command = build_capture_command(
             args,
