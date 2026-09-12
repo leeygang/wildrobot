@@ -1529,6 +1529,23 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--write-deadband-units", type=int, default=3)
     parser.add_argument("--prepare-speed-deg-s", type=float, default=20.0)
     parser.add_argument(
+        "--return-speed-deg-s",
+        type=float,
+        default=None,
+        help=(
+            "Speed used for start-pose normalization and the final return to "
+            "the unload pose. Defaults to --prepare-speed-deg-s."
+        ),
+    )
+    parser.add_argument(
+        "--normalize-start-pose",
+        action="store_true",
+        help=(
+            "Move to --unload-pose-deg before the test so every condition "
+            "starts from the same physical pose."
+        ),
+    )
+    parser.add_argument(
         "--prepare-monitor-hz",
         type=float,
         default=25.0,
@@ -1618,6 +1635,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         "prepare_speed_deg_s": args.prepare_speed_deg_s,
         "prepare_monitor_hz": args.prepare_monitor_hz,
     }
+    if args.return_speed_deg_s is not None:
+        positive["return_speed_deg_s"] = args.return_speed_deg_s
     for name, value in positive.items():
         if float(value) <= 0.0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
@@ -1695,6 +1714,19 @@ def _format_health(health: dict[str, float | None]) -> str:
     return f"voltage={voltage_text} temperature={temperature_text}"
 
 
+def resolve_return_speed_deg_s(
+    prepare_speed_deg_s: float,
+    return_speed_deg_s: float | None,
+) -> float:
+    """Resolve the independent safe-return speed."""
+
+    return float(
+        prepare_speed_deg_s
+        if return_speed_deg_s is None
+        else return_speed_deg_s
+    )
+
+
 def main() -> int:
     args = _parse_args()
     _validate_args(args)
@@ -1704,6 +1736,10 @@ def main() -> int:
     output_path = args.output or _default_output_path(servo_id)
     center_rad = math.radians(float(args.center_deg))
     unload_pose_rad = math.radians(float(args.unload_pose_deg))
+    return_speed_deg_s = resolve_return_speed_deg_s(
+        float(args.prepare_speed_deg_s),
+        args.return_speed_deg_s,
+    )
     lower_rad, upper_rad = servo.rad_range
     limit_margin_rad = math.radians(float(args.servo_limit_margin_deg))
     if not (
@@ -1873,6 +1909,10 @@ def main() -> int:
         f"prepare_speed={float(args.prepare_speed_deg_s):.1f}deg/s"
     )
     print(
+        f"  normalize_start_pose={bool(args.normalize_start_pose)} "
+        f"return_speed={return_speed_deg_s:.1f}deg/s"
+    )
+    print(
         f"  cooldown=unloaded to <= {float(args.cooldown_target_c):.1f}C "
         f"(poll={float(args.cooldown_poll_s):.1f}s, "
         f"timeout={float(args.cooldown_timeout_s):.1f}s)"
@@ -1952,6 +1992,10 @@ def main() -> int:
     final_unloaded_verified = False
     initial_units: int | None = None
     initial_rad: float | None = None
+    normalized_start_units: int | None = None
+    normalized_start_rad: float | None = None
+    normalize_start_move_s: float | None = None
+    normalize_start_wait_s: float | None = None
     centered_units: int | None = None
     centered_rad: float | None = None
     final_center_units: int | None = None
@@ -1969,6 +2013,7 @@ def main() -> int:
     servo_led_enabled: bool | None = None
     servo_alarm_mask: int | None = None
     initial_move_target: tuple[int, int] | None = None
+    start_pose_attempts: list[dict[str, object]] = []
     preparation_attempts: list[dict[str, object]] = []
     unload_pose_attempts: list[dict[str, object]] = []
     unload_pose_units: int | None = None
@@ -2154,6 +2199,54 @@ def main() -> int:
                 "Post-load hold passed; torque remained enabled before motion.",
                 flush=True,
             )
+        if args.normalize_start_pose:
+            print(
+                "Normalizing the test start to the gravity-neutral unload pose "
+                f"at {return_speed_deg_s:.1f}deg/s...",
+                flush=True,
+            )
+            (
+                normalized_start_units,
+                normalized_start_rad,
+                normalize_start_move_s,
+                normalize_start_wait_s,
+            ) = prepare_servo_center(
+                bus,
+                servo_id=servo_id,
+                servo=servo,
+                center_rad=unload_pose_rad,
+                initial_units=prepare_initial_units,
+                prepare_speed_deg_s=return_speed_deg_s,
+                move_time_ms=int(args.move_time_ms),
+                settle_s=1.0,
+                center_tolerance_deg=float(args.center_tolerance_deg),
+                max_attempts=1,
+                min_voltage_v=float(args.min_voltage_v),
+                max_temperature_c=float(args.max_temperature_c),
+                read_retries=int(args.read_retries),
+                read_retry_sleep_s=float(args.read_retry_sleep_s),
+                attempts=start_pose_attempts,
+                phase_label="Start-pose",
+                monitor_hz=float(args.prepare_monitor_hz),
+                monitor_samples=preparation_samples,
+                monitor_started=preparation_monitor_started,
+            )
+            prepare_initial_units = int(normalized_start_units)
+            normalization_voltage_violation = minimum_voltage_sample_below(
+                preparation_samples, float(args.min_voltage_v)
+            )
+            if normalization_voltage_violation is not None:
+                raise RuntimeError(
+                    "servo voltage dropped below the safety floor during "
+                    f"{normalization_voltage_violation['phase']}: "
+                    f"{float(normalization_voltage_violation['voltage_v']):.3f}V < "
+                    f"{float(args.min_voltage_v):.3f}V"
+                )
+            print(
+                "Start pose normalized automatically at "
+                f"{math.degrees(normalized_start_rad):+.2f}deg.",
+                flush=True,
+            )
         print(
             f"Moving to fixture center with up to "
             f"{int(args.center_max_attempts)} attempts..."
@@ -2294,7 +2387,7 @@ def main() -> int:
             servo=servo,
             center_rad=unload_pose_rad,
             initial_units=int(final_center_units),
-            prepare_speed_deg_s=float(args.prepare_speed_deg_s),
+            prepare_speed_deg_s=return_speed_deg_s,
             move_time_ms=int(args.move_time_ms),
             settle_s=float(args.settle_s),
             center_tolerance_deg=float(args.center_tolerance_deg),
@@ -2534,6 +2627,9 @@ def main() -> int:
         "move_time_ms": int(args.move_time_ms),
         "write_deadband_units": int(args.write_deadband_units),
         "prepare_only": bool(args.prepare_only),
+        "normalize_start_pose": bool(args.normalize_start_pose),
+        "prepare_speed_deg_s": float(args.prepare_speed_deg_s),
+        "return_speed_deg_s": return_speed_deg_s,
         "prepare_monitor_hz": float(args.prepare_monitor_hz),
         "pre_move_hold_s": float(args.pre_move_hold_s),
         "timing_semantics": {
@@ -2553,6 +2649,8 @@ def main() -> int:
             "run_confirmation": run_confirmation_wait_s,
             "automatic_start_delay": startup_delay_wait_s,
             "cooldown": cooldown_wait_s,
+            "normalize_start_pose_commanded": normalize_start_move_s,
+            "normalize_start_pose_actual": normalize_start_wait_s,
             "prepare_commanded_move": prepare_move_s,
             "prepare_move_and_settle_actual": prepare_wait_s,
             "center_confirmation": center_confirmation_wait_s,
@@ -2604,6 +2702,7 @@ def main() -> int:
             "unload_confirmation_required": False,
             "center_max_attempts": int(args.center_max_attempts),
             "preparation_monitor": preparation_summary,
+            "start_pose_attempts": start_pose_attempts,
             "preparation_attempts": preparation_attempts,
             "unload_pose_attempts": unload_pose_attempts,
             "failure": failure_diagnostics,
@@ -2626,6 +2725,12 @@ def main() -> int:
             "initial_position_units": initial_units,
             "initial_position_deg": (
                 math.degrees(initial_rad) if initial_rad is not None else None
+            ),
+            "normalized_start_position_units": normalized_start_units,
+            "normalized_start_position_deg": (
+                math.degrees(normalized_start_rad)
+                if normalized_start_rad is not None
+                else None
             ),
             "centered_position_units": centered_units,
             "centered_position_deg": (

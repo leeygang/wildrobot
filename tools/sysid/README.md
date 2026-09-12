@@ -109,8 +109,8 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
   selected write deadband. Schema v4 also records scheduled time, scheduler
   sleep, actual serial-write completion, command age at each read, and cooldown
   temperature/voltage history. `preparation_*` arrays preserve the monitored
-  pre-move, center-move, center-settle, and unload-pose states even when capture
-  fails before the profile starts;
+  pre-move, start-pose normalization, center-move, center-settle, and
+  unload-pose states even when capture fails before the profile starts;
 - `.json`: fixture geometry and inertia, servo/bus identity, pre/post voltage
   and temperature, initial/center/final positions, torque-load state, all
   operator/cooldown/preparation/profile/return waits, step 10/50/90% response,
@@ -188,6 +188,12 @@ The limits plan runs preparation-only moves, never the step/chirp profile:
 3. interaction check: the identical 0-to-30-degree path at 10, 15, and 20
    degrees/s.
 
+Before every condition, the capture normalizes the fixture to the configured
+zero-degree unload pose at 5 degrees/s and verifies it. The outbound leg then
+uses only that condition's test speed, while every return to zero remains fixed
+at 5 degrees/s. This prevents an arbitrary unpowered starting angle or a fast
+return from contaminating the requested comparison.
+
 The load cases hold each endpoint for three seconds. The validated BAM model
 predicts approximately 0.12, 0.24, and 0.35 Nm of static gravity torque at 10,
 20, and 30 degrees. Keeping speed fixed in the first sweep isolates the load
@@ -195,11 +201,12 @@ trend; keeping the endpoint and path fixed in the second isolates the
 speed/current-transient trend. The third sweep then measures their interaction
 at the previously demonstrated 30-degree load.
 
-Every condition uses one center attempt and 50 Hz preparation telemetry. A
-voltage or torque-disable event stops the campaign immediately so a reset
-servo is never mistaken for a valid slower retry. Power-cycle the fixture and
-resume at a named condition only after inspecting the failed JSON/NPZ pair,
-for example:
+Every condition uses one test attempt and 50 Hz preparation telemetry. The
+JSON records the initial and normalized positions, normalization timing,
+outbound test speed, and independent return speed. A voltage or torque-disable
+event stops the campaign immediately so a reset servo is never mistaken for a
+valid slower retry. Power-cycle the fixture and resume at a named condition
+only after inspecting the failed JSON/NPZ pair, for example:
 
 ```bash
 uv run python runtime/scripts/run_servo_sysid_campaign.py \
@@ -236,14 +243,15 @@ uv run python runtime/scripts/run_servo_sysid_campaign.py \
 The runner executes six captures in order: a 2-degree 0.1-10 Hz bandwidth
 trace at zero, fit traces at +30 and -30 degrees, held-out validation traces at
 +45 and -45 degrees, and a final zero-load repeat. All actuator-model captures
-use zero command-write deadband. Each child capture reads and records the servo
-EEPROM angle and voltage limits, temperature limit, position/motor mode, alarm
-configuration, and accepted move target. It requires no typed confirmation:
-after a cancellable startup delay, it waits unloaded for the servo to cool to
-35 C, runs the profile, returns to the verified zero-degree gravity-neutral
-pose, and disables torque. A failure or operator abort stops the campaign
-immediately; already completed capture pairs remain under the campaign
-directory printed at startup.
+use zero command-write deadband. Each child capture normalizes to zero before
+its measured move and returns to zero at 5 degrees/s. It also reads and records
+the servo EEPROM angle and voltage limits, temperature limit, position/motor
+mode, alarm configuration, and accepted move target. It requires no typed
+confirmation: after a cancellable startup delay, it waits unloaded for the
+servo to cool to 35 C, runs the profile, returns to the verified zero-degree
+gravity-neutral pose, and disables torque. A failure or operator abort stops
+the campaign immediately; already completed capture pairs remain under the
+campaign directory printed at startup.
 
 After a corrected setup or transient preparation failure, resume in a new
 campaign directory without repeating completed conditions:

@@ -45,6 +45,8 @@ def test_standard_campaign_has_fit_validation_and_repeatability_runs() -> None:
     assert CAMPAIGN_RUNS[0].amplitudes_deg == "2"
     assert CAMPAIGN_RUNS[0].chirp_end_hz == 10.0
     assert all(run.chirp_end_hz == 2.0 for run in CAMPAIGN_RUNS[1:])
+    assert all(run.normalize_start_pose for run in CAMPAIGN_RUNS)
+    assert all(run.return_speed_deg_s == 5 for run in CAMPAIGN_RUNS)
 
 
 def test_limit_campaign_separates_load_speed_and_combined_conditions() -> None:
@@ -76,6 +78,8 @@ def test_limit_campaign_separates_load_speed_and_combined_conditions() -> None:
     ]
     assert all(run.prepare_only for run in LIMIT_CAMPAIGN_RUNS)
     assert all(run.center_max_attempts == 1 for run in LIMIT_CAMPAIGN_RUNS)
+    assert all(run.normalize_start_pose for run in LIMIT_CAMPAIGN_RUNS)
+    assert all(run.return_speed_deg_s == 5 for run in LIMIT_CAMPAIGN_RUNS)
 
 
 def test_capture_command_forces_identification_deadband_and_labels_run(
@@ -99,6 +103,8 @@ def test_capture_command_forces_identification_deadband_and_labels_run(
     assert _option(command, "--max-unload-static-torque-nm") == "0.05"
     assert _option(command, "--notes") == "standard-sysid-campaign:A1_bandwidth"
     assert _option(command, "--output") == str(output)
+    assert "--normalize-start-pose" in command
+    assert _option(command, "--return-speed-deg-s") == "5.0"
     assert command[-1] == "--dry-run"
 
 
@@ -171,6 +177,8 @@ def test_limit_campaign_uses_single_prepare_only_attempt(
     assert len(commands) == len(LIMIT_CAMPAIGN_RUNS)
     for command, campaign_run in zip(commands, LIMIT_CAMPAIGN_RUNS, strict=True):
         assert "--prepare-only" in command
+        assert "--normalize-start-pose" in command
+        assert _option(command, "--return-speed-deg-s") == "5.0"
         assert _option(command, "--prepare-speed-deg-s") == str(
             float(campaign_run.prepare_speed_deg_s)
         )

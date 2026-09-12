@@ -24,6 +24,7 @@ from runtime.scripts.capture_servo_sysid import (
     monitor_preparation_phase,
     preparation_trace_arrays,
     prepare_servo_center,
+    resolve_return_speed_deg_s,
     summarize_capture,
     summarize_preparation_trace,
     validate_health,
@@ -56,6 +57,11 @@ def test_fixture_servo_uses_raw_centered_htd_coordinates() -> None:
     assert servo.rad_range == pytest.approx(
         (-ServoConfig.RANGE_RAD / 2.0, ServoConfig.RANGE_RAD / 2.0)
     )
+
+
+def test_return_speed_can_be_independent_from_outbound_speed() -> None:
+    assert resolve_return_speed_deg_s(20.0, None) == pytest.approx(20.0)
+    assert resolve_return_speed_deg_s(100.0, 5.0) == pytest.approx(5.0)
 
 
 def test_profile_contains_symmetric_steps_and_toddlerbot_style_chirps() -> None:

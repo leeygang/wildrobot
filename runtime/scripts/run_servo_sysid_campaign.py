@@ -39,6 +39,8 @@ class CampaignRun:
     prepare_monitor_hz: float | None = None
     center_max_attempts: int | None = None
     settle_s: float | None = None
+    normalize_start_pose: bool = True
+    return_speed_deg_s: float | None = 5.0
 
 
 CAMPAIGN_RUNS = (
@@ -320,6 +322,12 @@ def build_capture_command(
         )
     if campaign_run.settle_s is not None:
         command.extend(["--settle-s", str(float(campaign_run.settle_s))])
+    if campaign_run.normalize_start_pose:
+        command.append("--normalize-start-pose")
+    if campaign_run.return_speed_deg_s is not None:
+        command.extend(
+            ["--return-speed-deg-s", str(float(campaign_run.return_speed_deg_s))]
+        )
     if campaign_run.prepare_only:
         command.append("--prepare-only")
     if args.dry_run:
@@ -360,15 +368,20 @@ def run_campaign(args: argparse.Namespace) -> int:
             flush=True,
         )
         print(
+            "  Every run normalizes to the zero pose first and returns at a "
+            "fixed 5deg/s, independent of the tested outbound speed.",
+            flush=True,
+        )
+        print(
             "  Every condition gets one attempt. Any voltage/protection failure "
             "stops the campaign; power-cycle before resuming.",
             flush=True,
         )
     else:
         print(
-            "  Each run independently cools the unloaded servo, automatically "
-            "verifies center with bounded retries, returns to the gravity-neutral "
-            "unload pose, and disables torque.",
+            "  Each run independently cools the unloaded servo, normalizes to "
+            "zero, verifies center with bounded retries, returns at 5deg/s, "
+            "and disables torque.",
             flush=True,
         )
 
