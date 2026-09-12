@@ -19,11 +19,16 @@ CMD_MOVE_STOP = 12
 CMD_ID_WRITE = 13
 CMD_ID_READ = 14
 CMD_ANGLE_LIMIT_READ = 21
+CMD_VIN_LIMIT_READ = 23
+CMD_TEMP_MAX_LIMIT_READ = 25
 CMD_TEMP_READ = 26
 CMD_VIN_READ = 27
 CMD_POS_READ = 28
+CMD_OR_MOTOR_MODE_READ = 30
 CMD_LOAD_OR_UNLOAD_WRITE = 31
 CMD_LOAD_OR_UNLOAD_READ = 32
+CMD_LED_CTRL_READ = 34
+CMD_LED_ERROR_READ = 36
 
 
 def format_bytes(data: Iterable[int]) -> str:
@@ -279,6 +284,66 @@ class RawServoBus:
         lower = int(packet.params[0]) | (int(packet.params[1]) << 8)
         upper = int(packet.params[2]) | (int(packet.params[3]) << 8)
         return lower, upper
+
+    def read_voltage_limits_v(self, servo_id: int) -> tuple[float, float] | None:
+        packet = self._request_response(int(servo_id), CMD_VIN_LIMIT_READ)
+        if (
+            packet is None
+            or packet.command != CMD_VIN_LIMIT_READ
+            or packet.servo_id != int(servo_id)
+            or len(packet.params) < 4
+        ):
+            return None
+        lower_mv = int(packet.params[0]) | (int(packet.params[1]) << 8)
+        upper_mv = int(packet.params[2]) | (int(packet.params[3]) << 8)
+        return float(lower_mv) / 1000.0, float(upper_mv) / 1000.0
+
+    def read_temperature_limit_c(self, servo_id: int) -> int | None:
+        packet = self._request_response(int(servo_id), CMD_TEMP_MAX_LIMIT_READ)
+        if (
+            packet is None
+            or packet.command != CMD_TEMP_MAX_LIMIT_READ
+            or packet.servo_id != int(servo_id)
+            or not packet.params
+        ):
+            return None
+        return int(packet.params[0])
+
+    def read_motor_mode(self, servo_id: int) -> tuple[int, int] | None:
+        packet = self._request_response(int(servo_id), CMD_OR_MOTOR_MODE_READ)
+        if (
+            packet is None
+            or packet.command != CMD_OR_MOTOR_MODE_READ
+            or packet.servo_id != int(servo_id)
+            or len(packet.params) < 4
+        ):
+            return None
+        mode = int(packet.params[0])
+        raw_speed = int(packet.params[2]) | (int(packet.params[3]) << 8)
+        speed = raw_speed - 0x10000 if raw_speed & 0x8000 else raw_speed
+        return mode, speed
+
+    def read_led_enabled(self, servo_id: int) -> bool | None:
+        packet = self._request_response(int(servo_id), CMD_LED_CTRL_READ)
+        if (
+            packet is None
+            or packet.command != CMD_LED_CTRL_READ
+            or packet.servo_id != int(servo_id)
+            or not packet.params
+        ):
+            return None
+        return int(packet.params[0]) == 0
+
+    def read_alarm_mask(self, servo_id: int) -> int | None:
+        packet = self._request_response(int(servo_id), CMD_LED_ERROR_READ)
+        if (
+            packet is None
+            or packet.command != CMD_LED_ERROR_READ
+            or packet.servo_id != int(servo_id)
+            or not packet.params
+        ):
+            return None
+        return int(packet.params[0])
 
     def read_temperature_c(self, servo_id: int) -> int | None:
         packet = self._request_response(int(servo_id), CMD_TEMP_READ)

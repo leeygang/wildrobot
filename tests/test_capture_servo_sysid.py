@@ -411,8 +411,8 @@ def test_center_preparation_retries_and_records_diagnostics() -> None:
 
     assert centered_units == 625
     assert math.degrees(centered_rad) == pytest.approx(30.0)
-    assert commanded_s == pytest.approx(3.0)
-    assert actual_s == pytest.approx(5.0)
+    assert commanded_s == pytest.approx(4.5)
+    assert actual_s == pytest.approx(6.5)
     assert len(attempts) == 2
     assert attempts[0]["accepted_target_units"] == 625
     assert attempts[0]["measured_position_units"] == 562
@@ -465,3 +465,62 @@ def test_center_preparation_stops_after_bounded_retries() -> None:
 
     assert len(attempts) == 3
     assert attempts[-1]["measured_position_units"] == 562
+
+
+def test_center_preparation_rearms_after_servo_auto_unloads() -> None:
+    class AutoUnloadingBus:
+        positions = iter((562, 625))
+        loaded_states = iter((True, False, False, True, True))
+        writes: list[tuple[int, int]] = []
+        load_count = 0
+
+        def move_time_write(self, _servo_id, position, move_time_ms):
+            self.writes.append((int(position), int(move_time_ms)))
+
+        def read_move_time(self, _servo_id):
+            return self.writes[-1]
+
+        def read_position(self, _servo_id):
+            return next(self.positions)
+
+        def read_voltage_v(self, _servo_id):
+            return 11.6
+
+        def read_temperature_c(self, _servo_id):
+            return 35
+
+        def read_loaded(self, _servo_id):
+            return next(self.loaded_states)
+
+        def load(self, _servo_id):
+            self.load_count += 1
+
+    bus = AutoUnloadingBus()
+    attempts: list[dict[str, object]] = []
+
+    centered_units, _, commanded_s, _ = prepare_servo_center(
+        bus,
+        servo_id=100,
+        servo=build_fixture_servo_config(100),
+        center_rad=math.radians(30.0),
+        initial_units=500,
+        prepare_speed_deg_s=20.0,
+        move_time_ms=20,
+        settle_s=0.0,
+        center_tolerance_deg=2.0,
+        max_attempts=3,
+        min_voltage_v=9.0,
+        max_temperature_c=60.0,
+        read_retries=1,
+        read_retry_sleep_s=0.0,
+        attempts=attempts,
+        monotonic_fn=lambda: 0.0,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert centered_units == 625
+    assert commanded_s == pytest.approx(4.5)
+    assert bus.load_count == 1
+    assert attempts[0]["loaded_after"] is False
+    assert attempts[1]["reloaded_before_attempt"] is True
+    assert attempts[1]["loaded_after"] is True

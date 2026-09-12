@@ -73,7 +73,8 @@ port, and duration. The script then:
 4. primes the target at the current position, enables torque, and verifies it;
 5. moves to center at a bounded speed, reads back the servo's accepted target,
    position, torque state, voltage, and temperature, and retries automatically
-   up to `--center-max-attempts` when the center tolerance is not met;
+   up to `--center-max-attempts` when the center tolerance is not met; a retry
+   re-primes and reloads a servo that disabled torque, then uses a longer move;
 6. runs the full profile while checking encoder reads, tracking error, and loop
    timing;
 7. returns to center, reads voltage and temperature again, moves to the
@@ -134,7 +135,8 @@ The runner executes six captures in order: a 2-degree 0.1-10 Hz bandwidth
 trace at zero, fit traces at +30 and -30 degrees, held-out validation traces at
 +45 and -45 degrees, and a final zero-load repeat. All actuator-model captures
 use zero command-write deadband. Each child capture reads and records the servo
-EEPROM angle limits and accepted move target. It requires no typed confirmation:
+EEPROM angle and voltage limits, temperature limit, position/motor mode, alarm
+configuration, and accepted move target. It requires no typed confirmation:
 after a cancellable startup delay, it waits unloaded for the servo to cool to
 35 C, runs the profile, returns to the verified zero-degree gravity-neutral
 pose, and disables torque. A failure or operator abort stops the campaign

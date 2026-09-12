@@ -939,6 +939,7 @@ def prepare_servo_center(
     current_rad = servo.servo_elect_units_to_joint_target_rad(current_units)
     total_commanded_move_s = 0.0
     preparation_started = monotonic_fn()
+    last_loaded: bool | None = None
     minimum_prepare_ms = max(
         int(move_time_ms),
         int(
@@ -952,9 +953,19 @@ def prepare_servo_center(
     minimum_prepare_ms = min(30000, minimum_prepare_ms)
 
     for attempt_index in range(1, int(max_attempts) + 1):
+        loaded_before = bus.read_loaded(servo_id)
+        reloaded_before_attempt = loaded_before is not True
+        if reloaded_before_attempt:
+            bus.move_time_write(
+                servo_id,
+                current_units,
+                max(500, int(move_time_ms)),
+            )
+            bus.load(servo_id)
+            _verify_loaded_state(bus, servo_id=servo_id, expected=True)
         starting_error_deg = abs(math.degrees(center_rad - current_rad))
         prepare_ms = max(
-            minimum_prepare_ms,
+            min(30000, minimum_prepare_ms * attempt_index),
             int(
                 math.ceil(
                     starting_error_deg / float(prepare_speed_deg_s) * 1000.0
@@ -981,7 +992,8 @@ def prepare_servo_center(
             retries=int(read_retries),
             retry_sleep_s=float(read_retry_sleep_s),
         )
-        loaded = bus.read_loaded(servo_id)
+        loaded_after = bus.read_loaded(servo_id)
+        last_loaded = loaded_after
         diagnostic = {
             "attempt": attempt_index,
             "start_position_units": current_units,
@@ -999,7 +1011,9 @@ def prepare_servo_center(
             "measured_position_deg": math.degrees(measured_rad),
             "error_deg": error_deg,
             "progress_deg": starting_error_deg - error_deg,
-            "loaded": loaded,
+            "loaded_before": loaded_before,
+            "reloaded_before_attempt": reloaded_before_attempt,
+            "loaded_after": loaded_after,
             "voltage_v": health["voltage_v"],
             "temperature_c": health["temperature_c"],
             "attempt_elapsed_s": monotonic_fn() - attempt_started,
@@ -1017,7 +1031,7 @@ def prepare_servo_center(
             f"({math.degrees(measured_rad):+.2f}deg) "
             f"error={error_deg:.2f}deg "
             f"progress={starting_error_deg - error_deg:+.2f}deg "
-            f"loaded={loaded} {_format_health(health)}",
+            f"loaded={loaded_after} {_format_health(health)}",
             flush=True,
         )
         validate_health(
@@ -1025,11 +1039,7 @@ def prepare_servo_center(
             min_voltage_v=float(min_voltage_v),
             max_temperature_c=float(max_temperature_c),
         )
-        if loaded is not True:
-            raise RuntimeError(
-                f"servo unloaded unexpectedly during center attempt {attempt_index}"
-            )
-        if error_deg <= float(center_tolerance_deg):
+        if error_deg <= float(center_tolerance_deg) and loaded_after is True:
             return (
                 measured_units,
                 measured_rad,
@@ -1039,6 +1049,15 @@ def prepare_servo_center(
         current_units = measured_units
         current_rad = measured_rad
 
+    if (
+        abs(math.degrees(center_rad - current_rad))
+        <= float(center_tolerance_deg)
+        and last_loaded is not True
+    ):
+        raise RuntimeError(
+            f"servo reached {phase_label.lower()} but could not remain loaded "
+            f"after {int(max_attempts)} attempts"
+        )
     raise RuntimeError(
         f"servo did not reach {phase_label.lower()} after "
         f"{int(max_attempts)} attempts: "
@@ -1562,6 +1581,11 @@ def main() -> int:
     return_to_center_wait_s: float | None = None
     unload_confirmation_wait_s = 0.0
     servo_angle_limits_units: tuple[int, int] | None = None
+    servo_voltage_limits_v: tuple[float, float] | None = None
+    servo_temperature_limit_c: int | None = None
+    servo_motor_mode: tuple[int, int] | None = None
+    servo_led_enabled: bool | None = None
+    servo_alarm_mask: int | None = None
     initial_move_target: tuple[int, int] | None = None
     preparation_attempts: list[dict[str, object]] = []
     unload_pose_attempts: list[dict[str, object]] = []
@@ -1584,6 +1608,11 @@ def main() -> int:
                 f"servo ID probe failed on {port}: expected {servo_id}, got {reported_id}"
             )
         servo_angle_limits_units = bus.read_angle_limits(servo_id)
+        servo_voltage_limits_v = bus.read_voltage_limits_v(servo_id)
+        servo_temperature_limit_c = bus.read_temperature_limit_c(servo_id)
+        servo_motor_mode = bus.read_motor_mode(servo_id)
+        servo_led_enabled = bus.read_led_enabled(servo_id)
+        servo_alarm_mask = bus.read_alarm_mask(servo_id)
         initial_move_target = bus.read_move_time(servo_id)
         if servo_angle_limits_units is None:
             print("Servo diagnostics: EEPROM angle limits unavailable")
@@ -1614,6 +1643,17 @@ def main() -> int:
             print(
                 "Servo diagnostics: active move target="
                 f"{initial_move_target[0]} units/{initial_move_target[1]}ms"
+            )
+        print(
+            "Servo diagnostics: "
+            f"voltage_limits={servo_voltage_limits_v}V "
+            f"temperature_limit={servo_temperature_limit_c}C "
+            f"motor_mode={servo_motor_mode} "
+            f"led_enabled={servo_led_enabled} alarm_mask={servo_alarm_mask}"
+        )
+        if servo_motor_mode is not None and servo_motor_mode[0] != 0:
+            raise RuntimeError(
+                f"servo is in motor mode {servo_motor_mode}; position mode is required"
             )
         initial_loaded_state = bus.read_loaded(servo_id)
         initial_units = _read_position_with_retries(
@@ -1649,6 +1689,27 @@ def main() -> int:
             "voltage_v": cooldown_samples[-1]["voltage_v"],
             "temperature_c": cooldown_samples[-1]["temperature_c"],
         }
+        if servo_voltage_limits_v is not None:
+            voltage_v = float(health_before["voltage_v"])
+            if not (
+                servo_voltage_limits_v[0]
+                <= voltage_v
+                <= servo_voltage_limits_v[1]
+            ):
+                raise RuntimeError(
+                    f"servo voltage {voltage_v:.3f}V is outside its EEPROM limits "
+                    f"[{servo_voltage_limits_v[0]:.3f}, "
+                    f"{servo_voltage_limits_v[1]:.3f}]V"
+                )
+        if (
+            servo_temperature_limit_c is not None
+            and float(health_before["temperature_c"])
+            > float(servo_temperature_limit_c)
+        ):
+            raise RuntimeError(
+                f"servo temperature {float(health_before['temperature_c']):.1f}C "
+                f"exceeds its EEPROM limit {servo_temperature_limit_c}C"
+            )
         print(
             f"Starting profile preparation after {cooldown_wait_s:.1f}s cooldown; "
             f"{_format_health(health_before)}"
@@ -1978,6 +2039,26 @@ def main() -> int:
                 list(servo_angle_limits_units)
                 if servo_angle_limits_units is not None
                 else None
+            ),
+            "voltage_limits_v": (
+                list(servo_voltage_limits_v)
+                if servo_voltage_limits_v is not None
+                else None
+            ),
+            "temperature_limit_c": servo_temperature_limit_c,
+            "motor_mode": (
+                {
+                    "mode": int(servo_motor_mode[0]),
+                    "speed": int(servo_motor_mode[1]),
+                }
+                if servo_motor_mode is not None
+                else None
+            ),
+            "led_enabled": servo_led_enabled,
+            "alarm_mask": servo_alarm_mask,
+            "alarm_mask_interpretation": (
+                "configured alarm sources: bit0=temperature, bit1=voltage, "
+                "bit2=locked-rotor; not a live fault code"
             ),
             "initial_move_target_units": (
                 int(initial_move_target[0])

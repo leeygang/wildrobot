@@ -2,12 +2,17 @@ from runtime.wr_runtime.hardware.hiwonder_ttl_bus import (
     CMD_ANGLE_LIMIT_READ,
     CMD_ID_READ,
     CMD_ID_WRITE,
+    CMD_LED_CTRL_READ,
+    CMD_LED_ERROR_READ,
     CMD_LOAD_OR_UNLOAD_READ,
     CMD_LOAD_OR_UNLOAD_WRITE,
     CMD_MOVE_TIME_READ,
     CMD_MOVE_TIME_WRITE,
+    CMD_OR_MOTOR_MODE_READ,
     CMD_POS_READ,
+    CMD_TEMP_MAX_LIMIT_READ,
     CMD_TEMP_READ,
+    CMD_VIN_LIMIT_READ,
     CMD_VIN_READ,
     SERVO_BROADCAST_ID,
     RawServoBus,
@@ -114,6 +119,34 @@ def test_read_angle_limits_returns_little_endian_bounds():
 
     assert bus.read_angle_limits(3) == (100, 900)
     assert transport.writes == [build_packet(3, CMD_ANGLE_LIMIT_READ)]
+
+
+def test_read_voltage_and_temperature_protection_limits():
+    transport = FakeTransport(
+        [
+            build_packet(3, CMD_VIN_LIMIT_READ, [0x64, 0x19, 0xE0, 0x2E]),
+            build_packet(3, CMD_TEMP_MAX_LIMIT_READ, [85]),
+        ]
+    )
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_voltage_limits_v(3) == (6.5, 12.0)
+    assert bus.read_temperature_limit_c(3) == 85
+
+
+def test_read_motor_mode_led_and_alarm_configuration():
+    transport = FakeTransport(
+        [
+            build_packet(3, CMD_OR_MOTOR_MODE_READ, [1, 0, 0x18, 0xFC]),
+            build_packet(3, CMD_LED_CTRL_READ, [0]),
+            build_packet(3, CMD_LED_ERROR_READ, [7]),
+        ]
+    )
+    bus = RawServoBus(transport, RawServoBusConfig(response_timeout_s=0.001))
+
+    assert bus.read_motor_mode(3) == (1, -1000)
+    assert bus.read_led_enabled(3) is True
+    assert bus.read_alarm_mask(3) == 7
 
 
 def test_read_temperature_returns_degrees_celsius():
