@@ -1,8 +1,9 @@
 <default>
     <default class="htd45hServo">
       <geom contype="0" conaffinity="0" />
-      <joint damping="0.08516" frictionloss="0.022275" armature="0.024992" />
-      <position kp="21.1" kv="0.5" forcerange="-4.0 4.0" />
+      <!-- 2026-09-12 A1/B1/B2 low-load HTD-45H SysID; armature, kv, and torque limit held fixed. -->
+      <joint damping="1.10618" frictionloss="0.324094" armature="0.024992" />
+      <position kp="31.902" kv="0.5" forcerange="-4.0 4.0" />
     </default>
     <default class="backlash">
         <!-- +/- 0.5° of backlash -->

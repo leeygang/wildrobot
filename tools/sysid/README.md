@@ -295,6 +295,38 @@ The reported fixture inertia excludes the MJCF joint's placeholder `armature`
 value so that the later fit does not count an assumed actuator inertia as a
 measured mechanical load.
 
+### Offline actuator fit
+
+After collecting one zero-load bandwidth trace and mirrored positive/negative
+loaded traces, fit the low-load HTD-45H model locally:
+
+```bash
+uv run python tools/sysid/fit_servo_dynamics.py \
+  servo_sysid/htd45h_servo_100_20260912_210117.npz \
+  servo_sysid/htd45h_servo_100_20260912_210528.npz \
+  servo_sysid/htd45h_servo_100_20260912_210813.npz \
+  --fixture-mjcf assets/bam/robot.xml
+```
+
+The fitter replays the quantized 50 Hz commands in the measured one-DOF
+fixture and follows ToddlerBot's combined time/frequency-domain comparison. It
+fits effective position gain, damping, friction loss, and a discrete
+command-delay choice. Armature and actuator `kv` remain fixed: with the current
+fixture, damping and armature are strongly correlated and cannot be separated
+reliably. Because this fixture exercises less than 0.5 Nm, the fitter also does
+not alter the vendor torque limit or a velocity-dependent torque envelope. Add
+`--apply` only after inspecting the generated report; this updates both
+`assets/v2/joints_properties.xml` and its generated `assets/v2/wildrobot.xml`
+mirror.
+
+The 2026-09-12 A1/B1/B2 fit selected zero extra command-delay samples and
+changed the shared nominal model from `kp=21.1`, `damping=0.08516`, and
+`frictionloss=0.022275` to `kp=31.902`, `damping=1.10618`, and
+`frictionloss=0.324094`. Armature remains `0.024992` and actuator `kv` remains
+`0.5`. Mean capture replay RMSE improved from 0.8051 degrees to 0.4386 degrees
+(45.5%). This is a low-load nominal fit; torque-limit identification and the
+held-out +45-degree validation remain separate gates.
+
 References:
 
 - ToddlerBot paper, system-identification method: https://arxiv.org/abs/2502.00893
