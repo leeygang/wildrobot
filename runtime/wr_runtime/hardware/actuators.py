@@ -89,6 +89,11 @@ class HiwonderCachedActuators(Actuators):
         self.baudrate = int(baudrate or getattr(transport, "baudrate", 0) or 0)
         self._last_error: Optional[Exception] = None
         self.last_position_diagnostics: dict[str, np.ndarray] = {}
+        self.last_shutdown_diagnostics: dict[str, object] = {}
+        self._last_target_position_units = np.full(
+            len(self.actuator_names), np.nan, dtype=np.float32
+        )
+        self._last_target_clipped = np.zeros(len(self.actuator_names), dtype=bool)
 
         self.servo_ids_list: List[int] = []
         offsets: List[int] = []
@@ -159,13 +164,17 @@ class HiwonderCachedActuators(Actuators):
         if move_time is None:
             raise ValueError("move_time_ms must be provided when no default_move_time_ms is set")
 
-        units = joint_target_rad_to_servo_pos_elec_units(
-            targets,
-            self.offsets_unit,
-            self.motor_signs,
-            self.centers_rad,
-            self.servo_model,
+        raw_units = (
+            self.servo_model.units_center
+            + self.offsets_unit
+            + self.motor_signs
+            * ((targets - self.centers_rad) * self.servo_model.units_per_rad)
         )
+        units = np.clip(
+            raw_units, self.servo_model.units_min, self.servo_model.units_max
+        )
+        self._last_target_position_units = np.asarray(units, dtype=np.float32).copy()
+        self._last_target_clipped = np.asarray(raw_units != units, dtype=bool)
         positions_by_servo_id = dict(
             zip(self.servo_ids_list, np.rint(units).astype(int).tolist())
         )
@@ -211,6 +220,29 @@ class HiwonderCachedActuators(Actuators):
             "read_fail_count": np.asarray(
                 state.read_fail_count[ordered_indices], dtype=np.int32
             ).copy(),
+            "temperature_c": np.asarray(
+                state.temperature_c[ordered_indices], dtype=np.float32
+            ).copy(),
+            "voltage_v": np.asarray(
+                state.voltage_v[ordered_indices], dtype=np.float32
+            ).copy(),
+            "torque_enabled_state": np.asarray(
+                state.torque_enabled_state[ordered_indices], dtype=np.int8
+            ).copy(),
+            "temperature_age_s": np.asarray(
+                state.temperature_age_s[ordered_indices], dtype=np.float32
+            ).copy(),
+            "voltage_age_s": np.asarray(
+                state.voltage_age_s[ordered_indices], dtype=np.float32
+            ).copy(),
+            "torque_enabled_age_s": np.asarray(
+                state.torque_enabled_age_s[ordered_indices], dtype=np.float32
+            ).copy(),
+            "health_read_fail_count": np.asarray(
+                state.health_read_fail_count[ordered_indices], dtype=np.int32
+            ).copy(),
+            "target_position_units": self._last_target_position_units.copy(),
+            "target_clipped": self._last_target_clipped.copy(),
         }
         self._last_error = None
         return servo_pos_elect_units_to_joint_target_rad(
@@ -243,12 +275,28 @@ class HiwonderCachedActuators(Actuators):
         index_by_servo_id = {int(sid): i for i, sid in enumerate(state.servo_ids)}
         age = np.full(len(self.servo_ids_list), np.inf, dtype=np.float32)
         fail_count = np.zeros(len(self.servo_ids_list), dtype=np.int32)
+        temperature_c = np.full(len(self.servo_ids_list), np.nan, dtype=np.float32)
+        voltage_v = np.full(len(self.servo_ids_list), np.nan, dtype=np.float32)
+        torque_enabled = np.full(len(self.servo_ids_list), -1, dtype=np.int8)
+        temperature_age = np.full(len(self.servo_ids_list), np.inf, dtype=np.float32)
+        voltage_age = np.full(len(self.servo_ids_list), np.inf, dtype=np.float32)
+        torque_enabled_age = np.full(
+            len(self.servo_ids_list), np.inf, dtype=np.float32
+        )
+        health_fail_count = np.zeros(len(self.servo_ids_list), dtype=np.int32)
         for i, sid in enumerate(self.servo_ids_list):
             idx = index_by_servo_id.get(int(sid))
             if idx is None:
                 continue
             age[i] = float(state.position_age_s[idx])
             fail_count[i] = int(state.read_fail_count[idx])
+            temperature_c[i] = float(state.temperature_c[idx])
+            voltage_v[i] = float(state.voltage_v[idx])
+            torque_enabled[i] = int(state.torque_enabled_state[idx])
+            temperature_age[i] = float(state.temperature_age_s[idx])
+            voltage_age[i] = float(state.voltage_age_s[idx])
+            torque_enabled_age[i] = float(state.torque_enabled_age_s[idx])
+            health_fail_count[i] = int(state.health_read_fail_count[idx])
 
         finite_age = age[np.isfinite(age)]
         max_age = float(np.max(finite_age)) if finite_age.size else float("inf")
@@ -271,6 +319,14 @@ class HiwonderCachedActuators(Actuators):
             vals = age[mask & np.isfinite(age)]
             return float(np.max(vals)) if vals.size else 0.0
 
+        def _finite_max(values: np.ndarray) -> float:
+            finite = values[np.isfinite(values)]
+            return float(np.max(finite)) if finite.size else float("nan")
+
+        def _finite_min(values: np.ndarray) -> float:
+            finite = values[np.isfinite(values)]
+            return float(np.min(finite)) if finite.size else float("nan")
+
         servo_io_config = getattr(self.servo_io, "config", None)
         write_deadband_units = int(getattr(servo_io_config, "write_deadband_units", 0))
 
@@ -288,6 +344,26 @@ class HiwonderCachedActuators(Actuators):
             "servo_cache_stale_joint_count": int(np.count_nonzero(age > self._cache_age_limit_s)),
             "servo_cache_uninitialized_count": int(np.count_nonzero(~np.isfinite(age))),
             "servo_read_fail_count_total": int(np.sum(fail_count)),
+            "servo_health_read_count": int(metrics.health_read_success),
+            "servo_health_read_fail_count": int(metrics.health_read_failures),
+            "servo_health_read_fail_count_total": int(np.sum(health_fail_count)),
+            "servo_health_uninitialized_joint_count": int(
+                np.count_nonzero(
+                    ~np.isfinite(temperature_c)
+                    | ~np.isfinite(voltage_v)
+                    | (torque_enabled < 0)
+                )
+            ),
+            "servo_health_poll_interval_s": float(
+                getattr(servo_io_config, "health_poll_interval_s", 0.0)
+            ),
+            "servo_temperature_max_c": _finite_max(temperature_c),
+            "servo_voltage_min_v": _finite_min(voltage_v),
+            "servo_torque_disabled_count": int(np.count_nonzero(torque_enabled == 0)),
+            "servo_unexpected_unload_events": int(metrics.unexpected_unload_events),
+            "servo_temperature_age_max_s": _finite_max(temperature_age),
+            "servo_voltage_age_max_s": _finite_max(voltage_age),
+            "servo_torque_enabled_age_max_s": _finite_max(torque_enabled_age),
             "servo_write_targets_submitted": int(metrics.write_targets_submitted),
             "servo_write_targets_replaced": int(metrics.write_targets_replaced),
             "servo_write_commands": int(metrics.write_commands),
@@ -304,14 +380,28 @@ class HiwonderCachedActuators(Actuators):
             ),
             "servo_latest_write_latency_s": float(metrics.latest_write_latency_s),
             "servo_latest_read_latency_s": float(metrics.latest_read_latency_s),
+            "servo_latest_health_read_latency_s": float(
+                metrics.latest_health_read_latency_s
+            ),
         }
 
     def disable(self) -> None:
         self.servo_io.stop()
         try:
-            self.servo_io.unload_servos(self.servo_ids_list)
-        except Exception:
-            pass
+            report = self.servo_io.unload_servos(self.servo_ids_list)
+            self.last_shutdown_diagnostics = (
+                dict(report) if isinstance(report, dict) else {}
+            )
+        except Exception as exc:
+            self.last_shutdown_diagnostics = {
+                "attempted_servo_ids": list(self.servo_ids_list),
+                "commanded_servo_ids": [],
+                "confirmed_servo_ids": [],
+                "unverified_servo_ids": [],
+                "failed_servo_ids": list(self.servo_ids_list),
+                "errors": [repr(exc)],
+            }
+            print(f"ERROR: servo unload failed: {exc!r}", flush=True)
 
     def close(self) -> None:
         self.servo_io.close()

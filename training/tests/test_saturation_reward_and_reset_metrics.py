@@ -96,6 +96,18 @@ def test_saturation_metric_emits_on_environment_step() -> None:
 
     assert "reward/saturation" in metrics
     assert float(metrics["reward/saturation"]) <= 0.0
+    joint_name = "left_hip_roll"
+    torque_abs = float(metrics[f"torque/{joint_name}/abs_nm"])
+    assert float(
+        metrics[f"actuator/{joint_name}/torque_sq_nm2"]
+    ) == pytest.approx(torque_abs * torque_abs, rel=1e-5, abs=1e-7)
+    assert float(metrics[f"actuator/{joint_name}/speed_abs_rad_s"]) >= 0.0
+    assert float(
+        metrics[f"actuator/{joint_name}/tracking_error_abs_rad"]
+    ) >= 0.0
+    assert float(
+        metrics[f"actuator/{joint_name}/mechanical_power_abs_w"]
+    ) >= 0.0
 
 
 def test_saturation_is_opt_in_and_17d5_is_the_only_optimization_change() -> None:
@@ -249,6 +261,7 @@ def test_reset_origin_metrics_are_forwarded_to_wandb() -> None:
         "reset/rsi_reset_frac": 0.75,
         "reset/home_failure_rate": 0.10,
         "reset/rsi_failure_rate": 0.02,
+        "actuator/left_hip_roll/tracking_error_abs_rad": 0.04,
     }
     iteration_metrics = SimpleNamespace(
         episode_reward=1.0,
@@ -275,3 +288,6 @@ def test_reset_origin_metrics_are_forwarded_to_wandb() -> None:
     assert emitted["reset/rsi_reset_frac"] == pytest.approx(0.75)
     assert emitted["reset/home_failure_rate"] == pytest.approx(0.10)
     assert emitted["reset/rsi_failure_rate"] == pytest.approx(0.02)
+    assert emitted[
+        "actuator/left_hip_roll/tracking_error_abs_rad"
+    ] == pytest.approx(0.04)

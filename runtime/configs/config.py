@@ -540,7 +540,7 @@ class FootSwitchConfig:
 
 @dataclass(frozen=True)
 class ServoReadScheduleConfig:
-    """Feedback freshness limits for the per-board servo workers."""
+    """Position freshness and low-rate health polling for servo workers."""
 
     max_cache_age_s: Dict[str, float] = field(
         default_factory=lambda: {
@@ -549,6 +549,7 @@ class ServoReadScheduleConfig:
             "default": 1.25,
         }
     )
+    health_poll_interval_s: float = 1.0
 
 
 # =============================================================================
@@ -970,7 +971,16 @@ class WrRuntimeConfig:
                 )
             limits[str(key)] = value_f
 
-        return ServoReadScheduleConfig(max_cache_age_s=limits)
+        health_poll_interval_s = float(raw.get("health_poll_interval_s", 1.0))
+        if health_poll_interval_s < 0.0:
+            raise ValueError(
+                "servo_read_schedule.health_poll_interval_s must be non-negative"
+            )
+
+        return ServoReadScheduleConfig(
+            max_cache_age_s=limits,
+            health_poll_interval_s=health_poll_interval_s,
+        )
 
     @staticmethod
     def _validate_motor_signs(motor_signs: Dict[str, float]) -> None:
@@ -1168,6 +1178,9 @@ class WrRuntimeConfig:
             },
             "servo_read_schedule": {
                 "max_cache_age_s": self.servo_read_schedule.max_cache_age_s,
+                "health_poll_interval_s": (
+                    self.servo_read_schedule.health_poll_interval_s
+                ),
             },
         }
         return out

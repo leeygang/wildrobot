@@ -41,6 +41,15 @@ def _info(*, previous: list[float], observed: list[float]) -> dict:
             "velocity_units_s": np.array([4.0, -5.0], dtype=np.float32),
             "position_age_s": np.array([0.02, 0.04], dtype=np.float32),
             "read_fail_count": np.array([0, 1], dtype=np.int32),
+            "temperature_c": np.array([42.0, 49.0], dtype=np.float32),
+            "voltage_v": np.array([11.4, 10.7], dtype=np.float32),
+            "torque_enabled_state": np.array([1, 0], dtype=np.int8),
+            "temperature_age_s": np.array([0.2, 0.3], dtype=np.float32),
+            "voltage_age_s": np.array([0.4, 0.5], dtype=np.float32),
+            "torque_enabled_age_s": np.array([0.6, 0.7], dtype=np.float32),
+            "health_read_fail_count": np.array([0, 2], dtype=np.int32),
+            "target_position_units": np.array([520, 480], dtype=np.float32),
+            "target_clipped": np.array([False, True]),
         },
     }
 
@@ -60,11 +69,21 @@ def test_policy_telemetry_records_aligned_command_and_feedback(tmp_path: Path) -
         loop_step=3,
         requested_velocity_cmd=np.array([0.07, 0.0, 0.0], dtype=np.float32),
     )
+    recorder.record_shutdown(
+        {
+            "attempted_servo_ids": [1, 2],
+            "commanded_servo_ids": [1, 2],
+            "confirmed_servo_ids": [1],
+            "unverified_servo_ids": [2],
+            "failed_servo_ids": [],
+            "errors": ["servo_id=2 verification timed out"],
+        }
+    )
 
     assert recorder.save(outcome="aborted", error="fall cutoff") == output
 
     with np.load(output) as data:
-        assert int(data["schema_version"]) == 1
+        assert int(data["schema_version"]) == 2
         assert str(data["outcome"]) == "aborted"
         assert str(data["error"]) == "fall cutoff"
         assert data["phase"].tolist() == ["walking"]
@@ -82,6 +101,15 @@ def test_policy_telemetry_records_aligned_command_and_feedback(tmp_path: Path) -
         assert data["servo_servo_read_fail_count"].tolist() == [1.0]
         assert "servo_ignored" not in data.files
         np.testing.assert_allclose(data["servo_position_age_s"], [[0.02, 0.04]])
+        np.testing.assert_allclose(data["servo_temperature_c"], [[42.0, 49.0]])
+        np.testing.assert_allclose(data["servo_voltage_v"], [[11.4, 10.7]])
+        np.testing.assert_allclose(data["servo_torque_enabled_state"], [[1.0, 0.0]])
+        np.testing.assert_allclose(data["servo_target_clipped"], [[0.0, 1.0]])
+        assert data["shutdown_unload_confirmed_servo_ids"].tolist() == [1]
+        assert data["shutdown_unload_unverified_servo_ids"].tolist() == [2]
+        assert data["shutdown_unload_errors"].tolist() == [
+            "servo_id=2 verification timed out"
+        ]
 
 
 def test_inspect_log_reports_walking_tracking_and_missing_footswitches(
@@ -110,4 +138,8 @@ def test_inspect_log_reports_walking_tracking_and_missing_footswitches(
     assert "Previous-command vs feedback error top 2" in text
     assert "left_hip_roll=2.865/2.865" in text
     assert "Servo feedback cache age top 2" in text
+    assert "Joint speed top 2" in text
+    assert "Servo temperature top 2" in text
+    assert "Servo voltage lowest 2" in text
+    assert "Servo torque-disabled occupancy top 2" in text
     assert "foot switches were disabled or unavailable" in text

@@ -353,6 +353,17 @@ def _create_telemetry_recorder(
     return recorder
 
 
+def _close_robot_io_with_telemetry(robot_io, telemetry) -> None:
+    """Close hardware, then preserve the unload/verification report in telemetry."""
+    try:
+        robot_io.close()
+    finally:
+        if telemetry is not None:
+            telemetry.record_shutdown(
+                getattr(robot_io, "last_shutdown_diagnostics", {})
+            )
+
+
 def _install_stack_dump_signal() -> None:
     sigusr1 = getattr(signal, "SIGUSR1", None)
     if sigusr1 is None:
@@ -696,6 +707,9 @@ def _build_hardware_robot_io(
                 ),
                 read_groups=tuple(read_groups),
                 read_group_schedule=tuple(read_group_schedule),
+                health_poll_interval_s=float(
+                    getattr(read_schedule, "health_poll_interval_s", 1.0)
+                ),
             ),
             worker_name=str(board.name),
         )
@@ -1439,6 +1453,17 @@ def _print_timing_summary(
             f"write_failures={last_metrics.get('servo_write_failures')} "
             f"write_targets={last_metrics.get('servo_write_targets_submitted')} "
             f"write_replaced={last_metrics.get('servo_write_targets_replaced')}",
+            flush=True,
+        )
+        print(
+            "  Servo health summary: "
+            f"temperature_max_c={last_metrics.get('servo_temperature_max_c')} "
+            f"voltage_min_v={last_metrics.get('servo_voltage_min_v')} "
+            f"torque_disabled={last_metrics.get('servo_torque_disabled_count')} "
+            f"unexpected_unloads={last_metrics.get('servo_unexpected_unload_events')} "
+            f"health_reads={last_metrics.get('servo_health_read_count')} "
+            f"health_read_failures={last_metrics.get('servo_health_read_fail_count')} "
+            f"health_uninitialized={last_metrics.get('servo_health_uninitialized_joint_count')}",
             flush=True,
         )
         if servo_metric_samples:
@@ -2992,7 +3017,7 @@ def _run_deployment_bundle_from_args(
                 telemetry_phase="walking",
             )
     finally:
-        base_robot_io.close()
+        _close_robot_io_with_telemetry(base_robot_io, telemetry)
     print("Run complete.", flush=True)
     return 0
 
@@ -3187,7 +3212,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         try:
             initial_signals = robot_io.read()
         except BaseException:
-            robot_io.close()
+            _close_robot_io_with_telemetry(robot_io, telemetry)
             raise
         initial_q = np.asarray(
             initial_signals.joint_pos_rad, dtype=np.float32
@@ -3195,7 +3220,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         if initial_q.size != len(hardware_actuator_names) or not np.all(
             np.isfinite(initial_q)
         ):
-            robot_io.close()
+            _close_robot_io_with_telemetry(robot_io, telemetry)
             raise SystemExit(
                 "Cannot start startup pose blend: initial joint readback is invalid "
                 f"(size={initial_q.size}, expected={len(hardware_actuator_names)})."
@@ -3362,7 +3387,7 @@ def _run_policy_from_args(args: argparse.Namespace) -> int:
         )
     finally:
         try:
-            robot_io.close()
+            _close_robot_io_with_telemetry(robot_io, telemetry)
         except Exception as exc:  # pragma: no cover - best-effort cleanup
             print(f"Warning: robot_io.close() failed: {exc}", flush=True)
     print("Run complete.", flush=True)

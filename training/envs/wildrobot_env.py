@@ -6189,6 +6189,16 @@ class WildRobotEnv(mjx_env.MjxEnv):
         torque_ratio = torque_abs / (
             self._cal._force_limits[self._policy_signal_indices] + jp.float32(1e-6)
         )
+        actuator_speed_abs = jp.abs(
+            data.qvel[self._actuator_dof_addrs]
+        ).astype(jp.float32)
+        actuator_tracking_error_abs = jp.abs(
+            applied_target_q - data.qpos[self._actuator_qpos_addrs]
+        ).astype(jp.float32)
+        actuator_torque_sq = (torque_abs * torque_abs).astype(jp.float32)
+        actuator_mechanical_power_abs = (
+            torque_abs * actuator_speed_abs
+        ).astype(jp.float32)
         terminal_metrics_dict["tracking/avg_torque"] = jp.mean(torque_abs).astype(jp.float32)
         terminal_metrics_dict["tracking/max_torque"] = jp.max(torque_ratio).astype(jp.float32)
         terminal_metrics_dict["debug/torque_abs_max"] = jp.max(torque_ratio).astype(jp.float32)
@@ -6220,6 +6230,21 @@ class WildRobotEnv(mjx_env.MjxEnv):
             terminal_metrics_dict[f"torque/{actuator_name}/sat_frac"] = (
                 torque_ratio[actuator_idx] > jp.float32(0.95)
             ).astype(jp.float32)
+            terminal_metrics_dict[
+                f"torque/{actuator_name}/ratio_of_model_limit"
+            ] = torque_ratio[actuator_idx].astype(jp.float32)
+            terminal_metrics_dict[
+                f"actuator/{actuator_name}/speed_abs_rad_s"
+            ] = actuator_speed_abs[actuator_idx]
+            terminal_metrics_dict[
+                f"actuator/{actuator_name}/tracking_error_abs_rad"
+            ] = actuator_tracking_error_abs[actuator_idx]
+            terminal_metrics_dict[
+                f"actuator/{actuator_name}/torque_sq_nm2"
+            ] = actuator_torque_sq[actuator_idx]
+            terminal_metrics_dict[
+                f"actuator/{actuator_name}/mechanical_power_abs_w"
+            ] = actuator_mechanical_power_abs[actuator_idx]
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

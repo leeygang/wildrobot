@@ -33,6 +33,9 @@ class HardwareRobotIO(RobotIO[Signals]):
     last_servo_diagnostics: dict[str, np.ndarray] = field(
         default_factory=dict, init=False
     )
+    last_shutdown_diagnostics: dict[str, object] = field(
+        default_factory=dict, init=False
+    )
     last_commanded_q_rad: Optional[np.ndarray] = field(default=None, init=False)
 
     @property
@@ -239,5 +242,13 @@ class HardwareRobotIO(RobotIO[Signals]):
             try:
                 self.imu.close()
             finally:
-                self.actuators.disable()
-                self.actuators.close()
+                try:
+                    self.actuators.disable()
+                    shutdown = getattr(
+                        self.actuators, "last_shutdown_diagnostics", {}
+                    )
+                    self.last_shutdown_diagnostics = (
+                        dict(shutdown) if isinstance(shutdown, dict) else {}
+                    )
+                finally:
+                    self.actuators.close()

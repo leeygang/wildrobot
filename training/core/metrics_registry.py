@@ -2067,6 +2067,56 @@ for _actuator_name in TORQUE_ACTUATOR_NAMES:
                     ">95% of its configured torque limit"
                 ),
             ),
+            MetricSpec(
+                name=f"torque/{_actuator_name}/ratio_of_model_limit",
+                reducer=Reducer.MEAN,
+                log_prefix="torque",
+                description=(
+                    f"Mean absolute torque divided by the configured model limit "
+                    f"for {_actuator_name}"
+                ),
+            ),
+        ]
+    )
+
+# Actuator behavior needed to compare simulation demand with hardware
+# telemetry. These stay actuator-generic so the schema survives a future
+# change from serial servos to CAN actuators. ``torque_sq_nm2`` supports an RMS
+# torque/thermal-load proxy without incorrectly claiming simulated temperature.
+for _actuator_name in TORQUE_ACTUATOR_NAMES:
+    METRIC_SPECS.extend(
+        [
+            MetricSpec(
+                name=f"actuator/{_actuator_name}/speed_abs_rad_s",
+                reducer=Reducer.MEAN,
+                log_prefix="actuator",
+                description=f"Mean absolute joint speed for {_actuator_name} (rad/s)",
+            ),
+            MetricSpec(
+                name=f"actuator/{_actuator_name}/tracking_error_abs_rad",
+                reducer=Reducer.MEAN,
+                log_prefix="actuator",
+                description=(
+                    f"Mean absolute applied-target tracking error for {_actuator_name} (rad)"
+                ),
+            ),
+            MetricSpec(
+                name=f"actuator/{_actuator_name}/torque_sq_nm2",
+                reducer=Reducer.MEAN,
+                log_prefix="actuator",
+                description=(
+                    f"Mean squared joint torque for {_actuator_name} (Nm^2); "
+                    "take sqrt for RMS torque"
+                ),
+            ),
+            MetricSpec(
+                name=f"actuator/{_actuator_name}/mechanical_power_abs_w",
+                reducer=Reducer.MEAN,
+                log_prefix="actuator",
+                description=(
+                    f"Mean absolute joint mechanical power for {_actuator_name} (W)"
+                ),
+            ),
         ]
     )
 

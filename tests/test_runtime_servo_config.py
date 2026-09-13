@@ -386,19 +386,22 @@ def test_servo_read_schedule_parses_and_serializes(tmp_path: Path) -> None:
         },
         "servo_read_schedule": {
             "max_cache_age_s": {"leg": 0.12, "default": 0.25},
+            "health_poll_interval_s": 2.0,
         },
     }
 
     cfg = WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
     assert cfg.servo_read_schedule.max_cache_age_s["leg"] == pytest.approx(0.12)
+    assert cfg.servo_read_schedule.health_poll_interval_s == pytest.approx(2.0)
     out = cfg.to_dict()
     assert out["servo_read_schedule"] == {
         "max_cache_age_s": {
             "leg": 0.12,
             "arm": 1.25,
             "default": 0.25,
-        }
+        },
+        "health_poll_interval_s": 2.0,
     }
 
 
@@ -412,6 +415,16 @@ def test_servo_read_schedule_rejects_obsolete_group_config(
     }
 
     with pytest.raises(ValueError, match="no longer supports"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
+def test_servo_read_schedule_rejects_negative_health_interval(tmp_path: Path) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "servo_read_schedule": {"health_poll_interval_s": -1.0},
+    }
+
+    with pytest.raises(ValueError, match="health_poll_interval_s"):
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 

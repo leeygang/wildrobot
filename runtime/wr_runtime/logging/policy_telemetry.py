@@ -12,7 +12,7 @@ import numpy as np
 class PolicyTelemetryRecorder:
     """Collect a policy run and save it as a compressed NumPy archive."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(
         self,
@@ -32,6 +32,7 @@ class PolicyTelemetryRecorder:
         )
         self._started_s = time.monotonic()
         self._rows: list[dict[str, Any]] = []
+        self._shutdown_diagnostics: dict[str, Any] = {}
 
     @property
     def sample_count(self) -> int:
@@ -127,7 +128,39 @@ class PolicyTelemetryRecorder:
                 "servo_read_fail_count": _vector(
                     servo_diagnostics.get("read_fail_count"), n_act
                 ),
+                "servo_temperature_c": _vector(
+                    servo_diagnostics.get("temperature_c"), n_act
+                ),
+                "servo_voltage_v": _vector(
+                    servo_diagnostics.get("voltage_v"), n_act
+                ),
+                "servo_torque_enabled_state": _vector(
+                    servo_diagnostics.get("torque_enabled_state"), n_act
+                ),
+                "servo_temperature_age_s": _vector(
+                    servo_diagnostics.get("temperature_age_s"), n_act
+                ),
+                "servo_voltage_age_s": _vector(
+                    servo_diagnostics.get("voltage_age_s"), n_act
+                ),
+                "servo_torque_enabled_age_s": _vector(
+                    servo_diagnostics.get("torque_enabled_age_s"), n_act
+                ),
+                "servo_health_read_fail_count": _vector(
+                    servo_diagnostics.get("health_read_fail_count"), n_act
+                ),
+                "servo_target_position_units": _vector(
+                    servo_diagnostics.get("target_position_units"), n_act
+                ),
+                "servo_target_clipped": _vector(
+                    servo_diagnostics.get("target_clipped"), n_act
+                ),
             }
+        )
+
+    def record_shutdown(self, diagnostics: dict[str, Any] | None) -> None:
+        self._shutdown_diagnostics = (
+            dict(diagnostics) if isinstance(diagnostics, dict) else {}
         )
 
     def save(self, *, outcome: str, error: str | None = None) -> Path | None:
@@ -188,6 +221,15 @@ class PolicyTelemetryRecorder:
             "servo_velocity_units_s",
             "servo_position_age_s",
             "servo_read_fail_count",
+            "servo_temperature_c",
+            "servo_voltage_v",
+            "servo_torque_enabled_state",
+            "servo_temperature_age_s",
+            "servo_voltage_age_s",
+            "servo_torque_enabled_age_s",
+            "servo_health_read_fail_count",
+            "servo_target_position_units",
+            "servo_target_clipped",
         ):
             arrays[key] = np.stack([row[key] for row in rows]).astype(np.float32)
         arrays["yaw_rate_cmd"] = arrays["velocity_cmd"][:, 2].copy()
@@ -204,6 +246,19 @@ class PolicyTelemetryRecorder:
         arrays.update(_metric_arrays(rows, source="timing_s", prefix="timing_"))
         arrays.update(
             _metric_arrays(rows, source="servo_metrics", prefix="servo_")
+        )
+        for key in (
+            "attempted_servo_ids",
+            "commanded_servo_ids",
+            "confirmed_servo_ids",
+            "unverified_servo_ids",
+            "failed_servo_ids",
+        ):
+            arrays[f"shutdown_unload_{key}"] = np.asarray(
+                self._shutdown_diagnostics.get(key, []), dtype=np.int32
+            )
+        arrays["shutdown_unload_errors"] = np.asarray(
+            [str(item) for item in self._shutdown_diagnostics.get("errors", [])]
         )
 
         self.path.parent.mkdir(parents=True, exist_ok=True)

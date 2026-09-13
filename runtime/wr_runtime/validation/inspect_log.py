@@ -204,6 +204,13 @@ def inspect_log(path: Path) -> None:
     print(f"Joints: vel_rad_s overall (p95={jv_stats.get('p95', float('nan')):.3f}, max={jv_stats.get('max', float('nan')):.3f})")
 
     actuator_names = _actuator_names(data, joint_pos.shape[-1])
+    if joint_vel.ndim == 2 and joint_vel.shape[0] == t:
+        _print_per_joint_ranking(
+            "Joint speed",
+            np.abs(joint_vel[analysis_mask]),
+            actuator_names,
+            unit="rad/s",
+        )
     if "joint_tracking_error_rad" in data:
         tracking_error = np.asarray(
             data["joint_tracking_error_rad"], dtype=np.float32
@@ -236,6 +243,117 @@ def inspect_log(path: Path) -> None:
                 actuator_names,
                 unit="ms",
             )
+    if "servo_temperature_c" in data:
+        temperature = np.asarray(data["servo_temperature_c"], dtype=np.float32)
+        if (
+            temperature.ndim == 2
+            and temperature.shape[0] == t
+            and np.any(np.isfinite(temperature[analysis_mask]))
+        ):
+            _print_per_joint_ranking(
+                "Servo temperature",
+                temperature[analysis_mask],
+                actuator_names,
+                unit="C",
+            )
+            if "host_monotonic_s" in data:
+                _print_temperature_rise_rates(
+                    temperature,
+                    np.asarray(data["host_monotonic_s"], dtype=np.float64),
+                    analysis_mask,
+                    actuator_names,
+                )
+    if "servo_voltage_v" in data:
+        voltage = np.asarray(data["servo_voltage_v"], dtype=np.float32)
+        if (
+            voltage.ndim == 2
+            and voltage.shape[0] == t
+            and np.any(np.isfinite(voltage[analysis_mask]))
+        ):
+            _print_per_joint_low_ranking(
+                "Servo voltage",
+                voltage[analysis_mask],
+                actuator_names,
+                unit="V",
+            )
+    if "servo_torque_enabled_state" in data:
+        torque_enabled = np.asarray(
+            data["servo_torque_enabled_state"], dtype=np.float32
+        )
+        if torque_enabled.ndim == 2 and torque_enabled.shape[0] == t:
+            known = torque_enabled[analysis_mask] >= 0.0
+            disabled = torque_enabled[analysis_mask] == 0.0
+            disabled_fraction = np.full(torque_enabled.shape[1], np.nan)
+            for index in range(torque_enabled.shape[1]):
+                if np.any(known[:, index]):
+                    disabled_fraction[index] = float(
+                        np.mean(disabled[known[:, index], index])
+                    )
+            if np.any(np.isfinite(disabled_fraction)):
+                _print_per_joint_values(
+                    "Servo torque-disabled occupancy",
+                    disabled_fraction,
+                    actuator_names,
+                    unit="%",
+                    scale=100.0,
+                )
+    if "servo_target_clipped" in data:
+        target_clipped = np.asarray(data["servo_target_clipped"], dtype=np.float32)
+        if (
+            target_clipped.ndim == 2
+            and target_clipped.shape[0] == t
+            and np.any(np.isfinite(target_clipped[analysis_mask]))
+        ):
+            _print_per_joint_values(
+                "Servo electrical-range clipping occupancy",
+                np.nanmean(target_clipped[analysis_mask], axis=0),
+                actuator_names,
+                unit="%",
+                scale=100.0,
+            )
+
+    if "shutdown_unload_attempted_servo_ids" in data:
+        attempted = np.asarray(data["shutdown_unload_attempted_servo_ids"]).size
+        confirmed = np.asarray(data.get("shutdown_unload_confirmed_servo_ids", [])).size
+        unverified = np.asarray(
+            data.get("shutdown_unload_unverified_servo_ids", [])
+        ).size
+        failed = np.asarray(data.get("shutdown_unload_failed_servo_ids", [])).size
+        print(
+            "Shutdown unload: "
+            f"attempted={attempted}, confirmed={confirmed}, "
+            f"unverified={unverified}, failed={failed}"
+        )
+        errors = np.asarray(data.get("shutdown_unload_errors", [])).astype(str)
+        for error in errors:
+            print(f"Shutdown unload error: {error}")
+
+    if "servo_servo_health_read_count" in data and "host_monotonic_s" in data:
+        health_count = np.asarray(
+            data["servo_servo_health_read_count"], dtype=np.float64
+        ).reshape(-1)
+        host_ts = np.asarray(data["host_monotonic_s"], dtype=np.float64).reshape(-1)
+        if health_count.size == t and host_ts.size == t and t > 1:
+            duration_s = float(host_ts[-1] - host_ts[0])
+            if duration_s > 0.0:
+                health_rate_hz = float(health_count[-1] - health_count[0]) / duration_s
+                print(f"Servo health bus read rate: {health_rate_hz:.2f} transactions/s")
+
+    counter_parts = []
+    for key, label in (
+        ("servo_servo_read_fail_count", "position_read_failures"),
+        ("servo_servo_health_read_fail_count", "health_read_failures"),
+        ("servo_servo_write_failures", "write_failures"),
+        ("servo_servo_unexpected_unload_events", "unexpected_unloads"),
+    ):
+        if key not in data:
+            continue
+        values = np.asarray(data[key], dtype=np.float64).reshape(-1)
+        finite = values[np.isfinite(values)]
+        if finite.size:
+            counter_parts.append(f"{label}={int(finite[-1])}")
+    if counter_parts:
+        print("Servo IO counters: " + ", ".join(counter_parts))
 
     timing_parts = []
     for key, label in (
@@ -339,6 +457,67 @@ def _print_per_joint_values(
         + ", ".join(
             f"{names[index]}={vector[index] * scale:.3f}{unit}" for index in order
         )
+    )
+
+
+def _print_per_joint_low_ranking(
+    label: str,
+    values: np.ndarray,
+    names: list[str],
+    *,
+    unit: str,
+    limit: int = 5,
+) -> None:
+    matrix = np.asarray(values, dtype=np.float64)
+    if matrix.ndim != 2 or matrix.shape[1] != len(names):
+        return
+    minimum = np.nanmin(matrix, axis=0)
+    p05 = np.nanpercentile(matrix, 5.0, axis=0)
+    order = np.argsort(np.nan_to_num(p05, nan=np.inf))[:limit]
+    print(
+        f"{label} lowest {len(order)} (min/p05 {unit}): "
+        + ", ".join(
+            f"{names[index]}={minimum[index]:.3f}/{p05[index]:.3f}"
+            for index in order
+        )
+    )
+
+
+def _print_temperature_rise_rates(
+    temperature_c: np.ndarray,
+    host_time_s: np.ndarray,
+    mask: np.ndarray,
+    names: list[str],
+    *,
+    limit: int = 5,
+) -> None:
+    temperature = np.asarray(temperature_c, dtype=np.float64)
+    timestamps = np.asarray(host_time_s, dtype=np.float64).reshape(-1)
+    selected = np.asarray(mask, dtype=bool).reshape(-1)
+    if temperature.ndim != 2 or temperature.shape[1] != len(names):
+        return
+    rates = np.full(len(names), np.nan, dtype=np.float64)
+    for index in range(len(names)):
+        valid = selected & np.isfinite(temperature[:, index]) & np.isfinite(timestamps)
+        sample_indices = np.flatnonzero(valid)
+        if sample_indices.size < 2:
+            continue
+        first = int(sample_indices[0])
+        last = int(sample_indices[-1])
+        duration_s = float(timestamps[last] - timestamps[first])
+        if duration_s > 0.0:
+            rates[index] = (
+                float(temperature[last, index] - temperature[first, index])
+                / duration_s
+                * 60.0
+            )
+    finite = np.flatnonzero(np.isfinite(rates))
+    if finite.size == 0:
+        return
+    order = finite[np.argsort(rates[finite])[::-1][:limit]]
+    print(
+        f"Servo temperature rise top {len(order)} (C/min): "
+        + ", ".join(f"{names[index]}={rates[index]:.3f}" for index in order)
     )
 
 

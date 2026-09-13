@@ -25,6 +25,11 @@ class FakeRawBus:
         self.reads = []
         self.transport = FakeTransport()
         self.write_sleep_s = float(write_sleep_s)
+        self.temperatures = {int(servo_id): 40 for servo_id in positions}
+        self.voltages = {int(servo_id): 11.1 for servo_id in positions}
+        self.loaded = {int(servo_id): True for servo_id in positions}
+        self.health_reads = []
+        self.unloads = []
 
     def read_position(self, servo_id: int):
         self.reads.append(int(servo_id))
@@ -34,6 +39,22 @@ class FakeRawBus:
         if self.write_sleep_s > 0.0:
             time.sleep(self.write_sleep_s)
         self.writes.append((int(servo_id), int(position), int(time_ms)))
+
+    def read_temperature_c(self, servo_id: int):
+        self.health_reads.append(("temperature", int(servo_id)))
+        return self.temperatures.get(int(servo_id))
+
+    def read_voltage_v(self, servo_id: int):
+        self.health_reads.append(("voltage", int(servo_id)))
+        return self.voltages.get(int(servo_id))
+
+    def read_loaded(self, servo_id: int):
+        self.health_reads.append(("torque_enabled", int(servo_id)))
+        return self.loaded.get(int(servo_id))
+
+    def unload(self, servo_id: int):
+        self.unloads.append(int(servo_id))
+        self.loaded[int(servo_id)] = False
 
 
 class FakeLogger:
@@ -131,6 +152,110 @@ def test_worker_submits_target_to_raw_bus():
     metrics = worker.get_metrics()
     assert metrics.write_targets_submitted == 1
     assert metrics.write_commands == 1
+
+
+def test_worker_polls_temperature_voltage_and_torque_enable_without_blocking_startup():
+    raw_bus = FakeRawBus({3: 501})
+    raw_bus.temperatures[3] = 52
+    raw_bus.voltages[3] = 10.6
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            servo_ids=(3,),
+            health_poll_interval_s=0.003,
+            idle_sleep_s=0.0001,
+        ),
+    )
+
+    worker.start()
+    try:
+        assert _wait_until(lambda: worker.get_metrics().health_read_success >= 3)
+    finally:
+        worker.stop()
+
+    state = worker.get_cached_servo_state()
+    assert state.position_units.tolist() == [501.0]
+    assert state.temperature_c.tolist() == [52.0]
+    assert state.voltage_v.tolist() == [10.600000381469727]
+    assert state.torque_enabled_state.tolist() == [1]
+    assert state.health_read_fail_count.tolist() == [0]
+
+
+def test_health_polling_is_rate_limited_and_yields_to_pending_writes():
+    raw_bus = FakeRawBus({1: 501, 2: 502})
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(
+            servo_ids=(1, 2),
+            health_poll_interval_s=1.2,
+        ),
+    )
+    worker._last_update_time_s[:] = time.monotonic()
+    worker._next_health_read_s = time.monotonic() - 1.0
+
+    worker.submit_targets_units({1: 520}, move_time_ms=20)
+    assert worker._health_read_due() is False
+    assert worker._pop_pending_target() is not None
+
+    before = time.monotonic()
+    assert worker._health_read_due() is True
+    worker._read_next_health()
+
+    # Two servos x three fields: at most one transaction every 0.2 seconds,
+    # hence each field for each servo is sampled at most once per 1.2 seconds.
+    assert worker._next_health_read_s - before >= 0.19
+    assert len(raw_bus.health_reads) == 1
+
+
+def test_worker_counts_unexpected_torque_disable_transition_once():
+    raw_bus = FakeRawBus({3: 501})
+    raw_bus.loaded[3] = False
+    worker = ServoIOWorker(
+        raw_bus,
+        ServoIOWorkerConfig(servo_ids=(3,)),
+    )
+    worker._last_written_target_by_servo[3] = (501, 20)
+
+    worker._read_health_one(3, "torque_enabled")
+    worker._read_health_one(3, "torque_enabled")
+
+    assert worker.get_cached_servo_state().torque_enabled_state.tolist() == [0]
+    assert worker.get_metrics().unexpected_unload_events == 1
+
+
+def test_initial_unloaded_state_is_not_an_event_before_first_command():
+    raw_bus = FakeRawBus({3: 501})
+    raw_bus.loaded[3] = False
+    worker = ServoIOWorker(raw_bus, ServoIOWorkerConfig(servo_ids=(3,)))
+
+    worker._read_health_one(3, "torque_enabled")
+
+    assert worker.get_cached_servo_state().torque_enabled_state.tolist() == [0]
+    assert worker.get_metrics().unexpected_unload_events == 0
+
+    worker._last_written_target_by_servo[3] = (501, 20)
+    worker._read_health_one(3, "torque_enabled")
+    assert worker.get_metrics().unexpected_unload_events == 1
+
+
+def test_unload_report_continues_after_command_failure_and_verifies_state():
+    class PartiallyFailingRawBus(FakeRawBus):
+        def unload(self, servo_id: int):
+            if int(servo_id) == 2:
+                raise OSError("write failed")
+            super().unload(servo_id)
+
+    raw_bus = PartiallyFailingRawBus({1: 501, 2: 502})
+    worker = ServoIOWorker(raw_bus, ServoIOWorkerConfig(servo_ids=(1, 2)))
+
+    report = worker.unload_servos([1, 2])
+
+    assert report["attempted_servo_ids"] == [1, 2]
+    assert report["confirmed_servo_ids"] == [1]
+    assert report["failed_servo_ids"] == [2]
+    assert "write failed" in report["errors"][0]
+    assert worker.get_metrics().unload_commands == 1
+    assert worker.get_metrics().unload_failures == 1
 
 
 def test_multi_board_io_routes_targets_and_runs_board_writes_concurrently():

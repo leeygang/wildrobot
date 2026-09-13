@@ -1597,6 +1597,7 @@ def build_wandb_metrics(
             key.startswith("debug/")
             or key.startswith("tracking/")
             or key.startswith("torque/")
+            or key.startswith("actuator/")
             or key.startswith("support/")
             or key.startswith("term_")
             # 2026-05-18 metric-correctness sweep wiring: the train

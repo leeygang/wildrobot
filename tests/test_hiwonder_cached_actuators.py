@@ -13,6 +13,14 @@ class FakeServoIO:
         self.submitted = []
         self.closed = False
         self.stopped = False
+        self.unload_report = {
+            "attempted_servo_ids": [1, 2],
+            "commanded_servo_ids": [1, 2],
+            "confirmed_servo_ids": [1, 2],
+            "unverified_servo_ids": [],
+            "failed_servo_ids": [],
+            "errors": [],
+        }
 
     def submit_targets_units(self, positions_by_servo_id, *, move_time_ms):
         self.submitted.append((dict(positions_by_servo_id), int(move_time_ms)))
@@ -29,6 +37,10 @@ class FakeServoIO:
     def close(self):
         self.closed = True
 
+    def unload_servos(self, servo_ids):
+        assert list(servo_ids) == [1, 2]
+        return self.unload_report
+
 
 def _state():
     return CachedServoState(
@@ -38,6 +50,13 @@ def _state():
         position_age_s=np.array([0.01, 0.02], dtype=np.float32),
         read_fail_count=np.array([0, 0], dtype=np.int32),
         last_update_time_s=np.array([1.0, 1.0], dtype=np.float64),
+        temperature_c=np.array([42.0, 47.0], dtype=np.float32),
+        voltage_v=np.array([11.2, 10.8], dtype=np.float32),
+        torque_enabled_state=np.array([1, 0], dtype=np.int8),
+        temperature_age_s=np.array([0.4, 0.5], dtype=np.float32),
+        voltage_age_s=np.array([0.3, 0.6], dtype=np.float32),
+        torque_enabled_age_s=np.array([0.2, 0.7], dtype=np.float32),
+        health_read_fail_count=np.array([0, 2], dtype=np.int32),
         last_read_group="test",
         last_read_servo_id=2,
         last_error=None,
@@ -79,6 +98,10 @@ def test_cached_actuators_convert_cached_units_to_radians():
     np.testing.assert_allclose(diagnostics["position_units"], [600.0, 400.0])
     np.testing.assert_allclose(diagnostics["velocity_units_s"], [10.0, -20.0])
     np.testing.assert_allclose(diagnostics["position_age_s"], [0.01, 0.02])
+    np.testing.assert_allclose(diagnostics["temperature_c"], [42.0, 47.0])
+    np.testing.assert_allclose(diagnostics["voltage_v"], [11.2, 10.8])
+    np.testing.assert_array_equal(diagnostics["torque_enabled_state"], [1, 0])
+    np.testing.assert_array_equal(diagnostics["health_read_fail_count"], [0, 2])
 
 
 def test_cached_actuators_close_delegates_to_worker():
@@ -88,6 +111,16 @@ def test_cached_actuators_close_delegates_to_worker():
     actuators.close()
 
     assert fake_io.closed is True
+
+
+def test_cached_actuators_records_verified_shutdown_unload():
+    fake_io = FakeServoIO(_state())
+    actuators = _actuators(fake_io)
+
+    actuators.disable()
+
+    assert fake_io.stopped is True
+    assert actuators.last_shutdown_diagnostics["confirmed_servo_ids"] == [1, 2]
 
 
 def test_cached_actuators_reports_last_read_servo_id():

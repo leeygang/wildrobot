@@ -601,6 +601,11 @@ def test_named_torque_metrics_match_robot_config() -> None:
     for name in configured_names:
         assert f"torque/{name}/abs_nm" in METRIC_INDEX
         assert f"torque/{name}/sat_frac" in METRIC_INDEX
+        assert f"torque/{name}/ratio_of_model_limit" in METRIC_INDEX
+        assert f"actuator/{name}/speed_abs_rad_s" in METRIC_INDEX
+        assert f"actuator/{name}/tracking_error_abs_rad" in METRIC_INDEX
+        assert f"actuator/{name}/torque_sq_nm2" in METRIC_INDEX
+        assert f"actuator/{name}/mechanical_power_abs_w" in METRIC_INDEX
 
 
 def test_standalone_evaluators_pass_full_rollout_contract() -> None:

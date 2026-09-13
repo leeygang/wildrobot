@@ -116,6 +116,13 @@ Notes:
 - **Servo IDs do not come from MJCF**. Servo IDs are physical IDs stored on the servos / controller and should live in your runtime config (`servo_controller.servos.<joint>.id`).
 - `servo_controller.boards` assigns each globally unique servo ID to exactly one named USB TTL board. The required roles are `left_leg_board`, `right_leg_board`, and `upper_body_board`; calibration derives their ID sets from joint names. Run `uv run python runtime/scripts/calibrate.py --config runtime/configs/hardware_config.json --calibrate-servo-board` to detect and write the real ports and assignments. The legacy single-board `servo_controller.port` field remains supported.
 - `servo_read_schedule.max_cache_age_s` defines feedback freshness limits. Each board worker continuously round-robins all servos assigned to that board; read-group lists are no longer configured.
+- `servo_read_schedule.health_poll_interval_s` sets the per-servo interval for
+  low-rate temperature, voltage, and torque-enable reads (default `1.0` s,
+  `0` disables them). Health reads are staggered and yield to pending writes
+  and position-cache deadlines. With the canonical 5/5/7-servo board split,
+  this caps health traffic at 15/15/21 request-response transactions per second
+  on the three independent buses; it never performs a health sweep in one
+  worker iteration.
 - `servo_controller.servos.<joint>.servo_offset_unit` is a per-joint calibration offset in **servo units** around the electrical center (500). Values can be positive or negative. Use the calibration script to write these.
 - `servo_controller.servos.<joint>.motor_unit_direction` is a per-joint sign (`+1.0` or `-1.0`) to correct mechanical reversals; if a joint moves the wrong way, flip its sign.
 - `servo_controller.servos.<joint>.joint_angle_at_servo_center_deg` (optional, default 0) selects the MuJoCo angle represented by conceptual servo center unit 500. The electrical command at that angle is `500 + servo_offset_unit`. Most joints can keep this at 0. The former `joint_angle_at_zero_unit_deg` key remains load-compatible but is serialized using the new name.
@@ -154,8 +161,11 @@ Flags:
   `--log PATH` overrides the automatic path; `--log-only PATH` also suppresses
   console output.
 - `--telemetry [PATH]`: save aligned per-control-step sensor, policy, command,
-  servo-feedback, and timing data to a compressed `.npz`. With no path, the
-  telemetry file is written beside the text log using the same filename stem.
+  servo position/tracking, temperature, voltage, torque-enable state, bus
+  failures, command clipping, timing, and shutdown-unload verification to a
+  compressed `.npz`. With no path, the telemetry file is written beside the
+  text log using the same filename stem. HTD-45H does not report motor current
+  or calibrated torque; its torque-enable flag is not a load measurement.
 - `--velocity-cmd vx` or `--velocity-cmd vx,vy,wz` (default: bundle
   `default_velocity_cmd`, e.g. `0.13,0,0` for smoke9 straight walk).
 - `--no-realtime`: don't sleep to maintain `control_hz` (hardware only).
