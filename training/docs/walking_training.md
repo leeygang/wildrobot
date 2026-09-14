@@ -1,11 +1,12 @@
 # WildRobot Walking Training Plan
 
-**Status:** TB9 checkpoint 20 remains the stable baseline (`0/64` falls).
-TB10 is rejected: its fast-command worst saturation remained `15.39%`, and
-its slow-command safety probe fell in `8/64` environments. The
-`v0.21.0-tb11` corrected-reference/COM-lever screen is ready; see the newest
-walking entry in `training/CHANGELOG.md` for its command and promotion gates.
-**Last updated:** 2026-09-14
+**Status:** TB9 checkpoint 20 remains the stable production baseline. TB11 is
+rejected for deployment: checkpoint 5 survived both commands but retained
+`15.10%` fast and `11.27%` slow worst-actuator saturation, while later
+checkpoints regressed safety. A same-actor simulator A/B rejected a direct
+`home -> q_ref` base switch (`8/8` falls in about `2.05 s`). Production and
+subsequent training remain on the ToddlerBot-aligned `home` action base.
+**Last updated:** 2026-09-15
 
 **Historical sections archived:**
 
@@ -18,7 +19,30 @@ walking entry in `training/CHANGELOG.md` for its command and promotion gates.
 
 ---
 
-## Active TB11 Reference-Geometry and COM-Lever Plan
+## Active Post-TB11 Plan
+
+TB11 fixed the planner/IK/FK geometry contract, but its behavior changed load
+distribution rather than total demand. Checkpoint 5 is the diagnostic result:
+it had `0/64` falls at both forward commands, yet the worst stable saturation
+was `15.10%` fast and `11.27%` slow versus the `5%` deployment gate. The
+measured average support COM lever improved only `117.7 -> 114.7 mm` versus
+TB9, and bilateral hip-roll RMS stayed effectively unchanged
+(`5.334 -> 5.347 Nm`).
+
+Keep `env.loc_ref_residual_base: home`. ToddlerBot sets `default_action` once
+from reference frame zero and learns the gait around that constant pose. A
+direct q_ref override of the existing TB11 actor failed all `8/8` simulator
+episodes after about `2.05 s`, because the actor's home-relative gait output
+and the time-varying q_ref were added together. Historical smoke5 avoided that
+semantic mismatch by training its q_ref actor from scratch.
+
+The next policy or hardware decision must therefore reduce measured total
+support demand while retaining the home action contract. Do not launch the
+previously proposed five-iteration q_ref warm-start. Use the simulator-only
+`--residual-base-override` in `diagnose_roll_load_sharing.py` only for causal
+diagnostics; it is not a deployment mode.
+
+## Completed TB11 Reference-Geometry and COM-Lever Plan
 
 TB10 falsified the reward-only whole-leg-headroom hypothesis. At the primary
 `0.133333 m/s` command, checkpoint 20 retained `0/64` falls and reduced the

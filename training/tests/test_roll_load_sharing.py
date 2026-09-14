@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from training.eval.diagnose_roll_load_sharing import (
+    _apply_residual_base_override,
     _take_policy_actuator_channels,
     summarize_roll_load_sharing,
 )
@@ -16,6 +19,19 @@ JOINT_NAMES = (
     "right_hip_roll",
     "right_ankle_roll",
 )
+
+
+def test_residual_base_override_is_explicit_and_simulator_scoped() -> None:
+    cfg = SimpleNamespace(env=SimpleNamespace(loc_ref_residual_base="home"))
+
+    assert _apply_residual_base_override(cfg, None) == ("home", "home")
+    assert cfg.env.loc_ref_residual_base == "home"
+
+    assert _apply_residual_base_override(cfg, "q_ref") == ("home", "q_ref")
+    assert cfg.env.loc_ref_residual_base == "q_ref"
+
+    with pytest.raises(ValueError, match="unsupported residual-base override"):
+        _apply_residual_base_override(cfg, "invalid")
 
 
 def test_policy_actuator_projection_handles_leg_only_policy() -> None:

@@ -43,6 +43,19 @@ def _take_policy_actuator_channels(
     return jnp.take(values, policy_signal_indices, axis=-1)
 
 
+def _apply_residual_base_override(
+    training_cfg: Any,
+    override: str | None,
+) -> tuple[str, str]:
+    """Apply a simulator-only action-base override for controlled A/B tests."""
+    configured = str(training_cfg.env.loc_ref_residual_base)
+    effective = configured if override is None else str(override)
+    if effective not in {"home", "q_ref", "ref_init"}:
+        raise ValueError(f"unsupported residual-base override: {effective!r}")
+    training_cfg.env.loc_ref_residual_base = effective
+    return configured, effective
+
+
 def _percentile(values: np.ndarray, percentile: float) -> float:
     if values.size == 0:
         return 0.0
@@ -470,6 +483,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hardware-stall-torque-nm", type=float, default=None)
     parser.add_argument("--hardware-no-load-speed-rad-s", type=float, default=None)
+    parser.add_argument(
+        "--residual-base-override",
+        choices=("home", "q_ref", "ref_init"),
+        default=None,
+        help=(
+            "Simulator-only action-base override for causal diagnostics. This "
+            "does not convert checkpoint action semantics and must not be used "
+            "to claim deployment compatibility."
+        ),
+    )
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -493,6 +516,15 @@ def main() -> int:
             raise ValueError("hardware no-load speed must be positive")
 
     training_cfg = load_training_config(args.config)
+    configured_residual_base, effective_residual_base = (
+        _apply_residual_base_override(training_cfg, args.residual_base_override)
+    )
+    if configured_residual_base != effective_residual_base:
+        print(
+            "WARNING: simulator-only residual-base override: "
+            f"{configured_residual_base} -> {effective_residual_base}. "
+            "Checkpoint actions retain their original semantics."
+        )
     robot_cfg_path = Path(training_cfg.env.robot_config_path)
     if not robot_cfg_path.is_absolute():
         robot_cfg_path = PROJECT_ROOT / robot_cfg_path
@@ -572,6 +604,8 @@ def main() -> int:
         "num_envs": int(args.num_envs),
         "num_steps": int(args.num_steps),
         "seed": int(args.seed),
+        "configured_residual_base": configured_residual_base,
+        "effective_residual_base": effective_residual_base,
         "hardware_torque_speed_envelope": (
             None
             if args.hardware_stall_torque_nm is None

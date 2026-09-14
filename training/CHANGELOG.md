@@ -8,6 +8,65 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb11-result + residual-base A/B] - 2026-09-15: retain the ToddlerBot home action base
+
+The TB11 run is `training/wandb/offline-run-20260914_082100-mch7tsfr`.
+The authoritative post-training evaluator selected no checkpoint. Checkpoint 5
+was the only candidate with zero falls at both commands, but it remained above
+the `5%` stable actuator-saturation gate:
+
+| Checkpoint | Fast falls / worst stable saturation | Slow falls / worst stable saturation |
+|---|---:|---:|
+| 5 | **0/64 / 15.10%** | **0/64 / 11.27%** |
+| 10 | 2/64 / 21.01% | 0/64 / 13.43% |
+| 15 | 3/64 / 21.51% | 2/64 / 19.06% |
+| 20 | 0/64 / 18.61% | 27/64 / 14.37% |
+
+Twenty iterations are sufficient to reject continued optimization under the
+same objective. PPO completed all four epochs and 64 active updates per
+iteration, while training reward reached its maximum at iteration 20 as
+deterministic safety worsened. This is objective/load-redistribution behavior,
+not incomplete convergence.
+
+The corrected reference reduced the same-seed measured support COM lever only
+from TB9's `117.7 mm` average to TB11 checkpoint 5's `114.7 mm`; total
+bilateral hip-roll RMS demand did not decrease (`5.334 -> 5.347 Nm`). It did
+improve left/right hip RMS imbalance to `0.42%`, but stable saturation remained
+`10.44/15.10%` at the hips and `4.44/14.11%` at the knees. The learned gait
+therefore stayed far from the corrected reference's approximately `77 mm`
+lever and redistributed demand rather than removing it.
+
+A same-checkpoint simulator A/B then changed only the action base for TB11
+checkpoint 5 at `0.133333 m/s`, `8 x 500` steps, seed 0:
+
+| Action base | Survivors | First-episode duration | Result |
+|---|---:|---:|---|
+| `home` | **8/8** | 10.0 s | stable |
+| forced `q_ref` | **0/8** | mean 2.05 s | reject |
+
+The forced-`q_ref` arm is not evidence that a separately trained q_ref policy
+can never work. It proves that a home-trained actor cannot be warm-started by
+simply changing the base: its outputs already encode the gait relative to
+home, so adding the time-varying reference changes every commanded target and
+causes a contract shock. The historical smoke5 q_ref branch was trained from
+scratch for exactly this reason. A five-iteration TB9-to-q_ref fine-tune would
+therefore be a confounded experiment and is cancelled.
+
+`training/eval/diagnose_roll_load_sharing.py` now accepts the simulator-only
+`--residual-base-override {home,q_ref,ref_init}` option and records both the
+configured and effective bases. It is deliberately diagnostic: the hardware
+runtime supports only the `home` contract. The production and next-training
+baseline remains `home`, matching ToddlerBot's
+`default_action + action_scale * action` implementation. Any future q_ref
+branch would require a from-scratch or explicitly reparameterized actor and
+must demonstrate a large morphology-driven benefit before changing runtime.
+
+References: Shi et al., *ToddlerBot* (arXiv:2502.00893); local ToddlerBot
+`locomotion/mjx_env.py:1219-1227,1543-1567`; WildRobot
+`training/envs/wildrobot_env.py:2016-2062`.
+
+---
+
 ## [v0.21.0-tb10-result + tb11-ready] - 2026-09-14: reject reward-only load shifting and correct the WR reference geometry
 
 The TB10 whole-leg-headroom run is
