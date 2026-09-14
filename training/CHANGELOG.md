@@ -8,6 +8,115 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb9-result + tb10-ready] - 2026-09-14: preserve stability and close whole-leg actuator-headroom loopholes
+
+The HTD-45H SysID adaptation run is
+`training/wandb/offline-run-20260913_085048-zklwsbm9`. The authoritative
+post-training evaluator selected no checkpoint because both retained
+candidates exceeded the `5%` stable per-actuator saturation gate. Checkpoint
+20 is the next-stage source because it passed the remaining forward and
+orientation gates:
+
+| Deployment metric | TB9 checkpoint 20 | Gate | Result |
+|---|---:|---:|:---:|
+| walking falls | **0/64** | 0/64 | pass |
+| forward velocity at `0.133333 m/s` | **0.12465 m/s** | >=0.075 m/s | pass |
+| forward command error | **0.07330 m/s** | <=0.075 m/s | pass |
+| stable torso tilt mean / peak / survivor-final | **3.25 / 10.87 / 5.55 deg** | <=10 / 15 / 10 deg | pass |
+| stable worst-actuator saturation | **16.92%** | <=5% | fail |
+
+The new all-leg support-phase diagnostic shows that TB9 already balanced the
+left/right hip-roll RMS demand. At `0.133333 m/s`, the stable-window values
+were `2.707/2.627 Nm`, only `2.9%` relative imbalance. The remaining problem
+is total phase-local demand, not bilateral symmetry:
+
+| Stable support phase | Saturated actuator | >95% model-limit occupancy |
+|---|---|---:|
+| left-only | left hip roll | **30.2%** |
+| right-only | right hip roll | **38.8%** |
+| right-only | right knee pitch | **24.1%** |
+| double support | left knee pitch | **22.0%** |
+
+The fast same-seed `8 x 500` diagnostic had `0/8` falls. The slow
+`0.066667 m/s` diagnostic had `1/8` falls, so TB10 automatically evaluates
+that point as an additional safety probe instead of assuming the faster gait
+is the worst case.
+
+Reviewing commit `d71cf8b` found and corrected several metric issues before
+using the telemetry for another optimization decision:
+
+- The metric registry declared all 17 actuators, but the environment populated
+  only the ten policy-controlled leg joints. Held waist/arm loads were
+  therefore reported as zero. All 17 channels now use MuJoCo actuator order.
+- Simulated tracking error now compares feedback with the actual calibrated
+  and joint-limit-clipped control target, not the pre-calibration policy target.
+- Post-training JSON now records per actuator mean and RMS torque, model-limit
+  ratio, saturation occupancy, speed, tracking error, and mechanical power.
+- Failure traces preserve the full-actuator dynamics-randomization state.
+- Runtime temperature maxima, voltage minima, and temperature rise use the
+  complete run and actual staggered health-refresh times. Non-finite health
+  polling/cache settings are rejected.
+
+The next configuration is
+`training/configs/ppo_walking_v0210_tb10_whole_leg_headroom.yaml`. It preserves
+TB9's actor/observation/reference contract, ToddlerBot/RSL-RL PPO settings,
+pose weights, stance, command distribution, and SysID nominal. It changes only
+the actuator-headroom objective:
+
+- keep the weak normalized saturation reward coefficient at `-0.01`;
+- begin the soft warning at `80%` instead of `90%` of the model limit;
+- apply it to all ten controlled leg actuators, preventing load from merely
+  moving from hip roll to knee or ankle;
+- do not add an instantaneous left/right symmetry reward, because alternating
+  single support is intentionally asymmetric;
+- do not add torque-limit randomization or thermal derating until those HTD-45H
+  quantities are measured.
+
+ToddlerBot comparison: its active `walk.gin` leaves generic motor-torque and
+energy penalties disabled. It instead combines a ZMP/IK walking reference with
+a system-identified asymmetric actuator envelope: acceleration torque is
+constant at low speed and tapers with velocity, while braking has a separate
+limit. Every envelope parameter is randomized per actuator by the locomotion
+environment. This is materially different from WR's current constant `4.413
+Nm` clamp, which is the HTD-45H stall specification rather than a demonstrated
+continuous rating. ToddlerBot also has substantially more static hip-roll
+headroom: the prior geometry comparison measured `1.410 / 2.95 = 47.8%` for
+ToddlerBot versus `3.135 / 4.0 = 78.4%` for WR's corrected stance. The `4.0
+Nm` denominator is the MJCF limit used by the geometry verifier; TB9 overrides
+the training model with the HTD-45H `4.413 Nm` stall specification, which
+would make the same WR static estimate `71.0%`, but is not a demonstrated
+continuous-duty limit. Therefore this is a geometry/headroom comparison, not
+a physical continuous-torque rating, and TB does not need WR's current
+soft-headroom reward to solve the same operating point.
+
+Run TB10 on the GPU machine with a fresh critic/optimizer and the compatible
+TB9 actor:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_tb10_whole_leg_headroom.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_tb9_sysid_actuator_adaptation/ppo_walking_v0210_tb9_sysid_actuator_adaptation_v0210-tb9_20260913_085055-zklwsbm9/checkpoint_20_409600.pkl
+```
+
+TB10 is a `20`-iteration / `409,600`-transition causal screen. Promotion
+requires the primary fast command and the slow safety probe to retain zero
+falls and the existing tilt limits, while every actuator reaches at most `5%`
+stable `>95%` model-limit occupancy. Lower torque obtained by slowing or
+destabilizing the gait is a rejection, not progress. Hardware support remains
+unproven until a tether trial reports no unexpected unloads or command
+clipping and acceptable tracking, voltage, temperature, and temperature-rise
+behavior.
+
+Validation: `183` targeted runtime/training tests passed, and an actor-initialized
+TB10 quick verification completed including the fast primary evaluation and
+slow safety-probe path.
+
+References: Shi et al., *ToddlerBot* (arXiv:2502.00893); local ToddlerBot
+`toddlerbot/sim/motor_control.py`, `toddlerbot/locomotion/mjx_env.py`,
+`toddlerbot/locomotion/walk.gin`, and `toddlerbot/tools/run_sysID.py`.
+
+---
+
 ## [v0.21.0-tb3-result + tb4-ready] - 2026-09-08: forward gait clears stability gates; target single-support hip-roll margin
 
 The forward-only shared-home run is

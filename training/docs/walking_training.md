@@ -1,9 +1,10 @@
 # WildRobot Walking Training Plan
 
-**Status:** `v0.21.0-17d4` startup-transition fine-tune is ready. Initialize
-from the v0.21.0-17d2 checkpoint 120 actor; see the newest walking entry in
-`training/CHANGELOG.md` for the run command and promotion gates.
-**Last updated:** 2026-08-31
+**Status:** TB9 checkpoint 20 is the stable baseline (`0/64` falls) but is not
+deployment-ready because worst stable per-actuator saturation is `16.92%`.
+The `v0.21.0-tb10` whole-leg-headroom causal screen is ready; see the newest
+walking entry in `training/CHANGELOG.md` for its command and promotion gates.
+**Last updated:** 2026-09-14
 
 **Historical sections archived:**
 
@@ -13,6 +14,58 @@ from the v0.21.0-17d2 checkpoint 120 actor; see the newest walking entry in
   on 2026-05-24.
 - Per-run results: smoke13+ in `training/CHANGELOG.md`, smoke12b
   and earlier in `training/CHANGELOG.archive.md`.
+
+---
+
+## Active TB10 Improvement and Decision Plan
+
+The plan separates trainable load sharing from physical actuator and geometry
+limits. Training must not be treated as a way to create unavailable torque.
+
+1. **Run the TB10 whole-leg-headroom screen.** Initialize the actor from TB9
+   checkpoint 20 with a fresh critic and optimizer. Run 20 iterations. Preserve
+   zero falls, speed, and orientation while reducing every controlled leg
+   actuator to at most `5%` stable occupancy above `95%` of its model limit.
+   A reduction caused by slower or less stable walking is a failure.
+2. **If TB10 stays stable but remains saturated, change the reference rather
+   than increasing the reward.** Use support-phase diagnostics to move the COM
+   closer to the loaded foot, reduce lateral acceleration, and adjust step
+   width or double-support timing while preserving stance-geometry gates.
+3. **Complete the measured HTD-45H actuator model regardless of the TB10
+   outcome.** Torque-speed, braking, latency, backlash, and thermal/continuous
+   capacity are mandatory for trustworthy sim-to-real evaluation. TB10 only
+   determines how urgently the next training run needs the completed model.
+4. **Consider mechanical changes only after reference optimization and the
+   measured actuator envelope still show inadequate margin.** Candidates are
+   narrower support geometry, lower upper-body mass, different gearing, or
+   stronger hip/knee actuators. This step is conditional; it is not implied by
+   a single TB10 failure.
+5. **Run protected deployment qualification only after a policy passes the
+   simulation gates and the actuator model is credible.** The tethered trial
+   must show no unexpected unloads or command clipping and acceptable tracking
+   error, voltage, temperature, and temperature rise. Earlier tethered runs are
+   diagnostics, not deployment qualification.
+
+Decision branches:
+
+- **TB10 passes stability and headroom:** finish actuator-model validation,
+  then run the protected tethered deployment gate. Mechanical changes are not
+  required unless hardware telemetry fails.
+- **TB10 is stable but misses headroom:** keep TB9/TB10 stability evidence,
+  apply the measured support-phase COM/ZMP reference correction, incorporate
+  the actuator model, and retrain.
+- **TB10 regresses stability:** reject it, retain TB9 checkpoint 20 as the
+  baseline, and revise the objective/reference without promoting the run.
+- **The optimized reference still exceeds measured continuous capacity:** stop
+  reward iteration and make the required mechanical change.
+
+This ordering follows ToddlerBot's combination of a ZMP/IK locomotion
+reference and a system-identified, velocity-dependent asymmetric actuator
+envelope. WR's soft whole-leg headroom term is an explicit morphology-specific
+screen because WR has less lateral static headroom. Reference: Shi et al.,
+*ToddlerBot* (arXiv:2502.00893), plus the local implementations in
+`~/projects/toddlerbot/toddlerbot/sim/motor_control.py` and
+`~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py`.
 
 ---
 
