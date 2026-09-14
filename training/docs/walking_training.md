@@ -5,7 +5,9 @@ rejected for deployment: checkpoint 5 survived both commands but retained
 `15.10%` fast and `11.27%` slow worst-actuator saturation, while later
 checkpoints regressed safety. A same-actor simulator A/B rejected a direct
 `home -> q_ref` base switch (`8/8` falls in about `2.05 s`). Production and
-subsequent training remain on the ToddlerBot-aligned `home` action base.
+subsequent training remain on the ToddlerBot-aligned `home` action base. The
+next gate is the TB11 checkpoint-5 scalar actuator-capacity sweep documented
+below; do not start another PPO run before reading that result.
 **Last updated:** 2026-09-15
 
 **Historical sections archived:**
@@ -41,6 +43,42 @@ support demand while retaining the home action contract. Do not launch the
 previously proposed five-iteration q_ref warm-start. Use the simulator-only
 `--residual-base-override` in `diagnose_roll_load_sharing.py` only for causal
 diagnostics; it is not a deployment mode.
+
+Before another PPO run, measure whether scalar actuator capacity is the active
+constraint for TB11 checkpoint 5. The capacity sweep keeps the checkpoint,
+home action base, seeds, and commands fixed; only MuJoCo's actuator force range
+changes. It evaluates the existing fall, orientation, tracking, and `5%`
+stable-saturation gates at both deployment speeds, and records stable-window
+hip-roll and knee-pitch RMS torque so load migration remains visible:
+
+```bash
+uv run python training/eval/sweep_actuator_capacity.py \
+  --checkpoint training/checkpoints/ppo_walking_v0210_tb11_reference_geometry_com_lever/ppo_walking_v0210_tb11_reference_geometry_com_lever_v0210-tb11_20260914_082106-mch7tsfr/checkpoint_5_102400.pkl \
+  --config training/checkpoints/ppo_walking_v0210_tb11_reference_geometry_com_lever/ppo_walking_v0210_tb11_reference_geometry_com_lever_v0210-tb11_20260914_082106-mch7tsfr/training_config.yaml \
+  --torque-limits-nm 4.4129925 4.8 5.2 5.6 6.0 \
+  --velocity-cmds-m-s 0.066667 0.133333 \
+  --num-envs 64 \
+  --num-steps 1000 \
+  --output-dir _eval/tb11_ckpt5_actuator_capacity
+```
+
+This is a scalar force-capacity sensitivity test, not an HTD-45H rating. A
+passing point means the current controller would benefit from that simulated
+instantaneous capacity. It does not establish continuous torque, thermal
+margin, voltage-dependent torque-speed capacity, or hardware suitability.
+ToddlerBot models those measured acceleration/braking envelopes explicitly in
+`toddlerbot/sim/motor_control.py`; WR should add that model only after the
+corresponding HTD-45H measurements exist.
+
+Decision rule:
+
+- If a modest limit increase clears both speed safety gates while hip/knee RMS
+  stays similar, actuator capacity is the dominant blocker; qualify hardware
+  at that demand or change gearing/actuators.
+- If falls or tilt remain after saturation falls below `5%`, capacity alone is
+  not the blocker; retain the measured limit and change the gait/reference.
+- If hip demand merely moves into the knees or ankles, reject another generic
+  headroom reward and make a phase-specific geometry or hardware change.
 
 ## Completed TB11 Reference-Geometry and COM-Lever Plan
 

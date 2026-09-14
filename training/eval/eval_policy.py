@@ -97,6 +97,21 @@ def _network_activation_name(training_cfg) -> str:
     return actor_activation
 
 
+def _apply_actuator_force_limit_override(
+    env_cfg, override_nm: float | None
+) -> float | None:
+    """Apply and return the scalar MuJoCo actuator-force limit used for eval."""
+    configured = getattr(env_cfg, "actuator_force_limit_nm", None)
+    effective = configured if override_nm is None else override_nm
+    if effective is None:
+        return None
+    effective = float(effective)
+    if not math.isfinite(effective) or effective <= 0.0:
+        raise ValueError("actuator force limit must be a finite positive value")
+    env_cfg.actuator_force_limit_nm = effective
+    return effective
+
+
 def _format_metric(value: float, fmt: str = ".3f") -> str:
     return format(float(value), fmt)
 
@@ -374,11 +389,21 @@ def _compute_eval_metrics(
             ],
             axis=-1,
         )
+        torque_sq_rollout = jnp.stack(
+            [
+                traj.metrics_vec[
+                    ..., METRIC_INDEX[f"actuator/{name}/torque_sq_nm2"]
+                ]
+                for name in TORQUE_ACTUATOR_NAMES
+            ],
+            axis=-1,
+        )
         torque_summary = summarize_walking_torque_rollout(
             torque_rollout,
             traj.dones,
             traj.truncations,
             ctrl_dt=ctrl_dt,
+            torque_sq_nm2=torque_sq_rollout,
         )
         for phase in ("stable", "pre_fall", "fall_terminal"):
             values = torque_summary.pop(
@@ -390,6 +415,15 @@ def _compute_eval_metrics(
                     for name, value in zip(TORQUE_ACTUATOR_NAMES, values)
                 }
             )
+            rms_key = f"walking_{phase}_torque_rms_nm_per_actuator"
+            if rms_key in torque_summary:
+                rms_values = torque_summary.pop(rms_key)
+                agg_metrics.update(
+                    {
+                        f"walking_{phase}_torque/{name}/rms_nm": value
+                        for name, value in zip(TORQUE_ACTUATOR_NAMES, rms_values)
+                    }
+                )
         agg_metrics.update(torque_summary)
 
     return {k: float(v) for k, v in agg_metrics.items()}
@@ -581,6 +615,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--actuator-force-limit-nm",
+        type=float,
+        default=None,
+        help=(
+            "Override env.actuator_force_limit_nm before MuJoCo model "
+            "construction. This changes the scalar force range used by "
+            "physics and torque-saturation normalization."
+        ),
+    )
+    parser.add_argument(
         "--stochastic",
         action="store_true",
         help="Use stochastic sampling instead of deterministic actions",
@@ -662,9 +706,27 @@ def main() -> int:
         training_cfg.env.eval_velocity_cmd = velocity_cmd
     if args.stance_width_m is not None:
         training_cfg.env.loc_ref_default_stance_width_m = float(args.stance_width_m)
+    effective_actuator_force_limit_nm = _apply_actuator_force_limit_override(
+        training_cfg.env,
+        args.actuator_force_limit_nm,
+    )
     training_cfg.freeze()
 
     env = WildRobotEnv(config=training_cfg)
+    model_actuator_force_limits_nm = np.asarray(
+        env._full_actuator_force_limits,
+        dtype=np.float64,
+    )
+    if effective_actuator_force_limit_nm is not None and not np.allclose(
+        model_actuator_force_limits_nm,
+        effective_actuator_force_limit_nm,
+        rtol=0.0,
+        atol=1e-6,
+    ):
+        raise RuntimeError(
+            "MuJoCo actuator force ranges do not match the requested scalar "
+            f"limit {effective_actuator_force_limit_nm:.6f} Nm"
+        )
 
     # Build policy network and load checkpoint params
     rng = jax.random.PRNGKey(args.seed)
@@ -763,6 +825,16 @@ def main() -> int:
     metrics["policy/configured_init_std"] = float(
         jnp.exp(jnp.float32(training_cfg.networks.actor.log_std_init))
     )
+    if effective_actuator_force_limit_nm is not None:
+        metrics["eval/actuator_force_limit_nm"] = (
+            effective_actuator_force_limit_nm
+        )
+    metrics["eval/model_actuator_force_limit_min_nm"] = float(
+        np.min(model_actuator_force_limits_nm)
+    )
+    metrics["eval/model_actuator_force_limit_max_nm"] = float(
+        np.max(model_actuator_force_limits_nm)
+    )
 
     # Layout / action-mapping / residual-base affect what the policy
     # actually does at runtime; logging them at the top makes it obvious
@@ -831,6 +903,11 @@ def main() -> int:
     )
     if stance_width is not None:
         print(f"  reference stance width: {float(stance_width):.4f} m")
+    if effective_actuator_force_limit_nm is not None:
+        print(
+            "  scalar actuator force limit: "
+            f"{effective_actuator_force_limit_nm:.4f} Nm"
+        )
     if disable_cmd_resample:
         # v0.21.0 P3 / H3: eval_velocity_cmd is (vx, vy, wz).
         _ecv = training_cfg.env.eval_velocity_cmd

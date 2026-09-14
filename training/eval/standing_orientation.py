@@ -241,6 +241,7 @@ def summarize_walking_torque_rollout(
     ctrl_dt: float,
     stable_start_s: float = WALKING_STABLE_START_S,
     pre_fall_window_s: float = WALKING_PRE_FALL_WINDOW_S,
+    torque_sq_nm2: jnp.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
     """Split per-actuator torque-limit occupancy by stable and fall phases."""
     if torque_sat_frac.ndim != 3:
@@ -250,6 +251,8 @@ def summarize_walking_torque_rollout(
         or dones.shape != truncations.shape
     ):
         raise ValueError("torque, done, and truncation rollout shapes must match")
+    if torque_sq_nm2 is not None and torque_sq_nm2.shape != torque_sat_frac.shape:
+        raise ValueError("torque_sq_nm2 must match torque_sat_frac shape")
     (
         _first_episode,
         _terminal_event,
@@ -267,19 +270,19 @@ def summarize_walking_torque_rollout(
         pre_fall_window_s=pre_fall_window_s,
     )
 
-    def _phase_mean(mask: jnp.ndarray) -> jnp.ndarray:
+    def _phase_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
         count = jnp.sum(mask)
         return jnp.where(
             count > 0,
             jnp.sum(
-                jnp.where(mask[..., None], torque_sat_frac, 0.0), axis=(0, 1)
+                jnp.where(mask[..., None], values, 0.0), axis=(0, 1)
             )
             / count,
-            jnp.zeros(torque_sat_frac.shape[-1], dtype=jnp.float32),
+            jnp.zeros(values.shape[-1], dtype=jnp.float32),
         )
 
-    stable_per_actuator = _phase_mean(stable_mask)
-    pre_fall_per_actuator = _phase_mean(pre_fall_mask)
+    stable_per_actuator = _phase_mean(torque_sat_frac, stable_mask)
+    pre_fall_per_actuator = _phase_mean(torque_sat_frac, pre_fall_mask)
     terminal_fall = torque_sat_frac[
         first_failure_index,
         jnp.arange(torque_sat_frac.shape[1]),
@@ -293,7 +296,7 @@ def summarize_walking_torque_rollout(
         / terminal_count,
         jnp.zeros(torque_sat_frac.shape[-1], dtype=jnp.float32),
     )
-    return {
+    result = {
         "walking_stable_torque_sat_frac_per_actuator": stable_per_actuator,
         "walking_pre_fall_torque_sat_frac_per_actuator": pre_fall_per_actuator,
         "walking_fall_terminal_torque_sat_frac_per_actuator": (
@@ -309,6 +312,38 @@ def summarize_walking_torque_rollout(
             terminal_per_actuator
         ),
     }
+    if torque_sq_nm2 is not None:
+        stable_torque_sq = _phase_mean(torque_sq_nm2, stable_mask)
+        pre_fall_torque_sq = _phase_mean(torque_sq_nm2, pre_fall_mask)
+        terminal_torque_sq = torque_sq_nm2[
+            first_failure_index,
+            jnp.arange(torque_sq_nm2.shape[1]),
+        ]
+        terminal_torque_sq_mean = jnp.where(
+            terminal_count > 0,
+            jnp.sum(
+                jnp.where(
+                    failed_env[:, None], terminal_torque_sq, 0.0
+                ),
+                axis=0,
+            )
+            / terminal_count,
+            jnp.zeros(torque_sq_nm2.shape[-1], dtype=jnp.float32),
+        )
+        result.update(
+            {
+                "walking_stable_torque_rms_nm_per_actuator": jnp.sqrt(
+                    stable_torque_sq
+                ),
+                "walking_pre_fall_torque_rms_nm_per_actuator": jnp.sqrt(
+                    pre_fall_torque_sq
+                ),
+                "walking_fall_terminal_torque_rms_nm_per_actuator": jnp.sqrt(
+                    terminal_torque_sq_mean
+                ),
+            }
+        )
+    return result
 
 
 def summarize_orientation_rollout(

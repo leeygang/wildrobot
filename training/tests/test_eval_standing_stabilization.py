@@ -282,6 +282,10 @@ def test_walking_torque_separates_stable_and_fall_phases() -> None:
     torque[2:4, 0, 0] = 1.0
     torque[1:4, 1, 1] = 1.0
     torque[4:, 1, 0] = 1.0  # Post-reset samples must not count as stable.
+    torque_sq = np.zeros_like(torque)
+    torque_sq[2:4, 0, 0] = 4.0
+    torque_sq[1:4, 1, 1] = 9.0
+    torque_sq[4:, 1, 0] = 100.0
 
     summary = summarize_walking_torque_rollout(
         torque,
@@ -290,6 +294,7 @@ def test_walking_torque_separates_stable_and_fall_phases() -> None:
         ctrl_dt=0.1,
         stable_start_s=0.2,
         pre_fall_window_s=0.2,
+        torque_sq_nm2=torque_sq,
     )
 
     np.testing.assert_allclose(
@@ -303,6 +308,18 @@ def test_walking_torque_separates_stable_and_fall_phases() -> None:
     np.testing.assert_allclose(
         summary["walking_fall_terminal_torque_sat_frac_per_actuator"],
         [0.0, 1.0],
+    )
+    np.testing.assert_allclose(
+        summary["walking_stable_torque_rms_nm_per_actuator"],
+        [1.0, 0.0],
+    )
+    np.testing.assert_allclose(
+        summary["walking_pre_fall_torque_rms_nm_per_actuator"],
+        [0.0, 3.0],
+    )
+    np.testing.assert_allclose(
+        summary["walking_fall_terminal_torque_rms_nm_per_actuator"],
+        [0.0, 3.0],
     )
 
 

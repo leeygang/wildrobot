@@ -61,9 +61,21 @@ baseline remains `home`, matching ToddlerBot's
 branch would require a from-scratch or explicitly reparameterized actor and
 must demonstrate a large morphology-driven benefit before changing runtime.
 
+The next gate is now implemented as
+`training/eval/sweep_actuator_capacity.py`. It holds TB11 checkpoint 5, the
+`home` action base, seed, and forward commands constant while sweeping only
+MuJoCo's scalar actuator force limit. `eval_policy.py` now accepts
+`--actuator-force-limit-nm`, verifies and records the effective limit, and
+reports stable-window per-actuator RMS torque in addition to saturation. The
+sweep reports both safety-only and full promotion decisions at `0.066667` and
+`0.133333 m/s`, identifying the minimum tested capacity that clears every
+command without hiding a fall or tilt regression. This remains a sensitivity
+diagnostic, not a claim of HTD-45H continuous or torque-speed capacity.
+
 References: Shi et al., *ToddlerBot* (arXiv:2502.00893); local ToddlerBot
 `locomotion/mjx_env.py:1219-1227,1543-1567`; WildRobot
-`training/envs/wildrobot_env.py:2016-2062`.
+`training/envs/wildrobot_env.py:2016-2062`; local ToddlerBot
+`sim/motor_control.py:42-108`.
 
 ---
 

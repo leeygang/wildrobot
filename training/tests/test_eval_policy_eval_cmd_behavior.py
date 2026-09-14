@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 from training.eval.eval_policy import (
+    _apply_actuator_force_limit_override,
     _disable_cmd_resample_for_eval,
     _network_activation_name,
     _startup_action_scale,
@@ -72,9 +73,29 @@ def test_eval_policy_cli_accepts_explicit_velocity_command(monkeypatch) -> None:
             "0.066667",
             "0",
             "0",
+            "--actuator-force-limit-nm",
+            "5.2",
         ],
     )
 
     args = parse_args()
 
     assert args.velocity_cmd == pytest.approx([0.066667, 0.0, 0.0])
+    assert args.actuator_force_limit_nm == pytest.approx(5.2)
+
+
+def test_eval_policy_applies_positive_actuator_force_limit_override() -> None:
+    env_cfg = SimpleNamespace(actuator_force_limit_nm=4.4129925)
+
+    effective = _apply_actuator_force_limit_override(env_cfg, 5.2)
+
+    assert effective == pytest.approx(5.2)
+    assert env_cfg.actuator_force_limit_nm == pytest.approx(5.2)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_eval_policy_rejects_invalid_actuator_force_limit(value: float) -> None:
+    env_cfg = SimpleNamespace(actuator_force_limit_nm=4.4129925)
+
+    with pytest.raises(ValueError, match="finite positive"):
+        _apply_actuator_force_limit_override(env_cfg, value)
