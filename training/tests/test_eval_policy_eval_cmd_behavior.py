@@ -56,3 +56,25 @@ def test_eval_policy_cli_requires_config(monkeypatch) -> None:
     )
     with pytest.raises(SystemExit):
         parse_args()
+
+
+def test_eval_policy_cli_accepts_explicit_velocity_command(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "eval_policy.py",
+            "--checkpoint",
+            "/tmp/fake.pkl",
+            "--config",
+            "/tmp/fake.yaml",
+            "--velocity-cmd",
+            "0.066667",
+            "0",
+            "0",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.velocity_cmd == pytest.approx([0.066667, 0.0, 0.0])

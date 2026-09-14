@@ -4,7 +4,10 @@ from types import SimpleNamespace
 import numpy as np
 
 from runtime.wr_runtime.logging.policy_telemetry import PolicyTelemetryRecorder
-from runtime.wr_runtime.validation.inspect_log import inspect_log
+from runtime.wr_runtime.validation.inspect_log import (
+    _print_temperature_rise_rates,
+    inspect_log,
+)
 
 
 def _info(*, previous: list[float], observed: list[float]) -> dict:
@@ -143,3 +146,15 @@ def test_inspect_log_reports_walking_tracking_and_missing_footswitches(
     assert "Servo voltage lowest 2" in text
     assert "Servo torque-disabled occupancy top 2" in text
     assert "foot switches were disabled or unavailable" in text
+
+
+def test_temperature_rise_uses_health_refresh_time_not_cached_tail(capsys) -> None:
+    _print_temperature_rise_rates(
+        np.asarray([[30.0], [31.0], [31.0], [31.0]], dtype=np.float32),
+        np.asarray([0.0, 1.0, 2.0, 3.0], dtype=np.float64),
+        np.ones(4, dtype=bool),
+        ["left_hip_roll"],
+        sample_age_s=np.asarray([[0.0], [0.0], [1.0], [2.0]], dtype=np.float32),
+    )
+
+    assert "left_hip_roll=60.000" in capsys.readouterr().out

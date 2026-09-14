@@ -1026,6 +1026,27 @@ def test_apply_walking_probe_safety_gate() -> None:
     assert row["fail_reasons"] == ["lateral_probe_safety"]
 
 
+def test_walking_probe_safety_includes_forward_tracking_skip() -> None:
+    from training.core.post_training_eval import apply_walking_probe_safety_gate
+
+    row = {
+        "passed": True,
+        "gates": {},
+        "fail_reasons": [],
+        "lateral_yaw_probes": [
+            {
+                "axis": "unknown",
+                "skip_reason": "not a lateral/yaw tracking probe",
+                "safety_passed": False,
+            }
+        ],
+    }
+
+    assert apply_walking_probe_safety_gate(row) is False
+    assert row["passed"] is False
+    assert row["gates"]["lateral_probe_safety"] is False
+
+
 def test_lateral_probe_gate_passed_helper() -> None:
     """smoke7 2D-tracking gate: all non-skipped probes must pass; an evaluated
     failing probe blocks; configured-but-all-skipped fails closed; empty (no

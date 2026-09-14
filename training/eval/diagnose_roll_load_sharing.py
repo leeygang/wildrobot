@@ -34,13 +34,6 @@ from training.eval.standing_orientation import (
 from training.exports.export_onnx import get_checkpoint_dims
 
 
-ROLL_JOINT_NAMES = (
-    "left_hip_roll",
-    "left_ankle_roll",
-    "right_hip_roll",
-    "right_ankle_roll",
-)
-
 
 def _take_policy_actuator_channels(
     values: jax.Array,
@@ -79,9 +72,13 @@ def _summarize_joint(
     abs_policy = np.abs(policy)
     abs_applied = np.abs(applied)
     abs_target_error = np.abs(target_error)
+    abs_power = np.abs(torque * velocity)
     summary = {
         "torque_signed_mean_nm": float(np.mean(torque)) if torque.size else 0.0,
         "torque_abs_mean_nm": float(np.mean(abs_torque)) if torque.size else 0.0,
+        "torque_rms_nm": (
+            float(np.sqrt(np.mean(np.square(torque)))) if torque.size else 0.0
+        ),
         "torque_abs_p95_nm": _percentile(abs_torque, 95.0),
         "torque_ratio_mean": float(np.mean(ratio)) if ratio.size else 0.0,
         "torque_ratio_p95": _percentile(ratio, 95.0),
@@ -90,6 +87,9 @@ def _summarize_joint(
             float(np.mean(np.abs(velocity))) if velocity.size else 0.0
         ),
         "joint_velocity_abs_p95_rad_s": _percentile(np.abs(velocity), 95.0),
+        "mechanical_power_abs_mean_w": (
+            float(np.mean(abs_power)) if abs_power.size else 0.0
+        ),
         "policy_action_signed_mean": (float(np.mean(policy)) if policy.size else 0.0),
         "policy_action_abs_mean": (float(np.mean(abs_policy)) if policy.size else 0.0),
         "applied_action_signed_mean": (
@@ -142,6 +142,38 @@ def _summarize_joint(
     return summary
 
 
+def _summarize_pair_balance(
+    joint_summaries: Mapping[str, Mapping[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Compare left/right RMS demand over a complete rollout window.
+
+    This is deliberately a diagnostic rather than an instantaneous reward:
+    single-support walking is expected to be asymmetric within each step, but
+    a complete gait window should not chronically overload one side.
+    """
+    pairs: dict[str, dict[str, float]] = {}
+    for left_name, left_summary in joint_summaries.items():
+        if not left_name.startswith("left_"):
+            continue
+        suffix = left_name.removeprefix("left_")
+        right_name = f"right_{suffix}"
+        right_summary = joint_summaries.get(right_name)
+        if right_summary is None:
+            continue
+        left_rms = float(left_summary["torque_rms_nm"])
+        right_rms = float(right_summary["torque_rms_nm"])
+        larger = max(left_rms, right_rms)
+        pairs[suffix] = {
+            "left_torque_rms_nm": left_rms,
+            "right_torque_rms_nm": right_rms,
+            "torque_rms_abs_delta_nm": abs(left_rms - right_rms),
+            "torque_rms_relative_imbalance": (
+                abs(left_rms - right_rms) / larger if larger > 1e-9 else 0.0
+            ),
+        }
+    return pairs
+
+
 def _summarize_support_leverage(
     *,
     mask: np.ndarray,
@@ -184,7 +216,7 @@ def summarize_roll_load_sharing(
     hardware_stall_torque_nm: float | None = None,
     hardware_no_load_speed_rad_s: float | None = None,
 ) -> dict[str, Any]:
-    """Summarize roll-joint behavior by measured foot-support phase."""
+    """Summarize all policy actuators by measured foot-support phase."""
     state_arrays = (
         torque_nm,
         torque_ratio,
@@ -246,7 +278,7 @@ def summarize_roll_load_sharing(
         "left_only": com_to_left_foot_lateral_m,
         "right_only": com_to_right_foot_lateral_m,
     }
-    joint_indices = {name: joint_names.index(name) for name in ROLL_JOINT_NAMES}
+    joint_indices = {name: index for index, name in enumerate(joint_names)}
 
     output: dict[str, Any] = {
         "first_episode_sample_count": int(np.sum(np.asarray(first_episode))),
@@ -255,8 +287,35 @@ def summarize_roll_load_sharing(
         "windows": {},
     }
     for window_name, window_mask in windows.items():
+        window_joint_summaries = {
+            joint_name: _summarize_joint(
+                mask=window_mask,
+                joint_index=joint_index,
+                torque_nm=torque_nm,
+                torque_ratio=torque_ratio,
+                joint_velocity_rad_s=joint_velocity_rad_s,
+                policy_action=policy_action,
+                applied_action=applied_action,
+                target_error_rad=target_error_rad,
+                hardware_stall_torque_nm=hardware_stall_torque_nm,
+                hardware_no_load_speed_rad_s=hardware_no_load_speed_rad_s,
+            )
+            for joint_name, joint_index in joint_indices.items()
+        }
+        worst_joint = max(
+            window_joint_summaries,
+            key=lambda name: window_joint_summaries[name]["torque_ratio_p95"],
+        )
         window_output: dict[str, Any] = {
             "sample_count": int(np.sum(window_mask)),
+            "joints": window_joint_summaries,
+            "paired_torque_rms_balance": _summarize_pair_balance(
+                window_joint_summaries
+            ),
+            "worst_torque_ratio_p95_joint": worst_joint,
+            "worst_torque_ratio_p95": float(
+                window_joint_summaries[worst_joint]["torque_ratio_p95"]
+            ),
             "support_phases": {},
         }
         for phase_name, support_mask in support_masks.items():
@@ -400,7 +459,7 @@ def _collect_rollout(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Measure roll-joint load sharing by measured support phase",
+        description="Measure policy-actuator load sharing by measured support phase",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--checkpoint", required=True, type=Path)

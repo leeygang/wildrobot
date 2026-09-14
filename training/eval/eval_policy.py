@@ -449,6 +449,11 @@ def _write_failure_trace(
             "domain_rand_frictionloss_scales",
             "domain_rand_joint_offsets",
             "domain_rand_backlash",
+            "domain_rand_full_kp_scales",
+            "domain_rand_damping_scales",
+            "domain_rand_armature_scales",
+            "domain_rand_full_frictionloss_scales",
+            "domain_rand_full_backlash",
             "domain_rand_persistent_torso_pitch_error_rad",
             "domain_rand_persistent_actuator_offsets",
         ):
@@ -556,6 +561,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
     parser.add_argument(
+        "--velocity-cmd",
+        type=float,
+        nargs=3,
+        metavar=("VX", "VY", "WZ"),
+        default=None,
+        help=(
+            "Override env.eval_velocity_cmd for this rollout. This is useful "
+            "for deployment-band diagnostics without editing the saved config."
+        ),
+    )
+    parser.add_argument(
         "--stance-width-m",
         type=float,
         default=None,
@@ -639,6 +655,11 @@ def main() -> int:
     training_cfg.ppo.num_envs = int(args.num_envs)
     if args.num_steps is not None:
         training_cfg.ppo.rollout_steps = int(args.num_steps)
+    if args.velocity_cmd is not None:
+        velocity_cmd = tuple(float(value) for value in args.velocity_cmd)
+        if not all(math.isfinite(value) for value in velocity_cmd):
+            raise ValueError("--velocity-cmd values must be finite")
+        training_cfg.env.eval_velocity_cmd = velocity_cmd
     if args.stance_width_m is not None:
         training_cfg.env.loc_ref_default_stance_width_m = float(args.stance_width_m)
     training_cfg.freeze()

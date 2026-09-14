@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import mujoco
+import numpy as np
 import pytest
 
 from training.configs.training_config import load_training_config
@@ -29,6 +31,7 @@ from training.envs.wildrobot_env import (
 _SOURCE_CONFIG = "training/configs/ppo_walking_v0210_17d4_startup_mix.yaml"
 _FINETUNE_CONFIG = "training/configs/ppo_walking_v0210_17d5_saturation_finetune.yaml"
 _HIP_MARGIN_CONFIG = "training/configs/ppo_walking_v0210_17d8_hip_roll_margin.yaml"
+_TB9_CONFIG = "training/configs/ppo_walking_v0210_tb9_sysid_actuator_adaptation.yaml"
 
 
 def test_torque_saturation_penalty_uses_normalized_soft_limit_excess() -> None:
@@ -108,6 +111,52 @@ def test_saturation_metric_emits_on_environment_step() -> None:
     assert float(
         metrics[f"actuator/{joint_name}/mechanical_power_abs_w"]
     ) >= 0.0
+
+
+def test_actuator_metrics_cover_held_joints_and_use_physical_targets() -> None:
+    cfg = load_training_config(_TB9_CONFIG)
+    cfg.env.domain_rand_persistent_torso_pitch_error_range = [0.05, 0.05]
+    env = WildRobotEnv(config=cfg)
+    assert env.action_size == 10
+    assert env._full_actuator_count == 17
+
+    state = env.reset(jax.random.PRNGKey(0))
+    next_state = env.step(
+        state,
+        jnp.zeros(env.action_size, dtype=jnp.float32),
+    )
+    metrics = unpack_metrics(next_state.metrics[METRICS_VEC_KEY])
+
+    for actuator_id, actuator_name in enumerate(env._full_actuator_names):
+        joint_id = mujoco.mj_name2id(
+            env._mj_model,
+            mujoco.mjtObj.mjOBJ_JOINT,
+            actuator_name,
+        )
+        qpos_addr = int(env._mj_model.jnt_qposadr[joint_id])
+        dof_addr = int(env._mj_model.jnt_dofadr[joint_id])
+        torque_abs = abs(float(next_state.data.actuator_force[actuator_id]))
+        force_limit = float(
+            np.max(np.abs(env._mj_model.actuator_forcerange[actuator_id]))
+        )
+        speed_abs = abs(float(next_state.data.qvel[dof_addr]))
+        tracking_error_abs = abs(
+            float(next_state.data.ctrl[actuator_id])
+            - float(next_state.data.qpos[qpos_addr])
+        )
+
+        assert float(metrics[f"torque/{actuator_name}/abs_nm"]) == pytest.approx(
+            torque_abs, rel=1e-5, abs=1e-7
+        )
+        assert float(
+            metrics[f"torque/{actuator_name}/ratio_of_model_limit"]
+        ) == pytest.approx(torque_abs / force_limit, rel=1e-5, abs=1e-7)
+        assert float(
+            metrics[f"actuator/{actuator_name}/speed_abs_rad_s"]
+        ) == pytest.approx(speed_abs, rel=1e-5, abs=1e-7)
+        assert float(
+            metrics[f"actuator/{actuator_name}/tracking_error_abs_rad"]
+        ) == pytest.approx(tracking_error_abs, rel=1e-5, abs=1e-7)
 
 
 def test_saturation_is_opt_in_and_17d5_is_the_only_optimization_change() -> None:

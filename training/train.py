@@ -806,6 +806,20 @@ def start_training(
         "walking_pre_fall_max_actuator_torque_sat_frac",
         "walking_fall_terminal_max_actuator_torque_sat_frac",
     )
+    actuator_rollout_metric_names = (
+        ("torque_abs_mean_nm", "torque/{}/abs_nm"),
+        ("torque_model_limit_ratio_mean", "torque/{}/ratio_of_model_limit"),
+        ("speed_abs_mean_rad_s", "actuator/{}/speed_abs_rad_s"),
+        (
+            "tracking_error_abs_mean_rad",
+            "actuator/{}/tracking_error_abs_rad",
+        ),
+        ("torque_sq_mean_nm2", "actuator/{}/torque_sq_nm2"),
+        (
+            "mechanical_power_abs_mean_w",
+            "actuator/{}/mechanical_power_abs_w",
+        ),
+    )
     post_training_checkpoint_label = (
         str(training_cfg.ppo.eval.post_training_checkpoint_label).strip()
         or "eval_promoted"
@@ -1074,6 +1088,28 @@ def start_training(
 
                 def _fmt(value: Optional[float], spec: str) -> str:
                     return "n/a" if value is None else format(float(value), spec)
+
+                def _actuator_diagnostics(
+                    eval_result: Dict[str, Any],
+                ) -> Dict[str, Dict[str, float]]:
+                    diagnostics: Dict[str, Dict[str, float]] = {}
+                    for actuator_name in TORQUE_ACTUATOR_NAMES:
+                        values = {
+                            output_name: float(
+                                eval_result[metric_name.format(actuator_name)]
+                            )
+                            for output_name, metric_name in (
+                                actuator_rollout_metric_names
+                            )
+                        }
+                        values["torque_rms_nm"] = float(
+                            np.sqrt(max(0.0, values["torque_sq_mean_nm2"]))
+                        )
+                        values["torque_saturation_frac"] = float(
+                            eval_result[f"torque/{actuator_name}/sat_frac"]
+                        )
+                        diagnostics[actuator_name] = values
+                    return diagnostics
 
                 print()
                 print("Post-training deterministic eval candidates:")
@@ -1347,6 +1383,10 @@ def start_training(
                             for actuator_name, value in actuator_torque_sat.items()
                         }
                     )
+                    for actuator_name in TORQUE_ACTUATOR_NAMES:
+                        for _, metric_name in actuator_rollout_metric_names:
+                            resolved_name = metric_name.format(actuator_name)
+                            aggregates[resolved_name] = _mean(resolved_name)
                     if post_training_task == "standing":
                         aggregates.update(
                             summarize_orientation_rollout(
@@ -1666,6 +1706,18 @@ def start_training(
                             eval_result["step_length_right_per_touchdown_m"]
                         ),
                     }
+                    actuator_diagnostics = _actuator_diagnostics(eval_result)
+                    eval_metrics["actuator_diagnostics_by_actuator"] = (
+                        actuator_diagnostics
+                    )
+                    eval_metrics["max_actuator_mean_model_limit_ratio"] = max(
+                        values["torque_model_limit_ratio_mean"]
+                        for values in actuator_diagnostics.values()
+                    )
+                    eval_metrics["max_actuator_rms_torque_nm"] = max(
+                        values["torque_rms_nm"]
+                        for values in actuator_diagnostics.values()
+                    )
                     if post_training_task == "standing" or (
                         post_training_task == "walking"
                         and post_training_strict_walking_safety
@@ -1850,7 +1902,7 @@ def start_training(
                 if probe_cmds:
                     print()
                     print(
-                        f"Running {len(probe_cmds)} v0.21.0 lateral/yaw "
+                        f"Running {len(probe_cmds)} configured command "
                         f"probe eval(s) per top-{len(ranked_candidates)} "
                         "candidate..."
                     )
@@ -1903,6 +1955,9 @@ def start_training(
                                 ),
                             }
                             if post_training_strict_walking_safety:
+                                probe_actuator_diagnostics = _actuator_diagnostics(
+                                    probe_result
+                                )
                                 probe_eval_metrics.update(
                                     {
                                         "body_tilt_deg": float(
@@ -1927,6 +1982,23 @@ def start_training(
                                             )
                                             for actuator_name in TORQUE_ACTUATOR_NAMES
                                         },
+                                        "actuator_diagnostics_by_actuator": (
+                                            probe_actuator_diagnostics
+                                        ),
+                                        "max_actuator_mean_model_limit_ratio": max(
+                                            values[
+                                                "torque_model_limit_ratio_mean"
+                                            ]
+                                            for values in (
+                                                probe_actuator_diagnostics.values()
+                                            )
+                                        ),
+                                        "max_actuator_rms_torque_nm": max(
+                                            values["torque_rms_nm"]
+                                            for values in (
+                                                probe_actuator_diagnostics.values()
+                                            )
+                                        ),
                                     }
                                 )
                                 probe_eval_metrics.update(
@@ -1985,17 +2057,28 @@ def start_training(
                         # One-line console summary per candidate so the
                         # human launching the smoke can eyeball
                         # pass/fail across the probes.
-                        probe_summary = ", ".join(
-                            (
-                                f"{p['axis']}@{p['probe_cmd']}={'✓' if p['passed'] else '✗'}"
-                                + (
-                                    f"({p['signed_ratio']:.2f})"
-                                    if p["signed_ratio"] is not None
+                        probe_summary_parts = []
+                        for probe in probe_results:
+                            if probe["skip_reason"] is not None:
+                                safety = probe["safety_passed"]
+                                safety_text = (
+                                    "n/a" if safety is None else "✓" if safety else "✗"
+                                )
+                                probe_summary_parts.append(
+                                    f"safety@{probe['probe_cmd']}={safety_text} "
+                                    "tracking=skip"
+                                )
+                            else:
+                                ratio_text = (
+                                    f"({probe['signed_ratio']:.2f})"
+                                    if probe["signed_ratio"] is not None
                                     else ""
                                 )
-                            )
-                            for p in probe_results
-                        )
+                                probe_summary_parts.append(
+                                    f"{probe['axis']}@{probe['probe_cmd']}="
+                                    f"{'✓' if probe['passed'] else '✗'}{ratio_text}"
+                                )
+                        probe_summary = ", ".join(probe_summary_parts)
                         print(
                             f"  rank {row['rank']} {row['checkpoint_name']}: "
                             + probe_summary
@@ -2216,11 +2299,10 @@ def start_training(
                     )
                 else:
                     lateral_yaw_probes_message = (
-                        f"Evaluated {len(probe_cmds)} Appendix C probe(s) per "
-                        "top-k candidate; see "
+                        f"Evaluated {len(probe_cmds)} configured command probe(s) "
+                        "per top-k candidate; see "
                         "top_k_candidates[*].lateral_yaw_probes for per-probe "
-                        "tracking pass/fail (>=0.5 signed ratio with matching "
-                        "sign) and opt-in safety gates."
+                        "tracking results when applicable and opt-in safety gates."
                     )
 
                 summary_payload = {

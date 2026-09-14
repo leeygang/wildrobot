@@ -408,7 +408,24 @@ def test_timing_summary_prints_servo_cache_metrics(capsys):
                 "servo_write_commands": 3,
                 "servo_write_commands_skipped": 2,
                 "servo_write_failures": 0,
-            }
+                "servo_temperature_max_c": 42.0,
+                "servo_voltage_min_v": 10.8,
+            },
+            {
+                "servo_read_group": "right_leg",
+                "servo_read_ids": [5, 6, 7, 8, 10],
+                "servo_read_count": 10,
+                "servo_read_fail_count": 1,
+                "servo_forced_read_after_write": 3,
+                "servo_forced_read_after_write_missed": 0,
+                "servo_write_targets_submitted": 8,
+                "servo_write_targets_replaced": 1,
+                "servo_write_commands": 7,
+                "servo_write_commands_skipped": 2,
+                "servo_write_failures": 0,
+                "servo_temperature_max_c": 40.0,
+                "servo_voltage_min_v": 11.2,
+            },
         ],
     )
 
@@ -417,7 +434,9 @@ def test_timing_summary_prints_servo_cache_metrics(capsys):
     assert "Servo cache avg/p95/max ms" in out
     assert "Servo read/cache summary" in out
     assert "Servo worker sampled delta" in out
-    assert "last_group=left_leg" in out
+    assert "last_group=right_leg" in out
+    assert "temperature_max_c=42.0" in out
+    assert "voltage_min_v=10.8" in out
     assert "queue_ms_avg/p95/max" in out
 
 

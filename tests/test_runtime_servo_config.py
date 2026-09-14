@@ -418,13 +418,29 @@ def test_servo_read_schedule_rejects_obsolete_group_config(
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 
-def test_servo_read_schedule_rejects_negative_health_interval(tmp_path: Path) -> None:
+@pytest.mark.parametrize("invalid_interval", [-1.0, float("nan"), float("inf")])
+def test_servo_read_schedule_rejects_invalid_health_interval(
+    tmp_path: Path, invalid_interval: float
+) -> None:
     cfg_dict = _base_config() | {
         "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
-        "servo_read_schedule": {"health_poll_interval_s": -1.0},
+        "servo_read_schedule": {"health_poll_interval_s": invalid_interval},
     }
 
     with pytest.raises(ValueError, match="health_poll_interval_s"):
+        WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
+
+
+@pytest.mark.parametrize("invalid_age", [0.0, float("nan"), float("inf")])
+def test_servo_read_schedule_rejects_invalid_cache_age(
+    tmp_path: Path, invalid_age: float
+) -> None:
+    cfg_dict = _base_config() | {
+        "servo_controller": {"servos": {"left_hip_pitch": {"id": 1}}},
+        "servo_read_schedule": {"max_cache_age_s": {"leg": invalid_age}},
+    }
+
+    with pytest.raises(ValueError, match="max_cache_age_s.leg"):
         WildRobotRuntimeConfig.load(_write_config(tmp_path, cfg_dict))
 
 

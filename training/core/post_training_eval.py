@@ -663,11 +663,16 @@ def walking_safety_gates(eval_metrics: Mapping[str, Any]) -> Dict[str, bool]:
 
 
 def apply_walking_probe_safety_gate(row: MutableMapping[str, Any]) -> bool:
-    """Require every evaluated command probe to satisfy walking safety gates."""
+    """Require every command probe with safety metrics to pass safety gates.
+
+    Tracking-specific skips do not suppress the safety check. This permits a
+    pure-forward probe to validate falls, posture, and actuator headroom even
+    though the Appendix C lateral/yaw tracking criterion is not applicable.
+    """
     evaluated = [
         probe
         for probe in row.get("lateral_yaw_probes", ())
-        if probe.get("skip_reason") is None
+        if probe.get("safety_passed") is not None
     ]
     probes_ok = bool(evaluated) and all(
         bool(probe.get("safety_passed")) for probe in evaluated

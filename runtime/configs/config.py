@@ -965,16 +965,18 @@ class WrRuntimeConfig:
         limits = dict(default_limits)
         for key, value in limits_raw.items():
             value_f = float(value)
-            if value_f <= 0.0:
+            if not math.isfinite(value_f) or value_f <= 0.0:
                 raise ValueError(
-                    f"servo_read_schedule.max_cache_age_s.{key} must be positive"
+                    f"servo_read_schedule.max_cache_age_s.{key} must be finite "
+                    "and positive"
                 )
             limits[str(key)] = value_f
 
         health_poll_interval_s = float(raw.get("health_poll_interval_s", 1.0))
-        if health_poll_interval_s < 0.0:
+        if not math.isfinite(health_poll_interval_s) or health_poll_interval_s < 0.0:
             raise ValueError(
-                "servo_read_schedule.health_poll_interval_s must be non-negative"
+                "servo_read_schedule.health_poll_interval_s must be finite and "
+                "non-negative"
             )
 
         return ServoReadScheduleConfig(

@@ -257,11 +257,17 @@ def inspect_log(path: Path) -> None:
                 unit="C",
             )
             if "host_monotonic_s" in data:
+                temperature_age_s = (
+                    np.asarray(data["servo_temperature_age_s"], dtype=np.float64)
+                    if "servo_temperature_age_s" in data
+                    else None
+                )
                 _print_temperature_rise_rates(
                     temperature,
                     np.asarray(data["host_monotonic_s"], dtype=np.float64),
                     analysis_mask,
                     actuator_names,
+                    sample_age_s=temperature_age_s,
                 )
     if "servo_voltage_v" in data:
         voltage = np.asarray(data["servo_voltage_v"], dtype=np.float32)
@@ -489,6 +495,7 @@ def _print_temperature_rise_rates(
     mask: np.ndarray,
     names: list[str],
     *,
+    sample_age_s: np.ndarray | None = None,
     limit: int = 5,
 ) -> None:
     temperature = np.asarray(temperature_c, dtype=np.float64)
@@ -496,15 +503,34 @@ def _print_temperature_rise_rates(
     selected = np.asarray(mask, dtype=bool).reshape(-1)
     if temperature.ndim != 2 or temperature.shape[1] != len(names):
         return
+    age = None if sample_age_s is None else np.asarray(sample_age_s, dtype=np.float64)
+    if age is not None and age.shape != temperature.shape:
+        return
     rates = np.full(len(names), np.nan, dtype=np.float64)
     for index in range(len(names)):
         valid = selected & np.isfinite(temperature[:, index]) & np.isfinite(timestamps)
+        if age is not None:
+            valid &= np.isfinite(age[:, index])
         sample_indices = np.flatnonzero(valid)
+        if sample_indices.size < 2:
+            continue
+        measurement_times = timestamps[sample_indices]
+        if age is not None:
+            measurement_times = measurement_times - age[sample_indices, index]
+            # Health values are cached between staggered servo reads. Use the
+            # actual read timestamps rather than extending the denominator to
+            # the end of a stale cached tail.
+            rounded_times = np.round(measurement_times, decimals=3)
+            refresh_mask = np.concatenate(
+                ([True], np.diff(rounded_times) > 0.001)
+            )
+            sample_indices = sample_indices[refresh_mask]
+            measurement_times = measurement_times[refresh_mask]
         if sample_indices.size < 2:
             continue
         first = int(sample_indices[0])
         last = int(sample_indices[-1])
-        duration_s = float(timestamps[last] - timestamps[first])
+        duration_s = float(measurement_times[-1] - measurement_times[0])
         if duration_s > 0.0:
             rates[index] = (
                 float(temperature[last, index] - temperature[first, index])

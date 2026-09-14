@@ -749,6 +749,10 @@ class WildRobotEnv(mjx_env.MjxEnv):
         ]
         self._full_actuator_names = full_actuator_names
         self._full_actuator_count = len(full_actuator_names)
+        self._full_actuator_force_limits = jp.asarray(
+            np.max(np.abs(self._mj_model.actuator_forcerange), axis=1),
+            dtype=jp.float32,
+        )
         full_home_ctrl_list = get_home_ctrl_from_mj_model(
             mj_model=self._mj_model,
             actuator_names=full_actuator_names,
@@ -6180,25 +6184,38 @@ class WildRobotEnv(mjx_env.MjxEnv):
         terminal_metrics_dict["debug/raw_action_sat_frac"] = jp.mean(
             (abs_raw > jp.float32(0.95)).astype(jp.float32)
         )
-        # Torque diagnostics.  data.actuator_force is in Nm; CAL caches
-        # per-actuator force limits (from MJCF forcerange) so the
-        # normalised |τ| / limit is well-defined per joint.
-        torque_abs = jp.abs(data.actuator_force[self._cal._actuator_ids])[
-            self._policy_signal_indices
-        ]
-        torque_ratio = torque_abs / (
-            self._cal._force_limits[self._policy_signal_indices] + jp.float32(1e-6)
+        # Torque diagnostics.  data.actuator_force is in Nm and the cached
+        # force limits come from each actuator's MJCF forcerange, so the
+        # normalized |tau| / model-limit ratio is well-defined per joint.
+        # Emit the per-actuator diagnostics in full MuJoCo actuator order.  A
+        # ToddlerBot-style walking actor controls only the ten leg joints, but
+        # the remaining seven actuators still hold their home targets and can
+        # consume torque or develop tracking error.  Registering 17 metrics
+        # while populating only policy joints silently reported those held
+        # actuators as zero.
+        full_torque_abs = jp.abs(data.actuator_force).astype(jp.float32)
+        full_torque_ratio = full_torque_abs / (
+            self._full_actuator_force_limits + jp.float32(1e-6)
         )
-        actuator_speed_abs = jp.abs(
-            data.qvel[self._actuator_dof_addrs]
+        full_actuator_speed_abs = jp.abs(
+            data.qvel[self._full_actuator_dof_addrs]
         ).astype(jp.float32)
-        actuator_tracking_error_abs = jp.abs(
-            applied_target_q - data.qpos[self._actuator_qpos_addrs]
+        # ``ctrl_mj`` is the actual physical target after persistent
+        # calibration offsets and joint-limit clipping.  Comparing qpos with
+        # the pre-offset policy target would misclassify the injected hidden
+        # calibration error as servo tracking error.
+        full_actuator_tracking_error_abs = jp.abs(
+            ctrl_mj - data.qpos[self._full_actuator_qpos_addrs]
         ).astype(jp.float32)
-        actuator_torque_sq = (torque_abs * torque_abs).astype(jp.float32)
-        actuator_mechanical_power_abs = (
-            torque_abs * actuator_speed_abs
+        full_actuator_torque_sq = (
+            full_torque_abs * full_torque_abs
         ).astype(jp.float32)
+        full_actuator_mechanical_power_abs = (
+            full_torque_abs * full_actuator_speed_abs
+        ).astype(jp.float32)
+
+        torque_abs = jp.take(full_torque_abs, self._policy_signal_indices)
+        torque_ratio = jp.take(full_torque_ratio, self._policy_signal_indices)
         terminal_metrics_dict["tracking/avg_torque"] = jp.mean(torque_abs).astype(jp.float32)
         terminal_metrics_dict["tracking/max_torque"] = jp.max(torque_ratio).astype(jp.float32)
         terminal_metrics_dict["debug/torque_abs_max"] = jp.max(torque_ratio).astype(jp.float32)
@@ -6214,9 +6231,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             )
         )
         torque_metric_names = set(TORQUE_ACTUATOR_NAMES)
-        for actuator_idx, actuator_name in enumerate(
-            self._policy_spec.robot.actuator_names
-        ):
+        for actuator_idx, actuator_name in enumerate(self._full_actuator_names):
             if actuator_name not in torque_metric_names:
                 if self._allow_legacy_metric_actuators:
                     continue
@@ -6224,27 +6239,27 @@ class WildRobotEnv(mjx_env.MjxEnv):
                     "Missing per-actuator torque metric registration for "
                     f"{actuator_name!r}"
                 )
-            terminal_metrics_dict[f"torque/{actuator_name}/abs_nm"] = torque_abs[
-                actuator_idx
-            ].astype(jp.float32)
+            terminal_metrics_dict[f"torque/{actuator_name}/abs_nm"] = (
+                full_torque_abs[actuator_idx]
+            )
             terminal_metrics_dict[f"torque/{actuator_name}/sat_frac"] = (
-                torque_ratio[actuator_idx] > jp.float32(0.95)
+                full_torque_ratio[actuator_idx] > jp.float32(0.95)
             ).astype(jp.float32)
             terminal_metrics_dict[
                 f"torque/{actuator_name}/ratio_of_model_limit"
-            ] = torque_ratio[actuator_idx].astype(jp.float32)
+            ] = full_torque_ratio[actuator_idx]
             terminal_metrics_dict[
                 f"actuator/{actuator_name}/speed_abs_rad_s"
-            ] = actuator_speed_abs[actuator_idx]
+            ] = full_actuator_speed_abs[actuator_idx]
             terminal_metrics_dict[
                 f"actuator/{actuator_name}/tracking_error_abs_rad"
-            ] = actuator_tracking_error_abs[actuator_idx]
+            ] = full_actuator_tracking_error_abs[actuator_idx]
             terminal_metrics_dict[
                 f"actuator/{actuator_name}/torque_sq_nm2"
-            ] = actuator_torque_sq[actuator_idx]
+            ] = full_actuator_torque_sq[actuator_idx]
             terminal_metrics_dict[
                 f"actuator/{actuator_name}/mechanical_power_abs_w"
-            ] = actuator_mechanical_power_abs[actuator_idx]
+            ] = full_actuator_mechanical_power_abs[actuator_idx]
         # v0.20.1 imitation reward terms (weighted contributions + diagnostics).
         terminal_metrics_dict["reward/total"] = reward
         terminal_metrics_dict["reward/alive"] = reward_contrib["alive"]

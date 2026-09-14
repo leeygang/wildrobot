@@ -396,7 +396,7 @@ class ServoIOWorker:
 
     def _health_read_due(self) -> bool:
         interval_s = float(self.config.health_poll_interval_s)
-        if interval_s <= 0.0:
+        if not math.isfinite(interval_s) or interval_s <= 0.0:
             return False
         now = time.monotonic()
         with self._lock:

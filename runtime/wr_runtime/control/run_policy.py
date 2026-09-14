@@ -1426,6 +1426,20 @@ def _print_timing_summary(
     if servo_metric_samples or _timing_values(timing_samples, "io_servo_cache_age_max_s"):
         last_metrics = servo_metric_samples[-1] if servo_metric_samples else {}
         first_metrics = servo_metric_samples[0] if servo_metric_samples else {}
+        temperature_samples = [
+            float(sample["servo_temperature_max_c"])
+            for sample in servo_metric_samples
+            if np.isfinite(sample.get("servo_temperature_max_c", np.nan))
+        ]
+        voltage_samples = [
+            float(sample["servo_voltage_min_v"])
+            for sample in servo_metric_samples
+            if np.isfinite(sample.get("servo_voltage_min_v", np.nan))
+        ]
+        temperature_max_c = (
+            max(temperature_samples) if temperature_samples else None
+        )
+        voltage_min_v = min(voltage_samples) if voltage_samples else None
         print(
             "  Servo cache avg/p95/max ms: "
             f"all={_format_ms(_timing_avg(timing_samples, 'io_servo_cache_age_max_s'))}/"
@@ -1457,8 +1471,8 @@ def _print_timing_summary(
         )
         print(
             "  Servo health summary: "
-            f"temperature_max_c={last_metrics.get('servo_temperature_max_c')} "
-            f"voltage_min_v={last_metrics.get('servo_voltage_min_v')} "
+            f"temperature_max_c={temperature_max_c} "
+            f"voltage_min_v={voltage_min_v} "
             f"torque_disabled={last_metrics.get('servo_torque_disabled_count')} "
             f"unexpected_unloads={last_metrics.get('servo_unexpected_unload_events')} "
             f"health_reads={last_metrics.get('servo_health_read_count')} "

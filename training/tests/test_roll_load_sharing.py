@@ -78,13 +78,22 @@ def test_roll_load_summary_splits_support_and_excludes_startup() -> None:
     assert stable["support_phases"]["double_support"]["sample_count"] == 1
     left_hip = stable["support_phases"]["left_only"]["joints"]["left_hip_roll"]
     assert left_hip["torque_abs_mean_nm"] == pytest.approx(9.6)
+    assert left_hip["torque_rms_nm"] == pytest.approx(9.6)
     assert left_hip["torque_saturation_frac"] == pytest.approx(1.0)
     assert left_hip["joint_velocity_abs_mean_rad_s"] == pytest.approx(1.0)
+    assert left_hip["mechanical_power_abs_mean_w"] == pytest.approx(9.6)
     assert left_hip["applied_action_abs_mean"] == pytest.approx(0.48)
     assert left_hip["target_error_abs_mean_rad"] == pytest.approx(0.096)
     leverage = stable["support_phases"]["left_only"]["com_to_loaded_foot"]
     assert leverage["lateral_lever_signed_mean_m"] == pytest.approx(-0.08)
     assert leverage["quasi_static_gravity_moment_abs_mean_nm"] == pytest.approx(3.2)
+    assert stable["worst_torque_ratio_p95_joint"] == "left_hip_roll"
+    assert stable["joints"]["left_hip_roll"]["torque_rms_nm"] == pytest.approx(
+        np.sqrt((9.6**2 + 1.0**2 + 8.0**2) / 3.0)
+    )
+    assert stable["paired_torque_rms_balance"]["hip_roll"][
+        "torque_rms_relative_imbalance"
+    ] > 0.0
 
 
 def test_roll_load_summary_uses_only_pre_terminal_pre_fall_samples() -> None:
