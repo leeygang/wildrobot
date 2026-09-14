@@ -8,6 +8,100 @@ This changelog tracks capability changes, configuration updates, and training re
 
 ---
 
+## [v0.21.0-tb10-result + tb11-ready] - 2026-09-14: reject reward-only load shifting and correct the WR reference geometry
+
+The TB10 whole-leg-headroom run is
+`training/wandb/offline-run-20260914_030455-nn4y21q3`. The authoritative
+post-training evaluator selected no checkpoint. Checkpoint 20 retained the
+fast forward gait, but it failed actuator headroom and the new slow-command
+safety probe:
+
+| Deployment metric | TB9 checkpoint 20 | TB10 checkpoint 20 | Gate | Result |
+|---|---:|---:|---:|:---:|
+| fast-command falls | 0/64 | **0/64** | 0/64 | pass |
+| forward velocity | 0.12465 m/s | **0.12994 m/s** | >=0.075 m/s | pass |
+| stable tilt mean / peak / survivor-final | 3.25 / 10.87 / 5.55 deg | **3.84 / 13.08 / 7.59 deg** | <=10 / 15 / 10 deg | pass, regressed |
+| worst stable actuator saturation | 16.92% | **15.39%** | <=5% | fail |
+| slow-command falls | not authoritative | **8/64** | 0/64 | fail |
+
+The `80%`-onset all-leg penalty reduced the fast worst occupancy by only
+`1.52` percentage points (`9.0%` relative) and did not reduce total bilateral
+hip-roll RMS demand. In the same-seed `8 x 500` support diagnostic, TB9's
+left/right hip RMS was `2.707/2.627 Nm`; TB10's was `2.679/2.722 Nm`. Loaded
+hip saturation improved from `30.2/38.8%` to `27.1/33.0%`, but right-knee
+saturation during right support increased from `24.1%` to `26.8%`. The reward
+therefore redistributed peak load rather than removing the mechanical demand.
+
+The slow-command failure is a balance failure, not a final clipping event.
+Checkpoint 20 fell in `8/64` episodes after at least `8.56 s` (mean
+`13.94 s`); terminal saturation was zero and pre-fall worst saturation was
+only `8.5%`. Checkpoint 10 was also rejected: it had `1/64` slow falls and
+`19.88%` fast saturation. More TB10 iterations trade one failure mode for the
+other, so TB10 is not a deployment or continuation source. TB9 checkpoint 20
+remains the stable source.
+
+Before another PPO run, the new
+`training/eval/audit_reference_feasibility.py` compared planner intent with
+fixed-base MuJoCo FK and found a reference-contract defect. TB1--TB10 used
+`0.0536 m` for both the per-side footstep target and the analytic IK hip
+offset, but the WR MJCF hip-roll anchors are `0.0892 m` from the root. At both
+forward commands, TB10 planned about `52.6/53.3 mm` left/right support lever
+while its own `q_ref` realized about `89.5/89.5 mm`; the p95 discrepancy was
+`36.9/36.7 mm`. Planned foot separation was only `107.2 mm`, below the
+`146 mm` close-feet threshold, while FK realized about `179.9 mm`.
+
+The reference configuration now supports an explicit
+`env.loc_ref_hip_lateral_offset_m`, preserving historical defaults unless a
+new config opts in. The next config,
+`training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml`,
+sets the measured hip offset to `0.0892 m` and the verified shared-home
+footstep half-width to `0.0782 m`. Its pre-training audit passes at both
+speeds: planner/FK mean support levers are `76.8/77.5 mm` on the left and
+`77.7/77.7 mm` on the right, p95 mismatch is `0.9 mm`, planned/realized mean
+foot separation is `156.4/157.2 mm`, and p95 quasi-static support ratios are
+`70.6/69.8%` of the configured `4.413 Nm` model limit.
+
+This correctness fix does not by itself command a lower-load gait. As in
+ToddlerBot, the active actor is centered on frame-zero/home and the moving
+joint reference is critic-only. TB11 therefore initializes from TB9
+checkpoint 20, retains TB9's measured HTD-45H dynamics and weak `90%`-onset
+hip/knee headroom term, and adds the previously exercised `-0.05` measured
+single-support COM-lever objective. It deliberately drops TB10's rejected
+all-leg `80%` penalty. All four 5-iteration checkpoints are evaluated at fast
+and slow forward commands.
+
+Run the deterministic geometry gate:
+
+```bash
+uv run python training/eval/audit_reference_feasibility.py \
+  --config training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml
+```
+
+Then run TB11 on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_tb9_sysid_actuator_adaptation/ppo_walking_v0210_tb9_sysid_actuator_adaptation_v0210-tb9_20260913_085055-zklwsbm9/checkpoint_20_409600.pkl
+```
+
+Promotion remains stability-first: `0/64` falls at both speeds, no orientation
+regression from TB9, and at most `5%` stable `>95%`-limit occupancy for every
+actuator. If TB11 cannot reach that without losing stability, stop increasing
+reward pressure and move to measured actuator-envelope or mechanical changes.
+
+ToddlerBot comparison: local ToddlerBot derives `foot_to_com_y` from its robot
+geometry and uses it consistently in `algorithms/zmp_walk.py`; its active
+`locomotion/walk.gin` does not use generic motor-torque or ZMP joint-imitation
+rewards. WR keeps that action architecture, but adds the COM-lever objective as
+an explicit morphology adaptation for its wider support geometry and lower
+hip-roll headroom. References: Kajita et al., ICRA 2003,
+doi:10.1109/ROBOT.2003.1241826; Shi et al., *ToddlerBot*
+(arXiv:2502.00893); local ToddlerBot `algorithms/zmp_walk.py`,
+`locomotion/mjx_env.py`, and `sim/motor_control.py`.
+
+---
+
 ## [v0.21.0-tb9-result + tb10-ready] - 2026-09-14: preserve stability and close whole-leg actuator-headroom loopholes
 
 The HTD-45H SysID adaptation run is

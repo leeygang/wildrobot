@@ -254,6 +254,12 @@ class EnvConfig(Freezable):
     # value), not the final FK foot-center separation.
     loc_ref_default_stance_width_m: Optional[float] = None
 
+    # Optional morphology-specific lateral distance from the floating-base
+    # origin to each hip-roll joint.  This is distinct from stance width: the
+    # former belongs to the IK chain, while the latter is a footstep target.
+    # None preserves the historical ZMPWalkConfig default for old runs.
+    loc_ref_hip_lateral_offset_m: Optional[float] = None
+
     # Ratio of single-support to double-support duration in each half-cycle.
     # The ToddlerBot ZMP default is 2.0; lower values increase double support
     # while preserving the Froude-scaled 0.96 s cycle time.

@@ -48,6 +48,10 @@ class ZMPWalkConfig:
     # in physics across all C2 closeout sweeps (rounds 1-6).
     upper_leg_m: float = 0.193
     lower_leg_m: float = 0.180
+    # Historical default retained for reproducibility.  This is an IK-chain
+    # morphology parameter, not a stance-width parameter.  New WR configs
+    # should set it from the MJCF hip-roll anchors through
+    # env.loc_ref_hip_lateral_offset_m.
     hip_lateral_offset_m: float = 0.0536
     # The Onshape export refreshed on 2026-08-23 moved the ankle-pitch
     # bracket 1 mm upward while preserving the 0.193 m / 0.180 m sagittal
@@ -136,7 +140,8 @@ class ZMPWalkConfig:
     # now PASS; size-aware smoothness gates also PASS.  See CHANGELOG
     # `v0.20.1-phase8-retry-foot-step-height-0.05`.
     foot_step_height_m: float = 0.05
-    default_stance_width_m: float = 0.0536  # = hip_lateral_offset_m
+    # Per-side footstep target.  It need not equal hip_lateral_offset_m.
+    default_stance_width_m: float = 0.0536
     # Rotation radius for pure-yaw walking (mirrors TB's
     # ``rotation_radius`` in ``ZMPWalk.__init__``).  This is the radius
     # of the arc on which the feet sweep when ``command_yaw_rate`` is

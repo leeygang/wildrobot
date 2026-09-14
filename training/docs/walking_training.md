@@ -1,8 +1,9 @@
 # WildRobot Walking Training Plan
 
-**Status:** TB9 checkpoint 20 is the stable baseline (`0/64` falls) but is not
-deployment-ready because worst stable per-actuator saturation is `16.92%`.
-The `v0.21.0-tb10` whole-leg-headroom causal screen is ready; see the newest
+**Status:** TB9 checkpoint 20 remains the stable baseline (`0/64` falls).
+TB10 is rejected: its fast-command worst saturation remained `15.39%`, and
+its slow-command safety probe fell in `8/64` environments. The
+`v0.21.0-tb11` corrected-reference/COM-lever screen is ready; see the newest
 walking entry in `training/CHANGELOG.md` for its command and promotion gates.
 **Last updated:** 2026-09-14
 
@@ -17,55 +18,84 @@ walking entry in `training/CHANGELOG.md` for its command and promotion gates.
 
 ---
 
-## Active TB10 Improvement and Decision Plan
+## Active TB11 Reference-Geometry and COM-Lever Plan
 
-The plan separates trainable load sharing from physical actuator and geometry
-limits. Training must not be treated as a way to create unavailable torque.
+TB10 falsified the reward-only whole-leg-headroom hypothesis. At the primary
+`0.133333 m/s` command, checkpoint 20 retained `0/64` falls and reduced the
+worst stable saturation only `16.92% -> 15.39%` versus TB9. Its stable tilt
+mean/peak/final worsened `3.25/10.87/5.55 -> 3.84/13.08/7.59 deg`, and the
+slow `0.066667 m/s` safety probe fell in `8/64` environments. The failure is
+not an end-of-fall clipping artifact: slow-probe terminal saturation was zero
+and pre-fall worst saturation was `8.5%`.
 
-1. **Run the TB10 whole-leg-headroom screen.** Initialize the actor from TB9
-   checkpoint 20 with a fresh critic and optimizer. Run 20 iterations. Preserve
-   zero falls, speed, and orientation while reducing every controlled leg
-   actuator to at most `5%` stable occupancy above `95%` of its model limit.
-   A reduction caused by slower or less stable walking is a failure.
-2. **If TB10 stays stable but remains saturated, change the reference rather
-   than increasing the reward.** Use support-phase diagnostics to move the COM
-   closer to the loaded foot, reduce lateral acceleration, and adjust step
-   width or double-support timing while preserving stance-geometry gates.
-3. **Complete the measured HTD-45H actuator model regardless of the TB10
-   outcome.** Torque-speed, braking, latency, backlash, and thermal/continuous
-   capacity are mandatory for trustworthy sim-to-real evaluation. TB10 only
-   determines how urgently the next training run needs the completed model.
-4. **Consider mechanical changes only after reference optimization and the
-   measured actuator envelope still show inadequate margin.** Candidates are
-   narrower support geometry, lower upper-body mass, different gearing, or
-   stronger hip/knee actuators. This step is conditional; it is not implied by
-   a single TB10 failure.
-5. **Run protected deployment qualification only after a policy passes the
-   simulation gates and the actuator model is credible.** The tethered trial
-   must show no unexpected unloads or command clipping and acceptable tracking
-   error, voltage, temperature, and temperature rise. Earlier tethered runs are
-   diagnostics, not deployment qualification.
+The next plan fixes measurement and reference correctness before asking PPO to
+adapt again:
+
+1. **Gate planner/IK/FK consistency before training.** Run
+   `training/eval/audit_reference_feasibility.py` at both forward commands.
+   It compares the planner's COM-to-support-foot lever with fixed-base MuJoCo
+   FK, checks stance separation, and reports the implied quasi-static hip-roll
+   utilization.
+2. **Separate two previously conflated dimensions.** The WR MJCF hip-roll
+   anchors are `0.0892 m` from the root, but TB1--TB10 reused the `0.0536 m`
+   per-side footstep target as the IK hip offset. TB10 consequently planned
+   about `53 mm` of support lever while its own `q_ref` realized about
+   `89.5 mm`, a `36 mm` mismatch. TB11 uses `0.0892 m` for IK morphology and
+   the verified shared-home half-width `0.0782 m` for footsteps. The audit then
+   measures only `0.9 mm` p95 planner-to-FK error and passes the `0.8` static
+   support-ratio gate at both speeds.
+3. **Use one measured behavioral intervention.** Correcting `q_ref` alone
+   cannot move the actor: as in ToddlerBot, the active policy acts around the
+   first-frame/home pose and the time-varying joint reference is critic-only.
+   TB11 therefore reuses the measured `-0.05` single-support COM-lever reward,
+   while reverting to TB9's weak `90%`-onset hip/knee headroom term. It does
+   not inherit TB10's rejected all-leg `80%` penalty.
+4. **Run a bounded 20-iteration screen from TB9 checkpoint 20.** Save every
+   five iterations and evaluate all four checkpoints with `64 x 1000`
+   deterministic episodes at `0.133333` and `0.066667 m/s`.
+5. **Keep physical qualification separate.** Torque-speed, braking, latency,
+   backlash, and thermal/continuous capacity remain mandatory. If TB11 cannot
+   meet the simulated headroom gate without losing stability, stop reward
+   iteration and evaluate mechanical changes: narrower safe geometry, lower
+   upper-body mass, different gearing, or stronger hip/knee actuators.
 
 Decision branches:
 
-- **TB10 passes stability and headroom:** finish actuator-model validation,
-  then run the protected tethered deployment gate. Mechanical changes are not
-  required unless hardware telemetry fails.
-- **TB10 is stable but misses headroom:** keep TB9/TB10 stability evidence,
-  apply the measured support-phase COM/ZMP reference correction, incorporate
-  the actuator model, and retrain.
-- **TB10 regresses stability:** reject it, retain TB9 checkpoint 20 as the
-  baseline, and revise the objective/reference without promoting the run.
-- **The optimized reference still exceeds measured continuous capacity:** stop
-  reward iteration and make the required mechanical change.
+- **TB11 passes both speeds and <=5% saturation:** complete actuator-envelope
+  validation, export, visually inspect, then run the protected tether trial.
+- **TB11 improves headroom but misses the gate:** use its support-phase report
+  to decide whether one final reference/timing correction has a measured path
+  to the threshold; do not merely increase reward magnitude.
+- **TB11 regresses either speed or stability:** reject it and retain TB9
+  checkpoint 20. Move directly to actuator/mechanical capacity work.
+- **The corrected reference still exceeds measured continuous capacity:** stop
+  policy optimization and make the required mechanical change.
+
+Run the reference gate locally first:
+
+```bash
+uv run python training/eval/audit_reference_feasibility.py \
+  --config training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml
+```
+
+Then run TB11 on the GPU machine:
+
+```bash
+uv run python training/train.py \
+  --config training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml \
+  --init-policy training/checkpoints/ppo_walking_v0210_tb9_sysid_actuator_adaptation/ppo_walking_v0210_tb9_sysid_actuator_adaptation_v0210-tb9_20260913_085055-zklwsbm9/checkpoint_20_409600.pkl
+```
 
 This ordering follows ToddlerBot's combination of a ZMP/IK locomotion
 reference and a system-identified, velocity-dependent asymmetric actuator
-envelope. WR's soft whole-leg headroom term is an explicit morphology-specific
-screen because WR has less lateral static headroom. Reference: Shi et al.,
-*ToddlerBot* (arXiv:2502.00893), plus the local implementations in
-`~/projects/toddlerbot/toddlerbot/sim/motor_control.py` and
-`~/projects/toddlerbot/toddlerbot/locomotion/mjx_env.py`.
+envelope. ToddlerBot derives `foot_to_com_y` from robot geometry and uses it
+consistently for planning and IK; WR's separate hip-offset override is needed
+because its analytic IK previously conflated hip-anchor spacing with footstep
+width. The COM-lever term remains an explicit WR morphology adaptation because
+WR has less lateral static headroom. References: Kajita et al., ICRA 2003,
+doi:10.1109/ROBOT.2003.1241826; Shi et al., *ToddlerBot*
+(arXiv:2502.00893); local ToddlerBot `algorithms/zmp_walk.py`,
+`sim/motor_control.py`, and `locomotion/mjx_env.py`.
 
 ---
 

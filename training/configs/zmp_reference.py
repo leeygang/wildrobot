@@ -32,6 +32,7 @@ def zmp_walk_config_from_env(
 ) -> ZMPWalkConfig:
     """Return the ZMP config selected by a training/evaluation environment."""
     width_raw = _env_get(env, "loc_ref_default_stance_width_m", None)
+    hip_offset_raw = _env_get(env, "loc_ref_hip_lateral_offset_m", None)
     single_double_ratio = float(
         _env_get(env, "loc_ref_single_double_ratio", 2.0)
     )
@@ -59,24 +60,35 @@ def zmp_walk_config_from_env(
                 "env.loc_ref_walking_base_from_ref_init_roll cannot be "
                 "combined with loc_ref_walking_joint_offsets_rad"
             )
-    if width_raw is None:
-        return ZMPWalkConfig(single_double_ratio=single_double_ratio)
-    if offline_library_path:
+    if offline_library_path and (
+        width_raw is not None or hip_offset_raw is not None
+    ):
         raise ValueError(
-            "env.loc_ref_default_stance_width_m cannot be combined with "
+            "env.loc_ref_default_stance_width_m and "
+            "env.loc_ref_hip_lateral_offset_m cannot be combined with "
             "loc_ref_offline_library_path because an existing library has "
-            "already frozen its stance geometry"
+            "already frozen its geometry"
         )
-    width = float(width_raw)
-    if not math.isfinite(width) or width <= 0.0:
-        raise ValueError(
-            "env.loc_ref_default_stance_width_m must be finite and positive; "
-            f"got {width_raw!r}"
-        )
-    return ZMPWalkConfig(
-        default_stance_width_m=width,
-        single_double_ratio=single_double_ratio,
-    )
+    overrides: dict[str, float] = {
+        "single_double_ratio": single_double_ratio,
+    }
+    if width_raw is not None:
+        width = float(width_raw)
+        if not math.isfinite(width) or width <= 0.0:
+            raise ValueError(
+                "env.loc_ref_default_stance_width_m must be finite and positive; "
+                f"got {width_raw!r}"
+            )
+        overrides["default_stance_width_m"] = width
+    if hip_offset_raw is not None:
+        hip_offset = float(hip_offset_raw)
+        if not math.isfinite(hip_offset) or hip_offset <= 0.0:
+            raise ValueError(
+                "env.loc_ref_hip_lateral_offset_m must be finite and positive; "
+                f"got {hip_offset_raw!r}"
+            )
+        overrides["hip_lateral_offset_m"] = hip_offset
+    return ZMPWalkConfig(**overrides)
 
 
 def reference_roll_base_offsets(
