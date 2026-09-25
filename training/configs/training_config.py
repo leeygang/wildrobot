@@ -311,6 +311,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
             if env.get("loc_ref_hip_lateral_offset_m") is None
             else float(env["loc_ref_hip_lateral_offset_m"])
         ),
+        loc_ref_morphology_length_scale=float(
+            env.get("loc_ref_morphology_length_scale", 1.0)
+        ),
         loc_ref_single_double_ratio=float(
             env.get("loc_ref_single_double_ratio", 2.0)
         ),
@@ -354,6 +357,9 @@ def _parse_env_config(config: Dict[str, Any]) -> EnvConfig:
         # for the TB derivation: TB 0.06 m at TB stance 0.074 m →
         # 0.06/0.074 fraction × WR stance 0.18056 m ≈ 0.146 m).
         close_feet_threshold=float(env.get("close_feet_threshold", 0.146)),
+        single_support_com_lateral_normalization_m=float(
+            env.get("single_support_com_lateral_normalization_m", 0.10)
+        ),
         # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
         loc_ref_offline_library_path=(
             None if env.get("loc_ref_offline_library_path") in (None, "")

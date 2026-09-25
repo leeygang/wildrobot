@@ -1,17 +1,14 @@
 # WildRobot Walking Training Plan
 
-**Status:** TB9 checkpoint 20 remains the stable production baseline. TB11 is
-rejected for deployment: checkpoint 5 survived both commands but retained
-`15.10%` fast and `11.27%` slow worst-actuator saturation, while later
-checkpoints regressed safety. Its fixed-policy narrow-pose A/B improved the
-slow command but failed fast stability (`9/64` falls), so it cannot be deployed
-without matched adaptation. The completed scalar-capacity sweep found that
-the first all-command safety point was `5.6 Nm`, confirming insufficient
-actuator headroom without establishing an HTD-45H continuous rating. Before
-resizing hardware, run the matched control/moderate/narrow five-iteration
-screen in [`stance_pose_ab.md`](stance_pose_ab.md). Production remains on the
-ToddlerBot-aligned `home` action base.
-**Last updated:** 2026-09-24
+**Status:** TB9 checkpoint 20 remains the stable production baseline. The
+matched stance-pose screen rejected foot-placement narrowing as the main
+headroom fix: its control/moderate/narrow arms had `0/64`, `1/64`, and `14/64`
+fast-command falls while worst stable saturation remained `15.3-16.3%`.
+Because that test did not alter physical dimensions or mass, the next causal
+gate is the 2x2 length/mass experiment in
+[`morphology_size_factorial.md`](morphology_size_factorial.md). Production
+remains on the ToddlerBot-aligned `home` action base.
+**Last updated:** 2026-09-25
 
 **Historical sections archived:**
 
@@ -26,11 +23,13 @@ ToddlerBot-aligned `home` action base.
 
 ## Active Post-TB11 Plan
 
-The immediate next gate is the matched training screen documented in
-[`stance_pose_ab.md`](stance_pose_ab.md). Its current, moderate, and narrow
-arms start from the same TB9 actor with fresh critic/optimizer state and a
-fixed five-iteration budget. This removes the fixed-policy default-pose
-confound before changing pelvis, feet, or leg dimensions.
+The immediate next gate is the matched morphology experiment documented in
+[`morphology_size_factorial.md`](morphology_size_factorial.md). It changes
+physical length and mass independently while retaining the same HTD actuator,
+then measures their main effects and interaction. Its four arms start from the
+same TB9 actor with fresh critic/optimizer state. This explicitly separates
+size, mass, and learned-policy effects; the completed pose-only screen could
+not answer that physical-size question.
 
 TB11 fixed the planner/IK/FK geometry contract, but its behavior changed load
 distribution rather than total demand. Checkpoint 5 is the diagnostic result:

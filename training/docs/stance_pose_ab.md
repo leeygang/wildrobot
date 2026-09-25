@@ -159,6 +159,10 @@ The unchanged actor provides causal evidence, not a final deployment policy.
 Structural resizing is justified only after this pose-only test and the
 measured upper-body mass counterfactual fail to provide sufficient headroom.
 
+The pose-only result must not be interpreted as a physical-size experiment.
+The follow-up 2x2 length/mass test is specified in
+[`morphology_size_factorial.md`](morphology_size_factorial.md).
+
 ## Fixed-Policy Result and Matched Training Screen
 
 The fixed-policy result is `summary.json` copied from the GPU run. The narrow

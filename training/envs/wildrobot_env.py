@@ -742,6 +742,17 @@ class WildRobotEnv(mjx_env.MjxEnv):
         self._close_feet_threshold = jp.float32(
             getattr(self._config.env, "close_feet_threshold", 0.146)
         )
+        self._single_support_com_lateral_normalization_m = float(
+            getattr(
+                self._config.env,
+                "single_support_com_lateral_normalization_m",
+                0.10,
+            )
+        )
+        if self._single_support_com_lateral_normalization_m <= 0.0:
+            raise ValueError(
+                "env.single_support_com_lateral_normalization_m must be positive"
+            )
 
         full_actuator_names = [
             str(self._mj_model.actuator(actuator_id).name)
@@ -3593,6 +3604,7 @@ class WildRobotEnv(mjx_env.MjxEnv):
             root_quat_wxyz=root_quat_wxyz,
             left_loaded=left_loaded,
             right_loaded=right_loaded,
+            normalization_m=self._single_support_com_lateral_normalization_m,
         )
         r_standing_support_balance = jp.where(
             is_standing & both_loaded,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -31,6 +32,14 @@ def zmp_walk_config_from_env(
     env: Any, *, offline_library_path: str | None = None
 ) -> ZMPWalkConfig:
     """Return the ZMP config selected by a training/evaluation environment."""
+    length_scale = float(
+        _env_get(env, "loc_ref_morphology_length_scale", 1.0)
+    )
+    if not math.isfinite(length_scale) or length_scale <= 0.0:
+        raise ValueError(
+            "env.loc_ref_morphology_length_scale must be finite and positive; "
+            f"got {length_scale!r}"
+        )
     width_raw = _env_get(env, "loc_ref_default_stance_width_m", None)
     hip_offset_raw = _env_get(env, "loc_ref_hip_lateral_offset_m", None)
     single_double_ratio = float(
@@ -61,14 +70,33 @@ def zmp_walk_config_from_env(
                 "combined with loc_ref_walking_joint_offsets_rad"
             )
     if offline_library_path and (
-        width_raw is not None or hip_offset_raw is not None
+        width_raw is not None
+        or hip_offset_raw is not None
+        or not math.isclose(length_scale, 1.0)
     ):
         raise ValueError(
             "env.loc_ref_default_stance_width_m and "
-            "env.loc_ref_hip_lateral_offset_m cannot be combined with "
+            "env.loc_ref_hip_lateral_offset_m or a non-unit "
+            "env.loc_ref_morphology_length_scale cannot be combined with "
             "loc_ref_offline_library_path because an existing library has "
             "already frozen its geometry"
         )
+    base = ZMPWalkConfig()
+    base = replace(
+        base,
+        upper_leg_m=base.upper_leg_m * length_scale,
+        lower_leg_m=base.lower_leg_m * length_scale,
+        hip_lateral_offset_m=base.hip_lateral_offset_m * length_scale,
+        ankle_to_ground_m=base.ankle_to_ground_m * length_scale,
+        pelvis_to_hip_m=base.pelvis_to_hip_m * length_scale,
+        cycle_time_s=base.cycle_time_s * math.sqrt(length_scale),
+        foot_step_height_m=base.foot_step_height_m * length_scale,
+        default_stance_width_m=base.default_stance_width_m * length_scale,
+        rotation_radius_m=base.rotation_radius_m * length_scale,
+        plantarflex_ramp_band_m=base.plantarflex_ramp_band_m * length_scale,
+        max_step_length_m=base.max_step_length_m * length_scale,
+        min_reach_margin_m=base.min_reach_margin_m * length_scale,
+    )
     overrides: dict[str, float] = {
         "single_double_ratio": single_double_ratio,
     }
@@ -88,7 +116,7 @@ def zmp_walk_config_from_env(
                 f"got {hip_offset_raw!r}"
             )
         overrides["hip_lateral_offset_m"] = hip_offset
-    return ZMPWalkConfig(**overrides)
+    return replace(base, **overrides)
 
 
 def reference_roll_base_offsets(

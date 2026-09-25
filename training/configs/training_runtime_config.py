@@ -260,6 +260,12 @@ class EnvConfig(Freezable):
     # None preserves the historical ZMPWalkConfig default for old runs.
     loc_ref_hip_lateral_offset_m: Optional[float] = None
 
+    # Uniform length scale applied to the ZMP/IK reference geometry.  Keep at
+    # 1.0 for real WR models.  Counterfactual morphology experiments set this
+    # to the same scale used by their generated MJCF so link lengths, swing
+    # height, stance geometry, and Froude-scaled gait time remain consistent.
+    loc_ref_morphology_length_scale: float = 1.0
+
     # Ratio of single-support to double-support duration in each half-cycle.
     # The ToddlerBot ZMP default is 2.0; lower values increase double support
     # while preserving the Froude-scaled 0.96 s cycle time.
@@ -363,6 +369,11 @@ class EnvConfig(Freezable):
     #   0.8108 × 0.18056 ≈ 0.146 m
     # Only consulted when reward_weights.penalty_close_feet_xy != 0.
     close_feet_threshold: float = 0.146
+
+    # Length used to nondimensionalize the measured single-support
+    # COM-to-loaded-foot lever. Morphology tests scale this with the robot;
+    # production WR retains the reviewed 0.10 m value.
+    single_support_com_lateral_normalization_m: float = 0.10
 
     # v0.20.1 v3_offline_library — offline ReferenceLibrary source.
     # Set loc_ref_offline_library_path to load a saved library from
