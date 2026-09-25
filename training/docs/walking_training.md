@@ -3,12 +3,14 @@
 **Status:** TB9 checkpoint 20 remains the stable production baseline. TB11 is
 rejected for deployment: checkpoint 5 survived both commands but retained
 `15.10%` fast and `11.27%` slow worst-actuator saturation, while later
-checkpoints regressed safety. The completed scalar-capacity sweep found that
+checkpoints regressed safety. Its fixed-policy narrow-pose A/B improved the
+slow command but failed fast stability (`9/64` falls), so it cannot be deployed
+without matched adaptation. The completed scalar-capacity sweep found that
 the first all-command safety point was `5.6 Nm`, confirming insufficient
 actuator headroom without establishing an HTD-45H continuous rating. Before
-resizing hardware, run the fixed-policy pose-only stance A/B in
-[`stance_pose_ab.md`](stance_pose_ab.md). Production and subsequent training
-remain on the ToddlerBot-aligned `home` action base.
+resizing hardware, run the matched control/moderate/narrow five-iteration
+screen in [`stance_pose_ab.md`](stance_pose_ab.md). Production remains on the
+ToddlerBot-aligned `home` action base.
 **Last updated:** 2026-09-24
 
 **Historical sections archived:**
@@ -24,11 +26,11 @@ remain on the ToddlerBot-aligned `home` action base.
 
 ## Active Post-TB11 Plan
 
-The immediate next gate is the pose-only A/B documented in
-[`stance_pose_ab.md`](stance_pose_ab.md). It compares the current `156.4 mm`
-stance against a statically verified `130.75 mm` stance while holding the
-checkpoint, mass, actuator model, timing, command, and seed fixed. This tests
-whether lateral pose is causal before changing pelvis, feet, or leg dimensions.
+The immediate next gate is the matched training screen documented in
+[`stance_pose_ab.md`](stance_pose_ab.md). Its current, moderate, and narrow
+arms start from the same TB9 actor with fresh critic/optimizer state and a
+fixed five-iteration budget. This removes the fixed-policy default-pose
+confound before changing pelvis, feet, or leg dimensions.
 
 TB11 fixed the planner/IK/FK geometry contract, but its behavior changed load
 distribution rather than total demand. Checkpoint 5 is the diagnostic result:

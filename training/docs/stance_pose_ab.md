@@ -1,6 +1,6 @@
 # WR Lateral Stance: Dynamics Analysis and Pose-Only A/B
 
-**Status:** ready for a fixed-policy simulator A/B using TB11 checkpoint 5.
+**Status:** fixed-policy A/B complete; matched three-arm training screen ready.
 **Date:** 2026-09-24
 
 ## Question Being Tested
@@ -158,3 +158,62 @@ The unchanged actor provides causal evidence, not a final deployment policy.
 
 Structural resizing is justified only after this pose-only test and the
 measured upper-body mass counterfactual fail to provide sufficient headroom.
+
+## Fixed-Policy Result and Matched Training Screen
+
+The fixed-policy result is `summary.json` copied from the GPU run. The narrow
+pose was stable at `0.066667 m/s`, reducing peak tilt `11.80 -> 9.18 deg` and
+worst saturation `12.44% -> 10.34%`. At `0.133333 m/s`, however, it regressed
+from `0/64` to `9/64` falls and peak tilt increased `13.08 -> 25.57 deg`.
+Fast hip-roll RMS did not improve (`5.324 -> 5.422 Nm`), even though knee and
+ankle-pitch demand fell.
+
+This rejects direct deployment of the changed pose, but it is not a clean
+geometry rejection: the actor was trained around the baseline default action.
+The next experiment therefore trains three matched arms from the same TB9
+checkpoint with a fresh critic and optimizer:
+
+| Arm | Total roll correction | Foot separation | Purpose |
+|---|---:|---:|---|
+| control | 0.0300 rad | 156.4 mm | normalized current-pose control |
+| moderate | 0.0500 rad | 141.1 mm | lower-risk intermediate pose |
+| narrow | 0.0635 rad | 130.75 mm | full ToddlerBot-scaled pose |
+
+All arms retain the same PPO, rewards, system-identified actuator model,
+domain randomization, `0.96 s` timing, commands, and `home` residual contract.
+The generated configs differ only in experiment metadata and the three
+geometry-linked fields listed above.
+
+Run the five-iteration screen on the GPU machine:
+
+```bash
+uv run python training/scripts/run_stance_pose_training_screen.py
+```
+
+To inspect the generated configs and exact commands without training:
+
+```bash
+uv run python training/scripts/run_stance_pose_training_screen.py \
+  --prepare-only
+```
+
+The script uses `--init-policy` semantics with TB9 checkpoint 20, so all arms
+start from identical actor parameters while receiving fresh critic and
+optimizer state. It writes complete configs under `training/configs/auto/`
+and each training job saves its effective config beside its checkpoints.
+
+Do not launch the three-seed confirmation yet. First reject any arm that has a
+fall, exceeds the orientation gates, fails to reduce hip load, or moves demand
+into another joint. Run confirmation only for the surviving arm and control:
+
+```bash
+uv run python training/scripts/run_stance_pose_training_screen.py \
+  --arms control <selected-arm> \
+  --seeds 42 43 44 \
+  --iterations 10
+```
+
+The standard post-training evaluator covers both forward commands. Before a
+deployment decision, run `training/eval/diagnose_roll_load_sharing.py` against
+the selected checkpoint and its saved `training_config.yaml` to measure the
+COM-to-loaded-foot lever and torque by measured support phase.

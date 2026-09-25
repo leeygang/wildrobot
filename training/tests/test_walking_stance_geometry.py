@@ -97,3 +97,35 @@ def test_tb11_pose_only_narrow_candidate_is_physically_valid() -> None:
         for name, passed in candidate["gates"].items()
         if name != "foot_separation"
     )
+
+
+def test_tb11_pose_only_moderate_candidate_has_expected_geometry() -> None:
+    (
+        model,
+        robot_config,
+        home_qpos,
+        home_foot_rotations,
+        close_feet_threshold_m,
+    ) = load_stance_inputs(TB11_CONFIG)
+    candidate = analyze_stance_candidate(
+        model=model,
+        robot_config=robot_config,
+        home_qpos=home_qpos,
+        home_foot_rotations=home_foot_rotations,
+        offset_rad=0.0200,
+        close_feet_threshold_m=close_feet_threshold_m,
+        max_support_torque_ratio=0.8,
+        max_foot_orientation_delta_deg=1.0,
+        max_sole_height_delta_m=0.002,
+    )
+
+    assert candidate["foot_center_separation_m"] == pytest.approx(
+        0.141079, abs=1e-5
+    )
+    assert candidate["inner_foot_clearance_m"] > 0.059
+    assert candidate["self_contact_count"] == 0
+    assert all(
+        passed
+        for name, passed in candidate["gates"].items()
+        if name != "foot_separation"
+    )
