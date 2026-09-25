@@ -6,6 +6,8 @@ import pytest
 
 from training.eval.eval_policy import (
     _apply_actuator_force_limit_override,
+    _apply_close_feet_threshold_override,
+    _apply_symmetric_home_roll_offset_override,
     _disable_cmd_resample_for_eval,
     _network_activation_name,
     _startup_action_scale,
@@ -75,6 +77,10 @@ def test_eval_policy_cli_accepts_explicit_velocity_command(monkeypatch) -> None:
             "0",
             "--actuator-force-limit-nm",
             "5.2",
+            "--home-roll-offset-rad",
+            "0.0635",
+            "--close-feet-threshold-m",
+            "0.106",
         ],
     )
 
@@ -82,6 +88,8 @@ def test_eval_policy_cli_accepts_explicit_velocity_command(monkeypatch) -> None:
 
     assert args.velocity_cmd == pytest.approx([0.066667, 0.0, 0.0])
     assert args.actuator_force_limit_nm == pytest.approx(5.2)
+    assert args.home_roll_offset_rad == pytest.approx(0.0635)
+    assert args.close_feet_threshold_m == pytest.approx(0.106)
 
 
 def test_eval_policy_applies_positive_actuator_force_limit_override() -> None:
@@ -99,3 +107,47 @@ def test_eval_policy_rejects_invalid_actuator_force_limit(value: float) -> None:
 
     with pytest.raises(ValueError, match="finite positive"):
         _apply_actuator_force_limit_override(env_cfg, value)
+
+
+def test_eval_policy_applies_symmetric_home_roll_offset_override() -> None:
+    env_cfg = SimpleNamespace(
+        home_joint_offsets_rad={"left_hip_pitch": 0.1}
+    )
+
+    effective = _apply_symmetric_home_roll_offset_override(env_cfg, 0.0635)
+
+    assert effective == pytest.approx(0.0635)
+    assert env_cfg.home_joint_offsets_rad == pytest.approx(
+        {
+            "left_hip_pitch": 0.1,
+            "left_hip_roll": 0.0635,
+            "right_hip_roll": -0.0635,
+            "left_ankle_roll": -0.0635,
+            "right_ankle_roll": 0.0635,
+        }
+    )
+
+
+@pytest.mark.parametrize("value", [-1.0, float("nan"), float("inf")])
+def test_eval_policy_rejects_invalid_home_roll_offset(value: float) -> None:
+    env_cfg = SimpleNamespace(home_joint_offsets_rad={})
+
+    with pytest.raises(ValueError, match="finite non-negative"):
+        _apply_symmetric_home_roll_offset_override(env_cfg, value)
+
+
+def test_eval_policy_applies_close_feet_threshold_override() -> None:
+    env_cfg = SimpleNamespace(close_feet_threshold=0.146)
+
+    effective = _apply_close_feet_threshold_override(env_cfg, 0.106)
+
+    assert effective == pytest.approx(0.106)
+    assert env_cfg.close_feet_threshold == pytest.approx(0.106)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, float("nan"), float("inf")])
+def test_eval_policy_rejects_invalid_close_feet_threshold(value: float) -> None:
+    env_cfg = SimpleNamespace(close_feet_threshold=0.146)
+
+    with pytest.raises(ValueError, match="finite positive"):
+        _apply_close_feet_threshold_override(env_cfg, value)

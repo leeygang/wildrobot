@@ -12,6 +12,10 @@ from training.eval.verify_walking_stance_geometry import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG = PROJECT_ROOT / "training/configs/ppo_walking_v0210_17d8_hip_roll_margin.yaml"
+TB11_CONFIG = (
+    PROJECT_ROOT
+    / "training/configs/ppo_walking_v0210_tb11_reference_geometry_com_lever.yaml"
+)
 
 
 def _analyze(offset_rad: float):
@@ -60,3 +64,36 @@ def test_candidate_003_passes_static_geometry_gate_but_home_does_not() -> None:
     assert not home["passed"]
     assert candidate["passed"]
     assert candidate["close_feet_margin_m"] > 0.01
+
+
+def test_tb11_pose_only_narrow_candidate_is_physically_valid() -> None:
+    (
+        model,
+        robot_config,
+        home_qpos,
+        home_foot_rotations,
+        close_feet_threshold_m,
+    ) = load_stance_inputs(TB11_CONFIG)
+    candidate = analyze_stance_candidate(
+        model=model,
+        robot_config=robot_config,
+        home_qpos=home_qpos,
+        home_foot_rotations=home_foot_rotations,
+        offset_rad=0.0335,
+        close_feet_threshold_m=close_feet_threshold_m,
+        max_support_torque_ratio=0.8,
+        max_foot_orientation_delta_deg=1.0,
+        max_sole_height_delta_m=0.002,
+    )
+
+    assert candidate["foot_center_separation_m"] == pytest.approx(
+        0.13075, abs=1e-4
+    )
+    assert candidate["inner_foot_clearance_m"] > 0.048
+    assert candidate["self_contact_count"] == 0
+    assert candidate["gates"]["foot_separation"] is False
+    assert all(
+        passed
+        for name, passed in candidate["gates"].items()
+        if name != "foot_separation"
+    )

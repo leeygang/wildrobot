@@ -56,6 +56,14 @@ from training.eval.standing_orientation import (
 )
 
 
+SYMMETRIC_HOME_ROLL_SIGNS = {
+    "left_hip_roll": 1.0,
+    "right_hip_roll": -1.0,
+    "left_ankle_roll": -1.0,
+    "right_ankle_roll": 1.0,
+}
+
+
 def _eval_cmd_is_overridden(env_cfg) -> bool:
     """v0.21.0 P11 (H3 + H4): eval override sentinel reads vx (index 0) only.
 
@@ -109,6 +117,37 @@ def _apply_actuator_force_limit_override(
     if not math.isfinite(effective) or effective <= 0.0:
         raise ValueError("actuator force limit must be a finite positive value")
     env_cfg.actuator_force_limit_nm = effective
+    return effective
+
+
+def _apply_symmetric_home_roll_offset_override(
+    env_cfg, override_rad: float | None
+) -> float | None:
+    """Set the absolute symmetric hip/ankle-roll home correction for eval."""
+    if override_rad is None:
+        return None
+    effective = float(override_rad)
+    if not math.isfinite(effective) or effective < 0.0:
+        raise ValueError("home roll offset must be a finite non-negative value")
+    offsets = dict(getattr(env_cfg, "home_joint_offsets_rad", {}) or {})
+    for joint_name, sign in SYMMETRIC_HOME_ROLL_SIGNS.items():
+        offsets[joint_name] = sign * effective
+    env_cfg.home_joint_offsets_rad = offsets
+    return effective
+
+
+def _apply_close_feet_threshold_override(
+    env_cfg, override_m: float | None
+) -> float:
+    """Set and return the close-feet reward threshold used for eval."""
+    effective = (
+        float(getattr(env_cfg, "close_feet_threshold"))
+        if override_m is None
+        else float(override_m)
+    )
+    if not math.isfinite(effective) or effective <= 0.0:
+        raise ValueError("close-feet threshold must be a finite positive value")
+    env_cfg.close_feet_threshold = effective
     return effective
 
 
@@ -615,6 +654,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--home-roll-offset-rad",
+        type=float,
+        default=None,
+        help=(
+            "Override the absolute symmetric canonical home correction: "
+            "left hip +x, right hip -x, left ankle -x, right ankle +x."
+        ),
+    )
+    parser.add_argument(
+        "--close-feet-threshold-m",
+        type=float,
+        default=None,
+        help=(
+            "Override env.close_feet_threshold for geometry-normalized "
+            "fixed-policy comparisons."
+        ),
+    )
+    parser.add_argument(
         "--actuator-force-limit-nm",
         type=float,
         default=None,
@@ -705,7 +762,18 @@ def main() -> int:
             raise ValueError("--velocity-cmd values must be finite")
         training_cfg.env.eval_velocity_cmd = velocity_cmd
     if args.stance_width_m is not None:
-        training_cfg.env.loc_ref_default_stance_width_m = float(args.stance_width_m)
+        stance_width_m = float(args.stance_width_m)
+        if not math.isfinite(stance_width_m) or stance_width_m <= 0.0:
+            raise ValueError("stance width must be a finite positive value")
+        training_cfg.env.loc_ref_default_stance_width_m = stance_width_m
+    effective_home_roll_offset_rad = _apply_symmetric_home_roll_offset_override(
+        training_cfg.env,
+        args.home_roll_offset_rad,
+    )
+    effective_close_feet_threshold_m = _apply_close_feet_threshold_override(
+        training_cfg.env,
+        args.close_feet_threshold_m,
+    )
     effective_actuator_force_limit_nm = _apply_actuator_force_limit_override(
         training_cfg.env,
         args.actuator_force_limit_nm,
@@ -829,6 +897,12 @@ def main() -> int:
         metrics["eval/actuator_force_limit_nm"] = (
             effective_actuator_force_limit_nm
         )
+    if effective_home_roll_offset_rad is not None:
+        metrics["eval/home_roll_offset_rad"] = effective_home_roll_offset_rad
+    metrics["eval/reference_stance_half_width_m"] = float(
+        training_cfg.env.loc_ref_default_stance_width_m
+    )
+    metrics["eval/close_feet_threshold_m"] = effective_close_feet_threshold_m
     metrics["eval/model_actuator_force_limit_min_nm"] = float(
         np.min(model_actuator_force_limits_nm)
     )
@@ -903,6 +977,15 @@ def main() -> int:
     )
     if stance_width is not None:
         print(f"  reference stance width: {float(stance_width):.4f} m")
+    if effective_home_roll_offset_rad is not None:
+        print(
+            "  symmetric home roll offset: "
+            f"{effective_home_roll_offset_rad:.4f} rad"
+        )
+    print(
+        "  close-feet threshold: "
+        f"{effective_close_feet_threshold_m:.4f} m"
+    )
     if effective_actuator_force_limit_nm is not None:
         print(
             "  scalar actuator force limit: "

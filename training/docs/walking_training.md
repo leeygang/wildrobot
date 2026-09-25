@@ -3,12 +3,13 @@
 **Status:** TB9 checkpoint 20 remains the stable production baseline. TB11 is
 rejected for deployment: checkpoint 5 survived both commands but retained
 `15.10%` fast and `11.27%` slow worst-actuator saturation, while later
-checkpoints regressed safety. A same-actor simulator A/B rejected a direct
-`home -> q_ref` base switch (`8/8` falls in about `2.05 s`). Production and
-subsequent training remain on the ToddlerBot-aligned `home` action base. The
-next gate is the TB11 checkpoint-5 scalar actuator-capacity sweep documented
-below; do not start another PPO run before reading that result.
-**Last updated:** 2026-09-15
+checkpoints regressed safety. The completed scalar-capacity sweep found that
+the first all-command safety point was `5.6 Nm`, confirming insufficient
+actuator headroom without establishing an HTD-45H continuous rating. Before
+resizing hardware, run the fixed-policy pose-only stance A/B in
+[`stance_pose_ab.md`](stance_pose_ab.md). Production and subsequent training
+remain on the ToddlerBot-aligned `home` action base.
+**Last updated:** 2026-09-24
 
 **Historical sections archived:**
 
@@ -22,6 +23,12 @@ below; do not start another PPO run before reading that result.
 ---
 
 ## Active Post-TB11 Plan
+
+The immediate next gate is the pose-only A/B documented in
+[`stance_pose_ab.md`](stance_pose_ab.md). It compares the current `156.4 mm`
+stance against a statically verified `130.75 mm` stance while holding the
+checkpoint, mass, actuator model, timing, command, and seed fixed. This tests
+whether lateral pose is causal before changing pelvis, feet, or leg dimensions.
 
 TB11 fixed the planner/IK/FK geometry contract, but its behavior changed load
 distribution rather than total demand. Checkpoint 5 is the diagnostic result:
