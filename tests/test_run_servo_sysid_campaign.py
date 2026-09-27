@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 from runtime.scripts.run_servo_sysid_campaign import (
     CAMPAIGN_RUNS,
+    CAMPAIGN_PLANS,
+    DEPLOYMENT_RUNS,
     LIMIT_CAMPAIGN_RUNS,
     build_capture_command,
     parse_args,
@@ -47,6 +50,18 @@ def test_standard_campaign_has_fit_validation_and_repeatability_runs() -> None:
     assert all(run.chirp_end_hz == 2.0 for run in CAMPAIGN_RUNS[1:])
     assert all(run.normalize_start_pose for run in CAMPAIGN_RUNS)
     assert all(run.return_speed_deg_s == 5 for run in CAMPAIGN_RUNS)
+
+
+def test_complete_campaign_adds_runtime_deadband_validation() -> None:
+    complete = CAMPAIGN_PLANS["complete"]
+
+    assert complete[: len(LIMIT_CAMPAIGN_RUNS)] == LIMIT_CAMPAIGN_RUNS
+    assert complete[
+        len(LIMIT_CAMPAIGN_RUNS) : len(LIMIT_CAMPAIGN_RUNS) + len(CAMPAIGN_RUNS)
+    ] == CAMPAIGN_RUNS
+    assert complete[-1] == DEPLOYMENT_RUNS[0]
+    assert DEPLOYMENT_RUNS[0].center_deg == 45.0
+    assert DEPLOYMENT_RUNS[0].write_deadband_units == 3
 
 
 def test_limit_campaign_separates_load_speed_and_combined_conditions() -> None:
@@ -96,6 +111,9 @@ def test_capture_command_forces_identification_deadband_and_labels_run(
     assert _option(command, "--amplitudes-deg") == "2"
     assert _option(command, "--chirp-end-hz") == "10.0"
     assert _option(command, "--write-deadband-units") == "0"
+    assert _option(command, "--profile-health-poll-hz") == "6.0"
+    assert _option(command, "--max-position-error-deg") == "12.0"
+    assert _option(command, "--max-static-torque-nm") == "2.5"
     assert _option(command, "--center-max-attempts") == "3"
     assert _option(command, "--min-voltage-v") == "9.6"
     assert _option(command, "--startup-delay-s") == "3.0"
@@ -141,6 +159,11 @@ def test_campaign_stops_after_first_failed_capture(
 
     assert run_campaign(_args(tmp_path)) == 7
     assert len(commands) == 2
+    manifest_path = next(tmp_path.glob("*/campaign_manifest.json"))
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["failed_run_id"] == "B1_fit_plus30"
+    assert [run["returncode"] for run in manifest["runs"]] == [0, 7]
 
 
 def test_campaign_can_resume_at_failed_condition(monkeypatch, tmp_path: Path) -> None:
@@ -207,3 +230,32 @@ def test_default_plan_is_limits(tmp_path: Path) -> None:
 
     assert args.plan == "limits"
     assert args.start_at == LIMIT_CAMPAIGN_RUNS[0].run_id
+
+
+def test_complete_campaign_preflights_then_runs_and_writes_manifest(
+    monkeypatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, *, check):
+        assert check is False
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _args(tmp_path, "--plan", "complete")
+
+    assert run_campaign(args) == 0
+    complete = CAMPAIGN_PLANS["complete"]
+    assert len(commands) == 2 * len(complete)
+    assert all(command[-1] == "--dry-run" for command in commands[: len(complete)])
+    assert all("--dry-run" not in command for command in commands[len(complete) :])
+
+    manifest_paths = list(tmp_path.glob("*/campaign_manifest.json"))
+    assert len(manifest_paths) == 1
+    manifest = json.loads(manifest_paths[0].read_text())
+    assert manifest["status"] == "completed"
+    assert manifest["preflight_completed"] is True
+    assert [run["run_id"] for run in manifest["runs"]] == [
+        run.run_id for run in complete
+    ]

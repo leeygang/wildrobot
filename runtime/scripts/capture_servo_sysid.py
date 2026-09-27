@@ -45,9 +45,10 @@ from wr_runtime.hardware.hiwonder_ttl_bus import (  # noqa: E402
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 STANDARD_GRAVITY_M_S2 = 9.80665
 DEFAULT_AMPLITUDES_DEG = (2.0, 5.0, 8.0)
+PROFILE_HEALTH_FIELDS = ("voltage_v", "temperature_c", "loaded")
 
 
 def _yellow(text: str) -> str:
@@ -538,6 +539,7 @@ def summarize_capture(
 def _empty_capture_arrays() -> dict[str, np.ndarray]:
     return {
         "profile_time_s": np.empty(0, dtype=np.float64),
+        "host_wall_time_s": np.empty(0, dtype=np.float64),
         "scheduled_elapsed_s": np.empty(0, dtype=np.float64),
         "scheduler_wait_s": np.empty(0, dtype=np.float64),
         "command_elapsed_s": np.empty(0, dtype=np.float64),
@@ -567,6 +569,9 @@ def _new_capture_fields() -> dict[str, list[object]]:
 def _arrays_from_fields(fields: dict[str, list[object]]) -> dict[str, np.ndarray]:
     return {
         "profile_time_s": np.asarray(fields["profile_time_s"], dtype=np.float64),
+        "host_wall_time_s": np.asarray(
+            fields["host_wall_time_s"], dtype=np.float64
+        ),
         "scheduled_elapsed_s": np.asarray(
             fields["scheduled_elapsed_s"], dtype=np.float64
         ),
@@ -923,6 +928,172 @@ def minimum_voltage_sample_below(
     return minimum if float(minimum["voltage_v"]) < float(threshold_v) else None
 
 
+def profile_health_trace_arrays(
+    samples: Sequence[dict[str, object]],
+) -> dict[str, np.ndarray]:
+    """Convert staggered in-profile health reads into event-oriented arrays."""
+
+    fields = np.asarray(
+        [str(sample["field"]) for sample in samples], dtype="U20"
+    )
+    values = np.asarray(
+        [
+            float(sample["value"])
+            if sample.get("value") is not None
+            else float("nan")
+            for sample in samples
+        ],
+        dtype=np.float64,
+    )
+
+    def values_for(field: str) -> np.ndarray:
+        return np.where(fields == field, values, np.nan).astype(np.float32)
+
+    return {
+        "profile_health_elapsed_s": np.asarray(
+            [sample["profile_elapsed_s"] for sample in samples], dtype=np.float64
+        ),
+        "profile_health_host_wall_time_s": np.asarray(
+            [sample["host_wall_time_s"] for sample in samples], dtype=np.float64
+        ),
+        "profile_health_sample_index": np.asarray(
+            [sample["sample_index"] for sample in samples], dtype=np.int32
+        ),
+        "profile_health_segment_index": np.asarray(
+            [sample["segment_index"] for sample in samples], dtype=np.int32
+        ),
+        "profile_health_segment_name": np.asarray(
+            [str(sample["segment_name"]) for sample in samples], dtype="U64"
+        ),
+        "profile_health_field": fields,
+        "profile_health_value": values,
+        "profile_health_read_s": np.asarray(
+            [sample["read_duration_s"] for sample in samples], dtype=np.float64
+        ),
+        "profile_health_position_joint_rad": np.asarray(
+            [sample["position_joint_rad"] for sample in samples], dtype=np.float32
+        ),
+        "profile_health_applied_joint_rad": np.asarray(
+            [sample["applied_joint_rad"] for sample in samples], dtype=np.float32
+        ),
+        "profile_health_voltage_v": values_for("voltage_v"),
+        "profile_health_temperature_c": values_for("temperature_c"),
+        "profile_health_loaded_state": np.asarray(
+            [
+                int(bool(sample["value"]))
+                if sample["field"] == "loaded" and sample.get("value") is not None
+                else -1
+                for sample in samples
+            ],
+            dtype=np.int8,
+        ),
+        "profile_health_error": np.asarray(
+            [str(sample.get("error") or "") for sample in samples], dtype="U256"
+        ),
+    }
+
+
+def summarize_profile_health_trace(
+    arrays: dict[str, np.ndarray],
+) -> dict[str, object]:
+    """Summarize sparse profile health events without forward-filling them."""
+
+    fields = np.asarray(arrays["profile_health_field"]).astype(str)
+    voltage = np.asarray(arrays["profile_health_voltage_v"], dtype=np.float64)
+    temperature = np.asarray(
+        arrays["profile_health_temperature_c"], dtype=np.float64
+    )
+    loaded = np.asarray(arrays["profile_health_loaded_state"], dtype=np.int8)
+    read_s = np.asarray(arrays["profile_health_read_s"], dtype=np.float64)
+    errors = np.asarray(arrays["profile_health_error"]).astype(str)
+
+    def finite_values(values: np.ndarray) -> np.ndarray:
+        return values[np.isfinite(values)]
+
+    valid_voltage = finite_values(voltage)
+    valid_temperature = finite_values(temperature)
+    valid_read_s = finite_values(read_s)
+    unload_indices = np.flatnonzero(loaded == 0)
+    first_unload: dict[str, object] | None = None
+    if unload_indices.size:
+        index = int(unload_indices[0])
+        first_unload = {
+            "sample_index": int(arrays["profile_health_sample_index"][index]),
+            "segment": str(arrays["profile_health_segment_name"][index]),
+            "profile_elapsed_s": float(
+                arrays["profile_health_elapsed_s"][index]
+            ),
+            "position_deg": math.degrees(
+                float(arrays["profile_health_position_joint_rad"][index])
+            ),
+        }
+    return {
+        "staggered": True,
+        "total_read_count": int(fields.size),
+        "read_count_by_field": {
+            field: int(np.count_nonzero(fields == field))
+            for field in PROFILE_HEALTH_FIELDS
+        },
+        "failed_read_count": int(np.count_nonzero(errors != "")),
+        "min_voltage_v": (
+            float(np.min(valid_voltage)) if valid_voltage.size else None
+        ),
+        "max_voltage_v": (
+            float(np.max(valid_voltage)) if valid_voltage.size else None
+        ),
+        "min_temperature_c": (
+            float(np.min(valid_temperature)) if valid_temperature.size else None
+        ),
+        "max_temperature_c": (
+            float(np.max(valid_temperature)) if valid_temperature.size else None
+        ),
+        "first_unload": first_unload,
+        "health_read_ms": {
+            "mean": (
+                1000.0 * float(np.mean(valid_read_s))
+                if valid_read_s.size
+                else None
+            ),
+            "p95": (
+                1000.0 * float(np.percentile(valid_read_s, 95.0))
+                if valid_read_s.size
+                else None
+            ),
+            "max": (
+                1000.0 * float(np.max(valid_read_s))
+                if valid_read_s.size
+                else None
+            ),
+        },
+    }
+
+
+def _read_profile_health_field(
+    bus: RawServoBus,
+    *,
+    servo_id: int,
+    field: str,
+    retries: int,
+    retry_sleep_s: float,
+    sleep_fn=time.sleep,
+) -> float | bool | None:
+    readers = {
+        "voltage_v": bus.read_voltage_v,
+        "temperature_c": bus.read_temperature_c,
+        "loaded": bus.read_loaded,
+    }
+    if field not in readers:
+        raise ValueError(f"unknown profile health field: {field}")
+    value: float | bool | None = None
+    for attempt in range(max(1, int(retries))):
+        value = readers[field](int(servo_id))
+        if value is not None:
+            return value
+        if attempt + 1 < max(1, int(retries)) and retry_sleep_s > 0.0:
+            sleep_fn(float(retry_sleep_s))
+    return None
+
+
 def capture_profile(
     bus: RawServoBus,
     *,
@@ -936,12 +1107,32 @@ def capture_profile(
     read_retries: int,
     read_retry_sleep_s: float,
     fields: dict[str, list[object]] | None = None,
+    health_poll_hz: float = 0.0,
+    min_voltage_v: float = 0.0,
+    max_temperature_c: float = float("inf"),
+    health_samples: list[dict[str, object]] | None = None,
+    monotonic_fn=time.monotonic,
+    wall_time_fn=time.time,
+    sleep_fn=time.sleep,
 ) -> dict[str, np.ndarray]:
+    """Capture the motion profile and optional staggered safety telemetry.
+
+    ``health_poll_hz`` is the total extra bus-read budget, not a per-field
+    rate. Voltage, temperature, and torque-enable reads rotate one at a time,
+    matching the runtime worker's non-blocking health-poll strategy.
+    """
+
     fields = fields if fields is not None else _new_capture_fields()
-    capture_start = time.monotonic()
+    health_samples = health_samples if health_samples is not None else []
+    capture_start = monotonic_fn()
     nominal_step = 0
     last_written_units: int | None = None
     last_write_done: float | None = None
+    health_cursor = 0
+    next_health_read_s = capture_start
+    health_interval_s = (
+        1.0 / float(health_poll_hz) if float(health_poll_hz) > 0.0 else None
+    )
 
     for segment_index, segment in enumerate(segments):
         print(
@@ -949,14 +1140,14 @@ def capture_profile(
             f"({len(segment.targets_rad) / sample_hz:.1f}s)",
             flush=True,
         )
-        segment_start = time.monotonic()
+        segment_start = monotonic_fn()
         for local_step, target_rad in enumerate(segment.targets_rad):
             scheduled = segment_start + float(local_step) / float(sample_hz)
-            wait_start = time.monotonic()
-            remaining = scheduled - time.monotonic()
+            wait_start = monotonic_fn()
+            remaining = scheduled - monotonic_fn()
             if remaining > 0.0:
-                time.sleep(remaining)
-            loop_start = time.monotonic()
+                sleep_fn(remaining)
+            loop_start = monotonic_fn()
             scheduler_wait_s = loop_start - wait_start
             target_units = servo.joint_target_rad_to_elect_unit(float(target_rad))
             should_write = (
@@ -964,11 +1155,11 @@ def capture_profile(
                 or abs(int(target_units) - int(last_written_units))
                 > int(write_deadband_units)
             )
-            write_start = time.monotonic()
+            write_start = monotonic_fn()
             if should_write:
                 bus.move_time_write(int(servo_id), int(target_units), int(move_time_ms))
                 last_written_units = int(target_units)
-            write_done = time.monotonic()
+            write_done = monotonic_fn()
             if should_write:
                 last_write_done = write_done
             assert last_written_units is not None
@@ -976,19 +1167,20 @@ def capture_profile(
             applied_rad = servo.servo_elect_units_to_joint_target_rad(
                 int(last_written_units)
             )
-            read_start = time.monotonic()
+            read_start = monotonic_fn()
             position_units = _read_position_with_retries(
                 bus,
                 servo_id=int(servo_id),
                 retries=int(read_retries),
                 retry_sleep_s=float(read_retry_sleep_s),
             )
-            read_done = time.monotonic()
+            read_done = monotonic_fn()
             position_rad = servo.servo_elect_units_to_joint_target_rad(
                 int(position_units)
             )
 
             fields["profile_time_s"].append(float(nominal_step) / float(sample_hz))
+            fields["host_wall_time_s"].append(float(wall_time_fn()))
             fields["scheduled_elapsed_s"].append(scheduled - capture_start)
             fields["scheduler_wait_s"].append(scheduler_wait_s)
             fields["command_elapsed_s"].append(write_start - capture_start)
@@ -1010,6 +1202,71 @@ def capture_profile(
             fields["command_write_s"].append(write_done - write_start)
             fields["position_read_s"].append(read_done - read_start)
             fields["loop_lateness_s"].append(max(0.0, loop_start - scheduled))
+
+            if (
+                health_interval_s is not None
+                and monotonic_fn() >= next_health_read_s
+            ):
+                health_field = PROFILE_HEALTH_FIELDS[
+                    health_cursor % len(PROFILE_HEALTH_FIELDS)
+                ]
+                health_cursor += 1
+                health_read_started = monotonic_fn()
+                health_error: str | None = None
+                try:
+                    health_value = _read_profile_health_field(
+                        bus,
+                        servo_id=int(servo_id),
+                        field=health_field,
+                        retries=int(read_retries),
+                        retry_sleep_s=float(read_retry_sleep_s),
+                        sleep_fn=sleep_fn,
+                    )
+                except Exception as exc:
+                    health_value = None
+                    health_error = f"{type(exc).__name__}: {exc}"
+                health_read_done = monotonic_fn()
+                health_samples.append(
+                    {
+                        "profile_elapsed_s": health_read_done - capture_start,
+                        "host_wall_time_s": float(wall_time_fn()),
+                        "sample_index": nominal_step,
+                        "segment_index": segment_index,
+                        "segment_name": segment.name,
+                        "field": health_field,
+                        "value": health_value,
+                        "read_duration_s": health_read_done - health_read_started,
+                        "position_joint_rad": position_rad,
+                        "applied_joint_rad": float(applied_rad),
+                        "error": health_error,
+                    }
+                )
+                next_health_read_s = health_read_done + health_interval_s
+                if health_value is None:
+                    raise RuntimeError(
+                        f"in-profile {health_field} telemetry is unavailable"
+                        + (f": {health_error}" if health_error else "")
+                    )
+                if (
+                    health_field == "voltage_v"
+                    and float(health_value) < float(min_voltage_v)
+                ):
+                    raise RuntimeError(
+                        "in-profile servo voltage "
+                        f"{float(health_value):.3f}V is below "
+                        f"{float(min_voltage_v):.3f}V"
+                    )
+                if (
+                    health_field == "temperature_c"
+                    and float(health_value) > float(max_temperature_c)
+                ):
+                    raise RuntimeError(
+                        "in-profile servo temperature "
+                        f"{float(health_value):.1f}C exceeds "
+                        f"{float(max_temperature_c):.1f}C"
+                    )
+                if health_field == "loaded" and health_value is False:
+                    raise RuntimeError("servo unloaded during the motion profile")
             nominal_step += 1
 
             if abs(float(applied_rad) - position_rad) > float(max_position_error_rad):
@@ -1021,9 +1278,9 @@ def capture_profile(
                 )
 
         segment_end = segment_start + len(segment.targets_rad) / float(sample_hz)
-        remaining = segment_end - time.monotonic()
+        remaining = segment_end - monotonic_fn()
         if remaining > 0.0:
-            time.sleep(remaining)
+            sleep_fn(remaining)
 
     return _arrays_from_fields(fields)
 
@@ -1519,6 +1776,16 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_AMPLITUDES_DEG,
     )
     parser.add_argument("--sample-hz", type=float, default=50.0)
+    parser.add_argument(
+        "--profile-health-poll-hz",
+        type=float,
+        default=6.0,
+        help=(
+            "Total in-profile health-read rate. Voltage, temperature, and "
+            "torque-enable reads are staggered across this budget so the "
+            "50 Hz position loop never performs a blocking health sweep."
+        ),
+    )
     parser.add_argument("--settle-s", type=float, default=1.0)
     parser.add_argument("--step-hold-s", type=float, default=1.0)
     parser.add_argument("--chirp-duration-s", type=float, default=10.0)
@@ -1640,6 +1907,10 @@ def _validate_args(args: argparse.Namespace) -> None:
     for name, value in positive.items():
         if float(value) <= 0.0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
+    if float(args.profile_health_poll_hz) < 0.0:
+        raise ValueError("--profile-health-poll-hz must be non-negative")
+    if float(args.profile_health_poll_hz) > float(args.sample_hz):
+        raise ValueError("--profile-health-poll-hz must not exceed --sample-hz")
     if args.chirp_end_hz < args.chirp_start_hz:
         raise ValueError("--chirp-end-hz must be >= --chirp-start-hz")
     if args.fixture_mjcf is not None:
@@ -1903,6 +2174,11 @@ def main() -> int:
             f"move_time_ms={int(args.move_time_ms)} "
             f"deadband_units={int(args.write_deadband_units)}"
         )
+        print(
+            "  profile_health="
+            f"{float(args.profile_health_poll_hz):.1f} total reads/s "
+            "staggered across voltage, temperature, and torque-enable"
+        )
     print(
         f"  preparation_monitor={float(args.prepare_monitor_hz):.1f}Hz "
         f"pre_move_hold={float(args.pre_move_hold_s):.1f}s "
@@ -1979,6 +2255,7 @@ def main() -> int:
 
     capture_fields = _new_capture_fields()
     preparation_samples: list[dict[str, object]] = []
+    profile_health_samples: list[dict[str, object]] = []
     health_samples: list[dict[str, object]] = []
     cooldown_samples: list[dict[str, object]] = []
     outcome = "failed"
@@ -2339,6 +2616,10 @@ def main() -> int:
                 read_retries=int(args.read_retries),
                 read_retry_sleep_s=float(args.read_retry_sleep_s),
                 fields=capture_fields,
+                health_poll_hz=float(args.profile_health_poll_hz),
+                min_voltage_v=float(args.min_voltage_v),
+                max_temperature_c=float(args.max_temperature_c),
+                health_samples=profile_health_samples,
             )
             profile_duration_s = time.monotonic() - profile_started
             return_started = time.monotonic()
@@ -2507,6 +2788,7 @@ def main() -> int:
             ),
         }
     )
+    arrays.update(profile_health_trace_arrays(profile_health_samples))
     measured_position = np.asarray(arrays["position_joint_rad"], dtype=np.float64)
     if fixture_model is not None:
         fixture_qpos, hold_torque, load_inertia = fixture_model.evaluate(
@@ -2526,6 +2808,35 @@ def main() -> int:
         fixture_qpos_rad=fixture_qpos,
         estimated_hold_torque_nm=hold_torque,
         estimated_load_inertia_kg_m2=load_inertia,
+    )
+    profile_health_position = np.asarray(
+        arrays["profile_health_position_joint_rad"], dtype=np.float64
+    )
+    if fixture_model is not None:
+        (
+            profile_health_fixture_qpos,
+            profile_health_hold_torque,
+            profile_health_load_inertia,
+        ) = fixture_model.evaluate(profile_health_position)
+    else:
+        (
+            profile_health_fixture_qpos,
+            profile_health_hold_torque,
+            profile_health_load_inertia,
+        ) = evaluate_manual_horizontal_fixture(
+            profile_health_position,
+            center_rad=center_rad,
+            signed_load_moment_kg_m=signed_load_moment_kg_m,
+            load_inertia_kg_m2=load_inertia_at_center_kg_m2,
+        )
+    arrays.update(
+        {
+            "profile_health_fixture_qpos_rad": profile_health_fixture_qpos,
+            "profile_health_estimated_hold_torque_nm": profile_health_hold_torque,
+            "profile_health_estimated_load_inertia_kg_m2": (
+                profile_health_load_inertia
+            ),
+        }
     )
     arrays.update(preparation_trace_arrays(preparation_samples))
     preparation_position = np.asarray(
@@ -2572,6 +2883,8 @@ def main() -> int:
         sample_hz=float(args.sample_hz),
         max_delay_s=float(args.max_delay_s),
     )
+    profile_health_summary = summarize_profile_health_trace(arrays)
+    summary["profile_health"] = profile_health_summary
     health_by_phase = {
         str(sample["phase"]): sample
         for sample in health_samples
@@ -2593,8 +2906,11 @@ def main() -> int:
             temperature_rise_c_per_min = (
                 temperature_rise_c * 60.0 / profile_duration_s
             )
+    profile_max_temperature_c = profile_health_summary["max_temperature_c"]
+    profile_min_voltage_v = profile_health_summary["min_voltage_v"]
     metadata: dict[str, object] = {
         "tool": "runtime/scripts/capture_servo_sysid.py",
+        "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "mode": (
             "htd45h_center_preparation_diagnostic"
             if args.prepare_only
@@ -2623,6 +2939,7 @@ def main() -> int:
         "amplitudes_deg": [float(value) for value in args.amplitudes_deg],
         "sample_hz": float(args.sample_hz),
         "sample_rate_hz": float(args.sample_hz),
+        "profile_health_poll_hz_total": float(args.profile_health_poll_hz),
         "num_samples": int(arrays["timestamps_s"].size),
         "move_time_ms": int(args.move_time_ms),
         "write_deadband_units": int(args.write_deadband_units),
@@ -2641,6 +2958,14 @@ def main() -> int:
                 "time from the latest serial-write completion to position-read completion"
             ),
             "position_elapsed_s": "host monotonic time after position response",
+            "host_wall_time_s": (
+                "Unix wall time sampled with each position for alignment with "
+                "an external current or load-cell logger"
+            ),
+            "profile_health_poll": (
+                "one staggered voltage, temperature, or torque-enable read per "
+                "event; --profile-health-poll-hz is the total bus-read budget"
+            ),
             "delay_s": (
                 "cross-correlation lag including servo response; not pure transport latency"
             ),
@@ -2716,6 +3041,8 @@ def main() -> int:
         "thermal_summary": {
             "before_profile_temperature_c": before_profile_temperature,
             "after_profile_temperature_c": after_profile_temperature,
+            "max_profile_temperature_c": profile_max_temperature_c,
+            "min_profile_voltage_v": profile_min_voltage_v,
             "profile_temperature_rise_c": temperature_rise_c,
             "profile_temperature_rise_c_per_min": temperature_rise_c_per_min,
         },
@@ -2850,6 +3177,16 @@ def main() -> int:
             "Tracking: "
             f"RMSE={float(summary['tracking_rmse_deg']):.2f}deg "
             f"p95={float(summary['tracking_abs_p95_deg']):.2f}deg"
+        )
+    if profile_health_summary["total_read_count"]:
+        print(
+            "Profile health: "
+            f"reads={profile_health_summary['total_read_count']} "
+            f"failed={profile_health_summary['failed_read_count']} "
+            f"min_voltage={profile_health_summary['min_voltage_v']}V "
+            f"max_temperature={profile_health_summary['max_temperature_c']}C "
+            f"first_unload={profile_health_summary['first_unload']}",
+            flush=True,
         )
     return exit_code
 

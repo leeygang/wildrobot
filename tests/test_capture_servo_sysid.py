@@ -24,9 +24,11 @@ from runtime.scripts.capture_servo_sysid import (
     monitor_preparation_phase,
     preparation_trace_arrays,
     prepare_servo_center,
+    profile_health_trace_arrays,
     resolve_return_speed_deg_s,
     summarize_capture,
     summarize_preparation_trace,
+    summarize_profile_health_trace,
     validate_health,
     validate_profile,
     wait_for_cooldown,
@@ -197,6 +199,152 @@ def test_capture_records_transmitted_command_after_write_deadband() -> None:
     assert summary["segments"]["test"]["command_write_fraction"] == pytest.approx(0.5)
 
 
+def test_capture_staggers_profile_health_reads_and_records_wall_time() -> None:
+    servo = ServoConfig(id=1, rad_range=(-1.0, 1.0))
+
+    class FakeBus:
+        position = 500
+
+        def move_time_write(self, _servo_id, position, _move_time_ms):
+            self.position = int(position)
+
+        def read_position(self, _servo_id):
+            return self.position
+
+        def read_voltage_v(self, _servo_id):
+            return 11.5
+
+        def read_temperature_c(self, _servo_id):
+            return 37
+
+        def read_loaded(self, _servo_id):
+            return True
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    health_samples: list[dict[str, object]] = []
+    arrays = capture_profile(
+        FakeBus(),
+        servo_id=1,
+        servo=servo,
+        segments=(
+            ProfileSegment(
+                name="test",
+                kind="chirp",
+                targets_rad=tuple(np.linspace(0.0, 0.05, 51)),
+            ),
+        ),
+        sample_hz=50.0,
+        move_time_ms=20,
+        write_deadband_units=0,
+        max_position_error_rad=1.0,
+        read_retries=1,
+        read_retry_sleep_s=0.0,
+        health_poll_hz=6.0,
+        min_voltage_v=9.6,
+        max_temperature_c=60.0,
+        health_samples=health_samples,
+        monotonic_fn=monotonic,
+        wall_time_fn=lambda: 1_700_000_000.0 + now[0],
+        sleep_fn=sleep,
+    )
+
+    assert [sample["field"] for sample in health_samples] == [
+        "voltage_v",
+        "temperature_c",
+        "loaded",
+        "voltage_v",
+        "temperature_c",
+        "loaded",
+    ]
+    assert arrays["host_wall_time_s"].tolist() == pytest.approx(
+        [1_700_000_000.0 + 0.02 * index for index in range(51)]
+    )
+    health_arrays = profile_health_trace_arrays(health_samples)
+    health_arrays["profile_health_estimated_hold_torque_nm"] = np.zeros(
+        len(health_samples), dtype=np.float32
+    )
+    summary = summarize_profile_health_trace(health_arrays)
+    assert summary["read_count_by_field"] == {
+        "voltage_v": 2,
+        "temperature_c": 2,
+        "loaded": 2,
+    }
+    assert summary["min_voltage_v"] == pytest.approx(11.5)
+    assert summary["max_temperature_c"] == pytest.approx(37.0)
+    assert summary["first_unload"] is None
+
+
+def test_capture_aborts_and_preserves_profile_torque_disable_event() -> None:
+    servo = ServoConfig(id=1, rad_range=(-1.0, 1.0))
+
+    class AutoUnloadingBus:
+        position = 500
+
+        def move_time_write(self, _servo_id, position, _move_time_ms):
+            self.position = int(position)
+
+        def read_position(self, _servo_id):
+            return self.position
+
+        def read_voltage_v(self, _servo_id):
+            return 11.5
+
+        def read_temperature_c(self, _servo_id):
+            return 37
+
+        def read_loaded(self, _servo_id):
+            return False
+
+    now = [0.0]
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    health_samples: list[dict[str, object]] = []
+    with pytest.raises(RuntimeError, match="unloaded during the motion profile"):
+        capture_profile(
+            AutoUnloadingBus(),
+            servo_id=1,
+            servo=servo,
+            segments=(
+                ProfileSegment(
+                    name="test",
+                    kind="chirp",
+                    targets_rad=tuple(np.linspace(0.0, 0.05, 6)),
+                ),
+            ),
+            sample_hz=10.0,
+            move_time_ms=20,
+            write_deadband_units=0,
+            max_position_error_rad=1.0,
+            read_retries=1,
+            read_retry_sleep_s=0.0,
+            health_poll_hz=30.0,
+            min_voltage_v=9.6,
+            max_temperature_c=60.0,
+            health_samples=health_samples,
+            monotonic_fn=monotonic,
+            wall_time_fn=lambda: 1_700_000_000.0 + now[0],
+            sleep_fn=sleep,
+        )
+
+    health_arrays = profile_health_trace_arrays(health_samples)
+    summary = summarize_profile_health_trace(health_arrays)
+    assert summary["total_read_count"] == 3
+    assert summary["first_unload"]["sample_index"] == 2
+    assert summary["first_unload"]["segment"] == "test"
+
+
 def test_step_response_metrics_report_gain_and_wait_times() -> None:
     metrics = estimate_step_response_metrics(
         np.full(10, 1.0),
@@ -306,7 +454,7 @@ def test_write_capture_writes_npz_and_manifest_without_overwrite(tmp_path) -> No
 
     with np.load(npz_path) as payload:
         assert set(arrays).issubset(payload.files)
-        assert int(payload["schema_version"]) == 4
+        assert int(payload["schema_version"]) == 5
     assert json.loads(json_path.read_text())["summary"]["samples"] == 2
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         write_capture(

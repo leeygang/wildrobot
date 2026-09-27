@@ -98,7 +98,8 @@ port, and duration. The script then:
    automatically up to `--center-max-attempts`; a retry re-primes and reloads a
    servo that disabled torque, then uses a longer move;
 6. runs the full profile while checking encoder reads, tracking error, and loop
-   timing;
+   timing; voltage, temperature, and torque-enable reads are staggered across
+   a bounded extra bus-read budget and abort the profile on a safety violation;
 7. returns to center, reads voltage and temperature again, moves to the
    configured gravity-neutral unload pose, verifies it, and disables torque;
 8. stops and unloads the servo in a `finally` path on completion, error, or
@@ -126,11 +127,13 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
   the smooth `requested_command_rad`, segment labels, command/read timing, and
   `fixture_qpos_rad`, MuJoCo-derived holding torque and moving-load inertia.
   `command_rad` is the quantized target actually transmitted after the
-  selected write deadband. Schema v4 also records scheduled time, scheduler
-  sleep, actual serial-write completion, command age at each read, and cooldown
-  temperature/voltage history. `preparation_*` arrays preserve the monitored
-  pre-move, start-pose normalization, center-move, center-settle, and
-  unload-pose states even when capture fails before the profile starts;
+  selected write deadband. Schema v5 also records scheduled and Unix wall time,
+  scheduler sleep, actual serial-write completion, command age at each read,
+  cooldown temperature/voltage history, and event-oriented `profile_health_*`
+  voltage, temperature, and torque-enable samples. `preparation_*` arrays
+  preserve the monitored pre-move, start-pose normalization, center-move,
+  center-settle, and unload-pose states even when capture fails before the
+  profile starts;
 - `.json`: fixture geometry and inertia, servo/bus identity, pre/post voltage
   and temperature, initial/center/final positions, torque-load state, all
   operator/cooldown/preparation/profile/return waits, step 10/50/90% response,
@@ -138,6 +141,10 @@ The output pair is written under `runtime/calibration/servo_sysid/` by default:
 
 The reported chirp `delay_s` is explicitly a cross-correlation lag that includes
 servo response dynamics; it is not a pure serial or actuator transport delay.
+The default `--profile-health-poll-hz 6` is a total budget: the three health
+fields rotate one at a time, giving about 2 Hz per field without putting a
+three-read sweep in the 50 Hz position loop. Use the wall-time channel to align
+an external current-supply or load-cell trace with the NPZ.
 
 ### Torque-loss preparation diagnostic
 
@@ -287,6 +294,47 @@ uv run python runtime/scripts/run_servo_sysid_campaign.py \
 Use `--dry-run` to validate all six profiles and fixture loads without opening
 the serial port.
 
+### Comprehensive next BAM campaign
+
+Use the opt-in `complete` plan for the next characterization pass. One command
+first dry-runs every condition, then automatically executes the nine separated
+load/speed checks, the six signed-load SysID/validation captures, and a final
+loaded profile with the deployment command deadband. Each condition retains an
+independent cooldown and automatic neutral-pose return:
+
+```bash
+uv run python runtime/scripts/run_servo_sysid_campaign.py \
+  --plan complete \
+  --servo-id 100 \
+  --board-port /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C4C127022-if00 \
+  --fixture-mjcf assets/bam/robot.xml \
+  --fixture-joint pitch \
+  --fixture-direction 1 \
+  --fixture-qpos-offset-deg 0 \
+  --profile-health-poll-hz 6 \
+  --max-static-torque-nm 2.5 \
+  --dry-run
+```
+
+Inspect the printed travel and torque envelope, then remove `--dry-run` for the
+hardware run. The campaign writes `campaign_manifest.json` after every child
+capture, including checksums, outcomes, safety summaries, modeled fixture
+torque, tracking results, and thermal results. A failed or interrupted run
+therefore leaves a usable, auditable partial campaign.
+
+The current `assets/bam/robot.xml` fixture reaches only about `0.56 Nm`; running
+the complete plan unchanged improves coverage and telemetry but still cannot
+identify the HTD-45H walking-load torque boundary. For that question, install a
+mechanically verified higher-load fixture and update its MJCF mass/inertia to
+match before dry-running this command. Do not raise `--max-static-torque-nm`
+merely to bypass preflight: it is a safety ceiling, not a servo rating.
+
+The servo protocol still cannot report motor current or output torque. Connect
+a current-logging supply and, ideally, a load cell during this campaign if
+those signals are required; the per-sample Unix timestamps are provided for
+alignment. Without those external sensors, no software change can recover the
+missing electrical/current measurement after the experiment.
+
 The HTD protocol exposes position, supply voltage, and temperature, but not
 motor current or torque. Torque-related parameters therefore require the
 known lever mass, radius, and inertia and must be fitted across multiple load
@@ -332,6 +380,8 @@ References:
 - ToddlerBot paper, system-identification method: https://arxiv.org/abs/2502.00893
 - ToddlerBot implementation: `~/projects/toddlerbot/toddlerbot/policies/sysID.py`
   and `~/projects/toddlerbot/toddlerbot/tools/run_sysID.py`
+- Rhoban BAM actuator-modeling guide:
+  https://github.com/Rhoban/bam/blob/main/docs/identification/actuator_modeling.rst
 - HTD/Hiwonder protocol examples: `docs/HTD-45H Serial Bus Servo/`
 
 ## Capture commands
